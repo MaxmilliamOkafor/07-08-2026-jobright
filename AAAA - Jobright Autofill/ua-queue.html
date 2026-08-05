@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jobright Queue Manager</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#0f1117;color:#e2e8f0;font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-width:300px}
+  header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,#052e22,#0f1117);border-bottom:1px solid #1e2030;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pulse{width:9px;height:9px;border-radius:50%;background:#6b7280;flex-shrink:0}
+  .pulse.on{background:#4ade80;animation:p 1.5s ease-in-out infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
+  h1{font-size:13.5px;margin:0;color:#6ee7b7;font-weight:700;flex:1;white-space:nowrap}
+  .chip{font-size:10.5px;font-weight:700;color:#34d399;background:rgba(16,185,129,.13);padding:2px 8px;border-radius:10px}
+  #stats{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid #1e2030}
+  .stat{flex:1;min-width:64px;background:#161925;border:1px solid #232636;border-radius:9px;padding:7px 4px;text-align:center;font-size:10px;color:#94a3b8}
+  .stat b{display:block;font-size:16px;color:#e2e8f0;margin-bottom:1px}
+  .s-pending b{color:#fbbf24}.s-applying b{color:#a78bfa}.s-done b{color:#4ade80}.s-failed b{color:#f87171}.s-skipped b{color:#94a3b8}
+  .bar{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid #1e2030;align-items:center}
+  button{border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;background:#232636;color:#cbd5e1}
+  button:hover{filter:brightness(1.15)}
+  button:active{transform:scale(.97)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .b-start{background:linear-gradient(135deg,#059669,#10b981);color:#fff;box-shadow:0 2px 8px rgba(16,185,129,.3)}
+  .b-stop{background:rgba(239,68,68,.15);color:#f87171}
+  .b-accent{background:rgba(139,92,246,.16);color:#c4b5fd}
+  select,input[type=search]{background:#161925;color:#e2e8f0;border:1px solid #232636;border-radius:8px;padding:7px 9px;font-size:12px}
+  .progress-wrap{padding:8px 14px;border-bottom:1px solid #1e2030;display:none}
+  .progress-wrap.show{display:block}
+  .pbar{width:100%;height:6px;background:#1e2030;border-radius:3px;overflow:hidden}
+  .pfill{height:100%;background:linear-gradient(90deg,#059669,#34d399);border-radius:3px;transition:width .4s;width:0}
+  .plabel{display:flex;justify-content:space-between;font-size:10.5px;color:#94a3b8;margin-bottom:5px}
+  #log{max-height:110px;overflow-y:auto;padding:6px 14px;border-bottom:1px solid #1e2030;font-size:11px;color:#94a3b8}
+  #log div{padding:1.5px 0}
+  #log .ok{color:#4ade80}#log .err{color:#f87171}#log .act{color:#6ee7b7}
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  th{position:sticky;top:0;background:#12141d;text-align:left;padding:7px 8px;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #232636}
+  td{padding:7px 8px;border-bottom:1px solid #1a1d2a;vertical-align:top}
+  tr:hover td{background:#141724}
+  a{color:#34d399;text-decoration:none}
+  .badge{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:8px;text-transform:uppercase;white-space:nowrap}
+  .b-pending{background:rgba(251,191,36,.14);color:#fbbf24}
+  .b-applying{background:rgba(167,139,250,.16);color:#a78bfa}
+  .b-done{background:rgba(74,222,128,.14);color:#4ade80}
+  .b-failed,.b-timeout{background:rgba(239,68,68,.14);color:#f87171}
+  .b-skipped{background:rgba(148,163,184,.14);color:#94a3b8}
+  .del{background:none;color:#64748b;padding:2px 6px;font-size:13px}
+  .del:hover{color:#f87171}
+  .url{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+  #empty{padding:44px 20px;text-align:center;color:#64748b;font-size:12.5px}
+  .hidden{display:none!important}
+  .hint{font-size:10px;color:#475569;padding:6px 14px 12px}
+</style>
+</head>
+<body>
+  <header>
+    <div class="pulse" id="pulse"></div>
+    <h1>⚡ Jobright Queue Manager</h1>
+    <span class="chip" id="counter">0 jobs</span>
+  </header>
+
+  <div id="stats"></div>
+
+  <div class="bar">
+    <button class="b-start" id="btnStart">▶ Start</button>
+    <button class="b-stop" id="btnStop" disabled>■ Stop</button>
+    <select id="conc" title="How many jobs run at once, each in its own background tab">
+      <option value="1">1 tab</option>
+      <option value="2">2 tabs</option>
+      <option value="3" selected>3 tabs</option>
+      <option value="4">4 tabs</option>
+      <option value="5">5 tabs</option>
+    </select>
+    <button class="b-accent" id="btnImport">⬆ Import CSV</button>
+    <input type="file" id="csvFile" accept=".csv,text/csv,text/plain" class="hidden">
+    <button id="btnExport">⬇ Export</button>
+    <button id="btnRetry">↻ Retry failed</button>
+    <button id="btnClearDone">Clear done</button>
+    <button id="btnClearAll">Clear all</button>
+  </div>
+
+  <div class="bar">
+    <input type="search" id="search" placeholder="Search url / title…" style="flex:1;min-width:120px">
+    <select id="statusFilter">
+      <option value="all">All statuses</option>
+      <option value="pending">Pending</option>
+      <option value="applying">Applying</option>
+      <option value="done">Done</option>
+      <option value="failed">Failed</option>
+      <option value="timeout">Timeout</option>
+      <option value="skipped">Skipped</option>
+    </select>
+  </div>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="plabel"><span id="progressLabel">Running…</span><span id="progressPct">0%</span></div>
+    <div class="pbar"><div class="pfill" id="progressFill"></div></div>
+  </div>
+
+  <div id="log"></div>
+
+  <div id="empty">No jobs yet. Import a CSV of job URLs (or paste URLs in the on-page sidebar) — then hit ▶ Start.<br><br>Jobs open in <b>background tabs</b> so you can keep browsing. This panel stays docked and live.</div>
+  <table id="tbl" class="hidden">
+    <thead><tr><th>#</th><th>Status</th><th>Job</th><th>Board</th><th>When</th><th></th></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="hint">Tip: pin this as a browser side panel (puzzle icon → Jobright Autofill → side panel) so it stays in place while the queue runs.</div>
+
+  <script src="ua-queue.js"></script>
+</body>
+</html>
