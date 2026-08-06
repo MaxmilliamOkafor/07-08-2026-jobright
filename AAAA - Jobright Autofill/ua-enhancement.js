@@ -1,5 +1,10 @@
-// === ULTIMATE AUTOFILL ENHANCEMENT v13.0.0 (Jobright v1.14.0 — FULL AUTO / CSV QUEUE) ===
-// Built: 2026-06-18. Base: official Jobright Autofill 1.14.0 (newest patch, 2026-06-18).
+// === ULTIMATE AUTOFILL ENHANCEMENT v14.0.0 (Jobright v1.19.0 — FULL AUTO / CSV QUEUE) ===
+// Built: 2026-08-06. Base: official Jobright Autofill 1.19.0 (newest patch, 2026-08-03).
+// v14.0.0: the bulk-apply run is orchestrated by the background service worker
+// (ua-orchestrator.js) instead of the side-panel document, so closing the panel no
+// longer kills a run. Each job tab PULLS its assignment by tab id (UA_MGR_WHOAMI),
+// which is immune to the Jobright→ATS redirect timing that used to lose jobs, and
+// reports its terminal status over runtime messaging as well as storage.
 // Ultimate Edition: AI-level knockout intelligence, 500+ pre-seeded ATS responses,
 // STAR-format behavioral answers, resume keyword optimizer, smart cover-letter generator,
 // 150+ ATS platforms (Paradox/Olivia, Phenom chatbot, Beamery, HireVue chat, ModernHire),
@@ -1692,14 +1697,31 @@
   // Normalize a URL so the same job isn't counted twice (the two parsers can emit
   // slightly different strings — trailing punctuation, hash, etc.). This is what
   // made a CSV of N urls show ~2N "jobs".
+  // Only http(s) URLs are ever queued or navigated to. A CSV cell is untrusted
+  // input, and the queue feeds `location.href` — a `javascript:` or `data:` row
+  // must never survive normalization. Tracking params are stripped so the same
+  // job posting shared from two places de-duplicates to one entry.
+  function isSafeJobUrl(u) {
+    try { const p = new URL(String(u)).protocol; return p === 'http:' || p === 'https:'; } catch (_) { return false; }
+  }
   function normalizeUrl(u) {
     if (!u) return '';
-    let s = String(u).trim().replace(/[)\]}>"'.,;]+$/, '');
-    try { const x = new URL(s); x.hash = ''; let h = x.href; return h.replace(/\/$/, ''); } catch (_) { return s; }
+    let s = String(u).trim().replace(/^[\s"'<([]+/, '').replace(/[)\]}>"'.,;]+$/, '');
+    if (!s) return '';
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(s) && /^[\w-]+(\.[\w-]+)+\//.test(s)) s = 'https://' + s;
+    try {
+      const x = new URL(s);
+      if (x.protocol !== 'http:' && x.protocol !== 'https:') return '';
+      x.hash = '';
+      for (const p of [...x.searchParams.keys()]) {
+        if (/^(utm_[\w-]*|fbclid|gclid|msclkid|mc_cid|mc_eid|igshid|_ga|trk|trackingId)$/i.test(p)) x.searchParams.delete(p);
+      }
+      return x.href.replace(/\/$/, '');
+    } catch (_) { return ''; }
   }
   async function addJob(url, title, meta) {
     url = normalizeUrl(url);
-    if (!url || queue.some(j => normalizeUrl(j.url) === url)) return;
+    if (!url || !isSafeJobUrl(url) || queue.some(j => normalizeUrl(j.url) === url)) return;
     queue.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), url, title: title || shortUrl(url), status: 'pending', addedAt: Date.now(), jobBoard: detectJobBoard(url), companyName: meta?.companyName || '', error: null, startedAt: null, completedAt: null, duration: null, ...(meta || {}) });
     await saveQ(); renderQ(); updateCtrl();
   }
@@ -1707,28 +1729,62 @@
   async function clearQ() { queue = []; selected.clear(); await saveQ(); renderQ(); updateCtrl(); }
   async function removeSelected() { queue = queue.filter(j => !selected.has(j.id)); selected.clear(); await saveQ(); renderQ(); updateCtrl(); }
   function shortUrl(u) { try { const p = new URL(u); return p.hostname.replace('www.', '') + p.pathname.slice(0, 30); } catch { return u.slice(0, 40); } }
-  // BUG FIXED: for a multi-column row "URL,Title,Location" the inner loop correctly
-  // isolated just the URL segment — but a second, UNCONDITIONAL check right after it
-  // ALSO tested the WHOLE raw line against /^https?:\/\//, which is true for any line
-  // that simply STARTS with a URL (i.e. every multi-column row). That pushed the
-  // entire "URL,Title,Location" string as a SECOND, separate "URL" into the queue —
-  // Chrome then percent-encoded the embedded spaces on navigation, producing exactly
-  // the malformed request ("...job-slug,Job%20Title...") that Workday's server
-  // rejected with an HTTP 406. The whole-line fallback must only run when the inner
-  // loop did NOT already find a clean URL segment (i.e. a genuinely bare-URL line).
-  function parseCSV(t) {
-    const u = [];
-    for (const l of t.split(/[\r\n]+/)) {
-      const s = l.trim();
-      if (!s || /^(url|link|job|title|company)/i.test(s)) continue;
-      let foundInLine = false;
-      for (const c of s.split(/[,\t]/)) {
-        const v = c.trim().replace(/^["']|["']$/g, '');
-        if (/^https?:\/\//i.test(v)) { u.push(v); foundInLine = true; break; }
-      }
-      if (!foundInLine && /^https?:\/\//i.test(s) && !u.includes(s)) u.push(s);
+  // Proper RFC-4180 parsing with delimiter sniffing. The old line-splitting version
+  // corrupted any export whose cells were quoted and contained a comma or a newline
+  // (job titles like "Engineer, Backend" are extremely common), and it only ever
+  // understood comma/tab — semicolon files from European Excel came out as one giant
+  // cell. It also pushed a whole "URL,Title,Location" line as a second bogus "URL",
+  // which Chrome then percent-encoded into the malformed request Workday answered
+  // with HTTP 406. Both classes of bug are gone: exactly one URL per row.
+  function sniffDelimiter(text) {
+    const line = String(text).split(/\r?\n/).find(l => l.trim()) || '';
+    let best = ',', bestN = 0;
+    for (const d of [',', ';', '\t', '|']) {
+      const n = line.split(d).length - 1;
+      if (n > bestN) { bestN = n; best = d; }
     }
-    return [...new Set(u)];
+    return bestN ? best : ',';
+  }
+  function parseCsvRows(text, delim) {
+    const rows = [];
+    let row = [], field = '', inQ = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i], nx = text[i + 1];
+      if (inQ) {
+        if (ch === '"' && nx === '"') { field += '"'; i++; }
+        else if (ch === '"') inQ = false;
+        else field += ch;
+      } else if (ch === '"') inQ = true;
+      else if (ch === delim) { row.push(field); field = ''; }
+      else if (ch === '\r') { /* handled by \n */ }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += ch;
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(r => r.length && r.some(c => c.trim()));
+  }
+  // Pull the job URL out of a row however it was written: its own column, a bare URL
+  // in any cell, a link with surrounding punctuation, or a hostname with no scheme.
+  function urlFromCsvRow(row) {
+    for (const raw of row) {
+      const cell = String(raw == null ? '' : raw).trim();
+      if (!cell) continue;
+      const m = cell.match(/https?:\/\/[^\s,"'<>)\]]+/i);
+      if (m) { const u = normalizeUrl(m[0]); if (u) return u; }
+      const u = normalizeUrl(cell);
+      if (u && /^https?:\/\/[^/]+\./i.test(u)) return u;
+    }
+    return '';
+  }
+  function parseCSV(t) {
+    const text = String(t || '').replace(/^﻿/, '');   // strip Excel's BOM
+    const rows = parseCsvRows(text, sniffDelimiter(text));
+    const out = [];
+    for (const r of rows) {
+      const u = urlFromCsvRow(r);
+      if (u && isSafeJobUrl(u) && !out.includes(u)) out.push(u);
+    }
+    return out;
   }
 
   // ===================== ATS =====================
@@ -4805,6 +4861,30 @@
       return j || null;
     } catch (_) { return null; }
   }
+  /* Is there anything on this page we can actually apply through? Probed over
+     several rounds rather than once, because a queued URL typically lands on a
+     Jobright/aggregator page that redirects to the real ATS, or on an SPA that
+     renders its form after first paint. Rounds where the document is still
+     loading, or where the URL just changed, don't count against the budget. */
+  async function probeApplyTarget(tries, gapMs) {
+    const gap = gapMs || 3000;
+    let budget = tries || 4;
+    let lastHref = location.href;
+    // Hard wall-clock bound so a page that never finishes loading, or an SPA that
+    // rewrites its URL on a timer, can't hold a job tab open indefinitely.
+    const deadline = Date.now() + Math.min(60000, (tries || 4) * gap * 3);
+    while (budget > 0 && Date.now() < deadline) {
+      if (document.readyState === 'complete') {
+        try { await openApplicationForm(); } catch (_) {}
+        if (hasApplicationForm() || hasApplyButton() || detectATS() || isWorkday() || findApplyManually() || checkSuccess()) return true;
+        budget--;
+      }
+      await sleep(gap);
+      if (location.href !== lastHref) { lastHref = location.href; budget = tries || 4; }  // navigated — start the budget over
+    }
+    return false;
+  }
+
   async function processManagedJob(c) {
     LOG(`Manager mode: driving "${c.title || c.url}"`);
     let finalized = false, tId = null;
@@ -4825,7 +4905,14 @@
         try { await recordApplication(c.url, c.title, status === 'done' ? 'applied' : 'failed', c.jobBoard, patch.duration); } catch (_) {}
       }
       try { await learnFromPage(); } catch (_) {}
-      await st.set('ua_mgr_advance', { id: c.id, status, ts: Date.now() });
+      // Report over BOTH channels with the same timestamp. The runtime message
+      // reaches the service worker instantly (and wakes it if it was idle); the
+      // storage write is the fallback for the case where the worker is mid-restart
+      // and the message is dropped. The orchestrator de-duplicates on (id, ts), so
+      // whichever arrives second is a no-op.
+      const ts = Date.now();
+      try { chrome.runtime.sendMessage({ type: 'UA_JOB_RESULT', id: c.id, status, error: error || null, ts }, () => void chrome.runtime.lastError); } catch (_) {}
+      await st.set('ua_mgr_advance', { id: c.id, status, ts });
       LOG(`Manager mode: job ${status} — manager will close this tab`);
     };
     const onTimeout = async () => {
@@ -4839,11 +4926,14 @@
       await openApplicationForm();
       await handleAccountAuth();
       if (detectCaptcha()) await waitForCaptchaClear();
-      if (!hasApplicationForm() && !hasApplyButton() && !detectATS() && !isWorkday() && !findApplyManually() && !checkSuccess()) {
-        await sleep(2500);
-        await openApplicationForm();
-        if (!hasApplicationForm() && !hasApplyButton() && !detectATS() && !isWorkday() && !findApplyManually() && !checkSuccess())
-          return void await finalize('skipped', 'No application form found');
+      // A false "no application form" is the worst outcome in a bulk run: the job is
+      // dropped silently and never retried. The old two-shot check fired while the tab
+      // was still on the Jobright landing page or mid-redirect to the ATS, so real jobs
+      // were skipped. Probe repeatedly instead, and abandon this pass entirely if the
+      // page navigates — the content script on the next page picks the job back up.
+      if (!(await probeApplyTarget(5, 4000))) {
+        if (finalized) return;
+        return void await finalize('skipped', 'No application form found');
       }
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       _lastSubmitAt = 0;
@@ -4882,10 +4972,27 @@
   // completed navigation in the tab, so the content script on the FINAL apply page is
   // the one that runs. A per-job guard makes double-delivery a no-op.
   let _mgrHandledJobId = null;
-  async function runManagedAssignment(job) {
+  /* Run-wide options the orchestrator owns (the panel writes them, the worker
+     hands them to each tab). Applied here so every job tab in a run behaves
+     identically no matter which page it booted on. */
+  function applyManagerSettings(s) {
+    if (!s || typeof s !== 'object') return;
+    if (typeof s.skipApplied === 'boolean') qSkipApplied = s.skipApplied;
+    if (typeof s.tailor === 'boolean') queueUseTailor = s.tailor;
+    if (s.jobTimeoutMs) {
+      // Stay comfortably inside the worker's hard cap so THIS tab reports a real
+      // status before the watchdog kills it — a watchdog timeout tells you nothing
+      // about why the job failed.
+      qTimeout = Math.max(60000, Math.min(150000, s.jobTimeoutMs - 45000));
+    }
+  }
+  async function runManagedAssignment(job, settings) {
     if (!job || !job.id) return;
     if (_mgrHandledJobId === job.id) return;
     _mgrHandledJobId = job.id;
+    // Tag the tab so a later navigation in the SAME tab can recover the job id
+    // locally, without another round-trip to the worker.
+    try { window.name = MGR_PREFIX + job.id; } catch (_) {}
     LOG(`Manager assigned this tab to "${job.title || job.url}"`);
     // On an odd redirect init() may have bailed before loading these — ensure they're ready.
     try { await load(); } catch (_) {}
@@ -4893,14 +5000,42 @@
       await loadAnswerBank(); await loadSavedResponses(); await loadAppHistory();
       await loadResumes(); await loadCustomDefaults(); await loadRateLimitDelay();
     } catch (_) {}
+    applyManagerSettings(settings);
     try { injectCSS(); } catch (_) {}
     await processManagedJob(job);
   }
+
+  /* PULL-based assignment. Pushes from the worker can all land before this
+     content script boots (common on a fast ATS page reached through two
+     redirects), which used to leave the tab idle until the 6-minute watchdog
+     killed the job. Asking "which job am I?" by tab id removes that race
+     entirely — the worker answers from its own tab map, so it is correct no
+     matter how many times the page redirected on the way here. */
+  async function askManagerForJob() {
+    if (window.self !== window.top) return null;
+    if (isRunnerTab()) return null;                        // the in-page runner owns its tab
+    return await new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_MGR_WHOAMI' }, (r) => { void chrome.runtime.lastError; res(r && r.job ? r : null); });
+      } catch (_) { res(null); }
+    });
+  }
+  /* Late-boot safety net: ask again a few seconds in, for the case where the
+     worker was asleep on the first ask and had not yet restored its tab map. */
+  async function pullManagedAssignment() {
+    const resp = await askManagerForJob();
+    if (!resp || _mgrHandledJobId === resp.job.id) return !!resp;
+    runManagedAssignment(resp.job, resp.settings);
+    return true;
+  }
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'UA_ASSIGN_JOB' && msg.job) {
-      if (window.self === window.top) runManagedAssignment(msg.job);
+      if (window.self === window.top && !isRunnerTab()) runManagedAssignment(msg.job, msg.settings);
+      // Respond synchronously — returning true without ever calling sendResponse
+      // leaves the worker's callback hanging until the port closes, which is what
+      // made assignment retries look like failures.
       try { sendResponse({ ok: true }); } catch (_) {}
-      return true;
+      return false;
     }
   });
 
@@ -4958,19 +5093,18 @@
           // Captcha gate: pause here (not skip) until the user solves it — sign-in and
           // apply pages are the most common places one appears.
           if (detectCaptcha()) await waitForCaptchaClear();
-          if (!hasApplicationForm() && !hasApplyButton() && !detectATS() && !isWorkday() && !findApplyManually() && !checkSuccess()) {
-            await sleep(2500); // one short grace period for slow SPAs
-            await openApplicationForm();
-            if (!hasApplicationForm() && !hasApplyButton() && !detectATS() && !isWorkday() && !findApplyManually() && !checkSuccess()) {
-              LOG('No application form / Apply found — skipping as invalid job');
-              clearTimeout(_qTimeoutId);
-              c.status = 'skipped'; c.error = 'No application form found'; c.completedAt = Date.now();
-              qStats.skipped++;
-              await saveQ(); await saveStats(); renderQ(); updateCtrl();
-              await sleep(600);
-              goNext();
-              return;
-            }
+          // Same multi-round probe the manager path uses: a single check fired while
+          // the page was still redirecting and threw away perfectly good jobs.
+          if (!(await probeApplyTarget(5, 4000))) {
+            LOG('No application form / Apply found — skipping as invalid job');
+            clearTimeout(_qTimeoutId);
+            if (c.status !== 'applying') return;
+            c.status = 'skipped'; c.error = 'No application form found'; c.completedAt = Date.now();
+            qStats.skipped++;
+            await saveQ(); await saveStats(); renderQ(); updateCtrl();
+            await sleep(600);
+            goNext();
+            return;
           }
 
           // Already applied / posting closed → skip fast (don't burn retries).
@@ -5068,6 +5202,12 @@
 
   function goNext() {
     if (qPaused) return;
+    // Drop anything that isn't a real web URL before it can reach location.href.
+    for (const j of queue) {
+      if (j.status === 'pending' && !isSafeJobUrl(j.url)) {
+        j.status = 'skipped'; j.error = 'Unsupported URL scheme'; j.completedAt = Date.now();
+      }
+    }
     const n = queue.find(j => j.status === 'pending');
     if (n) {
       n.status = 'applying';
@@ -5170,17 +5310,17 @@
   // LazyApply-inspired: bulk URL import from text (supports various formats)
   function parseBulkUrls(text) {
     const urls = [];
-    // Split by lines, commas, tabs, spaces
-    const tokens = text.split(/[\r\n,\t]+/).map(s => s.trim()).filter(Boolean);
+    // Split by lines, commas, tabs, semicolons and pipes so a pasted spreadsheet
+    // row works as well as a plain list.
+    const tokens = String(text || '').replace(/^﻿/, '').split(/[\r\n,\t;|]+/).map(s => s.trim()).filter(Boolean);
     for (const token of tokens) {
-      // Skip header rows
-      if (/^(url|link|job|title|company|status|date|source)/i.test(token)) continue;
-      // Extract URLs from mixed content
+      // Skip header cells (but never a cell that IS a link — "link.example.com/…").
+      if (!/^https?:\/\//i.test(token) && /^(url|link|job|title|company|status|date|source)\b/i.test(token)) continue;
       const urlMatch = token.match(/https?:\/\/[^\s,"'<>]+/i);
-      if (urlMatch) {
-        const clean = urlMatch[0].replace(/[)"'>\]]+$/, ''); // Clean trailing chars
-        if (!urls.includes(clean)) urls.push(clean);
-      }
+      const candidate = urlMatch ? urlMatch[0] : token;
+      // normalizeUrl rejects anything that isn't http(s) and strips trailing junk.
+      const clean = normalizeUrl(candidate);
+      if (clean && isSafeJobUrl(clean) && !urls.includes(clean)) urls.push(clean);
     }
     return urls;
   }
@@ -6625,11 +6765,13 @@
 
   async function handleFile(f) {
     const text = await f.text();
-    // Parse with both parsers, then NORMALIZE + de-dupe so the count matches the
-    // number of unique job URLs in the file (no more ~2x inflation).
+    // The structured parser handles real CSV/TSV exports; the loose one catches
+    // free-text lists (a pasted block of links). Normalize + de-dupe across both so
+    // the count matches the number of unique job URLs in the file — the double-parse
+    // used to report roughly 2x the real number.
     const raw = [...parseCSV(text), ...parseBulkUrls(text)];
-    const u = [...new Set(raw.map(normalizeUrl).filter(Boolean))];
-    if (!u.length) { alert('No valid URLs found in the file.'); return; }
+    const u = [...new Set(raw.map(normalizeUrl).filter(x => x && isSafeJobUrl(x)))];
+    if (!u.length) { alert('No valid job URLs found in the file.'); return; }
     const before = queue.length;
     for (const x of u) await addJob(x);
     const added = queue.length - before;
@@ -6647,7 +6789,9 @@
     del.disabled = !selected.size;
     sa.checked = queue.length > 0 && selected.size === queue.length;
 
-    list.innerHTML = queue.map((j, i) => `<div class="ua-qi"><input type="checkbox" data-id="${j.id}" class="qcb" ${selected.has(j.id) ? 'checked' : ''}><span class="num">${i + 1}</span><span class="url" title="${j.url}">${j.title || j.url}</span><span class="st ${j.status}">${j.status}</span><button class="rm" data-id="${j.id}">&times;</button></div>`).join('');
+    // Titles and URLs come from an imported CSV — untrusted text. Escape them, or a
+    // crafted cell injects markup straight into the page through innerHTML.
+    list.innerHTML = queue.map((j, i) => `<div class="ua-qi"><input type="checkbox" data-id="${escHtml(j.id)}" class="qcb" ${selected.has(j.id) ? 'checked' : ''}><span class="num">${i + 1}</span><span class="url" title="${escHtml(j.url)}">${escHtml(j.title || j.url)}</span><span class="st ${escHtml(j.status)}">${escHtml(j.status)}</span><button class="rm" data-id="${escHtml(j.id)}">&times;</button></div>`).join('');
 
     list.querySelectorAll('.qcb').forEach(c => c.addEventListener('change', e => { if (e.target.checked) selected.add(e.target.dataset.id); else selected.delete(e.target.dataset.id); renderQ(); }));
     list.querySelectorAll('.rm').forEach(b => b.addEventListener('click', e => removeJob(e.currentTarget.dataset.id)));
@@ -6880,7 +7024,17 @@
     });
     wrap.querySelector('#ua-sb-start').addEventListener('click', () => { if (!queue.some(j => j.status === 'pending')) { alert('Queue is empty — upload a CSV or paste job URLs first.'); return; } startQ(); });
     wrap.querySelector('#ua-sb-mgr')?.addEventListener('click', () => {
-      try { window.open(chrome.runtime.getURL('ua-queue.html'), '_blank'); } catch (_) { alert('Could not open the Queue Manager'); }
+      // Ask the service worker to open it: a content script's window.open of an
+      // extension URL is blocked outright by some sites' CSP, which made this
+      // button do nothing on exactly the ATS pages you need it on.
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_MGR_CMD', cmd: 'openManager' }, (r) => {
+          void chrome.runtime.lastError;
+          if (!r || !r.ok) { try { window.open(chrome.runtime.getURL('ua-queue.html'), '_blank'); } catch (_) {} }
+        });
+      } catch (_) {
+        try { window.open(chrome.runtime.getURL('ua-queue.html'), '_blank'); } catch (__) { alert('Could not open the Queue Manager'); }
+      }
     });
     wrap.querySelector('#ua-sb-stop').addEventListener('click', stopQ);
     wrap.querySelector('#ua-sb-pause').addEventListener('click', () => { if (qPaused) resumeQ(); else pauseQ(); });
@@ -7512,8 +7666,12 @@
     // where we click "Apply" to reveal the form). Skipping was the #1 reason the
     // CSV queue "did nothing" on many sites.
     const runnerActive = qActive && isRunnerTab();
-    // Manager mode: this tab was opened by the docked Queue Manager for a specific job.
-    const mgrJob = await findManagedJob();
+    // Manager mode: this tab was opened by the Queue Manager for a specific job.
+    // Ask the service worker by tab id first (authoritative, redirect-proof); fall
+    // back to the legacy window.name / URL-matching path only if it can't answer.
+    const mgrAssignment = await askManagerForJob();
+    const mgrJob = (mgrAssignment && mgrAssignment.job) || await findManagedJob();
+    const mgrSettings = mgrAssignment && mgrAssignment.settings;
     // Whether this page is genuinely a job application (known ATS host, or a page that
     // actually READS like a job application — not just a "/apply" URL or a PDF upload).
     const eligible = typeof window.__uaIsEligiblePage !== 'function' || window.__uaIsEligiblePage();
@@ -7552,8 +7710,16 @@
     }
     if (runnerActive) { await sleep(1000); processQ(); } // start fast — Apply fires ASAP
     // Manager-driven tab: run this ONE job to a verified terminal status and report.
-    // (Fallback path — normally the manager's direct UA_ASSIGN_JOB message drives this.)
-    if (mgrJob && _mgrHandledJobId !== mgrJob.id) { await sleep(2500); if (_mgrHandledJobId !== mgrJob.id) { _mgrHandledJobId = mgrJob.id; processManagedJob(mgrJob); } }
+    // runManagedAssignment owns the _mgrHandledJobId guard, so this and the pushed
+    // UA_ASSIGN_JOB message can both fire without ever double-driving a job.
+    if (mgrJob) {
+      runManagedAssignment(mgrJob, mgrSettings);
+    } else if (!runnerActive && (await st.get('ua_mgr_active')) === true) {
+      // A run is active but this tab has no assignment yet — the worker may have been
+      // asleep. Re-ask a couple of times before giving up and behaving as a normal page.
+      setTimeout(() => { pullManagedAssignment().catch(() => {}); }, 3000);
+      setTimeout(() => { pullManagedAssignment().catch(() => {}); }, 9000);
+    }
     // Workday: when Fully Automated is ON (or a bulk run is active), auto-fill + submit
     // the Create Account / Sign In step. When OFF we stay out of the way and let
     // Jobright's native flow handle it, so the toggle is the single source of truth.

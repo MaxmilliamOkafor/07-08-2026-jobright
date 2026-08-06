@@ -1,43 +1,37 @@
 /**
- * ua-queue.js — Docked Queue Manager for the Jobright CSV auto-apply queue.
+ * ua-queue.js — Queue Manager UI for the Jobright CSV auto-apply automation.
  *
- * Modeled on OptimHire's jobQueue.js orchestrator: this EXTENSION PAGE (openable as a
- * tab or docked in Chrome's side panel, where it stays in place across navigations)
- * owns the tab lifecycle. Each pending job opens in its OWN background tab; the
- * ua-enhancement content script detects manager mode, applies, writes a terminal
- * status + an advance request; this page closes that tab and opens the next. Up to
- * 5 jobs run in parallel tabs for speed.
+ * This page (a tab, or docked in Chrome's side panel) is now a pure VIEW. The
+ * run itself is driven by ua-orchestrator.js inside the background service
+ * worker, so closing this panel no longer kills the run, orphans job tabs, or
+ * leaves jobs stuck on "applying". Everything here is either a render of
+ * chrome.storage.local or a command message to the orchestrator.
  *
- * Storage protocol (chrome.storage.local):
- *   ua_q               : Job[]  — the SAME queue the on-page sidebar uses
- *   ua_mgr_active      : boolean — manager run in progress
- *   ua_mgr_advance     : {id,status,ts} — content script → manager "job finished"
- *   ua_mgr_concurrency : number 1..5
- * Job statuses: pending | applying | done | failed | timeout | skipped
+ * Storage keys are documented in ua-orchestrator.js.
  */
 (function () {
   'use strict';
+
   const ST = chrome.storage.local;
-  const KEY_Q = 'ua_q';
-  const KEY_ACTIVE = 'ua_mgr_active';
-  const KEY_ADVANCE = 'ua_mgr_advance';
-  const KEY_CONC = 'ua_mgr_concurrency';
-  const KEY_OLD_RUNNER = 'ua_qa'; // the on-page single-tab runner flag — mutually exclusive
-  const JOB_HARD_CAP_MS = 6 * 60 * 1000; // manager-side watchdog (content script caps itself at 150s/page)
+  const K = {
+    Q: 'ua_q', ACTIVE: 'ua_mgr_active', PAUSED: 'ua_mgr_paused', CONC: 'ua_mgr_concurrency',
+    SETTINGS: 'ua_mgr_settings', LOG: 'ua_mgr_log', HISTORY: 'ua_app_history',
+  };
 
   let queue = [];
+  let history = [];
   let view = { filter: 'all', search: '' };
-  let _tabMap = new Map();   // jobId → tabId (only tabs WE opened)
-  let _lastAdvanceTs = 0;
-  let _filling = false;
+  let running = false, paused = false;
 
-  const get = (k) => new Promise(r => ST.get(k, d => r(d[k])));
-  const set = (o) => new Promise(r => ST.set(o, r));
+  const get = (k) => new Promise((r) => ST.get(k, (d) => { void chrome.runtime.lastError; r(d[k]); }));
+  const set = (o) => new Promise((r) => ST.set(o, () => { void chrome.runtime.lastError; r(); }));
+  const cmd = (c, extra) => new Promise((r) => {
+    try { chrome.runtime.sendMessage(Object.assign({ type: 'UA_MGR_CMD', cmd: c }, extra || {}), (resp) => { void chrome.runtime.lastError; r(resp || {}); }); }
+    catch (_) { r({}); }
+  });
+  const $ = (id) => document.getElementById(id);
 
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
+  /* ─────────────────────────── helpers ─────────────────────────── */
   function fmtTs(ts) {
     if (!ts) return '—';
     const d = Date.now() - ts;
@@ -46,27 +40,61 @@
     if (d < 86400000) return Math.round(d / 3600000) + 'h ago';
     return Math.round(d / 86400000) + 'd ago';
   }
-  function log(msg, cls) {
-    const el = document.getElementById('log');
-    const div = document.createElement('div');
-    if (cls) div.className = cls;
-    div.textContent = new Date().toTimeString().slice(0, 8) + '  ' + msg;
-    el.appendChild(div);
-    while (el.children.length > 60) el.removeChild(el.firstChild);
-    el.scrollTop = el.scrollHeight;
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+  /* Only http(s) rows are ever accepted. This page runs with extension
+     privileges, so a `javascript:` or `data:` cell in a CSV must never become a
+     link href or a tab we open. */
+  function isSafeUrl(u) {
+    try { const p = new URL(String(u)).protocol; return p === 'http:' || p === 'https:'; }
+    catch (_) { return false; }
+  }
+  function normUrl(u) {
+    let s = String(u == null ? '' : u).trim()
+      .replace(/^[\s"'<([]+/, '')
+      .replace(/[)\]}>"'.,;]+$/, '');
+    if (!s) return '';
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(s) && /^[\w-]+(\.[\w-]+)+\//.test(s)) s = 'https://' + s;
+    try {
+      const x = new URL(s);
+      if (x.protocol !== 'http:' && x.protocol !== 'https:') return '';
+      x.hash = '';
+      // Tracking noise makes identical jobs look like different URLs, which
+      // defeats de-duplication across imports.
+      for (const p of [...x.searchParams.keys()]) {
+        if (/^(utm_[\w-]*|fbclid|gclid|msclkid|mc_cid|mc_eid|igshid|_ga|trk|trackingId)$/i.test(p)) x.searchParams.delete(p);
+      }
+      return x.href.replace(/\/$/, '');
+    } catch (_) { return ''; }
+  }
+  function detectBoard(url) {
+    const P = [[/greenhouse/i, 'Greenhouse'], [/lever\.co/i, 'Lever'], [/myworkday|workday/i, 'Workday'],
+      [/ashbyhq/i, 'Ashby'], [/icims/i, 'iCIMS'], [/smartrecruiters/i, 'SmartRecruiters'],
+      [/workable/i, 'Workable'], [/breezy/i, 'Breezy'], [/jobvite/i, 'Jobvite'],
+      [/bamboohr/i, 'BambooHR'], [/taleo|oraclecloud/i, 'Oracle/Taleo'], [/successfactors/i, 'SuccessFactors'],
+      [/linkedin\.com/i, 'LinkedIn'], [/indeed\.com/i, 'Indeed'], [/rippling/i, 'Rippling'],
+      [/recruitee/i, 'Recruitee'], [/teamtailor/i, 'Teamtailor'], [/ziprecruiter/i, 'ZipRecruiter'],
+      [/jazz\.co|applytojob/i, 'JazzHR'], [/eightfold/i, 'Eightfold'], [/paylocity/i, 'Paylocity'],
+      [/adp\.com/i, 'ADP'], [/jobright\.ai/i, 'Jobright'], [/dover/i, 'Dover'], [/pinpointhq/i, 'Pinpoint'],
+      [/joinhandshake/i, 'Handshake'], [/usajobs\.gov/i, 'USAJOBS'], [/phenom/i, 'Phenom']];
+    for (const [re, n] of P) if (re.test(url)) return n;
+    return 'Career';
   }
 
-  /* ── storage (always read-modify-write so we never clobber content-script updates) ── */
-  async function loadQ() { queue = (await get(KEY_Q)) || []; }
-  async function mutateQ(fn) {
-    await loadQ();
-    fn(queue);
-    await set({ [KEY_Q]: queue });
-    render();
+  /* ─────────────────────────── CSV ─────────────────────────── */
+  /* RFC-4180 parser with delimiter sniffing. Real exports are comma, semicolon
+     (European Excel), tab (pasted spreadsheets) or pipe delimited, and often
+     carry a UTF-8 BOM that used to break header detection. */
+  function sniffDelimiter(text) {
+    const line = text.split(/\r?\n/).find((l) => l.trim()) || '';
+    let best = ',', bestN = 0;
+    for (const d of [',', ';', '\t', '|']) {
+      const n = line.split(d).length - 1;
+      if (n > bestN) { bestN = n; best = d; }
+    }
+    return bestN ? best : ',';
   }
-
-  /* ── CSV (RFC-4180-ish, ported from OptimHire jobQueue.js) ── */
-  function parseCsv(text) {
+  function parseCsv(text, delim) {
     const rows = [];
     let row = [], field = '', inQ = false;
     for (let i = 0; i < text.length; i++) {
@@ -75,343 +103,446 @@
         if (ch === '"' && nx === '"') { field += '"'; i++; }
         else if (ch === '"') inQ = false;
         else field += ch;
-      } else {
-        if (ch === '"') inQ = true;
-        else if (ch === ',') { row.push(field); field = ''; }
-        else if (ch === '\r') { /* skip */ }
-        else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
-        else field += ch;
-      }
+      } else if (ch === '"') inQ = true;
+      else if (ch === delim) { row.push(field); field = ''; }
+      else if (ch === '\r') { /* handled by \n */ }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += ch;
     }
     if (field.length || row.length) { row.push(field); rows.push(row); }
-    return rows.filter(r => r.length && r.some(c => c.trim()));
+    return rows.filter((r) => r.length && r.some((c) => c.trim()));
   }
-  function normUrl(u) {
-    let s = String(u || '').trim().replace(/[)\]}>"'.,;]+$/, '');
-    try { const x = new URL(s); x.hash = ''; return x.href.replace(/\/$/, ''); } catch (_) { return s; }
-  }
-  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-  function detectBoard(url) {
-    const P = [[/greenhouse/i, 'Greenhouse'], [/lever\.co/i, 'Lever'], [/myworkday/i, 'Workday'],
-      [/ashbyhq/i, 'Ashby'], [/icims/i, 'iCIMS'], [/smartrecruiters/i, 'SmartRecruiters'],
-      [/workable/i, 'Workable'], [/breezy/i, 'Breezy'], [/jobvite/i, 'Jobvite'],
-      [/bamboohr/i, 'BambooHR'], [/taleo|oraclecloud/i, 'Oracle/Taleo'], [/successfactors/i, 'SuccessFactors'],
-      [/linkedin\.com/i, 'LinkedIn'], [/indeed\.com/i, 'Indeed'], [/rippling/i, 'Rippling'],
-      [/recruitee/i, 'Recruitee'], [/teamtailor/i, 'Teamtailor'], [/ziprecruiter/i, 'ZipRecruiter']];
-    for (const [re, n] of P) if (re.test(url)) return n;
-    return 'Career';
-  }
-  async function importCsv(text) {
-    const rows = parseCsv(text);
-    if (!rows.length) return log('CSV is empty', 'err');
-    const first = rows[0].map(c => c.trim().toLowerCase());
-    const hasHeader = first.some(c => /\b(url|link|job_url|application_url)\b/.test(c));
-    const map = {};
-    if (hasHeader) {
-      first.forEach((c, i) => {
-        if (/\b(url|link|job_url|application_url)\b/.test(c)) map.url = i;
-        else if (/title|position/.test(c)) map.title = i;
-        else if (/company|employer/.test(c)) map.company = i;
-      });
+
+  /* Pull the job URL out of a row however it was written: a dedicated column, a
+     bare URL in any cell, a markdown/HTML link, or a hostname without a scheme. */
+  function urlFromRow(row, urlIdx) {
+    const cells = urlIdx != null && row[urlIdx] != null ? [row[urlIdx], ...row] : row;
+    for (const raw of cells) {
+      const cell = String(raw == null ? '' : raw).trim();
+      if (!cell) continue;
+      const m = cell.match(/https?:\/\/[^\s,"'<>)\]]+/i);
+      if (m) { const u = normUrl(m[0]); if (u) return u; }
+      const u = normUrl(cell);
+      if (u && /^https?:\/\/[^/]+\./i.test(u)) return u;
     }
-    if (map.url == null) map.url = 0;
-    let added = 0, dupes = 0, bad = 0;
-    await loadQ();
-    const have = new Set(queue.map(j => normUrl(j.url)));
+    return '';
+  }
+
+  async function importText(text, sourceName) {
+    text = String(text || '').replace(/^﻿/, '');   // strip BOM
+    if (!text.trim()) return log('Nothing to import', 'err');
+    const rows = parseCsv(text, sniffDelimiter(text));
+    if (!rows.length) return log('CSV is empty', 'err');
+
+    const first = rows[0].map((c) => c.trim().toLowerCase());
+    const map = {};
+    let hasHeader = false;
+    first.forEach((c, i) => {
+      if (/^https?:/i.test(c)) return;                       // a URL is data, not a header
+      if (/\b(url|link|href|job.?url|application.?url|apply)\b/.test(c)) { map.url = i; hasHeader = true; }
+      else if (/\b(title|position|role|job.?title)\b/.test(c)) { map.title = i; hasHeader = true; }
+      else if (/\b(company|employer|organi[sz]ation)\b/.test(c)) { map.company = i; hasHeader = true; }
+    });
+    // A header row with no recognised URL column still gets skipped as long as
+    // it clearly isn't data (no URL anywhere in it).
+    if (!hasHeader && !urlFromRow(rows[0]) && rows.length > 1) hasHeader = true;
+
+    const applied = new Set(history.filter((h) => h.status === 'applied').map((h) => normUrl(h.url)));
+    const skipApplied = $('optSkip').checked;
+    const have = new Set(queue.map((j) => normUrl(j.url)));
+    const additions = [];
+    let dupes = 0, bad = 0, alreadyApplied = 0;
+
     for (const r of (hasHeader ? rows.slice(1) : rows)) {
-      let url = (r[map.url] || '').trim();
-      // Bare-URL lines / URL anywhere in the row (matches the sidebar importer's tolerance)
-      if (!/^https?:\/\//i.test(url)) {
-        const seg = r.find(c => /^https?:\/\//i.test((c || '').trim()));
-        if (seg) url = seg.trim(); else if (url && /\w\.\w/.test(url)) url = 'https://' + url; else { bad++; continue; }
-      }
-      const n = normUrl(url);
-      if (have.has(n)) { dupes++; continue; }
-      have.add(n);
-      queue.push({
-        id: uid(), url: n, title: (map.title != null && r[map.title] || '').trim() || n.replace(/^https?:\/\/(www\.)?/, '').slice(0, 50),
-        status: 'pending', addedAt: Date.now(), jobBoard: detectBoard(n),
-        companyName: (map.company != null && r[map.company] || '').trim(),
+      const url = urlFromRow(r, map.url);
+      if (!url || !isSafeUrl(url)) { bad++; continue; }
+      if (have.has(url)) { dupes++; continue; }
+      if (skipApplied && applied.has(url)) { alreadyApplied++; continue; }
+      have.add(url);
+      additions.push({
+        id: uid(),
+        url,
+        title: (map.title != null && (r[map.title] || '').trim()) || url.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60),
+        status: 'pending',
+        addedAt: Date.now(),
+        jobBoard: detectBoard(url),
+        companyName: (map.company != null && (r[map.company] || '').trim()) || '',
         error: null, startedAt: null, completedAt: null, duration: null,
       });
-      added++;
     }
-    await set({ [KEY_Q]: queue });
-    render();
-    log(`Import: ${added} added, ${dupes} duplicates, ${bad} invalid`, added ? 'ok' : undefined);
+
+    if (additions.length) {
+      await mutateQ((q) => { q.push(...additions); });
+    } else {
+      render();
+    }
+    const parts = [`${additions.length} added`];
+    if (dupes) parts.push(`${dupes} duplicate${dupes === 1 ? '' : 's'}`);
+    if (alreadyApplied) parts.push(`${alreadyApplied} already applied`);
+    if (bad) parts.push(`${bad} invalid`);
+    log(`${sourceName ? sourceName + ': ' : 'Import: '}${parts.join(', ')}`, additions.length ? 'ok' : 'err');
   }
+
   function exportCsv() {
-    const cols = ['url', 'title', 'companyName', 'jobBoard', 'status', 'error', 'addedAt', 'completedAt'];
-    const escC = v => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    const csv = [cols.join(',')].concat(queue.map(j => cols.map(c => escC(j[c])).join(','))).join('\n');
+    const cols = ['url', 'title', 'companyName', 'jobBoard', 'status', 'error', 'addedAt', 'startedAt', 'completedAt', 'duration'];
+    const esc = (v) => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const csv = [cols.join(',')].concat(queue.map((j) => cols.map((c) => esc(j[c])).join(','))).join('\n');
+    const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.href = url;
     a.download = `jobright-queue-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
     a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
     log(`Exported ${queue.length} jobs`, 'ok');
   }
 
-  /* ── render ── */
+  /* ─────────────────────────── state ─────────────────────────── */
+  async function loadQ() { queue = (await get(K.Q)) || []; }
+  /* Read-modify-write against fresh storage: job tabs and the service worker
+     write ua_q too, so writing a stale in-memory array would clobber results. */
+  async function mutateQ(fn) {
+    await loadQ();
+    fn(queue);
+    await set({ [K.Q]: queue });
+    render();
+  }
+
+  /* ─────────────────────────── log ─────────────────────────── */
+  /* The log lives in storage so it survives the panel being closed and reopened
+     — the whole point of moving the engine into the service worker. */
+  async function renderLog() {
+    const buf = (await get(K.LOG)) || [];
+    const el = $('log');
+    el.textContent = '';
+    for (const raw of buf.slice(-60)) {
+      let e;
+      try { e = JSON.parse(raw); } catch (_) { continue; }
+      const div = document.createElement('div');
+      if (e.c) div.className = e.c;
+      div.textContent = new Date(e.t).toTimeString().slice(0, 8) + '  ' + e.m;
+      el.appendChild(div);
+    }
+    el.scrollTop = el.scrollHeight;
+  }
+  async function log(msg, cls) {
+    const buf = (await get(K.LOG)) || [];
+    buf.push(JSON.stringify({ t: Date.now(), m: msg, c: cls || '' }));
+    while (buf.length > 200) buf.shift();
+    await set({ [K.LOG]: buf });   // storage.onChanged re-renders
+  }
+
+  /* ─────────────────────────── render ─────────────────────────── */
   function counts() {
     const c = { all: queue.length, pending: 0, applying: 0, done: 0, failed: 0, timeout: 0, skipped: 0 };
     for (const j of queue) c[j.status] = (c[j.status] || 0) + 1;
     return c;
   }
+
   function render() {
     const c = counts();
-    document.getElementById('counter').textContent = c.all + ' jobs';
-    document.getElementById('stats').innerHTML =
-      `<div class="stat"><b>${c.all}</b>Total</div>` +
-      `<div class="stat s-pending"><b>${c.pending}</b>Pending</div>` +
-      `<div class="stat s-applying"><b>${c.applying}</b>Applying</div>` +
-      `<div class="stat s-done"><b>${c.done}</b>Done</div>` +
-      `<div class="stat s-failed"><b>${c.failed + c.timeout}</b>Failed</div>` +
-      `<div class="stat s-skipped"><b>${c.skipped}</b>Skipped</div>`;
+    $('counter').textContent = c.all + (c.all === 1 ? ' job' : ' jobs');
+
+    const stats = [
+      ['all', 'Total', c.all, ''],
+      ['pending', 'Pending', c.pending, 's-pending'],
+      ['applying', 'Applying', c.applying, 's-applying'],
+      ['done', 'Done', c.done, 's-done'],
+      ['failed', 'Failed', c.failed + c.timeout, 's-failed'],
+      ['skipped', 'Skipped', c.skipped, 's-skipped'],
+    ];
+    const statsEl = $('stats');
+    statsEl.textContent = '';
+    for (const [key, label, n, cls] of stats) {
+      const d = document.createElement('div');
+      d.className = 'stat ' + cls + (view.filter === key ? ' sel' : '');
+      d.dataset.filter = key;
+      d.title = 'Filter by ' + label.toLowerCase();
+      const b = document.createElement('b');
+      b.textContent = String(n);
+      d.appendChild(b);
+      d.appendChild(document.createTextNode(label));
+      statsEl.appendChild(d);
+    }
+
     const doneish = c.done + c.failed + c.timeout + c.skipped;
-    const pw = document.getElementById('progressWrap');
+    const pw = $('progressWrap');
     if (c.all && (c.applying || (doneish && doneish < c.all))) {
       pw.classList.add('show');
-      const pct = c.all ? Math.round(doneish / c.all * 100) : 0;
-      document.getElementById('progressPct').textContent = pct + '%';
-      document.getElementById('progressFill').style.width = pct + '%';
-      document.getElementById('progressLabel').textContent = c.applying ? `Applying to ${c.applying} job${c.applying > 1 ? 's' : ''}…` : 'Run progress';
+      const pct = Math.round(doneish / c.all * 100);
+      $('progressPct').textContent = pct + '%';
+      $('progressFill').style.width = pct + '%';
+      $('progressLabel').textContent = c.applying
+        ? `Applying to ${c.applying} job${c.applying > 1 ? 's' : ''}…`
+        : (running ? 'Run progress' : 'Paused / stopped');
     } else pw.classList.remove('show');
 
     const q = view.search.toLowerCase();
-    const visible = queue.filter(j => {
-      if (view.filter !== 'all' && j.status !== view.filter) return false;
+    const visible = queue.filter((j) => {
+      if (view.filter === 'failed') { if (j.status !== 'failed' && j.status !== 'timeout') return false; }
+      else if (view.filter !== 'all' && j.status !== view.filter) return false;
       if (q && !((j.url + ' ' + (j.title || '') + ' ' + (j.companyName || '')).toLowerCase().includes(q))) return false;
       return true;
     });
-    const tbl = document.getElementById('tbl');
-    const empty = document.getElementById('empty');
-    if (!queue.length) { tbl.classList.add('hidden'); empty.classList.remove('hidden'); return; }
+
+    const tbl = $('tbl'), empty = $('empty'), rowCount = $('rowCount');
+    if (!queue.length) {
+      tbl.classList.add('hidden');
+      rowCount.classList.add('hidden');
+      empty.classList.remove('hidden');
+      return;
+    }
     empty.classList.add('hidden');
     tbl.classList.remove('hidden');
-    document.getElementById('tbody').innerHTML = visible.map((j, i) =>
-      `<tr>
-        <td>${i + 1}</td>
-        <td><span class="badge b-${esc(j.status)}">${esc(j.status)}</span></td>
-        <td><a class="url" href="${esc(j.url)}" target="_blank" rel="noopener" title="${esc((j.error ? j.error + ' — ' : '') + j.url)}">${esc(j.title || j.url)}</a></td>
-        <td>${esc(j.jobBoard || '—')}</td>
-        <td>${fmtTs(j.completedAt || j.startedAt || j.addedAt)}</td>
-        <td><button class="del" data-del="${esc(j.id)}" title="Remove">✕</button></td>
-      </tr>`).join('') || '<tr><td colspan="6" style="padding:24px;text-align:center;color:#64748b">Nothing matches this filter.</td></tr>';
-  }
 
-  /* ── orchestrator ── */
-  function getConc() {
-    let n = parseInt(document.getElementById('conc').value, 10) || 1;
-    return Math.min(5, Math.max(1, n));
-  }
-  function runningWithTab() {
-    let n = 0;
-    for (const j of queue) if (j.status === 'applying' && _tabMap.has(j.id)) n++;
-    return n;
-  }
-  /* Push the job assignment into the tab. The content script may not be ready the
-     instant the tab is created, and the page redirects (Jobright → ATS → apply form),
-     so we retry and also re-send on every completed navigation (see onUpdated below). */
-  function assignToTab(tabId, job) {
-    let tries = 0;
-    const payload = { type: 'UA_ASSIGN_JOB', job: { id: job.id, url: job.url, title: job.title, jobBoard: job.jobBoard, startedAt: job.startedAt } };
-    const send = () => {
-      tries++;
-      try {
-        chrome.tabs.sendMessage(tabId, payload, () => {
-          const err = chrome.runtime.lastError; // no receiver yet → content script still booting
-          if (err && tries < 12 && _tabMap.get(job.id) === tabId) setTimeout(send, 1500);
-        });
-      } catch (_) { if (tries < 12) setTimeout(send, 1500); }
-    };
-    setTimeout(send, 1200);
-  }
-
-  async function fillSlots() {
-    if (_filling) return; _filling = true;
-    try {
-      if ((await get(KEY_ACTIVE)) !== true) return;
-      await loadQ();
-      const slots = getConc() - runningWithTab();
-      if (slots <= 0) { render(); return; }
-      // Mark the whole batch applying and save ONCE, so a mid-loop storage.onChanged
-      // can't reset our array and leave only one tab opened (the bug you hit).
-      const toOpen = [];
-      for (const j of queue) {
-        if (toOpen.length >= slots) break;
-        if (j.status === 'pending') { j.status = 'applying'; j.startedAt = Date.now(); j.error = null; toOpen.push(j); }
-      }
-      if (!toOpen.length) { if (runningWithTab() === 0) await finish(); render(); return; }
-      await set({ [KEY_Q]: queue });
-      for (const job of toOpen) {
-        // Background tab: a big run never hijacks the screen. active:false keeps focus
-        // on whatever you're doing while jobs apply in the background.
-        const tab = await new Promise(res => {
-          try { chrome.tabs.create({ url: job.url, active: false }, res); } catch (_) { res(null); }
-        });
-        if (tab && tab.id != null) { _tabMap.set(job.id, tab.id); assignToTab(tab.id, job); log(`▶ ${job.title || job.url}`, 'act'); }
-        else { job.status = 'failed'; job.error = 'Could not open tab'; await set({ [KEY_Q]: queue }); }
-      }
-      render();
-      if (!queue.some(j => j.status === 'pending' || (j.status === 'applying' && _tabMap.has(j.id)))) await finish();
-    } catch (e) { log('fillSlots error: ' + (e && e.message), 'err'); } finally { _filling = false; }
-  }
-
-  /* Re-assign on every completed navigation so the content script on the FINAL apply
-     page (after redirects) is the one that receives its job. */
-  try {
-    chrome.tabs.onUpdated.addListener((tabId, info) => {
-      if (info.status !== 'complete') return;
-      let jobId = null;
-      for (const [jid, tid] of _tabMap) if (tid === tabId) { jobId = jid; break; }
-      if (!jobId) return;
-      const job = queue.find(j => j.id === jobId);
-      if (job) assignToTab(tabId, job);
-    });
-  } catch (_) {}
-  function closeJobTab(jobId) {
-    const tabId = _tabMap.get(jobId);
-    if (tabId == null) return;
-    _tabMap.delete(jobId);
-    try { chrome.tabs.remove(tabId, () => void chrome.runtime.lastError); } catch (_) {}
-  }
-  async function handleAdvance(req) {
-    if (!req || !req.ts || req.ts === _lastAdvanceTs) return;
-    _lastAdvanceTs = req.ts;
-    const j = queue.find(x => x.id === req.id);
-    log(`${req.status === 'done' ? '✔' : req.status === 'skipped' ? '↷' : '✖'} ${j ? (j.title || j.url) : req.id} — ${req.status}`, req.status === 'done' ? 'ok' : req.status === 'skipped' ? undefined : 'err');
-    closeJobTab(req.id);
-    await set({ [KEY_ADVANCE]: null });
-    await fillSlots();
-  }
-  async function finish() {
-    if ((await get(KEY_ACTIVE)) !== true) return;
-    await set({ [KEY_ACTIVE]: false, [KEY_ADVANCE]: null });
-    setRunning(false);
-    const c = counts();
-    log(`Queue complete — ${c.done} applied, ${c.failed + c.timeout} failed, ${c.skipped} skipped`, 'ok');
-  }
-  async function start() {
-    await loadQ();
-    if (!queue.some(j => j.status === 'pending' || j.status === 'applying')) return log('No pending jobs — import a CSV first', 'err');
-    // Mutually exclusive with the on-page single-tab runner.
-    if (await get(KEY_OLD_RUNNER)) { await set({ [KEY_OLD_RUNNER]: false }); log('Stopped the in-page runner (manager takes over)'); }
-    for (const j of queue) if (j.status === 'applying') j.status = 'pending'; // orphans from a previous run
-    _tabMap.clear();
-    await set({ [KEY_Q]: queue, [KEY_ACTIVE]: true, [KEY_ADVANCE]: null });
-    setRunning(true);
-    const conc = getConc();
-    log(`Started — up to ${conc} job${conc > 1 ? 's' : ''} in parallel background tabs`, 'act');
-    await fillSlots();
-  }
-  async function stop() {
-    await set({ [KEY_ACTIVE]: false, [KEY_ADVANCE]: null });
-    for (const [, tabId] of _tabMap) { try { chrome.tabs.remove(tabId, () => void chrome.runtime.lastError); } catch (_) {} }
-    _tabMap.clear();
-    await mutateQ(q => { for (const j of q) if (j.status === 'applying') j.status = 'pending'; });
-    setRunning(false);
-    log('Stopped — job tabs closed, running jobs back to pending');
-  }
-  function setRunning(on) {
-    document.getElementById('pulse').classList.toggle('on', on);
-    document.getElementById('btnStart').disabled = on;
-    document.getElementById('btnStop').disabled = !on;
-  }
-
-  /* Watchdog: close tabs of finished jobs the advance message missed, hard-cap stuck
-     jobs, keep slots full. Runs every 12s while active. */
-  setInterval(async () => {
-    if ((await get(KEY_ACTIVE)) !== true) return;
-    await loadQ();
-    let dirty = false;
-    for (const j of queue) {
-      if (j.status !== 'applying') { if (_tabMap.has(j.id)) closeJobTab(j.id); continue; }
-      if (_tabMap.has(j.id) && j.startedAt && Date.now() - j.startedAt > JOB_HARD_CAP_MS) {
-        j.status = 'timeout'; j.error = 'Manager watchdog: no result in 6 min'; j.completedAt = Date.now();
-        dirty = true;
-        closeJobTab(j.id);
-        log(`⏱ ${j.title || j.url} — watchdog timeout`, 'err');
-      }
+    const tbody = $('tbody');
+    tbody.textContent = '';
+    if (!visible.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 6;
+      td.style.cssText = 'padding:24px;text-align:center;color:#64748b';
+      td.textContent = 'Nothing matches this filter.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
     }
-    if (dirty) await set({ [KEY_Q]: queue });
-    await fillSlots();
-    render();
-  }, 12000);
+    // Cap the DOM at 400 rows — a 5,000-row CSV used to lock the panel up.
+    const shown = visible.slice(0, 400);
+    for (let i = 0; i < shown.length; i++) {
+      const j = shown[i];
+      const tr = document.createElement('tr');
 
-  /* User closed a job tab by hand → re-queue that job. */
-  try {
-    chrome.tabs.onRemoved.addListener(async (tabId) => {
-      let jobId = null;
-      for (const [jid, tid] of _tabMap) if (tid === tabId) { jobId = jid; break; }
-      if (jobId == null) return;
-      _tabMap.delete(jobId);
-      if ((await get(KEY_ACTIVE)) !== true) return;
-      await mutateQ(q => { const j = q.find(x => x.id === jobId); if (j && j.status === 'applying') j.status = 'pending'; });
-      await fillSlots();
+      const tdN = document.createElement('td');
+      tdN.textContent = String(i + 1);
+      tr.appendChild(tdN);
+
+      const tdS = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = 'badge b-' + j.status;
+      badge.textContent = j.status;
+      tdS.appendChild(badge);
+      tr.appendChild(tdS);
+
+      const tdJ = document.createElement('td');
+      const a = document.createElement('a');
+      a.className = 'url';
+      a.textContent = j.title || j.url;
+      a.title = j.url;
+      if (isSafeUrl(j.url)) { a.href = j.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      tdJ.appendChild(a);
+      if (j.error) {
+        const e = document.createElement('span');
+        e.className = 'err-txt';
+        e.textContent = j.error;
+        e.title = j.error;
+        tdJ.appendChild(e);
+      }
+      tr.appendChild(tdJ);
+
+      const tdB = document.createElement('td');
+      tdB.textContent = j.jobBoard || '—';
+      tr.appendChild(tdB);
+
+      const tdW = document.createElement('td');
+      tdW.textContent = fmtTs(j.completedAt || j.startedAt || j.addedAt);
+      tr.appendChild(tdW);
+
+      const tdA = document.createElement('td');
+      tdA.style.whiteSpace = 'nowrap';
+      if (j.status !== 'pending' && j.status !== 'applying') {
+        const retry = document.createElement('button');
+        retry.className = 'rowbtn';
+        retry.dataset.retry = j.id;
+        retry.title = 'Queue this job again';
+        retry.textContent = '↻';
+        tdA.appendChild(retry);
+      }
+      const del = document.createElement('button');
+      del.className = 'rowbtn del';
+      del.dataset.del = j.id;
+      del.title = 'Remove';
+      del.textContent = '✕';
+      tdA.appendChild(del);
+      tr.appendChild(tdA);
+
+      tbody.appendChild(tr);
+    }
+    if (visible.length > shown.length) {
+      rowCount.classList.remove('hidden');
+      rowCount.textContent = `Showing ${shown.length} of ${visible.length} matching jobs — use search or a status filter to narrow down.`;
+    } else rowCount.classList.add('hidden');
+  }
+
+  function setRunning(on, isPaused) {
+    running = on; paused = !!isPaused;
+    $('pulse').classList.toggle('on', on && !paused);
+    $('pulse').classList.toggle('paused', on && paused);
+    $('btnStart').disabled = on;
+    $('btnStop').disabled = !on;
+    $('btnPause').disabled = !on;
+    $('btnPause').textContent = paused ? '▶ Resume' : '⏸ Pause';
+  }
+
+  /* ─────────────────────────── settings ─────────────────────────── */
+  async function saveSettings() {
+    await set({
+      [K.SETTINGS]: {
+        skipApplied: $('optSkip').checked,
+        tailor: $('optTailor').checked,
+        jobTimeoutMs: Math.max(1, Math.min(30, parseInt($('optTimeout').value, 10) || 6)) * 60000,
+      },
+      // The content script reads these two directly for the in-page runner too.
+      ua_skip_applied: $('optSkip').checked,
+      ua_queue_tailor: $('optTailor').checked,
     });
-  } catch (_) {}
+  }
 
-  /* Live sync: the content scripts and the on-page sidebar write ua_q too. */
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local') return;
-    if (changes[KEY_Q]) { queue = changes[KEY_Q].newValue || []; render(); }
-    if (changes[KEY_ACTIVE]) setRunning(!!changes[KEY_ACTIVE].newValue);
-    if (changes[KEY_ADVANCE] && changes[KEY_ADVANCE].newValue) handleAdvance(changes[KEY_ADVANCE].newValue);
+  /* ─────────────────────────── wiring ─────────────────────────── */
+  $('btnStart').addEventListener('click', async () => {
+    await saveSettings();
+    const r = await cmd('start');
+    if (r && r.ok === false && r.reason === 'empty') log('No pending jobs — import a CSV first', 'err');
   });
+  $('btnStop').addEventListener('click', () => cmd('stop'));
+  $('btnPause').addEventListener('click', () => cmd(paused ? 'resume' : 'pause'));
 
-  /* ── wiring ── */
-  document.getElementById('btnStart').addEventListener('click', start);
-  document.getElementById('btnStop').addEventListener('click', stop);
-  document.getElementById('btnImport').addEventListener('click', () => document.getElementById('csvFile').click());
-  document.getElementById('csvFile').addEventListener('change', (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
-    const r = new FileReader();
-    r.onload = () => importCsv(String(r.result));
-    r.readAsText(f);
+  $('btnImport').addEventListener('click', () => $('csvFile').click());
+  $('csvFile').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
     e.target.value = '';
+    for (const f of files) {
+      const text = await f.text().catch(() => '');
+      await importText(text, f.name);
+    }
   });
-  document.getElementById('btnExport').addEventListener('click', exportCsv);
-  document.getElementById('btnRetry').addEventListener('click', () => mutateQ(q => {
+
+  // Drag & drop a CSV anywhere on the panel.
+  let dragDepth = 0;
+  document.addEventListener('dragenter', (e) => { e.preventDefault(); if (++dragDepth === 1) document.body.classList.add('drag'); });
+  document.addEventListener('dragover', (e) => e.preventDefault());
+  document.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('drag'); } });
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('drag');
+    const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+    if (files.length) {
+      for (const f of files) await importText(await f.text().catch(() => ''), f.name);
+      return;
+    }
+    const text = e.dataTransfer && e.dataTransfer.getData('text');
+    if (text) await importText(text, 'Dropped text');
+  });
+
+  const dlg = $('pasteDlg');
+  $('btnPaste').addEventListener('click', () => { $('pasteBox').value = ''; dlg.showModal(); $('pasteBox').focus(); });
+  $('pasteCancel').addEventListener('click', () => dlg.close());
+  $('pasteAdd').addEventListener('click', async () => {
+    const text = $('pasteBox').value;
+    dlg.close();
+    await importText(text, 'Pasted');
+  });
+
+  $('btnExport').addEventListener('click', exportCsv);
+  $('btnRetry').addEventListener('click', async () => {
     let n = 0;
-    for (const j of q) if (j.status === 'failed' || j.status === 'timeout') { j.status = 'pending'; j.error = null; n++; }
-    log(n ? `${n} failed jobs back to pending` : 'No failed jobs', n ? 'ok' : undefined);
-  }));
-  document.getElementById('btnClearDone').addEventListener('click', () => mutateQ(q => {
-    const n = q.length;
-    for (let i = q.length - 1; i >= 0; i--) if (q[i].status === 'done' || q[i].status === 'skipped') q.splice(i, 1);
-    log(`Cleared ${n - q.length} finished jobs`);
-  }));
-  document.getElementById('btnClearAll').addEventListener('click', () => {
-    if (!queue.length || !confirm(`Delete ALL ${queue.length} jobs?`)) return;
-    mutateQ(q => q.splice(0, q.length));
+    await mutateQ((q) => {
+      for (const j of q) if (j.status === 'failed' || j.status === 'timeout') { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; n++; }
+    });
+    log(n ? `${n} failed job${n === 1 ? '' : 's'} back to pending` : 'No failed jobs', n ? 'ok' : '');
+    if (n && running) cmd('kick');
+  });
+  $('btnClearDone').addEventListener('click', async () => {
+    let removed = 0;
+    await mutateQ((q) => {
+      for (let i = q.length - 1; i >= 0; i--) if (q[i].status === 'done' || q[i].status === 'skipped') { q.splice(i, 1); removed++; }
+    });
+    log(`Cleared ${removed} finished job${removed === 1 ? '' : 's'}`);
+  });
+  $('btnClearAll').addEventListener('click', async () => {
+    if (!queue.length) return;
+    if (running && !confirm('A run is in progress. Stop it and delete all jobs?')) return;
+    if (!running && !confirm(`Delete ALL ${queue.length} jobs?`)) return;
+    if (running) await cmd('stop');
+    await mutateQ((q) => q.splice(0, q.length));
     log('Queue cleared');
   });
-  document.getElementById('search').addEventListener('input', e => { view.search = e.target.value; render(); });
-  document.getElementById('statusFilter').addEventListener('change', e => { view.filter = e.target.value; render(); });
-  document.getElementById('conc').addEventListener('change', e => set({ [KEY_CONC]: parseInt(e.target.value, 10) || 3 }));
-  document.getElementById('tbody').addEventListener('click', (e) => {
-    const id = e.target.dataset && e.target.dataset.del;
-    if (!id) return;
-    closeJobTab(id);
-    mutateQ(q => { const i = q.findIndex(x => x.id === id); if (i >= 0) q.splice(i, 1); });
+
+  $('search').addEventListener('input', (e) => { view.search = e.target.value; render(); });
+  $('statusFilter').addEventListener('change', (e) => { view.filter = e.target.value; render(); });
+  $('stats').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-filter]');
+    if (!el) return;
+    view.filter = el.dataset.filter;
+    $('statusFilter').value = view.filter === 'failed' ? 'failed' : view.filter;
+    render();
+  });
+  $('conc').addEventListener('change', (e) => set({ [K.CONC]: parseInt(e.target.value, 10) || 3 }));
+  for (const id of ['optSkip', 'optTailor', 'optTimeout']) $(id).addEventListener('change', saveSettings);
+
+  $('tbody').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    if (btn.dataset.del) {
+      const id = btn.dataset.del;
+      await mutateQ((q) => { const i = q.findIndex((x) => x.id === id); if (i >= 0) q.splice(i, 1); });
+      if (running) cmd('kick');
+    } else if (btn.dataset.retry) {
+      const id = btn.dataset.retry;
+      await mutateQ((q) => {
+        const j = q.find((x) => x.id === id);
+        if (j) { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; }
+      });
+      if (running) cmd('kick');
+    }
   });
 
-  /* ── boot ── */
+  document.addEventListener('keydown', (e) => {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if (e.key === '/') { e.preventDefault(); $('search').focus(); }
+    else if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey) cmd(running ? 'stop' : 'start');
+    else if (e.key.toLowerCase() === 'p' && !e.ctrlKey && !e.metaKey && running) cmd(paused ? 'resume' : 'pause');
+  });
+
+  /* Live sync — job tabs, the service worker and the on-page sidebar all write
+     these keys. */
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes[K.Q]) { queue = changes[K.Q].newValue || []; render(); }
+    if (changes[K.HISTORY]) history = changes[K.HISTORY].newValue || [];
+    if (changes[K.LOG]) renderLog();
+    if (changes[K.ACTIVE] || changes[K.PAUSED]) {
+      const on = changes[K.ACTIVE] ? !!changes[K.ACTIVE].newValue : running;
+      const pz = changes[K.PAUSED] ? !!changes[K.PAUSED].newValue : paused;
+      setRunning(on, pz);
+      render();
+    }
+    if (changes[K.CONC] && changes[K.CONC].newValue) $('conc').value = String(changes[K.CONC].newValue);
+  });
+
+  // Keep "…s ago" honest without re-rendering constantly.
+  setInterval(() => { if (queue.length) render(); }, 15000);
+
+  /* ─────────────────────────── boot ─────────────────────────── */
   (async () => {
     await loadQ();
-    const conc = await get(KEY_CONC);
-    if (conc) document.getElementById('conc').value = String(Math.min(5, Math.max(1, conc)));
-    const active = (await get(KEY_ACTIVE)) === true;
-    setRunning(active);
-    render();
-    log('Queue Manager ready');
-    if (active) {
-      // Manager page reloaded mid-run: our tab map is gone — re-queue and refill.
-      await mutateQ(q => { for (const j of q) if (j.status === 'applying') j.status = 'pending'; });
-      log('Resuming interrupted run…', 'act');
-      await fillSlots();
+    history = (await get(K.HISTORY)) || [];
+
+    const conc = await get(K.CONC);
+    if (conc) {
+      const opt = [...$('conc').options].find((o) => o.value === String(conc));
+      $('conc').value = opt ? String(conc) : '3';
     }
+    const s = (await get(K.SETTINGS)) || {};
+    $('optSkip').checked = s.skipApplied !== false;
+    $('optTailor').checked = s.tailor === true;
+    $('optTimeout').value = String(Math.round((s.jobTimeoutMs || 360000) / 60000));
+
+    const state = await cmd('state');
+    setRunning(state.active === true, state.paused === true);
+    render();
+    await renderLog();
+    if (state.active === true) cmd('kick');   // service worker may have just woken up
   })();
 })();

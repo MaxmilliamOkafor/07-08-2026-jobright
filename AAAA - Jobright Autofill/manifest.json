@@ -17,10 +17,10 @@
       "128": "icon128.plasmo.3c1ed2d2.png"
     }
   },
-  "version": "1.16.0",
+  "version": "1.19.0",
   "author": "Jobright.ai",
-  "name": "Jobright Autofill \u2013 Instant Job Applications, Job Match, AI Tailor Resume",
-  "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes \u2014 Trusted by 500K+ job seekers",
+  "name": "Jobright Autofill – Instant Job Applications, Job Match, AI Tailor Resume",
+  "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes — Trusted by 500K+ job seekers",
   "background": {
     "service_worker": "static/background/index.js"
   },
@@ -29,9 +29,13 @@
     "declarativeNetRequest",
     "tabs",
     "cookies",
+    "webNavigation",
     "activeTab",
     "scripting",
-    "sidePanel"
+    "sidePanel",
+    "alarms",
+    "contextMenus",
+    "notifications"
   ],
   "content_scripts": [
     {
@@ -65,7 +69,7 @@
         "https://www.google.com/recaptcha/enterprise/*",
         "https://crcldu.com/*"
       ],
-      "run_at": "document_idle",
+      "run_at": "document_start",
       "css": []
     },
     {
@@ -93,11 +97,9 @@
         "<all_urls>"
       ],
       "resources": [
-        "inter.42ee87cb.css",
-        "global.f36301ce.css",
         "helper-app.41ea2652.js",
-        "answer.d77729c7.js",
-        "dom.ed166d80.js",
+        "global.f36301ce.css",
+        "inter.42ee87cb.css",
         "ua-enhancement.js",
         "ua-queue.html",
         "ua-queue.js"
