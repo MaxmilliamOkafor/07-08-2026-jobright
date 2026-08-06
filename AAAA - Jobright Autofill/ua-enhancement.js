@@ -339,10 +339,26 @@
   // ===================== CONFIG =====================
   const SK = { AA: 'ua_aa', Q: 'ua_q', QA: 'ua_qa', QP: 'ua_qp', POS: 'ua_pos', ANS: 'ua_answers', PROF: 'ua_profile' };
   const ATS = [
+    // --- Platforms added after the CareerHound runs surfaced them (v14.1) ---
+    // ADP ships two unrelated candidate apps; myjobs is the one CSV links land on.
+    { n: 'ADP myjobs', p: /myjobs\.adp\.com/i },
+    { n: 'ADP WorkforceNow', p: /workforcenow\.adp\.com|adp\.com.*recruitment/i },
+    // Oracle Recruiting Cloud (Fusion). White-labelled onto company domains, so the
+    // /hcmUI/CandidateExperience path matters as much as the oraclecloud host.
+    { n: 'Oracle Recruiting', p: /oraclecloud\.com|\/hcmUI\/CandidateExperience/i },
+    { n: 'Taleo', p: /taleo\.net|\/careersection\//i },
+    { n: 'SuccessFactors', p: /successfactors\.(com|eu)|sapsf\.(com|eu)/i },
+    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com/i },
+    { n: 'Radancy', p: /talentbrew\.com|radancy\.com/i },
+    { n: 'Join', p: /(\/\/|\.)join\.com/i },
+    { n: 'Softgarden', p: /softgarden\.(io|de)/i },
+    { n: 'HRMDirect', p: /hrmdirect\.com/i },
+    { n: 'Greenhouse EU', p: /boards\.eu\.greenhouse\.io|job-boards\.greenhouse\.io/i },
+    { n: 'SmartRecruiters', p: /smartrecruiters\.com/i },
     { n: 'Workday', p: /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i },
     { n: 'Greenhouse', p: /boards\.greenhouse\.io|greenhouse\.io.*\/jobs/i },
     { n: 'Lever', p: /jobs\.lever\.co/i }, { n: 'SmartRecruiters', p: /jobs\.smartrecruiters\.com/i },
-    { n: 'iCIMS', p: /icims\.com/i }, { n: 'Taleo', p: /taleo\.net|oraclecloud\.com.*CandidateExperience/i },
+    { n: 'iCIMS', p: /icims\.com/i }, { n: 'Taleo', p: /taleo\.net/i },
     { n: 'Ashby', p: /jobs\.ashbyhq\.com/i }, { n: 'BambooHR', p: /bamboohr\.com.*\/jobs/i },
     { n: 'Oracle', p: /oraclecloud\.com.*recruit/i }, { n: 'LinkedIn', p: /linkedin\.com\/jobs\/(view|application)/i },
     { n: 'Indeed', p: /indeed\.com.*(viewjob|apply)/i }, { n: 'UltiPro', p: /ultipro\.com/i },
@@ -1571,13 +1587,100 @@
     return true;
   }
 
-  function realClick(el) {
-    if (!el) return;
+  /* ── DESTRUCTIVE-CONTROL GUARD ──────────────────────────────────────────────
+     Controls that destroy work already on the page: the "×" beside an uploaded
+     résumé, "Delete", "Discard", "Withdraw application". Nothing in an apply flow
+     ever needs one, and clicking one is how a SmartRecruiters run died — the ×
+     on the attached CV opened a native  Remove "…_CV"?  confirm, which blocks the
+     JavaScript thread until it is answered, so the automation froze behind it
+     until the watchdog killed the job. realClick is the single choke point every
+     driver clicks through, so the guard lives here. */
+  const DESTRUCTIVE_NAME_RE =
+    /^\s*(remove|delete|discard|erase|trash|unattach|detach|start over|clear all|withdraw)\b|\b(remove|delete|replace)\s+(this\s+)?(file|resume|résumé|cv|attachment|document|upload)|\bwithdraw\s+(my\s+)?application\b|\bcancel\s+application\b/i;
+  // Containers that hold an already-uploaded file. A bare icon button inside one
+  // of these is a remove control even when it has no accessible name at all.
+  const ATTACHMENT_CONTAINER_SEL =
+    '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],[class*="fileItem" i],[class*="file-list" i],[class*="dropzone" i],[class*="upload" i],spl-file-upload,spl-attachment,[data-test*="attachment" i],[data-testid*="attachment" i]';
+  function controlName(el) {
+    try {
+      const parts = [
+        el.getAttribute && (el.getAttribute('aria-label') || ''),
+        el.getAttribute && (el.getAttribute('title') || ''),
+        el.getAttribute && (el.getAttribute('data-test') || el.getAttribute('data-testid') || el.getAttribute('data-automation-id') || ''),
+        el.getAttribute && (el.getAttribute('name') || ''),
+        (el.textContent || ''),
+      ];
+      const img = el.querySelector && el.querySelector('img[alt],svg title,use[href]');
+      if (img) parts.push(img.getAttribute('alt') || img.textContent || '');
+      return parts.join(' ').replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+  function isDestructiveControl(el) {
+    try {
+      if (!el || !el.getAttribute) return false;
+      const name = controlName(el);
+      if (DESTRUCTIVE_NAME_RE.test(name)) return true;
+      // Unlabelled icon button (×, ✕, 🗑, or empty) sitting in an attachment row.
+      const txt = (el.textContent || '').replace(/\s+/g, '');
+      const iconish = txt === '' || /^[×✕✖x✗⨯🗑]{1,2}$/i.test(txt);
+      if (!iconish) return false;
+      const tag = (el.tagName || '').toUpperCase();
+      if (tag !== 'BUTTON' && tag !== 'A' && el.getAttribute('role') !== 'button') return false;
+      return !!(el.closest && el.closest(ATTACHMENT_CONTAINER_SEL));
+    } catch (_) { return false; }
+  }
+
+  // opts.force bypasses the guard — used only by the dialog resolver, which has to
+  // be able to press the "Cancel"/"Keep" button of a confirm it is answering.
+  function realClick(el, opts) {
+    if (!el) return false;
+    if (!(opts && opts.force) && isDestructiveControl(el)) {
+      LOG('Refusing to click destructive control:', controlName(el).slice(0, 60) || '(unlabelled ×)');
+      return false;
+    }
     el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     el.click();
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  /* ── SHADOW-PIERCING QUERIES ────────────────────────────────────────────────
+     $ / $$ above stop at a shadow boundary. Modern SmartRecruiters renders its
+     whole form as `spl-*` web components (Spark design system), each with its own
+     open shadow root, so a plain document.querySelector('#firstName') finds
+     nothing — which is why autofill "did nothing" on that ATS. These walk into
+     every open shadow root. Depth- and node-bounded so they stay cheap. */
+  function deepQueryAll(sel, root, limit) {
+    const out = [];
+    const cap = limit || 400;
+    const stack = [root || document];
+    let guard = 0;
+    while (stack.length && out.length < cap && guard++ < 20000) {
+      const node = stack.pop();
+      if (!node || !node.querySelectorAll) continue;
+      try { for (const el of node.querySelectorAll(sel)) { out.push(el); if (out.length >= cap) break; } } catch (_) {}
+      try { for (const el of node.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot); } catch (_) {}
+    }
+    return out;
+  }
+  function deepQuery(sel, root) { return deepQueryAll(sel, root, 1)[0] || null; }
+  function deepVisible(sel, root) { return deepQueryAll(sel, root).filter(isVisible); }
+
+  /* Web components frequently ignore .click() and only react to a full pointer
+     sequence (this is exactly how SmartRecruiters' spl-select options behave). */
+  function triggerMouse(el) {
+    if (!el) return false;
+    const opts = { bubbles: true, composed: true, cancelable: true, view: window };
+    for (const t of ['pointerover', 'pointerenter', 'pointerdown', 'mouseover', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      try {
+        const Ctor = t.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+        el.dispatchEvent(new Ctor(t, opts));
+      } catch (_) {}
+    }
+    try { el.click(); } catch (_) {}
+    return true;
   }
 
   // True if the element is already (roughly) within the viewport, so we don't need to
@@ -2354,6 +2457,9 @@
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping multi-page loop'); break; }
       if (checkSuccess()) { LOG('Success detected — stopping multi-page loop'); break; }
+      // A modal confirm swallows every subsequent click and looks exactly like a
+      // page that refuses to advance. Resolve it before spending a page budget.
+      await resolveBlockingDialog();
       // A visible captcha blocks every next step — pause for the user instead of
       // burning the page budget on retries that can't succeed.
       if (detectCaptcha()) await waitForCaptchaClear();
@@ -4887,10 +4993,14 @@
 
   async function processManagedJob(c) {
     LOG(`Manager mode: driving "${c.title || c.url}"`);
+    // Native confirm/alert would block this tab's JS thread outright, so the
+    // MAIN-world hooks answer them for the lifetime of this job (and only then).
+    setAutomationFlag(true);
     let finalized = false, tId = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
       clearTimeout(tId);
+      setAutomationFlag(false);
       const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
       Object.assign(c, patch);
       // Fresh read-modify-write on ua_q: parallel job tabs each hold their own copy of
@@ -5043,6 +5153,7 @@
     if (!qActive || qPaused || !queue.length) return;
     // Only the dedicated runner tab drives the queue — never hijack other tabs.
     if (!isRunnerTab()) return;
+    setAutomationFlag(true);
     const c = queue.find(j => j.status === 'applying');
     if (c) {
       try {
@@ -5226,6 +5337,7 @@
       st.set(SK.QA, false);
       st.set('ua_q_stopped_at', -1);
       unmarkRunnerTab(); // free this tab — run finished
+      setAutomationFlag(false); // native dialogs behave normally again
       // LazyApply-style: completion summary
       LOG('Queue complete — all jobs processed');
       const done = queue.filter(j => j.status === 'done').length;
@@ -5269,6 +5381,7 @@
     clearTimeout(_qTimeoutId);
     qActive = false; qPaused = false;
     unmarkRunnerTab();
+    setAutomationFlag(false);
     await st.set(SK.QA, false); await st.set(SK.QP, false);
     // LazyApply: save stop point for session resumption
     const applyingIdx = queue.findIndex(j => j.status === 'applying');
@@ -7583,9 +7696,350 @@
     } catch (e) { LOG('handleAccountAuth error:', e?.message || e); return false; }
   }
 
+  // ===================== BLOCKING-DIALOG RESOLVER =====================
+  // The MAIN-world hooks (ua-page-hooks.js) handle NATIVE confirm/alert. This
+  // handles the other half: in-page modals that trap the flow the same way. A
+  // destructive one ("Remove <file>?") is answered NO so the uploaded résumé
+  // survives; a proceed-style one ("Submit your application?") is answered YES so
+  // the run isn't stalled by a confirmation step.
+  const DIALOG_SEL = '[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog[open],.modal.show,.modal.in,[class*="Modal" i][class*="open" i],spl-modal,spl-dialog';
+  const DESTRUCTIVE_DIALOG_RE =
+    /\b(remove|delete|discard|erase|clear|withdraw|revert|unattach)\b[^.?!]{0,80}[?]|^\s*(remove|delete|discard)\b/i;
+  const NEGATIVE_BTN_RE = /^\s*(cancel|no|keep|don'?t|do not|dismiss|go back|nevermind|never mind|close)\s*$/i;
+  const POSITIVE_BTN_RE = /^\s*(ok|okay|yes|confirm|continue|proceed|submit|accept|agree|got it|i understand)\s*$/i;
+
+  function visibleDialogs() {
+    return deepQueryAll(DIALOG_SEL).filter(d => {
+      try { return isVisible(d) && (d.textContent || '').trim().length > 0; } catch (_) { return false; }
+    });
+  }
+  function dialogButtons(d) {
+    return deepQueryAll('button,[role="button"],a[role="button"],input[type="button"],input[type="submit"],spl-button', d)
+      .filter(isVisible);
+  }
+  // Returns true if it resolved something (caller should re-check the page).
+  async function resolveBlockingDialog() {
+    let acted = false;
+    for (const d of visibleDialogs()) {
+      const text = (d.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!text) continue;
+      const btns = dialogButtons(d);
+      if (!btns.length) continue;
+      const named = btns.map(b => ({ b, n: (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim() }));
+      const destructive = DESTRUCTIVE_DIALOG_RE.test(text);
+      const want = destructive ? NEGATIVE_BTN_RE : POSITIVE_BTN_RE;
+      const hit = named.find(x => want.test(x.n));
+      if (hit) {
+        LOG(`Blocking dialog resolved (${destructive ? 'declined' : 'accepted'}): "${text.slice(0, 80)}" → "${hit.n}"`);
+        realClick(hit.b, { force: true });   // force: the button may be named "Cancel"/"Close"
+        acted = true;
+        await sleep(600);
+        continue;
+      }
+      if (destructive) {
+        // No explicit Cancel — Escape is the safe answer; never fall through to
+        // whatever button happens to be first, which could be "Remove".
+        try { d.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true, composed: true })); } catch (_) {}
+        try { if (typeof d.close === 'function') d.close(); } catch (_) {}
+        LOG(`Blocking dialog escaped: "${text.slice(0, 80)}"`);
+        acted = true;
+        await sleep(600);
+      }
+    }
+    return acted;
+  }
+
+  // Tell the MAIN-world hooks whether the automation currently owns this tab.
+  // While this is off, native dialogs behave exactly as the site intended.
+  function setAutomationFlag(on) {
+    try {
+      const el = document.documentElement;
+      if (!el) return;
+      if (on) el.setAttribute('data-ua-auto', '1');
+      else el.removeAttribute('data-ua-auto');
+    } catch (_) {}
+  }
+  // Surface anything the page tried to ask us, so a swallowed dialog shows up in
+  // the log instead of being invisible.
+  try {
+    window.addEventListener('ua-native-dialog', (e) => {
+      const d = (e && e.detail) || {};
+      LOG(`Native ${d.kind} intercepted: "${String(d.message || '').slice(0, 100)}"` +
+        (d.answer === null || d.answer === undefined ? ' (dismissed)' : ` → answered ${d.answer ? 'YES' : 'NO'}`));
+    });
+  } catch (_) {}
+
+  // ===================== NEW-ATS SUPPORT PACK =====================
+  // Detection for the platforms the CSV runs kept landing on. Kept as predicates
+  // (not just URL regexes in one big list) so the dispatcher and the eligibility
+  // gate agree on what a page is.
+  function isSmartRecruiters() { return /(^|\.)smartrecruiters\.com$/i.test(location.hostname) || /smartrecruiters/i.test(location.href); }
+  // Oracle Recruiting Cloud (Fusion). Served from *.oraclecloud.com AND white-labelled
+  // onto company domains — the /hcmUI/CandidateExperience path is the reliable tell.
+  function isOracleCloud() {
+    return /(^|\.)oraclecloud\.com$/i.test(location.hostname) ||
+      /\/hcmUI\/CandidateExperience/i.test(location.pathname) ||
+      /oraclecloud\.com|\/hcmUI\/CandidateExperience/i.test(location.href);
+  }
+  function isTaleo() { return /(^|\.)taleo\.net$/i.test(location.hostname) || /\/careersection\//i.test(location.pathname); }
+  // ADP's candidate portal (myjobs.adp.com) is a different application from the
+  // recruiter-side workforcenow.adp.com flow the old driver targeted.
+  function isAdpMyJobs() { return /(^|\.)myjobs\.adp\.com$/i.test(location.hostname); }
+  function isAdpAny() { return isAdpMyJobs() || /(^|\.)(adp\.com|workforcenow\.adp\.com)$/i.test(location.hostname); }
+
+  /* ── SmartRecruiters ───────────────────────────────────────────────────────
+     Rewritten for the current Spark (`spl-*`) UI. The previous driver queried
+     `#firstName` etc. against `document`, which cannot cross the shadow roots
+     those components live in, so it filled nothing and then clicked around the
+     page — which is how it reached the résumé's remove button in the first place.
+     Everything here goes through the deep queries and a pointer sequence, because
+     spl components ignore a bare .click(). */
+  async function splSetInput(el, val) {
+    if (!el || !val) return false;
+    // spl-input wraps a real <input> in its shadow root.
+    const inner = el.tagName && el.tagName.toLowerCase().startsWith('spl-')
+      ? (el.shadowRoot && el.shadowRoot.querySelector('input,textarea')) || el.querySelector('input,textarea')
+      : el;
+    if (!inner) return false;
+    try { inner.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(inner, val);
+    await sleep(120);
+    return true;
+  }
+  // SmartRecruiters combobox: role="combobox" + aria-controls → a listbox of
+  // <spl-select-option>. The option only commits when the pointer sequence lands
+  // on its inner typography node.
+  async function splPickOption(combo, wanted) {
+    if (!combo) return false;
+    const id = combo.getAttribute('aria-controls') || combo.getAttribute('ariacontrols') || combo.getAttribute('list');
+    triggerMouse(combo);
+    await sleep(700);
+    let list = null;
+    if (id) { try { list = deepQuery('#' + CSS.escape(id)); } catch (_) { list = null; } }
+    const options = (list ? deepQueryAll('spl-select-option,[role="option"]', list) : deepQueryAll('spl-select-option,[role="option"]'))
+      .filter(isVisible);
+    if (!options.length) return false;
+    const norm = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+    const target = norm(wanted);
+    let pick = options.find(o => norm(o.innerText || o.textContent) === target);
+    if (!pick && target) pick = options.find(o => norm(o.innerText || o.textContent).includes(target));
+    if (!pick) return false;
+    const inner = pick.querySelector('spl-typography-body') ||
+      (pick.shadowRoot && pick.shadowRoot.querySelector('spl-typography-body,span,div')) || pick;
+    triggerMouse(inner);
+    await sleep(300);
+    return true;
+  }
+  async function smartRecruitersAutomation() {
+    LOG('SmartRecruiters automation starting (shadow-aware)...');
+    const p = await getProfile();
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    // Job page → application form.
+    if (!/\/(apply|publication)/i.test(location.pathname)) {
+      const apply = deepQueryAll('button,a,spl-button')
+        .filter(isVisible)
+        .find(b => /^\s*(apply|i'?m interested|apply now|start application)\b/i.test((b.textContent || '').trim()));
+      if (apply) { LOG('SmartRecruiters: opening the application'); realClick(apply); await sleep(3000); }
+    }
+
+    const loc = p.city ? [p.city, p.state || p.region || '', p.country || DEFAULTS.country].filter(Boolean).join(', ') : '';
+    const byName = {
+      firstName: p.first_name || p.firstName || '',
+      lastName: p.last_name || p.lastName || '',
+      email: p.email || '',
+      phoneNumber: p.phone || '',
+      phone: p.phone || '',
+      location: loc,
+    };
+
+    const MAX_STEPS = 10;
+    for (let step = 1; step <= MAX_STEPS; step++) {
+      if (checkSuccess()) { LOG('SmartRecruiters: submission confirmed'); break; }
+      await resolveBlockingDialog();
+      LOG(`SmartRecruiters: step ${step}`);
+
+      // Named fields, shadow-aware.
+      for (const [name, val] of Object.entries(byName)) {
+        if (!val) continue;
+        const el = deepQuery(`spl-input[id="${name}"],spl-input[name="${name}"],#${name},input[name="${name}"],input[id="${name}"]`);
+        if (el) {
+          const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || (el.querySelector && el.querySelector('input')) || el;
+          if (inner && !(inner.value || '').trim()) await splSetInput(el, val);
+        }
+      }
+
+      // Location typeahead needs its suggestion committed, or SmartRecruiters
+      // rejects the step with "Please select a location from the list".
+      if (loc) {
+        const locCombo = deepQueryAll('[role="combobox"],spl-input[id="location"]').filter(isVisible)[0];
+        if (locCombo) await splPickOption(locCombo, p.city || loc);
+      }
+
+      // Every remaining combobox: answer from the bank, else take the first real option
+      // so a required dropdown can never be what blocks the submit.
+      for (const combo of deepQueryAll('[role="combobox"][aria-haspopup="listbox"],[ariarole="combobox"]').filter(isVisible)) {
+        const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input') || combo;
+        if (inner && (inner.value || '').trim()) continue;      // already answered
+        const q = getFullQuestionText(combo) || getLabel(combo) || '';
+        const guess = q ? guessFieldValue(q, p, combo) : '';
+        if (!(await splPickOption(combo, guess))) await splPickOption(combo, '');
+        await sleep(200);
+      }
+
+      // spl-radio groups (Yes/No knockouts).
+      for (const group of deepQueryAll('fieldset[role="radiogroup"],[role="radiogroup"]').filter(isVisible)) {
+        const already = deepQueryAll('spl-radio[checked],input[type="radio"]:checked', group);
+        if (already.length) continue;
+        const q = (group.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        const want = String(guessFieldValue(q, p, group) || 'yes').toLowerCase();
+        const radios = deepQueryAll('spl-radio,input[type="radio"]', group).filter(isVisible);
+        const labelOf = r => ((r.shadowRoot && r.shadowRoot.querySelector('label')?.textContent) || r.textContent || r.value || '').trim().toLowerCase();
+        const pick = radios.find(r => labelOf(r) === want) || radios.find(r => labelOf(r).includes(want)) || radios[0];
+        if (pick) { triggerMouse(pick); await sleep(150); }
+      }
+
+      // Consent boxes.
+      for (const cb of deepQueryAll('input[type="checkbox"],spl-checkbox').filter(isVisible)) {
+        const checked = cb.checked || cb.hasAttribute('checked');
+        if (checked) continue;
+        const lbl = getLabel(cb) || (cb.textContent || '');
+        if (/consent|agree|privacy|gdpr|terms|data.?process|acknowledg/i.test(lbl)) { triggerMouse(cb); await sleep(120); }
+      }
+
+      await fallbackFill();
+      await triggerAutofillQuick();
+      await sleep(800);
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+      await resolveBlockingDialog();
+
+      // Advance. Text-matched so it survives SmartRecruiters renaming its test ids.
+      const buttons = deepQueryAll('button,spl-button,[role="button"]').filter(isVisible);
+      const nameOf = b => (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      const submit = buttons.find(b => /^\s*(submit( application)?|send application|finish)\b/i.test(nameOf(b)));
+      if (submit) {
+        LOG('SmartRecruiters: submitting');
+        realClick(submit);
+        _lastSubmitAt = Date.now();
+        await sleep(3500);
+        await resolveBlockingDialog();
+        break;
+      }
+      const next = buttons.find(b => /^\s*(next|continue|save (and|&) continue|review)\b/i.test(nameOf(b)));
+      if (next) { LOG('SmartRecruiters: next step'); realClick(next); await sleep(2800); continue; }
+      break;
+    }
+    learnFromFilledFields();
+    LOG('SmartRecruiters automation complete');
+  }
+
+  /* ── Oracle Recruiting Cloud (Fusion) + Taleo ──────────────────────────────
+     Oracle ships two unrelated candidate products and a CSV run hits both:
+       • Oracle Recruiting Cloud / Fusion — *.oraclecloud.com/hcmUI/CandidateExperience,
+         an Oracle JET app (oj-* components, some in shadow roots).
+       • Classic Taleo — *.taleo.net/careersection, server-rendered, frames, and
+         numeric field ids that differ per tenant, so it has to be label-driven. */
+  async function oracleCloudAutomation() {
+    LOG('Oracle Recruiting Cloud automation starting...');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    // Requisition page → application. Oracle labels this "Apply" / "Apply Now".
+    const applyNames = /^\s*(apply|apply now|apply for (this )?job|start( your)? application)\b/i;
+    for (let i = 0; i < 3; i++) {
+      if (/\/apply/i.test(location.href) || deepQuery('input,select,textarea,oj-input-text')) break;
+      const apply = deepQueryAll('button,a,oj-button').filter(isVisible)
+        .find(b => applyNames.test((b.textContent || b.getAttribute('title') || '').trim()));
+      if (!apply) break;
+      LOG('Oracle: opening the application');
+      realClick(apply);
+      await sleep(3000);
+    }
+
+    // Oracle asks for an account before the form on many tenants; the shared
+    // credential flow already knows how to satisfy that.
+    await handleAccountAuth();
+    await resolveBlockingDialog();
+
+    // Oracle's flow is a train of numbered blocks with one primary action; the
+    // universal multi-page driver handles it once fields are filled.
+    for (let step = 1; step <= 12; step++) {
+      if (checkSuccess()) break;
+      await resolveBlockingDialog();
+      await waitForFormStable(2500);
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+
+      const r = await autoSubmitOrNext();
+      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'next_page') { await sleep(2500); continue; }
+
+      // Oracle's own wording, when the generic pass found nothing to click.
+      const btn = deepQueryAll('button,oj-button,a[role="button"]').filter(isVisible)
+        .find(b => /^\s*(continue|next|review|submit|save and continue)\b/i.test((b.textContent || '').trim()));
+      if (!btn) break;
+      realClick(btn);
+      await sleep(2500);
+    }
+    learnFromFilledFields();
+    LOG('Oracle Recruiting Cloud automation complete');
+  }
+
+  /* ── ADP myjobs.adp.com ────────────────────────────────────────────────────
+     ADP's candidate experience (CX) app — a different product from the
+     workforcenow.adp.com flow the old adpAutomation() targeted, which is why
+     myjobs links fell through to the generic path and stalled. */
+  async function adpMyJobsAutomation() {
+    LOG('ADP myjobs automation starting...');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    // Listing / preview → application.
+    for (let i = 0; i < 3; i++) {
+      if (/\/(apply|application)/i.test(location.pathname)) break;
+      const apply = deepQueryAll('button,a').filter(isVisible)
+        .find(b => /^\s*(apply|apply now|apply to (this )?job|start application)\b/i.test((b.textContent || '').trim()));
+      if (!apply) break;
+      LOG('ADP: opening the application');
+      realClick(apply);
+      await sleep(3000);
+    }
+    await handleAccountAuth();
+
+    for (let step = 1; step <= 12; step++) {
+      if (checkSuccess()) break;
+      await resolveBlockingDialog();
+      await waitForFormStable(2500);
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+
+      const r = await autoSubmitOrNext();
+      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'next_page') { await sleep(2500); continue; }
+
+      const btn = deepQueryAll('button,a[role="button"]').filter(isVisible)
+        .find(b => /^\s*(next|continue|review|submit( application)?)\b/i.test((b.textContent || '').trim()));
+      if (!btn) break;
+      realClick(btn);
+      await sleep(2500);
+    }
+    learnFromFilledFields();
+    LOG('ADP myjobs automation complete');
+  }
+
   // ===================== ATS DISPATCHER =====================
   async function dispatchATSAutomation() {
     if (autoStopped()) { LOG('dispatchATSAutomation: Fully Automated is off — not running'); return; }
+    setAutomationFlag(true);
+    // A modal left open by a previous step swallows every click that follows, so
+    // clear one before doing anything else.
+    await resolveBlockingDialog();
     // Reveal the application form first if we're on a listing/landing page.
     await openApplicationForm();
     // Create an account / sign in with saved credentials if the ATS requires it.
@@ -7599,8 +8053,12 @@
     else if (/linkedin\.com.*\/jobs/i.test(url)) await linkedinEasyApply();
     else if (/ashbyhq\.com/i.test(url)) await ashbyAutomation();
     else if (/bamboohr\.com/i.test(url)) await bamboohrAutomation();
-    else if (/smartrecruiters\.com/i.test(url)) await smartRecruitersAutomation();
-    else if (/taleo\.net|oraclecloud\.com.*Candidate/i.test(url)) await taleoAutomation();
+    else if (isSmartRecruiters()) await smartRecruitersAutomation();
+    // Oracle ships two different candidate products — route each to its own driver
+    // instead of sending every oraclecloud URL through the classic-Taleo flow.
+    else if (isOracleCloud()) await oracleCloudAutomation();
+    else if (isTaleo()) await taleoAutomation();
+    else if (isAdpMyJobs()) await adpMyJobsAutomation();
     else if (/jobvite\.com/i.test(url)) await jobviteAutomation();
     else if (/workable\.com/i.test(url)) await workableAutomation();
     else if (/indeed\.com/i.test(url)) await indeedEasyApply();
@@ -7915,7 +8373,7 @@
 (function () {
   'use strict';
   // Hosts that ARE an ATS end-to-end — safe to activate anywhere on the site.
-  const ATS_HOSTS = /(^|\.)(jobright\.ai|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|ashbyhq\.com|smartrecruiters\.com|icims\.com|taleo\.net|bamboohr\.com|successfactors\.com|avature\.net|recruitee\.com|workable\.com|personio\.com|rippling\.com|jobvite\.com|jazzhr\.com|applytojob\.com|brassring\.com|ukg\.com|oraclecloud\.com|paylocity\.com|gusto\.com|breezy\.hr|breezyhr\.com|teamtailor\.com|manatal\.com|pinpointhq\.com|eightfold\.ai|phenom\.com|phenompeople\.com|paradox\.ai|hirevue\.com|modernhire\.com|mya\.com|beamery\.com|joinhandshake\.com|governmentjobs\.com|usajobs\.gov|adp\.com|workforcenow\.adp\.com|dover\.com|pinpoint\.dev|polymer\.co|jobscore\.com|recruiterflow\.com|zohorecruit\.com)$/i;
+  const ATS_HOSTS = /(^|\.)(jobright\.ai|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|ashbyhq\.com|smartrecruiters\.com|icims\.com|taleo\.net|bamboohr\.com|successfactors\.com|avature\.net|recruitee\.com|workable\.com|personio\.com|rippling\.com|jobvite\.com|jazzhr\.com|applytojob\.com|brassring\.com|ukg\.com|oraclecloud\.com|paylocity\.com|gusto\.com|breezy\.hr|breezyhr\.com|teamtailor\.com|manatal\.com|pinpointhq\.com|eightfold\.ai|phenom\.com|phenompeople\.com|paradox\.ai|hirevue\.com|modernhire\.com|mya\.com|beamery\.com|joinhandshake\.com|governmentjobs\.com|usajobs\.gov|adp\.com|workforcenow\.adp\.com|dover\.com|pinpoint\.dev|polymer\.co|jobscore\.com|recruiterflow\.com|zohorecruit\.com|myjobs\.adp\.com|sapsf\.com|sapsf\.eu|talentbrew\.com|radancy\.com|join\.com|softgarden\.io|softgarden\.de|hrmdirect\.com|csod\.com|cornerstoneondemand\.com|myworkdaysite\.com|smartrecruiters\.com)$/i;
   // Generic path pattern — only relevant OUTSIDE of mixed-use hosts like
   // LinkedIn / Indeed where /jobs/ is primarily browsing.
   const CAREER_PATH = /(^|\/)(apply|application|applications|careers|career|job-application|submit-application|opportunities|vacancies|openings|employment|hiring|recruit|recruiting|candidate|applicant)(\/|\?|-|_|$)/i;

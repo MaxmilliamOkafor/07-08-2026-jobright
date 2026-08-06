@@ -89,6 +89,97 @@ driven twice.
 
 ---
 
+## v14.1 — new ATS coverage and the dialog freeze
+
+### The `Remove "…_CV"?` freeze
+
+A SmartRecruiters run died on a native `confirm()` dialog:
+
+```
+Remove "Maxmilliam_Okafor_CV"?
+```
+
+A native confirm **blocks the page's JavaScript thread** until a human answers it.
+Nothing can run behind one — not the filler, not the submit, not the per-page
+timeout — so the job sat frozen until the manager's watchdog killed the tab six
+minutes later. Fixed in three independent layers, any one of which is enough:
+
+1. **The dialog can no longer block.** `ua-page-hooks.js` is a **MAIN-world**
+   content script (`"world": "MAIN"`), so it overrides the *page's own*
+   `confirm` / `alert` / `prompt` — an isolated-world content script cannot, which
+   is why this needed a new file. Destructive prompts ("Remove…", "Delete…",
+   "Discard…") are answered **no**, so the résumé you already uploaded stays
+   attached; everything else ("Submit your application?") is answered **yes** so a
+   confirmation step can't stall the run. Every intercepted dialog is logged.
+2. **The dialog is not opened in the first place.** `realClick` — the single choke
+   point every driver clicks through — now refuses destructive controls: anything
+   named Remove/Delete/Discard/Withdraw, and unlabelled `×` icon buttons sitting
+   inside an attachment row.
+3. **In-page modals too.** `resolveBlockingDialog()` answers modal confirms the
+   same way (Cancel/Keep for destructive, OK/Continue otherwise, Escape if there is
+   no safe button), and runs at the top of every multi-page step.
+
+The hooks are **inert unless a job is actually running** — the content script sets
+`data-ua-auto="1"` on `<html>` for the lifetime of a job and removes it afterwards.
+While you are browsing normally, every dialog behaves exactly as the site intended.
+
+### SmartRecruiters, rewritten
+
+The old driver queried `document.querySelector('#firstName')`. Modern
+SmartRecruiters renders its whole form as `spl-*` web components, **each with its
+own shadow root**, which `querySelector` cannot cross — so the driver filled
+nothing, then clicked around the page looking for something to press. That is how
+it reached the résumé's remove button.
+
+The driver now uses shadow-piercing queries (`deepQuery`/`deepQueryAll`) and a full
+pointer-event sequence (`triggerMouse`) — `spl` components ignore a bare `.click()`.
+It handles `spl-input`, `spl-select-option` comboboxes (including the location
+typeahead, which must have its suggestion committed or the step is rejected),
+`spl-radio` knockout groups, consent boxes, and the multi-step Next → Submit flow,
+matching buttons by visible text so it survives SmartRecruiters renaming its test
+ids.
+
+### New drivers
+
+| Platform | Why it needed one |
+| --- | --- |
+| **ADP `myjobs.adp.com`** | ADP's candidate app, a different product from the `workforcenow.adp.com` flow the old driver targeted. The old broad `adp.com.*\/job` pattern was matching myjobs URLs first and sending them down the wrong path. |
+| **Oracle Recruiting Cloud** | All `*.oraclecloud.com` HCM `CandidateExperience` sites, plus the white-labelled deployments on company domains (detected by the `/hcmUI/CandidateExperience` path). Previously these were claimed by the classic-Taleo entry. |
+| **Taleo** | Now scoped to genuine classic Taleo (`taleo.net`, `/careersection/`) instead of also swallowing Oracle. |
+
+Also added to detection: SuccessFactors' `sapsf.com`/`sapsf.eu` hosts, Phenom,
+Radancy/TalentBrew, join.com, softgarden, HRMDirect, and Greenhouse's newer
+`job-boards.greenhouse.io` host.
+
+**Registry ordering matters** and is now tested: `detectATS()` returns the first
+pattern that matches, so specific platforms are listed before the broad legacy
+entries. Two real mis-routings were caught this way — `myjobs.adp.com` resolving to
+the generic ADP entry, and every Oracle URL resolving to Taleo.
+
+### Verification
+
+`./tests/run.sh` now runs **114 assertions**, including two new suites:
+
+- **`ats.test.js`** — detection routing for every platform above (built from the
+  shipped `ATS` table and predicates, so it cannot drift), the `confirm()` answer
+  policy including the exact `Remove "Maxmilliam_Okafor_CV"?` string, and the
+  destructive-control guard (Remove/Delete blocked; Cancel, Submit, Upload allowed).
+- **`references.test.js`** — every function *called* in the shipped scripts must be
+  *declared*. `node --check` accepts a call to a helper that does not exist; it only
+  fails at runtime, on a live ATS page, as a silent job failure. This caught two
+  such calls (`answerFor`, `smartGuess`) in the new SmartRecruiters driver.
+
+### Not verified
+
+These drivers have not been run against the live sites — there is no browser in
+this environment. The dialog handling, detection routing and CSV paths are covered
+by tests; the per-ATS selectors are written to degrade gracefully (visible-text
+button matching, shadow-piercing queries, and the existing generic filler as the
+fallback) rather than depending on exact attribute names I could not confirm. Run
+one job per new ATS with concurrency 1 before a large batch.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -166,11 +257,14 @@ AAAA - Jobright Autofill/
 ├── scroll-to-anchor.…js        ┘
 ├── static/background/index.js  official 1.19.0 SW + one appended importScripts line
 ├── ua-enhancement.js           automation content script (ATS drivers, autofill, queue runner)
+├── ua-page-hooks.js            MAIN-world native-dialog hooks  ← new in v14.1
 ├── ua-orchestrator.js          service-worker queue engine  ← new
 ├── ua-queue.html / ua-queue.js Queue Manager UI (side panel or tab)
 └── icon*.png
 tests/
 ├── run.sh                      everything below, plus syntax + manifest checks
+├── references.test.js          every called function is declared
+├── ats.test.js                 ATS routing + dialog answer policy
 ├── csv-parsers.test.js         content-script CSV/URL parsing
 ├── queue-panel.test.js         panel CSV import behaviour
 └── orchestrator.test.js        queue engine against a simulated chrome.*
@@ -182,7 +276,7 @@ tests/
 ./tests/run.sh
 ```
 
-71 assertions, no browser required: JS syntax for everything shipped, manifest
+114 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,
