@@ -180,6 +180,70 @@ one job per new ATS with concurrency 1 before a large batch.
 
 ---
 
+## v14.2 — the Fully Automated toggle actually means off
+
+Three separate faults, all reported together: automation fired on recognised ATS
+pages with the toggle OFF, autofill ran during manual use without anyone pressing
+Autofill, and the switch kept turning itself back on.
+
+### Why "off" wasn't off
+
+The toggle only ever gated the **main dispatcher**. Roughly a dozen other modules
+in `ua-enhancement.js` live in their own IIFEs, cannot see the toggle's variable,
+and acted on any page that merely looked like a job application:
+
+| Module | What it did with the toggle OFF |
+| --- | --- |
+| Autofill-confirm auto-dismiss | Auto-clicked **Yes** on Jobright's *"Are you sure to autofill again?"* — **this is autofill starting without you pressing Autofill** |
+| ATS chatbot answerer | Polled every 4s and answered Paradox/Phenom/HireVue chat widgets |
+| Work-authorisation auto-answer | Ticked every 1.2s and selected Yes/No on right-to-work questions |
+
+There is now **one gate** — `window.__uaAutoAllowed()` — installed before every
+other module in the file. It answers yes only when the toggle is ON, this tab is
+the in-page queue runner, or this tab is running a CSV Queue Manager job. It is
+**fail-closed**: until `chrome.storage` has actually been read the answer is *no*,
+so a module booting at `document_start` can't act in the gap before the preference
+is known. `autoStopped()` used to return "not stopped" on any error — it now fails
+closed too.
+
+### Why the switch turned itself back on
+
+**Alt+A.** It toggled Fully Automated *and* immediately started applying
+(`setAutoApply(!autoApply, true)`). Its "is the user typing?" guard only checked
+`document.activeElement.tagName` — which **stops at a shadow boundary**, so on a
+SmartRecruiters or Workday form it reports `SPL-INPUT`, not `INPUT`, and a stray
+Alt+A while typing went straight through.
+
+- **Alt+A is now a kill switch only** — it can turn automation OFF, never ON.
+  Turning it on is a deliberate act and goes through the on-screen switch.
+- The typing guard now walks shadow roots and covers `contenteditable`.
+- Every change is logged with **who made it** (`switch`, `drawer checkbox`,
+  `Alt+A`), so if the state ever appears to move on its own again the log names
+  what moved it.
+
+### One more leak
+
+A Fully-Automated dispatch set the internal `data-ua-auto` flag and never cleared
+it, so on that page the gate stayed open even after you switched the toggle off.
+A queue job owns that flag for its lifetime; a dispatch now only borrows it and
+hands it back in a `finally`.
+
+### Persistence
+
+`ua_aa` is written in exactly one place, on every change, and read on every page
+load — so off stays off across reloads, new tabs, browser restarts and
+service-worker recycles. That single-writer property is now asserted by a test.
+
+### Verified
+
+`tests/gate.test.js` runs the shipped gate IIFE against a fake `chrome.storage`:
+28 assertions covering fail-closed boot, toggle OFF, unset preference, live
+ON/OFF switching, queue-job ownership, "a normal tab opened during a run is not
+hijacked", storage failure, and the source rules that stop the switch moving on
+its own. Total suite: **142 assertions**.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -265,6 +329,7 @@ tests/
 ├── run.sh                      everything below, plus syntax + manifest checks
 ├── references.test.js          every called function is declared
 ├── ats.test.js                 ATS routing + dialog answer policy
+├── gate.test.js                the Fully Automated toggle / automation gate
 ├── csv-parsers.test.js         content-script CSV/URL parsing
 ├── queue-panel.test.js         panel CSV import behaviour
 └── orchestrator.test.js        queue engine against a simulated chrome.*
@@ -276,7 +341,7 @@ tests/
 ./tests/run.sh
 ```
 
-114 assertions, no browser required: JS syntax for everything shipped, manifest
+142 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,

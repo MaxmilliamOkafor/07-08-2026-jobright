@@ -13,6 +13,77 @@
 // v13.0.0 FULL-AUTO: zero-supervision queue — robust Google-Places/typeahead location
 // committer + required-field guarantor sweep so the queue never stalls waiting for a human.
 // CSV upload -> import job URLs -> auto-apply each with Jobright autofill (LazyApply-style queue).
+/* ════════════════════════════════════════════════════════════════════════════
+   MASTER AUTOMATION GATE  —  installed before every other module in this file.
+
+   The "Fully Automated" toggle used to gate only the main dispatcher. Around a
+   dozen independent modules further down this file (the autofill-confirm
+   auto-dismisser, the chatbot answerer, the work-authorisation auto-answerer,
+   the AI answer generator, …) live in their own IIFEs, cannot see the toggle's
+   variable, and acted on any page that merely looked like a job application.
+   That is why the extension "started firing" on a recognised ATS with the
+   toggle OFF, and why autofill ran without anyone pressing Autofill.
+
+   Everything autonomous now asks this one question first. Three ways to say yes:
+     • the Fully Automated toggle is ON, or
+     • this tab is the in-page queue runner, or
+     • this tab is running a job for the CSV Queue Manager.
+
+   It is FAIL-CLOSED: until chrome.storage has actually been read, the answer is
+   NO. A module that boots at document_start therefore cannot act during the gap
+   before the preference is known — previously that gap was wide open.
+   ════════════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  if (window.__uaAutoAllowed) return;
+
+  let ready = false;          // has storage been read at least once?
+  let toggleOn = false;       // ua_aa  — the Fully Automated preference
+  let queueRunning = false;   // ua_qa  — the in-page single-tab runner
+
+  const RUNNER_PREFIX = 'UAQRUN::';
+  function isRunnerTab() {
+    try { return typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0; }
+    catch (_) { return false; }
+  }
+  // Set by the content script for the lifetime of a Queue-Manager-driven job.
+  function managedJobActive() {
+    try { return document.documentElement.getAttribute('data-ua-auto') === '1'; }
+    catch (_) { return false; }
+  }
+
+  window.__uaAutoAllowed = function () {
+    if (managedJobActive()) return true;          // a queued job owns this tab
+    if (!ready) return false;                     // preference not known yet → do nothing
+    if (toggleOn) return true;
+    return queueRunning && isRunnerTab();
+  };
+  // For UI/diagnostics: why did the gate answer the way it did?
+  window.__uaAutoReason = function () {
+    if (managedJobActive()) return 'queue job';
+    if (!ready) return 'preference not loaded';
+    if (toggleOn) return 'toggle ON';
+    if (queueRunning && isRunnerTab()) return 'queue runner tab';
+    return 'toggle OFF';
+  };
+
+  try {
+    chrome.storage.local.get(['ua_aa', 'ua_qa'], (d) => {
+      void chrome.runtime.lastError;
+      toggleOn = (d && d.ua_aa) === true;
+      queueRunning = (d && d.ua_qa) === true;
+      ready = true;
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes.ua_aa) { toggleOn = changes.ua_aa.newValue === true; ready = true; }
+      if (changes.ua_qa) queueRunning = changes.ua_qa.newValue === true;
+    });
+  } catch (_) {
+    // No storage access at all → stay fail-closed rather than assuming ON.
+  }
+})();
+
 (function () {
   'use strict';
 
@@ -1695,7 +1766,14 @@
   function clickEl(el) { if (!el) return false; scrollIfNeeded(el); realClick(el); return true; }
   // Automation should run only when Fully Automated is ON, or a bulk (CSV) run is active
   // in this runner tab. Long loops poll this so flipping the toggle OFF halts them.
-  function autoStopped() { try { return !autoApply && !(qActive && isRunnerTab()); } catch (_) { return false; } }
+  // Fail-CLOSED: if we cannot tell, we do not automate. (This used to return
+  // false — "not stopped" — on error, i.e. it defaulted to running.)
+  function autoStopped() {
+    try {
+      if (typeof window.__uaAutoAllowed === 'function') return !window.__uaAutoAllowed();
+      return !autoApply && !(qActive && isRunnerTab());
+    } catch (_) { return true; }
+  }
 
   function waitFor(sel, ms, xpath) {
     return new Promise(res => {
@@ -4593,16 +4671,36 @@
   }
 
   // ===================== KEYBOARD SHORTCUTS =====================
+  // Is the user typing? document.activeElement stops at a shadow boundary and
+  // reports the HOST element, so on SmartRecruiters/Workday forms it says
+  // "SPL-INPUT" rather than "INPUT" and the old check waved the keystroke
+  // through. Walk into the shadow tree, and treat contenteditable as typing too.
+  function isTypingTarget() {
+    try {
+      let el = document.activeElement;
+      for (let i = 0; i < 5 && el && el.shadowRoot && el.shadowRoot.activeElement; i++) el = el.shadowRoot.activeElement;
+      if (!el) return false;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return true;
+      if (el.isContentEditable) return true;
+      if (el.getAttribute && el.getAttribute('role') === 'textbox') return true;
+      return false;
+    } catch (_) { return true; }   // unsure → assume typing, never steal the key
+  }
+
   function setupKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
-      // Only when no input is focused
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+      if (isTypingTarget()) return;
       if (!e.altKey) return;
 
       switch (e.key.toLowerCase()) {
-        case 'a': // Alt+A: Toggle Fully Automated
+        // Alt+A is a KILL SWITCH, not a toggle. Turning Fully Automated ON is a
+        // deliberate act and must go through the on-screen switch: a stray Alt+A
+        // (plenty of sites and OS layouts use it) was silently turning automation
+        // back on and starting an application on the spot.
+        case 'a':
           e.preventDefault();
-          setAutoApply(!autoApply, true);
+          if (autoApply) setAutoApply(false, false, 'Alt+A');
+          else LOG('Alt+A ignored — turn Fully Automated ON with the switch, not a shortcut');
           break;
         case 'q': // Alt+Q: Toggle drawer
           e.preventDefault();
@@ -6484,7 +6582,7 @@
   // ===================== DRAWER EVENTS =====================
   function bindDrawer() {
     const tog = document.getElementById('ua-aa'); tog.checked = autoApply;
-    tog.addEventListener('change', e => { setAutoApply(e.target.checked, true); });
+    tog.addEventListener('change', e => { setAutoApply(e.target.checked, true, 'drawer checkbox'); });
 
     const drop = document.getElementById('ua-drop'), csv = document.getElementById('ua-csv');
     drop.addEventListener('click', () => csv.click());
@@ -7218,13 +7316,18 @@
   // automation on its own — no clicking Apply, Apply Manually, account creation, or
   // submit. The preference is persisted (SK.AA) and shared with the Alt+A shortcut and
   // the advanced-drawer checkbox.
-  async function setAutoApply(val, startNow) {
+  async function setAutoApply(val, startNow, source) {
     autoApply = !!val;
+    // Persisted immediately, so the choice survives a reload, a new tab, a
+    // browser restart and a service-worker recycle. Nothing else in the
+    // extension writes this key.
     try { await st.set(SK.AA, autoApply); } catch (_) {}
     paintAutoToggle();
     try { const d = document.getElementById('ua-aa'); if (d) d.checked = autoApply; } catch (_) {}
     try { updateStat(); } catch (_) {}
-    LOG('Fully Automated toggled ' + (autoApply ? 'ON' : 'OFF'));
+    // The source is logged so that if the switch ever appears to move on its own
+    // again, the log names what moved it.
+    LOG(`Fully Automated toggled ${autoApply ? 'ON' : 'OFF'} (by ${source || 'unknown'})`);
     if (autoApply && startNow && (detectATS() || isWorkday())) {
       LOG('Fully Automated ON — starting full automation for ' + (detectATS() || 'Workday'));
       if (isWorkday()) startWorkdayAccountWatch();
@@ -7272,7 +7375,7 @@
         </button>
       </div>
       <button id="ua-fa-gaps" type="button" title="Fill the location / visa-sponsorship / EEO fields Jobright left blank (Alt+F)" style="width:100%;margin-top:9px;padding:7px;border:1px solid #1c5743;border-radius:8px;background:transparent;color:#9ff5d3;font-size:11px;font-weight:600;cursor:pointer">🩹 Fill gaps Jobright missed</button>`;
-    card.querySelector('#ua-fa-toggle').addEventListener('click', () => setAutoApply(!autoApply, true));
+    card.querySelector('#ua-fa-toggle').addEventListener('click', () => setAutoApply(!autoApply, true, 'switch'));
     card.querySelector('#ua-fa-gaps').addEventListener('click', async (ev) => {
       const b = ev.currentTarget; const t = b.textContent; b.textContent = 'Filling…'; b.disabled = true;
       try { await resolveLocationFields(); await answerChoiceGroups(); await fallbackFill(); await guaranteeRequiredFields(); }
@@ -8035,8 +8138,16 @@
 
   // ===================== ATS DISPATCHER =====================
   async function dispatchATSAutomation() {
-    if (autoStopped()) { LOG('dispatchATSAutomation: Fully Automated is off — not running'); return; }
+    if (autoStopped()) { LOG(`dispatchATSAutomation: not running (${window.__uaAutoReason ? window.__uaAutoReason() : 'automation off'})`); return; }
+    // A queue job or the in-page runner owns the flag for its whole lifetime; a
+    // Fully-Automated dispatch only borrows it and must hand it back. Leaving it
+    // set kept the automation gate open on this page even after the toggle was
+    // switched off, which is one of the ways automation "kept firing".
+    const ownedElsewhere = (() => {
+      try { return document.documentElement.getAttribute('data-ua-auto') === '1'; } catch (_) { return false; }
+    })();
     setAutomationFlag(true);
+    try {
     // A modal left open by a previous step swallows every click that follows, so
     // clear one before doing anything else.
     await resolveBlockingDialog();
@@ -8075,6 +8186,9 @@
     // confirmed submitted yet, self-navigate the remaining steps (account walls,
     // multi-page forms, review/confirm screens) until it is.
     if (!checkSuccess()) await multiPageLoop();
+    } finally {
+      if (!ownedElsewhere) setAutomationFlag(false);
+    }
   }
 
   // ===================== INIT =====================
@@ -8294,8 +8408,11 @@
 })();
 
 // === AUTO-DISMISS "Are you sure to autofill again" CONFIRMATION POPUP ===
-// This popup from the Jobright extension interferes with autofill flow.
-// We auto-click "Yes" whenever it appears, including checking shadow DOMs.
+// Jobright asks this before re-running autofill. Auto-answering "Yes" is only
+// correct while WE are driving: during manual use it silently starts an autofill
+// the user never asked for, which is exactly the "fires without me clicking it"
+// complaint. Gated on the master automation gate, and the watcher is not even
+// installed when automation is off.
 (function () {
   function findAndDismissPopup(root) {
     // Check all shadow roots for the popup
@@ -8331,18 +8448,32 @@
   }
   function startWatch() {
     if (!eligible()) return;
-    var popupObserver = new MutationObserver(function () { findAndDismissPopup(document); });
+    if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) {
+      console.log('[UA] autofill-confirm watcher not installed (' +
+        (window.__uaAutoReason ? window.__uaAutoReason() : 'automation off') + ')');
+      return;
+    }
+    var popupObserver = new MutationObserver(function () {
+      if (window.__uaAutoAllowed()) findAndDismissPopup(document);
+    });
     try { popupObserver.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
     // Periodic sweep throttled to 2.5s (was 1s on every site) and auto-stops
     // after 2 minutes if nothing happened, to avoid forever-polling on idle tabs.
     var ticks = 0;
     var iv = setInterval(function () {
       if (++ticks > 48) { clearInterval(iv); try { popupObserver.disconnect(); } catch (_) {} return; }
-      findAndDismissPopup(document);
+      if (window.__uaAutoAllowed()) findAndDismissPopup(document);
     }, 2500);
   }
-  if (document.body) startWatch();
-  else document.addEventListener('DOMContentLoaded', startWatch, { once: true });
+  var _watching = false;
+  function startWatchOnce() { if (_watching) return; if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return; _watching = true; startWatch(); }
+  if (document.body) startWatchOnce();
+  else document.addEventListener('DOMContentLoaded', startWatchOnce, { once: true });
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area === 'local' && (changes.ua_aa || changes.ua_qa)) startWatchOnce();
+    });
+  } catch (_) {}
 })();
 
 // === SMARTRECRUITERS MULTI-PAGE AUTOFILL SUPPORT ===
@@ -9060,6 +9191,8 @@ Result: Shipped my first production change in week three and my notes doc became
     let chatTicks = 0;
     const chatIv = setInterval(() => {
       if (++chatTicks > 225) { clearInterval(chatIv); return; }
+      // Never answer a recruiting chatbot unless automation is actually on.
+      if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return;
       try { scanChatUI(); } catch (_) {}
     }, 4000);
     LOG('Chat-ATS handler active for', location.hostname);
@@ -11137,6 +11270,9 @@ a[href*="/checkout" i],
   }
   function processAll() {
     if (SELECTED.size === 0) return;
+    // Auto-answering is automation. During manual use the user answers this
+    // question themselves — nothing should be selected on their behalf.
+    if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return;
     try { processForm(document); } catch (_) {}
     // Also try common iframe scopes
     try {
