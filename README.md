@@ -667,6 +667,18 @@ ATS account, runs Jobright's autofill, fills any gaps, commits location/typeahea
 fields, submits, and **verifies the submission was confirmed** before the job counts
 as `done`. Unconfirmed submissions are marked `failed`, never a false "applied".
 
+### Importing
+
+Both import surfaces take a **drag and drop** as well as the file picker:
+
+- **Queue Manager panel** — drop a CSV anywhere on the panel.
+- **⚡ Bulk Auto-Apply card** (in Jobright's own sidebar) — drop onto the dashed
+  strip under the buttons, or anywhere on the card.
+
+Dropped **text** works too, so a column of links dragged out of a spreadsheet or an
+email goes straight in. Multiple files at once are fine, from either the picker or
+a drop.
+
 ### CSV format
 
 One job URL per row. Everything below imports correctly:

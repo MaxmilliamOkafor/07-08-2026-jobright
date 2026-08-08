@@ -201,5 +201,18 @@ eq('post-submit verification counts as work, not a stall',
 eq('the hard cap is still the backstop if an operation hangs outright',
   /jobTimeoutMs: 3 \* 60 \* 1000/.test(orch), true);
 
+/* ── 11. CSV import accepts a drop, not just the file picker ──────────────── */
+console.log('CSV drag and drop');
+eq('the in-page card shows a drop target', /id="ua-sb-drop"/.test(src), true);
+eq('the drop target is also clickable', /dropZone\?\.addEventListener\('click', \(\) => fileInput\.click\(\)\)/.test(src), true);
+eq('the whole card accepts a drop, not only the strip',
+  /for \(const target of \[wrap, dropZone\]\.filter\(Boolean\)\)/.test(src), true);
+eq('dropEffect is set, or some platforms refuse the drop', /dropEffect = 'copy'/.test(src), true);
+eq('dropped files are imported', /for \(const f of files\) await handleFile\(f\);/.test(src), true);
+eq('dropped text (a pasted URL list) is imported too',
+  /getData\('text\/uri-list'\) \|\| dt\.getData\('text\/plain'\)/.test(src), true);
+eq('multiple files at once', /multiple style="display:none"/.test(src), true);
+eq('the file picker also handles multi-select', /const files = \[\.\.\.e\.target\.files\];/.test(src), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

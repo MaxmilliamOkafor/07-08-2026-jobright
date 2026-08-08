@@ -7857,7 +7857,10 @@
         <button id="ua-sb-upload" style="${ghostBtn};flex:1">⬆ Upload CSV</button>
         <button id="ua-sb-paste-toggle" style="${ghostBtn};flex:1">⛓ Paste URLs</button>
       </div>
-      <input type="file" id="ua-sb-file" accept=".csv,.txt,.tsv,.json" style="display:none">
+      <div id="ua-sb-drop" style="border:1px dashed #2c5c4a;border-radius:9px;padding:9px;margin-bottom:8px;text-align:center;font-size:10.5px;color:#7d8b86;transition:all .15s;cursor:pointer">
+        …or drop a CSV here <span style="color:#5b6b66">(or a list of job URLs)</span>
+      </div>
+      <input type="file" id="ua-sb-file" accept=".csv,.txt,.tsv,.json" multiple style="display:none">
       <div id="ua-sb-paste-wrap" style="display:none;margin-bottom:8px">
         <textarea id="ua-sb-textarea" placeholder="Paste job URLs — one per line" style="width:100%;box-sizing:border-box;min-height:64px;background:#0e0e0f;border:1px solid #34343a;border-radius:9px;color:#e7e7ea;font-size:12px;padding:8px;resize:vertical"></textarea>
         <button id="ua-sb-add" style="${ghostBtn};width:100%;margin-top:6px">Add to queue</button>
@@ -7910,7 +7913,55 @@
     // --- wire events (engine functions are in this same scope) ---
     const fileInput = wrap.querySelector('#ua-sb-file');
     wrap.querySelector('#ua-sb-upload').addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', e => { if (e.target.files[0]) { handleFile(e.target.files[0]); e.target.value = ''; } });
+    fileInput.addEventListener('change', async e => {
+      const files = [...e.target.files];
+      e.target.value = '';
+      for (const f of files) await handleFile(f);
+    });
+
+    /* Drag and drop, on the whole bulk-apply card as well as the dashed strip —
+       dropping a CSV is the natural gesture and the button alone made it a
+       hidden feature. Text drops work too, so a list of URLs copied out of a
+       spreadsheet or an email can be dragged straight in. */
+    const dropZone = wrap.querySelector('#ua-sb-drop');
+    const idleStyle = { border: '1px dashed #2c5c4a', background: 'transparent', color: '#7d8b86' };
+    const overStyle = { border: '1px dashed #00f0a0', background: 'rgba(0,240,160,.08)', color: '#9ff5d3' };
+    const paint = (st) => { if (dropZone) Object.assign(dropZone.style, st); };
+    let dragDepth = 0;
+    const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+
+    dropZone?.addEventListener('click', () => fileInput.click());
+
+    for (const target of [wrap, dropZone].filter(Boolean)) {
+      target.addEventListener('dragenter', (e) => { stop(e); if (++dragDepth === 1) paint(overStyle); });
+      target.addEventListener('dragover', (e) => {
+        stop(e);
+        // Tell the browser this is a copy, or some platforms refuse the drop.
+        try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; } catch (_) {}
+      });
+      target.addEventListener('dragleave', (e) => { stop(e); if (--dragDepth <= 0) { dragDepth = 0; paint(idleStyle); } });
+      target.addEventListener('drop', async (e) => {
+        stop(e);
+        dragDepth = 0;
+        paint(idleStyle);
+        const dt = e.dataTransfer;
+        if (!dt) return;
+        const files = dt.files ? [...dt.files] : [];
+        if (files.length) {
+          for (const f of files) await handleFile(f);
+          return;
+        }
+        // A dragged selection / link rather than a file.
+        const text = (dt.getData && (dt.getData('text/uri-list') || dt.getData('text/plain'))) || '';
+        if (!text.trim()) return;
+        const urls = parseBulkUrls(text);
+        if (!urls.length) { alert('No valid job URLs in what you dropped.'); return; }
+        const before = queue.length;
+        for (const u of urls) await addJob(u);
+        LOG(`Dropped text: ${urls.length} URLs (${queue.length - before} new)`);
+        injectSidebarUI(); updateSidebarUI();
+      });
+    }
     const pasteWrap = wrap.querySelector('#ua-sb-paste-wrap');
     wrap.querySelector('#ua-sb-paste-toggle').addEventListener('click', () => {
       pasteWrap.style.display = pasteWrap.style.display === 'none' ? 'block' : 'none';
