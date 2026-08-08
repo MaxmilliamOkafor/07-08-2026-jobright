@@ -1008,22 +1008,55 @@
   }
 
   // Comprehensive knockout question handler for radio button groups
+  /* Commit one option of a multiple-choice question. A native radio takes a
+     .click(); a Spark <spl-radio>, an Oracle <oj-radio>, a Material
+     <mat-radio-button> or a role="radio" div does not, and silently stayed
+     unanswered — which then blocked the whole step. Escalate until the control
+     itself reports checked. */
+  function commitChoice(el) {
+    if (!el) return false;
+    realClick(el);
+    if (!choiceChecked(el)) triggerMouse(el);
+    if (!choiceChecked(el)) {
+      try {
+        const scope = ownerScope(el);
+        const lbl = (el.id && scope.querySelector) ? scope.querySelector(`label[for="${CSS.escape(el.id)}"]`)
+          : (el.closest && el.closest('label'));
+        if (lbl) realClick(lbl);
+      } catch (_) {}
+    }
+    if (!choiceChecked(el)) {
+      const native = innerNative(el, 'input[type=radio],input[type=checkbox]') || el;
+      try {
+        if (typeof native.checked === 'boolean') native.checked = true;
+        native.dispatchEvent(new Event('input', { bubbles: true }));
+        native.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (_) {}
+      try { if (el.setAttribute && el !== native) el.setAttribute('aria-checked', 'true'); } catch (_) {}
+    }
+    return true;
+  }
+
   function answerKnockoutRadioGroup(radios, parent, p) {
-    const questionText = (parent?.textContent || '').toLowerCase().replace(/\s+/g, ' ');
+    // Read the question from the whole group container, shadow text included —
+    // a web-component group's textContent is empty in the light DOM.
+    let questionText = '';
+    try {
+      questionText = (parent && (parent.innerText || parent.textContent)) || '';
+      if (!questionText.trim() && radios[0]) questionText = getFullQuestionText(radios[0]) || getLabel(radios[0]) || '';
+    } catch (_) {}
+    questionText = questionText.toLowerCase().replace(/\s+/g, ' ');
 
     // 1. Check saved responses first, then answers learned from the user's own manual
     // corrections — a previously-given human answer always beats the heuristics below.
     const savedAnswer = findSavedResponseMatch(questionText) || getLearnedAnswer(questionText);
     if (savedAnswer) {
       const sNorm = savedAnswer.toLowerCase().trim();
-      const optText = r => {
-        const lbl = $(`label[for="${CSS.escape(r.id)}"]`, parent);
-        return (lbl?.textContent || r.value || '').toLowerCase().trim();
-      };
+      const optText = r => choiceLabel(r);
       // Exact option match first — a saved "No" must not hit "NOt applicable" by substring.
       const match = radios.find(r => optText(r) === sNorm)
         || (sNorm.length > 3 ? radios.find(r => optText(r).includes(sNorm)) : null);
-      if (match) { realClick(match); return true; }
+      if (match) return commitChoice(match);
     }
 
     // 2. Experience range questions (0-3, 3-5, 5-7, 7+)
@@ -1031,19 +1064,15 @@
       const yearsExp = parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years) || 9;
       let bestMatch = null, bestScore = -1;
       for (const radio of radios) {
-        const lbl = $(`label[for="${CSS.escape(radio.id)}"]`, parent);
-        const text = (lbl?.textContent || radio.value || '').trim();
+        const text = choiceLabel(radio);
         const score = scoreExperienceRange(text, yearsExp);
         if (score > bestScore) { bestScore = score; bestMatch = radio; }
       }
-      if (bestMatch && bestScore > 0) { realClick(bestMatch); return true; }
+      if (bestMatch && bestScore > 0) return commitChoice(bestMatch);
     }
 
     // 3. Yes/No questions with smart analysis
-    const labels = radios.map(r => {
-      const lbl = $(`label[for="${CSS.escape(r.id)}"]`, parent);
-      return (lbl?.textContent || r.value || '').trim().toLowerCase();
-    });
+    const labels = radios.map(choiceLabel);
     // Yes/No — including REWORDED options ("Requires sponsorship" / "Does not require
     // sponsorship", "I am authorized" / "I am not authorized"). We decide semantically,
     // then map the decision onto the ACTUAL option wording via optionIndexForDecision.
@@ -1061,17 +1090,17 @@
         else if (/disabilit/i.test(questionText)) eeoVal = p.disability || '';
         if (eeoVal) {
           const eeoMatch = radios.find(r => {
-            const txt = (($(`label[for="${CSS.escape(r.id)}"]`, parent)?.textContent) || r.value || '').toLowerCase().trim();
+            const txt = choiceLabel(r);
             return txt === eeoVal.toLowerCase() || txt.includes(eeoVal.toLowerCase());
           });
-          if (eeoMatch) { realClick(eeoMatch); return true; }
+          if (eeoMatch) return commitChoice(eeoMatch);
         }
         // Hispanic/Latino is really a No question; other EEO → decline.
         decision = /hispanic|latino|latina|latinx/i.test(questionText) ? 'no' : 'decline';
       }
       if (decision) {
         const idx = optionIndexForDecision(labels, decision);
-        if (idx >= 0 && radios[idx]) { realClick(radios[idx]); return true; }
+        if (idx >= 0 && radios[idx]) return commitChoice(radios[idx]);
       }
     }
 
@@ -1079,11 +1108,8 @@
     if (/proficien|skill.?level|expertise|competenc|rating|how.*(rate|would you rate)/i.test(questionText)) {
       const levels = ['expert', 'advanced', 'proficient', 'experienced', 'senior', 'strong', 'high', 'fluent', '5', '4'];
       for (const level of levels) {
-        const match = radios.find(r => {
-          const lbl = $(`label[for="${CSS.escape(r.id)}"]`, parent);
-          return (lbl?.textContent || r.value || '').toLowerCase().includes(level);
-        });
-        if (match) { realClick(match); return true; }
+        const match = radios.find(r => choiceLabel(r).includes(level));
+        if (match) return commitChoice(match);
       }
     }
 
@@ -1091,11 +1117,8 @@
     if (/education.*level|highest.*degree|completed.*degree|level.*education/i.test(questionText)) {
       const levels = ["master", "master's", "graduate", "postgraduate", "bachelor", "undergraduate"];
       for (const level of levels) {
-        const match = radios.find(r => {
-          const lbl = $(`label[for="${CSS.escape(r.id)}"]`, parent);
-          return (lbl?.textContent || r.value || '').toLowerCase().includes(level);
-        });
-        if (match) { realClick(match); return true; }
+        const match = radios.find(r => choiceLabel(r).includes(level));
+        if (match) return commitChoice(match);
       }
     }
 
@@ -1104,8 +1127,7 @@
       const targetSalary = parseInt(p.expected_salary || DEFAULTS.salary) || 80000;
       let bestMatch = null, bestDiff = Infinity;
       for (const radio of radios) {
-        const lbl = $(`label[for="${CSS.escape(radio.id)}"]`, parent);
-        const text = (lbl?.textContent || radio.value || '');
+        const text = choiceLabel(radio);
         const nums = text.match(/[\d,]+/g);
         if (nums) {
           const avg = nums.reduce((s, n) => s + parseInt(n.replace(/,/g, '')), 0) / nums.length;
@@ -1113,21 +1135,18 @@
           if (diff < bestDiff) { bestDiff = diff; bestMatch = radio; }
         }
       }
-      if (bestMatch) { realClick(bestMatch); return true; }
+      if (bestMatch) return commitChoice(bestMatch);
     }
 
     // 7. Default: try guessValue match, then "Yes"
     const lbl = getLabel(radios[0]);
     const guess = guessFieldValue(lbl, p, radios[0]);
     if (guess) {
-      const match = radios.find(r => {
-        const t = ($(`label[for="${CSS.escape(r.id)}"]`)?.textContent || r.value || '').toLowerCase();
-        return t.includes(guess.toLowerCase());
-      });
-      if (match) { realClick(match); return true; }
+      const match = radios.find(r => choiceLabel(r).includes(guess.toLowerCase()));
+      if (match) return commitChoice(match);
     }
-    const yes = radios.find(r => /\byes\b/i.test($(`label[for="${CSS.escape(r.id)}"]`)?.textContent || r.value || ''));
-    if (yes) { realClick(yes); return true; }
+    const yes = radios.find(r => /\byes\b/i.test(choiceLabel(r)));
+    if (yes) return commitChoice(yes);
     return false;
   }
 
@@ -1141,7 +1160,7 @@
   // the question text comes from a cheap bounded label — never a full-subtree textContent.
   function answerButtonStyleQuestions(p) {
     let answered = 0;
-    let groups = $$('fieldset, [role="radiogroup"], [class*="radio-group"], [class*="RadioGroup"], [class*="ButtonGroup"], [class*="button-group"], [class*="question"], [class*="Question"]')
+    let groups = deepAll('fieldset, [role="radiogroup"], [class*="radio-group"], [class*="RadioGroup"], [class*="ButtonGroup"], [class*="button-group"], [class*="question"], [class*="Question"]', 200)
       .filter(isVisible).slice(0, 120);
     // Innermost first so we answer the actual small choice group, not a wrapping container.
     const depth = el => { let d = 0; for (let n = el; n; n = n.parentElement) d++; return d; };
@@ -1389,9 +1408,29 @@
     if (/background check|drug (test|screen)|reference check|pre.?employment screen/.test(q)) return 'yes';
     return null;
   }
+  /* Every ATS renders a Yes/No as something different: a native radio with a
+     sibling <label>, a role="radio" div, a Spark <spl-radio> whose text lives in
+     its own shadow root, an Oracle <oj-radioset> option. Read all of them, or the
+     option matcher sees an empty label and falls back to "first option". */
   function choiceLabel(r) {
-    return (getLabel(r) || r.value || (r.nextElementSibling && r.nextElementSibling.textContent) || (r.closest('label') && r.closest('label').textContent) || '').trim().toLowerCase();
+    let out = '';
+    try {
+      out = getLabel(r) || '';
+      if (!out) out = (r.getAttribute && (r.getAttribute('aria-label') || r.getAttribute('label'))) || '';
+      if (!out && r.shadowRoot) out = (r.shadowRoot.textContent || '').trim();
+      if (!out) out = (r.value || '');
+      if (!out && r.nextElementSibling) out = r.nextElementSibling.textContent || '';
+      if (!out && r.closest && r.closest('label')) out = r.closest('label').textContent || '';
+      if (!out) out = (r.textContent || '');
+    } catch (_) {}
+    return String(out).replace(/\s+/g, ' ').trim().toLowerCase();
   }
+  // Checked-state for any of those renderings.
+  function choiceChecked(r) { return checkboxChecked(r); }
+  /* Controls that can act as one option of a multiple-choice question, on every
+     component library the supported ATS use. */
+  const CHOICE_CONTROL_SEL = 'input[type=radio],[role="radio"],spl-radio,oj-radio,mat-radio-button,' +
+    'md-radio,sl-radio,ion-radio,vaadin-radio-button';
 
   // ── Semantic option matching ──────────────────────────────────────────────
   // Our knockout logic decides yes / no / decline. But real ATS options are often
@@ -1477,7 +1516,7 @@
     return null;
   }
 
-  function pickChoice(radios, want) {
+  async function pickChoice(radios, want) {
     // First: semantic mapping onto the real option wording.
     const labels = radios.map(choiceLabel);
     const idx = optionIndexForDecision(labels, want);
@@ -1492,8 +1531,12 @@
           : radios.find(isDecline) || radios.find(isNo);
     }
     if (!target) return false;
-    realClick(target);
-    if (!target.checked) { try { target.checked = true; } catch (_) {} target.dispatchEvent(new Event('input', { bubbles: true })); target.dispatchEvent(new Event('change', { bubbles: true })); }
+    // A plain .click() is ignored by Spark/JET/Material radios, so run the same
+    // escalating strategy the consent boxes use (inner input → click → full
+    // pointer sequence → label → Space → native set). Fire-and-forget: callers of
+    // pickChoice are synchronous, and the state check below covers the fast paths.
+    commitChoice(target);
+    if (!choiceChecked(target)) { try { await setCheckboxChecked(target); } catch (_) {} }
     return true;
   }
   // Questions we've already decided an answer for, keyed by normalized question TEXT
@@ -1509,23 +1552,27 @@
   async function answerChoiceGroups() {
     let n = 0;
     const groups = new Map();
-    for (const r of deepAll('input[type=radio],[role="radio"]').filter(isVisible)) {
+    for (const r of deepAll(CHOICE_CONTROL_SEL).filter(isVisible)) {
       // Group by (in order of preference): native radio name, the closest shared
       // question/fieldset container, or the immediate parent element. We deliberately
       // never fall back to the radio ITSELF as a key — that split a single Yes/No
       // pair (two radios with no name/container in common) into two bogus 1-radio
       // "groups", which could answer/read the wrong one.
-      const key = r.name || r.closest('fieldset,[role=group],.form-group,.field,.question,li') || r.parentElement || r;
+      let key = null;
+      try { key = r.name || (r.getAttribute && r.getAttribute('name')) || null; } catch (_) {}
+      if (!key) { try { key = r.closest('fieldset,[role=radiogroup],[role=group],.form-group,.field,.question,li'); } catch (_) {} }
+      if (!key) key = r.parentElement || r;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(r);
     }
     for (const radios of groups.values()) {
-      const fs = radios[0].closest('fieldset,[role=group],.question,[class*="question" i],.form-group,.field,li');
+      let fs = null;
+      try { fs = radios[0].closest('fieldset,[role=radiogroup],[role=group],.question,[class*="question" i],.form-group,.field,li'); } catch (_) {}
       let q = '';
       if (fs) { const lab = fs.querySelector('legend,label,[class*="label" i],[class*="title" i],[class*="question" i]'); q = (lab && lab.textContent) || fs.textContent || ''; }
       if (!q) q = getLabel(radios[0]) || '';
       const nq = normalizeQ(q);
-      if (radios.some(r => r.checked || r.getAttribute('aria-checked') === 'true')) { _choiceAnsweredAt.set(nq, Date.now()); continue; } // already answered
+      if (radios.some(choiceChecked)) { _choiceAnsweredAt.set(nq, Date.now()); continue; } // already answered
       // Skip if we already attempted this exact question recently — stops an
       // infinite re-click loop on ATS forms that keep resetting the radio state.
       const lastTry = _choiceAnsweredAt.get(nq);
@@ -1544,17 +1591,271 @@
       const want = chooseChoiceAnswer(q);
       if (!want) continue;
       _choiceAnsweredAt.set(nq, Date.now());
-      if (pickChoice(radios, want)) { n++; await sleep(120); }
+      if (await pickChoice(radios, want)) { n++; await sleep(120); }
     }
     if (n) LOG(`Workaround: answered ${n} choice group(s) Jobright left blank (sponsorship/auth/EEO)`);
     return n;
   }
 
+  /* ── UNIVERSAL QUESTION COVERAGE (every ATS) ───────────────────────────────
+     Three defects were platform-independent, even though each was reported on
+     one site:
+
+       1. STALE STEP. A single-page ATS swaps its questions in place. Waiting a
+          flat 2.8s after "Next" and then reading the DOM meant we filled — and
+          reported on — the step we had just left (SmartRecruiters /screening
+          was the reproducer; Workday, Oracle, Greenhouse and Ashby all do the
+          same thing). Nothing may be read until the question set has actually
+          changed AND stopped moving.
+       2. DEPENDENT QUESTIONS. A question that only renders once its parent is
+          answered ("If you selected Yes, would you consider relocating at your
+          own expense?") was never seen, because no pass ever looked again after
+          answering something.
+       3. DECLARATION BOXES. "You declare that you have read and understand the
+          privacy notice of ..." is a custom element on half the platforms, so
+          `input[type=checkbox]` never matched it and the step came back with
+          "Value is required".
+
+     All three are handled here once, and every driver goes through it. */
+
+  /* Every control that can carry an answer, across native HTML and the web
+     component sets the major ATS ship — Spark (spl-*, SmartRecruiters), Oracle
+     JET (oj-*), Angular Material, Material Web, Shoelace, Ionic, Vaadin.
+     Deliberately broad: a control we don't recognise is a question we silently
+     skip, which is exactly the failure mode being fixed. */
+  const QUESTION_CONTROL_SEL = [
+    'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset])',
+    'select', 'textarea', '[contenteditable="true"]',
+    '[role="radio"]', '[role="checkbox"]', '[role="combobox"]', '[role="listbox"]',
+    '[role="switch"]', '[role="spinbutton"]', '[role="textbox"]',
+    'spl-input', 'spl-select', 'spl-radio', 'spl-checkbox', 'spl-textarea', 'spl-date-input',
+    'oj-input-text', 'oj-text-area', 'oj-select-single', 'oj-select-one', 'oj-combobox-one',
+    'oj-radioset', 'oj-checkboxset', 'oj-input-date',
+    'mat-select', 'mat-checkbox', 'mat-radio-button', 'mat-slide-toggle',
+    'md-outlined-select', 'md-filled-select', 'md-checkbox', 'md-radio',
+    'sl-select', 'sl-checkbox', 'sl-radio', 'sl-switch',
+    'ion-select', 'ion-checkbox', 'ion-radio', 'ion-toggle',
+    'vaadin-combo-box', 'vaadin-checkbox', 'vaadin-radio-button', 'vaadin-select',
+  ].join(',');
+
+  function questionControls(cap) {
+    try { return deepAll(QUESTION_CONTROL_SEL, cap || 400).filter(isVisible); }
+    catch (_) { return []; }
+  }
+
+  /* A fingerprint of WHICH questions are on screen — never of their values, so
+     filling a field does not look like a new step, while a step swap or a newly
+     revealed sub-question always does. Built on deepAll, so it sees inside
+     shadow roots and same-origin frames (the old getPageHash used a plain
+     document query and was therefore IDENTICAL on every SmartRecruiters and
+     Oracle step, which is what let the loop fill the previous step twice). */
+  function stepSignature() {
+    let bits = [];
+    try {
+      bits = questionControls(400).map((el) => {
+        const tag = (el.tagName || '').toLowerCase();
+        let key = '';
+        try { key = (el.getAttribute('name') || el.getAttribute('id') || '').trim(); } catch (_) {}
+        if (!key) key = (getLabel(el) || '').replace(/\s+/g, ' ').trim().slice(0, 48);
+        return tag + '|' + key;
+      });
+    } catch (_) {}
+    let where = '';
+    try { where = location.origin + location.pathname + location.search; } catch (_) {}
+    return where + '::' + bits.length + '::' + bits.join('~').slice(0, 1800);
+  }
+
+  /* Wait until the page is genuinely showing a DIFFERENT set of questions, and
+     then until that set stops moving. Returns false when the step never changed
+     — the caller then knows something is blocking it (a validation error, a
+     missed required field) rather than cheerfully re-filling the old step.
+     Runs inside withBusy so the stall watchdog does not count a legitimate
+     page transition as a stuck job. */
+  async function waitForStepChange(previousSignature, maxMs) {
+    return withBusy('waiting for the next step', async () => {
+      const limit = maxMs || 15000;
+      const start = Date.now();
+      let seen = previousSignature;
+      let settledAt = 0;
+      while (Date.now() - start < limit) {
+        await sleep(300);
+        const now = stepSignature();
+        if (now === previousSignature) { seen = now; settledAt = 0; continue; }
+        if (now !== seen) { seen = now; settledAt = Date.now(); continue; }   // still rendering
+        if (!settledAt) settledAt = Date.now();
+        if (Date.now() - settledAt >= 700) { noteProgress('next step rendered'); return true; }
+      }
+      return stepSignature() !== previousSignature;
+    });
+  }
+
+  /* ── declaration / consent boxes on every platform ────────────────────────── */
+  const CONSENT_CONTROL_SEL = 'input[type=checkbox],[role="checkbox"],[role="switch"],spl-checkbox,' +
+    'oj-checkboxset,mat-checkbox,mat-slide-toggle,md-checkbox,sl-checkbox,sl-switch,ion-checkbox,' +
+    'ion-toggle,vaadin-checkbox';
+
+  /* Wording seen across ATS consent / declaration boxes. Wide on purpose: the
+     old list (consent|agree|privacy|gdpr|terms|data process|acknowledg) missed
+     "You DECLARE that you have READ and UNDERSTAND the privacy NOTICE of ...",
+     which is how a 100%-filled form still failed with "Value is required". */
+  const CONSENT_TEXT_RE = /\b(consent|agree|agreed|agreement|accept|accepted|privacy|policy|notice|statement|gdpr|ccpa|terms|conditions|data.?(process|processing|protection|transfer|retention)|acknowledg\w*|declar\w*|certif\w*|confirm\w*|attest\w*|affirm\w*|understand\w*|authoris\w*|authoriz\w*|permission|disclaimer|disclosure|e-?sign\w*|electronic signature|have read|read and|true and (complete|accurate)|to the best of my knowledge)\b/i;
+
+  /* Text that means the form is currently REFUSING to advance because of this
+     control — the "Value is required" under the unticked declaration box. */
+  const REQUIRED_ERROR_RE = /\b(value is required|is required|required field|this field is required|please (select|choose|check|tick|accept|agree|confirm|answer|complete|provide)|must be (selected|checked|accepted|answered|provided)|cannot be (blank|empty)|mandatory|field is mandatory)\b/i;
+
+  /* Never auto-tick these, however "required" the markup claims to be. */
+  const MARKETING_TEXT_RE = /\b(market\w*|newsletter|promotion\w*|job.?alert\w*|subscribe|subscription|keep me (updated|informed|posted)|notify me|email me about|similar (jobs|roles|opportunities)|talent (community|network|pool)|future (job )?opportunities)\b/i;
+
+  /* The native <input> a web-component checkbox wraps, wherever it hides it. */
+  function innerNative(el, sel) {
+    try {
+      if (el.matches && el.matches(sel)) return el;
+      if (el.shadowRoot) { const s = el.shadowRoot.querySelector(sel); if (s) return s; }
+      if (el.querySelector) { const q = el.querySelector(sel); if (q) return q; }
+    } catch (_) {}
+    return null;
+  }
+
+  function checkboxChecked(el) {
+    try {
+      const native = innerNative(el, 'input[type=checkbox],input[type=radio]');
+      if (native && typeof native.checked === 'boolean') return native.checked;
+      if (typeof el.checked === 'boolean') return el.checked;
+      const aria = el.getAttribute && el.getAttribute('aria-checked');
+      if (aria === 'true') return true;
+      if (aria === 'false') return false;
+      if (el.hasAttribute && el.hasAttribute('checked')) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  /* Everything readable about a control: its own label, its question container,
+     and — for a web component — the text inside its shadow root, which is where
+     SmartRecruiters keeps the declaration sentence. */
+  function controlText(el) {
+    const bits = [];
+    try { bits.push(el.getAttribute && (el.getAttribute('aria-label') || '')); } catch (_) {}
+    try { bits.push(getLabel(el) || ''); } catch (_) {}
+    try { bits.push(getFullQuestionText(el) || ''); } catch (_) {}
+    try {
+      const host = el.closest && el.closest('label,.field,.question,[class*="checkbox" i],[class*="consent" i],[class*="declaration" i],li,fieldset');
+      if (host) bits.push(host.innerText || host.textContent || '');
+    } catch (_) {}
+    try { if (el.shadowRoot) bits.push(el.shadowRoot.textContent || ''); } catch (_) {}
+    return bits.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 600);
+  }
+
+  /* A web-component checkbox ignores .click() on the host, and several ignore it
+     on the inner input too. Try the ways that actually work, cheapest first, and
+     stop the moment the control reports itself checked. */
+  async function setCheckboxChecked(cb) {
+    const attempts = [
+      () => { const i = innerNative(cb, 'input[type=checkbox],input[type=radio]'); if (i && i !== cb) realClick(i); },
+      () => realClick(cb),
+      () => triggerMouse(cb),
+      () => {
+        let lbl = null;
+        try {
+          const scope = ownerScope(cb);
+          if (cb.id && scope.querySelector) lbl = scope.querySelector(`label[for="${CSS.escape(cb.id)}"]`);
+          if (!lbl && cb.closest) lbl = cb.closest('label');
+          if (!lbl && cb.shadowRoot) lbl = cb.shadowRoot.querySelector('label');
+        } catch (_) {}
+        if (lbl) realClick(lbl);
+      },
+      () => {
+        try {
+          cb.focus({ preventScroll: true });
+          for (const type of ['keydown', 'keyup'])
+            cb.dispatchEvent(new KeyboardEvent(type, { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true }));
+        } catch (_) {}
+      },
+      () => {
+        // Last resort: set the native input and tell the framework about it.
+        const i = innerNative(cb, 'input[type=checkbox],input[type=radio]') || cb;
+        try {
+          i.checked = true;
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+          i.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (_) {}
+        try { if (cb.setAttribute) { cb.setAttribute('checked', ''); cb.setAttribute('aria-checked', 'true'); } } catch (_) {}
+      },
+    ];
+    for (const attempt of attempts) {
+      try { attempt(); } catch (_) {}
+      await sleep(110);
+      if (checkboxChecked(cb)) return true;
+    }
+    return checkboxChecked(cb);
+  }
+
+  /* Tick every declaration/consent box the form needs, on any ATS, whether it is
+     a native checkbox or a web component — and never a marketing opt-in. */
+  async function tickConsentBoxes() {
+    let n = 0;
+    for (const cb of deepAll(CONSENT_CONTROL_SEL, 150).filter(isVisible)) {
+      if (checkboxChecked(cb)) continue;
+      const txt = controlText(cb);
+      let required = false;
+      try { required = isFieldRequired(cb); } catch (_) {}
+      if (!required) required = REQUIRED_ERROR_RE.test(txt);
+      const consent = CONSENT_TEXT_RE.test(txt);
+      if (!required && !consent) continue;                       // nothing says we must
+      if (MARKETING_TEXT_RE.test(txt)) continue;                 // never opt the user in
+      try { if (isMarketingCheckbox(cb)) continue; } catch (_) {}
+      if (await setCheckboxChecked(cb)) {
+        n++;
+        noteProgress('accepted a required declaration');
+        await sleep(120);
+      } else {
+        LOG('Could not tick a required declaration box: ' + txt.slice(0, 80));
+      }
+    }
+    if (n) LOG(`Ticked ${n} required consent/declaration box(es)`);
+    return n;
+  }
+
+  /* Answer what is on screen, then LOOK AGAIN. A Yes on one question routinely
+     reveals another, and until now nothing went back for it — which is how a
+     form could report every required field filled while an unanswered
+     sub-question sat underneath the one that revealed it. Repeats until the set
+     of visible questions stops changing, which is also what terminates it. */
+  async function resolveDependentQuestions__impl(maxRounds) {
+    const rounds = maxRounds || 5;
+    let total = 0;
+    let lastSig = '';
+    for (let round = 1; round <= rounds; round++) {
+      if (autoStopped()) break;
+      const before = stepSignature();
+      let did = 0;
+      let p = null;
+      try { p = await getProfile(); } catch (_) {}
+      try { did += (await answerChoiceGroups()) || 0; } catch (e) { LOG('choice pass error:', e?.message || e); }
+      try { if (p) did += answerButtonStyleQuestions(p) || 0; } catch (e) { LOG('button-question pass error:', e?.message || e); }
+      try { if (p) did += (await fillCustomDropdowns(p)) || 0; } catch (e) { LOG('dropdown pass error:', e?.message || e); }
+      try { did += (await tickConsentBoxes()) || 0; } catch (e) { LOG('consent pass error:', e?.message || e); }
+      total += did;
+      // Give the framework a beat to render whatever those answers unlocked.
+      await sleep(400);
+      await waitForFormStable(1500);
+      const after = stepSignature();
+      if (did) noteProgress(`answered ${did} question(s)`);
+      if (after === before && !did) break;                       // nothing new, nothing answered
+      if (after === lastSig && !did) break;                      // oscillating without progress
+      if (after !== before) LOG(`Follow-up questions appeared (round ${round}) — answering those too`);
+      lastSig = before;
+    }
+    return total;
+  }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function resolveDependentQuestions(...a) { return withBusy('answering follow-up questions', () => resolveDependentQuestions__impl(...a)); }
+
   // FULL-AUTO GUARANTOR: ensure no required field is left blank so the form is always submittable
   // and the queue never waits on a human. Runs location commit first, then a best-effort sweep.
-  async function guaranteeRequiredFields__impl() {
+  async function guaranteeRequiredFieldsPass() {
     await resolveLocationFields();
-    await answerChoiceGroups();
+    await resolveDependentQuestions();
     const p = await getProfile();
     const required = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
       .filter(el => isVisible(el) && isFieldRequired(el) && !hasFieldValue(el));
@@ -1599,6 +1900,26 @@
       if (val) { el.focus({ preventScroll: true }); await sleep(60); nativeSet(el, val); el.dispatchEvent(new Event('change', { bubbles: true })); fixed++; await sleep(120); }
     }
     if (fixed) LOG(`Guarantor filled ${fixed} still-required field(s)`);
+    return fixed;
+  }
+
+  /* Answering a required field can reveal MORE required fields (conditional
+     sub-questions, "other — please specify" boxes, follow-up disclosures). One
+     pass therefore isn't enough: repeat until the question set stops changing,
+     re-running the general fill each time new controls appear so newly revealed
+     text boxes and dropdowns get answered too. Bounded, and it exits on the
+     first round that reveals nothing. */
+  async function guaranteeRequiredFields__impl() {
+    let fixed = 0;
+    for (let round = 1; round <= 3; round++) {
+      const before = stepSignature();
+      fixed += (await guaranteeRequiredFieldsPass()) || 0;
+      await sleep(350);
+      if (stepSignature() === before) break;
+      LOG(`Answering revealed more questions (round ${round}) — filling those too`);
+      noteProgress('answering revealed questions');
+      try { await fallbackFill__impl(); } catch (e) { LOG('follow-up fill error:', e?.message || e); }
+    }
     return fixed;
   }
   // Stall watchdog stands down while this runs — see withBusy.
@@ -1761,6 +2082,38 @@
      open shadow root, so a plain document.querySelector('#firstName') finds
      nothing — which is why autofill "did nothing" on that ATS. These walk into
      every open shadow root. Depth- and node-bounded so they stay cheap. */
+  /* The extension's OWN interface must never be mistaken for the page.
+     Jobright's sidebar is a plasmo-csui shadow root containing a full copy of
+     your profile (first name, last name, email, city…) and its own green
+     "Submit Application" button. Because deepQueryAll walks every open shadow
+     root, all of that was being enumerated as if it were the ATS form:
+
+       • the fill report counted sidebar inputs, so it read the values from the
+         PREVIOUS step and reported 100% while the real questions sat empty;
+       • findSubmitControl could pick Jobright's "Submit Application" instead of
+         the ATS's own Next/Submit;
+       • the dropdown and validation passes worked on sidebar controls.
+
+     One predicate, applied at the single point every deep query goes through. */
+  const OWN_UI_SEL = 'plasmo-csui,[id^="plasmo-"],[data-plasmo],#jobright-helper-id,' +
+    '.jobright-helper-content-container,#ua-ctrl,#ua-drawer,#ua-captcha-banner,' +
+    '[id^="ua-"],[class^="ua-"],#ua-dual-action-buttons';
+  function isOwnUi(el) {
+    let node = el;
+    for (let hop = 0; node && hop < 14; hop++) {
+      try { if (node.closest && node.closest(OWN_UI_SEL)) return true; } catch (_) {}
+      const root = node.getRootNode && node.getRootNode();
+      const host = root && root.host;
+      if (host) {
+        try {
+          const tag = (host.tagName || '').toLowerCase();
+          if (tag === 'plasmo-csui' || tag.startsWith('ua-') || /plasmo|jobright/i.test(host.id || '')) return true;
+        } catch (_) {}
+      }
+      node = host || null;                              // step out of the shadow root
+    }
+    return false;
+  }
   function deepQueryAll(sel, root, limit) {
     const out = [];
     const cap = limit || 400;
@@ -1769,8 +2122,19 @@
     while (stack.length && out.length < cap && guard++ < 20000) {
       const node = stack.pop();
       if (!node || !node.querySelectorAll) continue;
-      try { for (const el of node.querySelectorAll(sel)) { out.push(el); if (out.length >= cap) break; } } catch (_) {}
-      try { for (const el of node.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot); } catch (_) {}
+      try {
+        for (const el of node.querySelectorAll(sel)) {
+          if (isOwnUi(el)) continue;                    // our own UI is not the page
+          out.push(el);
+          if (out.length >= cap) break;
+        }
+      } catch (_) {}
+      try {
+        for (const el of node.querySelectorAll('*')) {
+          // Don't even descend into the extension's own shadow trees.
+          if (el.shadowRoot && !isOwnUi(el)) stack.push(el.shadowRoot);
+        }
+      } catch (_) {}
     }
     return out;
   }
@@ -2405,10 +2769,15 @@
     // Button-style questions (Ashby, Kraken, etc.)
     filled += answerButtonStyleQuestions(p);
 
-    // Required checkboxes
-    deepAll('input[type=checkbox][required],input[type=checkbox][aria-required="true"]')
-      .filter(el => isVisible(el) && !el.checked)
-      .forEach(cb => { realClick(cb); filled++; });
+    // Required checkboxes and declaration/consent boxes — native OR web component.
+    // The old pass matched `input[type=checkbox][required]` only, so a Spark
+    // `spl-checkbox` declaration ("You declare that you have read and understand
+    // the privacy notice of ...") was never ticked and the step was rejected with
+    // "Value is required" while every other field read as filled.
+    try { filled += await tickConsentBoxes(); } catch (e) { LOG('Consent pass error:', e?.message || e); }
+
+    // Anything those answers just revealed (conditional sub-questions).
+    try { filled += await resolveDependentQuestions__impl(3); } catch (e) { LOG('Dependent question pass error:', e?.message || e); }
 
     // Date fields — try to fill with reasonable defaults
     const dateInputs = deepAll('input[type=date]').filter(el => isVisible(el) && !el.value);
@@ -3060,6 +3429,35 @@
       const lbl = getLabel(el) || el.name || el.id || 'Required field';
       if (!missing.includes(lbl)) missing.push(lbl);
     }
+    // Web-component questions (Spark spl-radio, Oracle oj-radioset, Material,
+    // role="radio"/role="checkbox" widgets) are not <input>s, so none of the above
+    // saw them. An unanswered one still blocks the step — and being invisible here
+    // is why the loop concluded "nothing left to fix" and gave up on a form that
+    // very much still had something to fix.
+    try {
+      const seenGroups = new Set();
+      for (const r of deepAll(CHOICE_CONTROL_SEL, 200).filter(isVisible)) {
+        if (r.tagName === 'INPUT') continue;                       // already counted above
+        let group = null;
+        try { group = r.closest('fieldset,[role=radiogroup],[role=group],.question,.field,li'); } catch (_) {}
+        const key = group || r.parentElement || r;
+        if (seenGroups.has(key)) continue;
+        seenGroups.add(key);
+        const options = group ? deepQueryAll(CHOICE_CONTROL_SEL, group) : [r];
+        if (options.some(choiceChecked)) continue;
+        const lbl = (getFullQuestionText(r) || getLabel(r) || 'Required question').replace(/\s+/g, ' ').trim().slice(0, 120);
+        if (lbl && !missing.includes(lbl)) missing.push(lbl);
+      }
+      for (const cb of deepAll(CONSENT_CONTROL_SEL, 100).filter(isVisible)) {
+        if (cb.tagName === 'INPUT') continue;
+        if (checkboxChecked(cb)) continue;
+        const txt = controlText(cb);
+        if (!isFieldRequired(cb) && !REQUIRED_ERROR_RE.test(txt)) continue;
+        if (MARKETING_TEXT_RE.test(txt)) continue;
+        const lbl = txt.slice(0, 120) || 'Required declaration';
+        if (!missing.includes(lbl)) missing.push(lbl);
+      }
+    } catch (_) {}
     return missing;
   }
 
@@ -3148,6 +3546,8 @@
     // Second pass
     await fallbackFill();
     await sleep(500);
+    // Conditional sub-questions + declaration boxes + anything still required.
+    await guaranteeRequiredFields();
     // Fix any validation errors
     await handleValidationErrors();
     await sleep(500);
@@ -3223,10 +3623,14 @@
       await sleep(1000);
       await fallbackFill();
       await sleep(500);
+      // Conditional sub-questions, declaration boxes and anything still required —
+      // this is also what re-scans after an answer reveals a follow-up question.
+      await guaranteeRequiredFields();
       await handleValidationErrors();
       await sleep(300);
 
       // Submit or next
+      const beforeAction = getPageHash();
       const action = await autoSubmitOrNext();
       if (action === 'submitted') {
         LOG('Submitted on page ' + page);
@@ -3237,7 +3641,11 @@
         continue;
       } else if (action === 'next_page') {
         LOG('Next page clicked on page ' + page);
-        await sleep(3000);
+        // Wait for the NEXT step's questions to render before looping round.
+        // A flat 3s sleep meant the top of the loop frequently re-read the step
+        // we had just left, re-filled it, and burned a page of the budget.
+        if (!(await waitForStepChange(beforeAction, 15000)))
+          LOG('Page did not advance after Next — will re-check what is blocking it');
         continue;
       } else {
         // No submit/next found — re-fill once and retry; only stop if still nothing.
@@ -3255,11 +3663,13 @@
   }
 
   // Generate a hash of the current page state to detect page changes
-  function getPageHash() {
-    const fields = $$('input:not([type=hidden]),textarea,select').filter(isVisible);
-    const labels = fields.map(f => getLabel(f)).join('|');
-    return location.href + '::' + fields.length + '::' + labels.slice(0, 200);
-  }
+  /* The step fingerprint the multi-page loop compares against. This used to be a
+     plain `document.querySelectorAll` — blind to shadow roots — so on every web
+     component ATS (SmartRecruiters, Oracle JET, Workday's newer steps) it read
+     the SAME hash on every step and the loop believed the page had not advanced.
+     stepSignature walks shadow roots and same-origin frames, and excludes our own
+     sidebar, so a genuine step change is now visible. */
+  function getPageHash() { return stepSignature(); }
 
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
   async function directAutofillFlow() {
@@ -3270,6 +3680,9 @@
     await sleep(1000);
     await fallbackFill();
     await sleep(1000);
+    // Conditional sub-questions + declaration boxes + anything still required.
+    await guaranteeRequiredFields();
+    await handleValidationErrors();
     await autoSubmitOrNext();
     await sleep(2000);
     // Remaining pages are driven by the dispatcher's universal multi-page driver.
@@ -8720,6 +9133,11 @@
     for (let step = 1; step <= MAX_STEPS; step++) {
       if (checkSuccess()) { LOG('SmartRecruiters: submission confirmed'); break; }
       await resolveBlockingDialog();
+      // SmartRecruiters swaps the whole question set in place. Reading before the
+      // new step has rendered is what made the fill report describe the PREVIOUS
+      // page's fields while the real ones sat empty.
+      await waitForFormStable(3000);
+      const stepSig = stepSignature();
       LOG(`SmartRecruiters: step ${step}`);
 
       // Named fields, shadow-aware.
@@ -8798,8 +9216,22 @@
         await resolveBlockingDialog();
         break;
       }
-      const next = buttons.find(b => /^\s*(next|continue|save (and|&) continue|review)\b/i.test(nameOf(b)));
-      if (next) { LOG('SmartRecruiters: next step'); realClick(next); await sleep(2800); continue; }
+      const next = buttons.find(b => /^\s*(next|continue|save (and|&) continue|proceed|review)\b/i.test(nameOf(b)));
+      if (next) {
+        LOG('SmartRecruiters: next step');
+        realClick(next);
+        // Wait for the questions to actually change instead of a flat sleep — a
+        // fixed delay either read the old step (too short) or wasted time (too
+        // long), and told us nothing when the step refused to advance.
+        const moved = await waitForStepChange(stepSig, 15000);
+        if (!moved) {
+          LOG('SmartRecruiters: step did not advance — fixing what is blocking it');
+          await resolveBlockingDialog();
+          await handleValidationErrors();
+          await guaranteeRequiredFields();
+        }
+        continue;
+      }
       break;
     }
     learnFromFilledFields();
@@ -8840,6 +9272,9 @@
       if (checkSuccess()) break;
       await resolveBlockingDialog();
       await waitForFormStable(2500);
+      // Read the step that is on screen NOW — Oracle JET and ADP CX both swap the
+      // question set in place, so a flat sleep left us filling the previous one.
+      const stepSig = stepSignature();
       await triggerAutofillQuick();
       await fallbackFill();
       await guaranteeRequiredFields();
@@ -8847,7 +9282,7 @@
 
       const r = await autoSubmitOrNext();
       if (r === 'submitted') { await sleep(3000); break; }
-      if (r === 'next_page') { await sleep(2500); continue; }
+      if (r === 'next_page') { await waitForStepChange(stepSig, 15000); continue; }
 
       // Oracle's own wording, when the generic pass found nothing to click.
       const sub = findSubmitControl();
@@ -8887,6 +9322,9 @@
       if (checkSuccess()) break;
       await resolveBlockingDialog();
       await waitForFormStable(2500);
+      // Read the step that is on screen NOW — Oracle JET and ADP CX both swap the
+      // question set in place, so a flat sleep left us filling the previous one.
+      const stepSig = stepSignature();
       await triggerAutofillQuick();
       await fallbackFill();
       await guaranteeRequiredFields();
@@ -8894,7 +9332,7 @@
 
       const r = await autoSubmitOrNext();
       if (r === 'submitted') { await sleep(3000); break; }
-      if (r === 'next_page') { await sleep(2500); continue; }
+      if (r === 'next_page') { await waitForStepChange(stepSig, 15000); continue; }
 
       const sub = findSubmitControl();
       if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }

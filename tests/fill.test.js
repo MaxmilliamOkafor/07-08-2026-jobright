@@ -43,7 +43,7 @@ console.log('universal fillers see shadow DOM + frames');
 const UNIVERSAL = [
   'fallbackFill',            // fills everything the ATS driver missed
   'getMissingRequired',      // decides whether the form is complete
-  'guaranteeRequiredFields', // last-resort filler before submit
+  'guaranteeRequiredFieldsPass', // the required-field sweep itself
   'handleValidationErrors',  // reads the site's own complaints
   'hasApplicationForm',      // decides "is there a form here at all"
   'analyzeCurrentForm',
@@ -213,6 +213,166 @@ eq('dropped text (a pasted URL list) is imported too',
   /getData\('text\/uri-list'\) \|\| dt\.getData\('text\/plain'\)/.test(src), true);
 eq('multiple files at once', /multiple style="display:none"/.test(src), true);
 eq('the file picker also handles multi-select', /const files = \[\.\.\.e\.target\.files\];/.test(src), true);
+
+/* ── 12. the step that is on screen, not the one we just left ─────────────── */
+/* An ATS that swaps its questions in place looks identical to one that hasn't
+   moved yet, unless you actually compare the QUESTION SET. Waiting a flat 2.8s
+   after Next and then reading the DOM is how the fill report came to describe
+   the previous step's fields while the real ones sat empty. */
+console.log('SPA step changes are waited for, not slept through');
+const stepSig = body('stepSignature');
+eq('stepSignature exists and enumerates deeply', /deepAll\(|questionControls\(/.test(stepSig), true);
+eq('stepSignature uses no blind document query', (stepSig.match(/(?<![\w$])\$\$?\(/g) || []).length, 0);
+eq('stepSignature fingerprints WHICH questions, never their values — otherwise typing looks like a new step',
+  /\.value/.test(stepSig), false);
+eq('it counts the controls and names them', /bits\.length/.test(stepSig) && /getAttribute\('name'\)/.test(stepSig), true);
+
+const wsc = body('waitForStepChange');
+eq('waitForStepChange returns false when the step never changed',
+  /return stepSignature\(\) !== previousSignature;/.test(wsc), true);
+eq('it also waits for the new step to settle before reporting it', /settledAt/.test(wsc), true);
+eq('a legitimate page transition does not trip the stall watchdog',
+  /withBusy\('waiting for the next step'/.test(wsc), true);
+eq('it is bounded', /Date\.now\(\) - start < limit/.test(wsc), true);
+
+eq('the multi-page loop compares question sets, not a blind document query',
+  /function getPageHash\(\) \{ return stepSignature\(\); \}/.test(src), true);
+const srcSR = src.slice(src.lastIndexOf('async function smartRecruitersAutomation'));
+eq('SmartRecruiters waits for the next step instead of sleeping 2.8s',
+  /await waitForStepChange\(stepSig, 15000\)/.test(srcSR), true);
+eq('the old flat sleep after Next is gone',
+  /realClick\(next\); await sleep\(2800\)/.test(src), false);
+eq('a step that refuses to advance is diagnosed, not re-filled blindly',
+  /step did not advance — fixing what is blocking it/.test(srcSR), true);
+eq('the multi-page loop waits for the next step too',
+  /await waitForStepChange\(beforeAction, 15000\)/.test(body('multiPageLoop')), true);
+
+/* ── 13. questions that only appear once their parent is answered ──────────── */
+/* "If applicable, would you consider relocating…?" → Yes reveals "…would you
+   consider relocating at your own expense?". Nothing re-scanned after an answer,
+   so the revealed question was never seen and the form read as 100% complete. */
+console.log('conditional sub-questions are picked up');
+const dep = body('resolveDependentQuestions');
+eq('it answers, then looks again', /const before = stepSignature\(\)/.test(dep) && /const after = stepSignature\(\)/.test(dep), true);
+eq('a round covers choices, dropdowns and declarations',
+  /answerChoiceGroups\(\)/.test(dep) && /fillCustomDropdowns\(p\)/.test(dep) && /tickConsentBoxes\(\)/.test(dep), true);
+eq('it gives the framework time to render what an answer unlocked',
+  /waitForFormStable\(/.test(dep), true);
+eq('it stops when nothing new appeared and nothing was answered',
+  /if \(after === before && !did\) break;/.test(dep), true);
+eq('it cannot loop forever', /round <= rounds/.test(dep) && /const rounds = maxRounds \|\| 5;/.test(dep), true);
+eq('turning the automation off stops it mid-loop', /if \(autoStopped\(\)\) break;/.test(dep), true);
+
+const grf = body('guaranteeRequiredFields');
+eq('the guarantor re-scans after answering, it is not a single pass',
+  /for \(let round = 1; round <= 3; round\+\+\)/.test(grf), true);
+eq('it exits as soon as a round reveals nothing',
+  /if \(stepSignature\(\) === before\) break;/.test(grf), true);
+eq('newly revealed text boxes and dropdowns get filled too',
+  /await fallbackFill__impl\(\)/.test(grf), true);
+eq('the general fill also chases dependent questions',
+  /resolveDependentQuestions__impl\(3\)/.test(body('fallbackFill')), true);
+
+/* ── 14. declaration / consent boxes on every platform ─────────────────────── */
+/* "You declare that you have read and understand the privacy notice of X. *
+   Value is required" — a Spark <spl-checkbox>, so input[type=checkbox] never
+   matched it and the step was rejected while everything else read as filled. */
+console.log('required declarations are ticked on every ATS');
+const reOf = (name) => {
+  const m = src.match(new RegExp('const ' + name + '\\s*=\\s*(/[\\s\\S]*?/[gimsuy]*);\\n'));
+  if (!m) throw new Error('regex not found: ' + name);
+  return new Function('return ' + m[1])();
+};
+const CONSENT = reOf('CONSENT_TEXT_RE');
+const MARKETING = reOf('MARKETING_TEXT_RE');
+const REQERR = reOf('REQUIRED_ERROR_RE');
+
+for (const [text, want] of [
+  ['You declare that you have read and understand the privacy notice of ServiceNow.', true],
+  ['I acknowledge that I have read the privacy policy', true],
+  ['I agree to the terms and conditions', true],
+  ['I consent to the processing of my personal data', true],
+  ['I certify that the information provided is true and complete', true],
+  ['I confirm the above is accurate to the best of my knowledge', true],
+  ['I accept the candidate privacy statement', true],
+  ['By checking this box you provide your electronic signature', true],
+  ['I authorize a background check', true],
+  ['I have read and understood the data protection notice', true],
+  ['I attest that I am legally authorized to work', true],
+  ['Upload a second document', false],
+  ['Is this your current address', false],
+]) eq(`consent wording: "${text.slice(0, 46)}…" → ${want}`, CONSENT.test(text), want);
+
+for (const [text, want] of [
+  ['Sign me up for job alerts', true],
+  ['Send me marketing emails about similar roles', true],
+  ['Join our talent community', true],
+  ['Subscribe to the newsletter', true],
+  ['You declare that you have read and understand the privacy notice', false],
+  ['I agree to the terms and conditions', false],
+]) eq(`marketing wording: "${text.slice(0, 40)}" → ${want ? 'never ticked' : 'tickable'}`, MARKETING.test(text), want);
+
+eq('"Value is required" is recognised as the form refusing to advance', REQERR.test('Value is required'), true);
+eq('so is "This field is required"', REQERR.test('This field is required'), true);
+eq('so is "Please accept the terms"', REQERR.test('Please accept the terms'), true);
+eq('ordinary help text is not', REQERR.test('Optional — add anything else here'), false);
+
+const consentSel = src.match(/const CONSENT_CONTROL_SEL = ([\s\S]*?);\n/)[1];
+for (const tag of ['spl-checkbox', 'oj-checkboxset', 'mat-checkbox', 'md-checkbox', 'sl-checkbox', 'ion-checkbox', '[role="checkbox"]'])
+  eq(`declaration boxes: ${tag} is looked for`, consentSel.includes(tag), true);
+
+const setCb = body('setCheckboxChecked');
+eq('a web-component checkbox gets more than a .click()',
+  (setCb.match(/\(\) => /g) || []).length >= 5, true);
+eq('every attempt is verified against the control itself',
+  /if \(checkboxChecked\(cb\)\) return true;/.test(setCb), true);
+eq('the native input inside the component is tried first',
+  /innerNative\(cb, 'input\[type=checkbox\],input\[type=radio\]'\)/.test(setCb), true);
+const tick = body('tickConsentBoxes');
+eq('a box already ticked is left alone', /if \(checkboxChecked\(cb\)\) continue;/.test(tick), true);
+eq('marketing opt-ins are never ticked', /MARKETING_TEXT_RE\.test\(txt\)\) continue;/.test(tick), true);
+eq('a box that could not be ticked is reported, not silently skipped',
+  /Could not tick a required declaration box/.test(tick), true);
+
+/* ── 15. multiple-choice questions on every component library ──────────────── */
+console.log('choice questions work on web components, not just <input type=radio>');
+const choiceSel = src.match(/const CHOICE_CONTROL_SEL = ([\s\S]*?);\n/)[1];
+for (const tag of ['input[type=radio]', '[role="radio"]', 'spl-radio', 'oj-radio', 'mat-radio-button', 'sl-radio', 'ion-radio'])
+  eq(`choice options: ${tag} is looked for`, choiceSel.includes(tag), true);
+eq('the choice answerer enumerates all of them',
+  /deepAll\(CHOICE_CONTROL_SEL\)/.test(body('answerChoiceGroups')), true);
+eq('"already answered" is read from the component, not just input.checked',
+  /radios\.some\(choiceChecked\)/.test(body('answerChoiceGroups')), true);
+const cl = body('choiceLabel');
+eq('an option label is read out of its shadow root when that is where it lives',
+  /r\.shadowRoot/.test(cl), true);
+const commit = body('commitChoice');
+eq('committing a choice escalates past .click()',
+  /realClick\(el\)/.test(commit) && /triggerMouse\(el\)/.test(commit), true);
+eq('it falls back to the associated label', /label\[for=/.test(commit), true);
+eq('and finally to the native input plus change events',
+  /innerNative\(el, 'input\[type=radio\],input\[type=checkbox\]'\)/.test(commit), true);
+eq('unanswered web-component questions count as missing required fields',
+  /deepAll\(CHOICE_CONTROL_SEL, 200\)/.test(body('getMissingRequired')), true);
+eq('so do unticked required declarations',
+  /deepAll\(CONSENT_CONTROL_SEL, 100\)/.test(body('getMissingRequired')), true);
+
+/* ── 16. every ATS goes through the universal passes ───────────────────────── */
+/* Per-ATS drivers only handle what is special about their platform. Everything
+   universal — dependent questions, declarations, still-required fields — has to
+   be reached whichever driver ran, or a fix only lands on the site it was
+   reported from. */
+console.log('the universal passes are reached from every driver');
+eq('the multi-page driver runs the guarantor on every page',
+  /await guaranteeRequiredFields\(\);/.test(body('multiPageLoop')), true);
+eq('the tailor-first flow runs it too', /await guaranteeRequiredFields\(\);/.test(body('tailorFirstFlow')), true);
+eq('so does the no-sidebar direct flow', /await guaranteeRequiredFields\(\);/.test(body('directAutofillFlow')), true);
+eq('and every driver ends in the multi-page driver',
+  /if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(src), true);
+eq('Oracle waits for its next step rather than sleeping',
+  (src.match(/if \(r === 'next_page'\) \{ await waitForStepChange\(stepSig, 15000\); continue; \}/g) || []).length, 2);
+eq('no driver still blind-sleeps 2.5s in place of a step change',
+  /if \(r === 'next_page'\) \{ await sleep\(2500\); continue; \}/.test(src), false);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

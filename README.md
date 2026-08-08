@@ -744,6 +744,124 @@ the supervisor, or died somewhere still unaccounted for.
 
 ---
 
+## v15.1 — the step on screen, follow-up questions, and declaration boxes
+
+Three separate reports, one build. All three were platform-independent even
+though each was hit on one site, so all three are fixed for every ATS.
+
+### 1. The autofill was reading the step it had just left
+
+`jobs.smartrecruiters.com/.../screening` reported *"6/6 required fields filled ·
+100%"* while every question on screen was empty — the values it listed belonged
+to the **previous** step.
+
+Two causes, both now removed:
+
+* **The step comparison was blind to shadow DOM.** `getPageHash()` — what the
+  multi-page loop uses to decide "did the page advance?" — was a plain
+  `document.querySelectorAll`. SmartRecruiters (Spark `spl-*`), Oracle (JET
+  `oj-*`) and Workday's newer steps put their fields inside shadow roots, so the
+  hash was **identical on every step**. The loop concluded nothing had changed
+  and re-filled the step it was already on.
+* **Advancing was a flat sleep.** `realClick(next); await sleep(2800)` — too
+  short and you read the old step, too long and you waste the job's budget, and
+  either way it tells you nothing when the step *refuses* to advance.
+
+Now there is a real fingerprint of **which questions are on screen** —
+`stepSignature()`, built on the deep enumerator, so it sees shadow roots and
+same-origin frames, and (since the previous build) excludes Jobright's own
+sidebar. Deliberately value-free: filling a field must not look like a new step.
+
+`waitForStepChange()` waits until that set genuinely changes **and then stops
+moving**, up to 15s, inside `withBusy` so a legitimate page transition can't be
+mistaken for a stalled job. If the step never changes, the driver now says so and
+goes looking for what is blocking it (validation error, missed required field)
+instead of cheerfully re-filling.
+
+Wired into SmartRecruiters, Oracle, ADP and the universal multi-page driver — and
+since every driver ends in the multi-page driver, into all of them.
+
+### 2. A question revealed by an answer was never answered
+
+> If applicable, would you consider relocating for a role with ServiceNow?\* **Yes**
+> &nbsp;&nbsp;&nbsp;&nbsp;↳ If you selected Yes, would you consider relocating at your own expense?\* ☐ Yes ☐ No
+
+The sub-question only renders **after** the parent is answered. Nothing ever
+looked at the form again after answering something, so it was never seen — which
+is exactly how a form reads 17/17 · 100% with an unanswered required question
+sitting underneath.
+
+`resolveDependentQuestions()` answers what is on screen, waits for the framework
+to render whatever that unlocked, then compares the question fingerprint and goes
+round again. It stops on the first round that reveals nothing new, is capped at 5
+rounds, and aborts immediately if you turn the automation off. The required-field
+guarantor now does the same at a higher level: if a pass revealed more questions,
+it re-runs the general fill so newly revealed **text boxes and dropdowns** get
+answered too, not only the choices.
+
+### 3. "Value is required" under a declaration box
+
+> You declare that you have read and understand the privacy notice of ServiceNow.\*
+> *Value is required*
+
+That box is a `<spl-checkbox>` web component, so `input[type=checkbox]` — which is
+all the old consent pass matched — never found it. And the wording matched none of
+the old `consent|agree|privacy|gdpr|terms|acknowledg` list either.
+
+Now:
+
+* **Found everywhere**: `spl-checkbox`, `oj-checkboxset`, `mat-checkbox`,
+  `md-checkbox`, `sl-checkbox`, `ion-checkbox`, `vaadin-checkbox`,
+  `role="checkbox"`, `role="switch"` and plain inputs.
+* **Read properly**: the sentence is pulled from the component's own shadow root,
+  its label, and its question container — wherever the platform keeps it.
+* **Recognised**: *declare · certify · confirm · attest · affirm · understand ·
+  authorise · disclosure · electronic signature · have read · to the best of my
+  knowledge* on top of the original list.
+* **Ticked reliably**: a web-component checkbox ignores `.click()`, so it
+  escalates — inner native input → click → full pointer sequence → associated
+  `<label>` → Space key → native set plus `input`/`change` — checking the
+  control's own state after each attempt and stopping the moment it reports
+  checked. If none of them work, it says so in the log rather than moving on
+  silently.
+* **Still never a marketing opt-in.** Job alerts, newsletters, talent community
+  and "similar roles" are excluded explicitly, regardless of how the markup
+  labels them.
+
+The same escalation now backs **multiple-choice questions** too: `spl-radio`,
+`oj-radio`, `mat-radio-button`, `md-radio`, `sl-radio`, `ion-radio`,
+`vaadin-radio-button` and `role="radio"` widgets are enumerated, labelled (from
+their shadow roots where that's where the text lives) and committed the same way.
+Unanswered ones now also count toward "missing required fields", so the loop can
+no longer conclude "nothing left to fix" on a form that plainly still has
+something to fix.
+
+### Verified
+
+Mutation-checked — each of these fails the suite when reverted:
+
+| Reverted to | Assertions that fail |
+| --- | --- |
+| flat `sleep(2800)` after Next | *SmartRecruiters waits for the next step instead of sleeping 2.8s* |
+| `stepSignature` including field values | *fingerprints WHICH questions, never their values* |
+| guarantor as a single pass | *the guarantor re-scans after answering* |
+| dependent loop not re-reading the page | *it answers, then looks again* |
+| marketing guard removed | *marketing opt-ins are never ticked* |
+| the old narrow consent regex | 6 wording assertions, including the ServiceNow declaration |
+
+Suite total: **471 assertions**, all green.
+
+### Honest limits
+
+Cross-origin iframes are still only reachable through the all-frames injection,
+not the deep enumerator — a question inside a third-party iframe is answered by
+the copy running in that frame, not by the parent's fingerprint. And
+`stepSignature` deliberately ignores values, so a step that changes *only* a
+value and nothing structural reads as unchanged; that is the right trade for
+not treating our own typing as a page transition.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
