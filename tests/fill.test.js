@@ -133,8 +133,8 @@ eq('and tells it again when cleared', /reportCaptcha\('', false\)/.test(src), tr
 eq('the queue notifies and marks the row', /UA_JOB_NEEDS_HUMAN/.test(orch) && /needsHuman/.test(orch), true);
 eq('the watchdog does not time out a job waiting on a person',
   /if \(waited < cfg\.humanGraceMs && !overParked\) continue;/.test(orch), true);
-eq('the wait is short by default, not a quarter of an hour',
-  /humanGraceMs: 2 \* 60 \* 1000/.test(orch), true);
+eq('the wait is one minute by default, not a quarter of an hour',
+  /humanGraceMs: 60 \* 1000/.test(orch), true);
 eq('and it is configurable from the panel', /humanGraceMs: Math\.max\(15000/.test(orch), true);
 // The important part: waiting on a person must not cost throughput.
 eq('a parked job does not occupy a concurrency slot',

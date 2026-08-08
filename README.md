@@ -542,7 +542,7 @@ throughput**.
 | --- | --- | --- |
 | No progress → skip the job | 75s | **45s** (`Skip if stuck`, 20–600s) |
 | Tab silent → reclaim the slot | 75s (7 missed beats) | **40s** (4 missed beats) |
-| CAPTCHA waits for you | **15 min, holding a slot** | **2 min, holding nothing** (`Wait for me`, 0.5–30 min) |
+| CAPTCHA waits for you | **15 min, holding a slot** | **1 min, holding nothing** (`Wait for me`, 0.5–30 min) |
 | Hard cap per job | 6 min | 6 min (`Timeout`, 1–30 min) |
 
 The 15-minute CAPTCHA wait was the worst of it, and the real problem wasn't only
@@ -550,7 +550,8 @@ the number: the waiting job **kept its concurrency slot**, so a run at 3 tabs
 quietly dropped to 2 for the duration. Now a job blocked on a CAPTCHA stops
 counting against concurrency the instant it reports in, the next job starts
 immediately, and its tab stays open so you can still solve it. At most 3 such tabs
-park at once.
+park at once. The default wait is **1 minute** — long enough to catch it if you're
+at the keyboard, short enough that an unattended run barely notices.
 
 One clarification on an earlier log example: `Stopped responding after 42s` was
 badly worded — 42s was how long the job had been *alive*, not the threshold. It

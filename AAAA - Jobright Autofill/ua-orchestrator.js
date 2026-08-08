@@ -63,7 +63,7 @@
     tailor: false,
     jobTimeoutMs: 6 * 60 * 1000,   // hard cap per job (content script caps itself at 150s/page)
     stallMs: 45 * 1000,            // no progress for this long → skip the job and move on
-    humanGraceMs: 2 * 60 * 1000,   // how long a CAPTCHA'd job waits for you before it is dropped
+    humanGraceMs: 60 * 1000,       // how long a CAPTCHA'd job waits for you before it is dropped
     interJobDelayMs: 800,          // breathing room between tab opens
   };
 
