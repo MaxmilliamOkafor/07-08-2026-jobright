@@ -538,12 +538,26 @@ Fair criticism. A bulk run should not sit on a single job for minutes. Every
 threshold is now short, and — more importantly — **waiting no longer costs
 throughput**.
 
-| | was | now |
+| | originally | now |
 | --- | --- | --- |
-| No progress → skip the job | 75s | **45s** (`Skip if stuck`, 20–600s) |
-| Tab silent → reclaim the slot | 75s (7 missed beats) | **40s** (4 missed beats) |
+| No progress → skip the job | 75s | **15s** (`Skip if stuck`, 5–600s) |
+| Tab silent → reclaim the slot | 75s (7 missed beats) | **15s** (3 missed beats) |
 | CAPTCHA waits for you | **15 min, holding a slot** | **1 min, holding nothing** (`Wait for me`, 0.5–30 min) |
-| Hard cap per job | 6 min | 6 min (`Timeout`, 1–30 min) |
+| Hard cap per job | 6 min | **3 min** (`Timeout`, 1–30 min) |
+
+A 15-second window only means "stuck" if two other things change with it, and both
+did:
+
+- **The heartbeat runs every 5s** (was 10s). At the old interval, 15s of silence
+  was 1.5 beats — a single delayed one would have killed a healthy job.
+- **Progress is credited as it happens, not at the end of a pass.** `fallbackFill`
+  paces itself ~200ms per field and only reported progress once the whole pass
+  finished; on a long form that pass alone exceeds 15s, so the watchdog would have
+  skipped a job that was filling perfectly. Each field now counts, as do waiting
+  for a slow page, a navigation, and a CV upload in flight.
+
+With those in place, 15s genuinely means nothing is happening — the fill loop,
+the page, and the upload all keep the clock alive while they work.
 
 The 15-minute CAPTCHA wait was the worst of it, and the real problem wasn't only
 the number: the waiting job **kept its concurrency slot**, so a run at 3 tabs

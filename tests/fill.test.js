@@ -142,8 +142,18 @@ eq('a parked job does not occupy a concurrency slot',
 eq('the freed slot is refilled at once, not on the next tick',
   /The job no longer counts against concurrency[\s\S]{0,160}?await fillSlots\(\);/.test(orch), true);
 eq('parked tabs are capped so they cannot pile up', /MAX_PARKED = 3/.test(orch), true);
-eq('a dead tab is reclaimed in well under a minute', /HEARTBEAT_DEAD_MS = 40 \* 1000/.test(orch), true);
-eq('the no-progress cut-off defaults to 45s', /stallMs: 45 \* 1000/.test(orch), true);
+eq('a dead tab is reclaimed in 15s', /HEARTBEAT_DEAD_MS = 15 \* 1000/.test(orch), true);
+eq('the no-progress cut-off defaults to 15s', /stallMs: 15 \* 1000/.test(orch), true);
+eq('the hard cap per job is 3 minutes', /jobTimeoutMs: 3 \* 60 \* 1000/.test(orch), true);
+// A 15s window is only meaningful if the beat is fast enough to fill it, and if
+// work in progress is credited AS it happens rather than at the end of a pass.
+eq('the heartbeat is fast enough for a 15s window (3 beats)', /\}, 5000\);/.test(src), true);
+eq('the stall check polls every 3s', /\}, 3000\);/.test(src), true);
+eq('each filled field counts as progress, so a long form is not a stall',
+  /noteProgress\('filling fields'\);   \/\/ per field/.test(src), true);
+eq('waiting for a slow page counts as progress', /noteProgress\('waiting for the page'\)/.test(src), true);
+eq('a navigation counts as progress', /noteProgress\('page navigated'\)/.test(src), true);
+eq('an upload in flight counts as progress', /noteProgress\('uploading CV'\)/.test(src), true);
 eq('a new run clears stale needs-you markers', /delete j\.needsHuman;/.test(orch), true);
 eq('no CAPTCHA-solving is attempted (no solver service, no token injection)',
   /2captcha|anticaptcha|capmonster|deathbycaptcha|g-recaptcha-response\s*=/i.test(src), false);

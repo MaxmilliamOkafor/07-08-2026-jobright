@@ -110,8 +110,8 @@
   <div class="bar">
     <label class="opt" title="Never apply twice to the same job, even across separate CSV imports"><input type="checkbox" id="optSkip" checked> Skip already applied</label>
     <label class="opt" title="Use Jobright's resume generator on every job (slower, can stall)"><input type="checkbox" id="optTailor"> Tailor resume</label>
-    <label class="opt" title="Give up on a job after this many minutes and move on">Timeout <input type="number" id="optTimeout" min="1" max="30" step="1" value="6" style="width:52px"> min</label>
-    <label class="opt" title="If a job makes no progress at all for this long, skip it and start the next one. This is what keeps a stuck application from eating the whole timeout.">Skip if stuck <input type="number" id="optStall" min="20" max="600" step="5" value="45" style="width:56px"> s</label>
+    <label class="opt" title="Give up on a job after this many minutes and move on">Timeout <input type="number" id="optTimeout" min="1" max="30" step="1" value="3" style="width:52px"> min</label>
+    <label class="opt" title="If a job makes no progress at all for this long, skip it and start the next one. This is what keeps a stuck application from eating the whole timeout.">Skip if stuck <input type="number" id="optStall" min="5" max="600" step="5" value="15" style="width:56px"> s</label>
     <label class="opt" title="How long a job blocked by a CAPTCHA keeps its tab open waiting for you. It does NOT hold a slot — the rest of the queue keeps running at full speed meanwhile.">Wait for me <input type="number" id="optHuman" min="0.5" max="30" step="0.5" value="1" style="width:52px"> min</label>
   </div>
 

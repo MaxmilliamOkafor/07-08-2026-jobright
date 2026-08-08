@@ -1809,6 +1809,7 @@
   async function waitForResumeUpload(maxMs) {
     const dl = Date.now() + (maxMs || 20000);
     while (Date.now() < dl) {
+      noteProgress('uploading CV');   // an upload in flight is not a stall
       if (!resumeUploadInFlight() && resumeAlreadyAttached()) return true;
       if (!resumeUploadInFlight() && Date.now() > dl - 15000) break;   // nothing happening
       await sleep(800);
@@ -2309,6 +2310,7 @@
       inp.dispatchEvent(new Event('input', { bubbles: true }));
       inp.dispatchEvent(new Event('change', { bubbles: true }));
       filled++;
+      noteProgress('filling fields');   // per field: a long form is not a stall
       await sleep(200); // Accuracy-first: deliberate pacing between fields
     }
 
@@ -2488,7 +2490,7 @@
      seconds instead of holding a slot for minutes. */
   let _lastProgressAt = Date.now();
   let _lastProgressWhat = 'started';
-  let _stallLimitMs = 45000;        // no progress for this long → give up on the job
+  let _stallLimitMs = 15000;        // no progress for this long → give up on the job
   function noteProgress(what) {
     _lastProgressAt = Date.now();
     if (what) _lastProgressWhat = what;
@@ -5659,13 +5661,16 @@
     // rewrites its URL on a timer, can't hold a job tab open indefinitely.
     const deadline = Date.now() + Math.min(60000, (tries || 4) * gap * 3);
     while (budget > 0 && Date.now() < deadline) {
+      // Waiting for a page to load or redirect is the page being slow, not the
+      // job being stuck — don't let the stall watchdog count it against us.
+      if (document.readyState !== 'complete') noteProgress('waiting for the page');
       if (document.readyState === 'complete') {
         try { await openApplicationForm(); } catch (_) {}
         if (hasApplicationForm() || hasApplyButton() || detectATS() || isWorkday() || findApplyManually() || checkSuccess()) return true;
         budget--;
       }
       await sleep(gap);
-      if (location.href !== lastHref) { lastHref = location.href; budget = tries || 4; }  // navigated — start the budget over
+      if (location.href !== lastHref) { lastHref = location.href; budget = tries || 4; noteProgress('page navigated'); }
     }
     return false;
   }
@@ -5726,7 +5731,7 @@
       const secs = Math.round(stalledFor() / 1000);
       LOG(`Job stalled — no progress for ${secs}s (last: ${_lastProgressWhat}) — skipping to keep the queue moving`);
       finalize('timeout', `Stalled — no progress for ${secs}s (last activity: ${_lastProgressWhat})`);
-    }, 5000);
+    }, 3000);
 
     /* Heartbeat. Without it, a tab whose content script died (crash, or a
        navigation into a page we were not injected on) looked identical to one
@@ -5741,7 +5746,7 @@
           idleMs: stalledFor(), pct,
         }, () => void chrome.runtime.lastError);
       } catch (_) {}
-    }, 10000);
+    }, 5000);
 
     try {
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
@@ -5801,7 +5806,7 @@
     if (!s || typeof s !== 'object') return;
     if (typeof s.skipApplied === 'boolean') qSkipApplied = s.skipApplied;
     if (typeof s.tailor === 'boolean') queueUseTailor = s.tailor;
-    if (s.stallMs) _stallLimitMs = Math.max(20000, s.stallMs);
+    if (s.stallMs) _stallLimitMs = Math.max(5000, s.stallMs);
     if (s.jobTimeoutMs) {
       // Stay comfortably inside the worker's hard cap so THIS tab reports a real
       // status before the watchdog kills it — a watchdog timeout tells you nothing

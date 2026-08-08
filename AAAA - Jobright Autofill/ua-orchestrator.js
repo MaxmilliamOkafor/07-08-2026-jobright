@@ -53,16 +53,17 @@
   // that the oldest is given up on, so a challenge-heavy CSV cannot bury you in
   // parked tabs.
   const MAX_PARKED = 3;
-  /* A job tab reports a heartbeat every 10s, so this is four missed beats — enough
-     slack for a genuinely busy page, short enough that a crashed tab is reclaimed
-     in well under a minute instead of holding its slot until the per-job cap. */
-  const HEARTBEAT_DEAD_MS = 40 * 1000;
+  /* A job tab reports a heartbeat every 5s, so this is three missed beats. The
+     beat had to be made twice as fast to support a window this tight: at the old
+     10s interval, 15s of silence was 1.5 beats and a single delayed one would
+     have looked like a dead tab. */
+  const HEARTBEAT_DEAD_MS = 15 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
     tailor: false,
-    jobTimeoutMs: 6 * 60 * 1000,   // hard cap per job (content script caps itself at 150s/page)
-    stallMs: 45 * 1000,            // no progress for this long → skip the job and move on
+    jobTimeoutMs: 3 * 60 * 1000,   // hard cap per job — the backstop, not the usual exit
+    stallMs: 15 * 1000,            // no progress for this long → skip the job and move on
     humanGraceMs: 60 * 1000,       // how long a CAPTCHA'd job waits for you before it is dropped
     interJobDelayMs: 800,          // breathing room between tab opens
   };
@@ -151,7 +152,7 @@
       skipApplied: typeof s.skipApplied === 'boolean' ? s.skipApplied : DEFAULTS.skipApplied,
       tailor: typeof s.tailor === 'boolean' ? s.tailor : DEFAULTS.tailor,
       jobTimeoutMs: Math.max(60000, Number(s.jobTimeoutMs) || DEFAULTS.jobTimeoutMs),
-      stallMs: Math.max(20000, Number(s.stallMs) || DEFAULTS.stallMs),
+      stallMs: Math.max(5000, Number(s.stallMs) || DEFAULTS.stallMs),
       humanGraceMs: Math.max(15000, Number(s.humanGraceMs) || DEFAULTS.humanGraceMs),
       interJobDelayMs: Math.max(0, Number(s.interJobDelayMs) ?? DEFAULTS.interJobDelayMs),
     };
