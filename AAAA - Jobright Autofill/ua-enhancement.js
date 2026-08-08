@@ -13,8 +13,84 @@
 // v13.0.0 FULL-AUTO: zero-supervision queue — robust Google-Places/typeahead location
 // committer + required-field guarantor sweep so the queue never stalls waiting for a human.
 // CSV upload -> import job URLs -> auto-apply each with Jobright autofill (LazyApply-style queue).
+/* ════════════════════════════════════════════════════════════════════════════
+   MASTER AUTOMATION GATE  —  installed before every other module in this file.
+
+   The "Fully Automated" toggle used to gate only the main dispatcher. Around a
+   dozen independent modules further down this file (the autofill-confirm
+   auto-dismisser, the chatbot answerer, the work-authorisation auto-answerer,
+   the AI answer generator, …) live in their own IIFEs, cannot see the toggle's
+   variable, and acted on any page that merely looked like a job application.
+   That is why the extension "started firing" on a recognised ATS with the
+   toggle OFF, and why autofill ran without anyone pressing Autofill.
+
+   Everything autonomous now asks this one question first. Three ways to say yes:
+     • the Fully Automated toggle is ON, or
+     • this tab is the in-page queue runner, or
+     • this tab is running a job for the CSV Queue Manager.
+
+   It is FAIL-CLOSED: until chrome.storage has actually been read, the answer is
+   NO. A module that boots at document_start therefore cannot act during the gap
+   before the preference is known — previously that gap was wide open.
+   ════════════════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
+  if (window.__uaAutoAllowed) return;
+
+  let ready = false;          // has storage been read at least once?
+  let toggleOn = false;       // ua_aa  — the Fully Automated preference
+  let queueRunning = false;   // ua_qa  — the in-page single-tab runner
+
+  const RUNNER_PREFIX = 'UAQRUN::';
+  function isRunnerTab() {
+    try { return typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0; }
+    catch (_) { return false; }
+  }
+  // Set by the content script for the lifetime of a Queue-Manager-driven job.
+  function managedJobActive() {
+    try { return document.documentElement.getAttribute('data-ua-auto') === '1'; }
+    catch (_) { return false; }
+  }
+
+  window.__uaAutoAllowed = function () {
+    if (managedJobActive()) return true;          // a queued job owns this tab
+    if (!ready) return false;                     // preference not known yet → do nothing
+    if (toggleOn) return true;
+    return queueRunning && isRunnerTab();
+  };
+  // For UI/diagnostics: why did the gate answer the way it did?
+  window.__uaAutoReason = function () {
+    if (managedJobActive()) return 'queue job';
+    if (!ready) return 'preference not loaded';
+    if (toggleOn) return 'toggle ON';
+    if (queueRunning && isRunnerTab()) return 'queue runner tab';
+    return 'toggle OFF';
+  };
+
+  try {
+    chrome.storage.local.get(['ua_aa', 'ua_qa'], (d) => {
+      void chrome.runtime.lastError;
+      toggleOn = (d && d.ua_aa) === true;
+      queueRunning = (d && d.ua_qa) === true;
+      ready = true;
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes.ua_aa) { toggleOn = changes.ua_aa.newValue === true; ready = true; }
+      if (changes.ua_qa) queueRunning = changes.ua_qa.newValue === true;
+    });
+  } catch (_) {
+    // No storage access at all → stay fail-closed rather than assuming ON.
+  }
+})();
+
+(function () {
+  'use strict';
+  // The orchestrator injects this file into every frame of a job tab (see
+  // ua-orchestrator.js). The top frame already has it from the manifest, so
+  // without this guard the module would initialise twice there.
+  if (window.__uaEnhancementLoaded) return;
+  window.__uaEnhancementLoaded = true;
 
   // ===================== TEMP IN-DEPTH DEBUG LOGGER (toggle with Alt+D) =====================
   // A deep instrumentation layer that records, on the live ATS page, without DevTools:
@@ -339,10 +415,26 @@
   // ===================== CONFIG =====================
   const SK = { AA: 'ua_aa', Q: 'ua_q', QA: 'ua_qa', QP: 'ua_qp', POS: 'ua_pos', ANS: 'ua_answers', PROF: 'ua_profile' };
   const ATS = [
+    // --- Platforms added after the CareerHound runs surfaced them (v14.1) ---
+    // ADP ships two unrelated candidate apps; myjobs is the one CSV links land on.
+    { n: 'ADP myjobs', p: /myjobs\.adp\.com/i },
+    { n: 'ADP WorkforceNow', p: /workforcenow\.adp\.com|adp\.com.*recruitment/i },
+    // Oracle Recruiting Cloud (Fusion). White-labelled onto company domains, so the
+    // /hcmUI/CandidateExperience path matters as much as the oraclecloud host.
+    { n: 'Oracle Recruiting', p: /oraclecloud\.com|\/hcmUI\/CandidateExperience/i },
+    { n: 'Taleo', p: /taleo\.net|\/careersection\//i },
+    { n: 'SuccessFactors', p: /successfactors\.(com|eu)|sapsf\.(com|eu)/i },
+    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com/i },
+    { n: 'Radancy', p: /talentbrew\.com|radancy\.com/i },
+    { n: 'Join', p: /(\/\/|\.)join\.com/i },
+    { n: 'Softgarden', p: /softgarden\.(io|de)/i },
+    { n: 'HRMDirect', p: /hrmdirect\.com/i },
+    { n: 'Greenhouse EU', p: /boards\.eu\.greenhouse\.io|job-boards\.greenhouse\.io/i },
+    { n: 'SmartRecruiters', p: /smartrecruiters\.com/i },
     { n: 'Workday', p: /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i },
     { n: 'Greenhouse', p: /boards\.greenhouse\.io|greenhouse\.io.*\/jobs/i },
     { n: 'Lever', p: /jobs\.lever\.co/i }, { n: 'SmartRecruiters', p: /jobs\.smartrecruiters\.com/i },
-    { n: 'iCIMS', p: /icims\.com/i }, { n: 'Taleo', p: /taleo\.net|oraclecloud\.com.*CandidateExperience/i },
+    { n: 'iCIMS', p: /icims\.com/i }, { n: 'Taleo', p: /taleo\.net/i },
     { n: 'Ashby', p: /jobs\.ashbyhq\.com/i }, { n: 'BambooHR', p: /bamboohr\.com.*\/jobs/i },
     { n: 'Oracle', p: /oraclecloud\.com.*recruit/i }, { n: 'LinkedIn', p: /linkedin\.com\/jobs\/(view|application)/i },
     { n: 'Indeed', p: /indeed\.com.*(viewjob|apply)/i }, { n: 'UltiPro', p: /ultipro\.com/i },
@@ -451,6 +543,7 @@
     // generator and can stall, so we don't use it automatically unless opted in.
     queueUseTailor = (await st.get('ua_queue_tailor')) === true;
     qSkipApplied = (await st.get('ua_skip_applied')) !== false; // default ON
+    try { _submitMark = (await st.get(SUBMIT_MARK_KEY)) || null; } catch (_) { _submitMark = null; }
   }
   async function saveQ() { await st.set(SK.Q, queue); }
   async function saveStats() { await st.set('ua_q_stats', qStats); }
@@ -780,7 +873,7 @@
   }
 
   function learnFromFilledFields() {
-    $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
+    deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
       .filter(el => isVisible(el) && hasFieldValue(el))
       .forEach(el => {
         // Radio/checkbox: question is the GROUP's, answer is the checked option's label.
@@ -1416,7 +1509,7 @@
   async function answerChoiceGroups() {
     let n = 0;
     const groups = new Map();
-    for (const r of $$('input[type=radio],[role="radio"]').filter(isVisible)) {
+    for (const r of deepAll('input[type=radio],[role="radio"]').filter(isVisible)) {
       // Group by (in order of preference): native radio name, the closest shared
       // question/fieldset container, or the immediate parent element. We deliberately
       // never fall back to the radio ITSELF as a key — that split a single Yes/No
@@ -1463,7 +1556,7 @@
     await resolveLocationFields();
     await answerChoiceGroups();
     const p = await getProfile();
-    const required = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
+    const required = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
       .filter(el => isVisible(el) && isFieldRequired(el) && !hasFieldValue(el));
     let fixed = 0;
     for (const el of required) {
@@ -1481,7 +1574,7 @@
       }
       if (el.type === 'radio') continue;
       if (el.tagName === 'SELECT') {
-        const opts = $$('option', el).filter(o => o.value && o.index > 0);
+        const opts = deepAll('option', el).filter(o => o.value && o.index > 0);
         // Decision-aware pick (reads the real option wording); then EEO/decline; then
         // first real option as a last resort so a required select is never left blank.
         let opt = selectOptionForQuestion(el, lbl, p);
@@ -1519,8 +1612,17 @@
 
   function isVisible(el) {
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+    try {
+      const r = el.getBoundingClientRect();
+      // A zero-sized box already covers display:none anywhere up the ancestor chain.
+      if (r.width <= 0 || r.height <= 0) return false;
+      const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const cs = win.getComputedStyle ? win.getComputedStyle(el) : null;
+      if (!cs) return true;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+      if (parseFloat(cs.opacity || '1') === 0) return false;
+      return true;
+    } catch (_) { return false; }
   }
 
   function nativeSet(el, val) {
@@ -1571,13 +1673,278 @@
     return true;
   }
 
-  function realClick(el) {
-    if (!el) return;
+  /* ── DESTRUCTIVE-CONTROL GUARD ──────────────────────────────────────────────
+     Controls that destroy work already on the page: the "×" beside an uploaded
+     résumé, "Delete", "Discard", "Withdraw application". Nothing in an apply flow
+     ever needs one, and clicking one is how a SmartRecruiters run died — the ×
+     on the attached CV opened a native  Remove "…_CV"?  confirm, which blocks the
+     JavaScript thread until it is answered, so the automation froze behind it
+     until the watchdog killed the job. realClick is the single choke point every
+     driver clicks through, so the guard lives here. */
+  const DESTRUCTIVE_NAME_RE =
+    /^\s*(remove|delete|discard|erase|trash|unattach|detach|start over|clear all|withdraw)\b|\b(remove|delete|replace)\s+(this\s+)?(file|resume|résumé|cv|attachment|document|upload)|\bwithdraw\s+(my\s+)?application\b|\bcancel\s+application\b/i;
+  // Containers that hold an already-uploaded file. A bare icon button inside one
+  // of these is a remove control even when it has no accessible name at all.
+  const ATTACHMENT_CONTAINER_SEL =
+    '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],[class*="fileItem" i],[class*="file-list" i],[class*="dropzone" i],[class*="upload" i],spl-file-upload,spl-attachment,[data-test*="attachment" i],[data-testid*="attachment" i]';
+  function controlName(el) {
+    try {
+      const parts = [
+        el.getAttribute && (el.getAttribute('aria-label') || ''),
+        el.getAttribute && (el.getAttribute('title') || ''),
+        el.getAttribute && (el.getAttribute('data-test') || el.getAttribute('data-testid') || el.getAttribute('data-automation-id') || ''),
+        el.getAttribute && (el.getAttribute('name') || ''),
+        (el.textContent || ''),
+      ];
+      const img = el.querySelector && el.querySelector('img[alt],svg title,use[href]');
+      if (img) parts.push(img.getAttribute('alt') || img.textContent || '');
+      return parts.join(' ').replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+  function isDestructiveControl(el) {
+    try {
+      if (!el || !el.getAttribute) return false;
+      const name = controlName(el);
+      if (DESTRUCTIVE_NAME_RE.test(name)) return true;
+      // Unlabelled icon button (×, ✕, 🗑, or empty) sitting in an attachment row.
+      const txt = (el.textContent || '').replace(/\s+/g, '');
+      const iconish = txt === '' || /^[×✕✖x✗⨯🗑]{1,2}$/i.test(txt);
+      if (!iconish) return false;
+      const tag = (el.tagName || '').toUpperCase();
+      if (tag !== 'BUTTON' && tag !== 'A' && el.getAttribute('role') !== 'button') return false;
+      return !!(el.closest && el.closest(ATTACHMENT_CONTAINER_SEL));
+    } catch (_) { return false; }
+  }
+
+  // opts.force bypasses the guard — used only by the dialog resolver, which has to
+  // be able to press the "Cancel"/"Keep" button of a confirm it is answering.
+  function realClick(el, opts) {
+    if (!el) return false;
+    if (!(opts && opts.force) && isDestructiveControl(el)) {
+      LOG('Refusing to click destructive control:', controlName(el).slice(0, 60) || '(unlabelled ×)');
+      return false;
+    }
     el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     el.click();
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  /* ── SHADOW-PIERCING QUERIES ────────────────────────────────────────────────
+     $ / $$ above stop at a shadow boundary. Modern SmartRecruiters renders its
+     whole form as `spl-*` web components (Spark design system), each with its own
+     open shadow root, so a plain document.querySelector('#firstName') finds
+     nothing — which is why autofill "did nothing" on that ATS. These walk into
+     every open shadow root. Depth- and node-bounded so they stay cheap. */
+  function deepQueryAll(sel, root, limit) {
+    const out = [];
+    const cap = limit || 400;
+    const stack = [root || document];
+    let guard = 0;
+    while (stack.length && out.length < cap && guard++ < 20000) {
+      const node = stack.pop();
+      if (!node || !node.querySelectorAll) continue;
+      try { for (const el of node.querySelectorAll(sel)) { out.push(el); if (out.length >= cap) break; } } catch (_) {}
+      try { for (const el of node.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot); } catch (_) {}
+    }
+    return out;
+  }
+  function deepQuery(sel, root) { return deepQueryAll(sel, root, 1)[0] || null; }
+  function deepVisible(sel, root) { return deepQueryAll(sel, root).filter(isVisible); }
+
+  /* ── CUSTOM DROPDOWN COMMITTER (all ATS) ───────────────────────────────────
+     Native <select> is handled well already, but most modern ATS do not use one.
+     Greenhouse, Ashby, Lever, Workable, SmartRecruiters (spl-select) and Oracle
+     (oj-select) all render a div with role="combobox" plus a popup listbox. The
+     universal filler had no handler for those at all, so any REQUIRED custom
+     dropdown stayed empty — and an empty required field is the single commonest
+     reason a fully "filled" form still refuses to submit.
+
+     One committer for every flavour: open it, wait for the options to render
+     (they are usually created on demand), pick the best match, and confirm the
+     control actually took a value. */
+  function comboText(el) {
+    try { return (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim(); }
+    catch (_) { return ''; }
+  }
+  // Does this combobox already hold an answer?
+  function comboHasValue(el) {
+    try {
+      const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || el.querySelector?.('input');
+      if (inner && (inner.value || '').trim()) return true;
+      if ((el.value || '').trim()) return true;
+      // react-select / MUI render the chosen label as a child node.
+      const shown = el.querySelector?.('[class*="singleValue" i],[class*="multiValue" i],[class*="selected" i],[class*="chip" i]');
+      if (shown && comboText(shown)) return true;
+      const t = comboText(el);
+      // Placeholder text is not an answer.
+      return !!t && !/^(select|choose|pick|--|—|none|please select|start typing|search)\b/i.test(t) && t.length > 1;
+    } catch (_) { return false; }
+  }
+  function listboxFor(combo) {
+    const id = combo.getAttribute?.('aria-controls') || combo.getAttribute?.('ariacontrols') ||
+      combo.getAttribute?.('aria-owns') || combo.getAttribute?.('list');
+    if (id) { try { const el = deepOne('#' + CSS.escape(id)); if (el) return el; } catch (_) {} }
+    return null;
+  }
+  function visibleOptions(scope) {
+    const sel = '[role="option"],spl-select-option,oj-option,li[data-value],li[role="option"],' +
+      '[class*="option" i]:not([class*="options" i]),[class*="menu-item" i],[class*="MenuItem" i]';
+    return (scope ? deepQueryAll(sel, scope, 300) : deepAll(sel, 300))
+      .filter(isVisible)
+      .filter(o => { const t = comboText(o); return t && t.length < 120; });
+  }
+  /* Pick `wanted` (or, for a required field, any sane option) in a custom
+     dropdown. Returns true only if the control ended up holding a value. */
+  async function commitCustomDropdown(combo, wanted, required) {
+    if (!combo || comboHasValue(combo)) return false;
+    const want = String(wanted == null ? '' : wanted).replace(/\s+/g, ' ').trim().toLowerCase();
+
+    // Open it. Web components need the full pointer sequence; some open only on
+    // keyboard, so fall back to ArrowDown.
+    triggerMouse(combo);
+    await sleep(450);
+    let opts = visibleOptions(listboxFor(combo));
+    if (!opts.length) {
+      try {
+        const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input') || combo;
+        inner.focus?.({ preventScroll: true });
+        inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+      } catch (_) {}
+      await sleep(450);
+      opts = visibleOptions(listboxFor(combo));
+    }
+    // Typeahead: many comboboxes only render options once you type.
+    if (!opts.length && want) {
+      const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input');
+      if (inner) {
+        try { inner.focus({ preventScroll: true }); nativeSet(inner, want.slice(0, 24)); } catch (_) {}
+        await sleep(700);
+        opts = visibleOptions(listboxFor(combo));
+      }
+    }
+    if (!opts.length) return false;
+
+    const norm = (t) => String(t).replace(/\s+/g, ' ').trim().toLowerCase();
+    const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a)\b/i.test(t);
+    const real = opts.filter(o => !isPlaceholder(comboText(o)));
+    let pick = null;
+    if (want) {
+      pick = real.find(o => norm(comboText(o)) === want)
+        || real.find(o => norm(comboText(o)).includes(want))
+        || real.find(o => want.includes(norm(comboText(o))) && norm(comboText(o)).length > 2);
+      if (!pick) {
+        const words = want.split(/\s+/).filter(w => w.length > 2);
+        if (words.length) pick = real.find(o => words.some(w => norm(comboText(o)).includes(w)));
+      }
+    }
+    // Demographic questions: never invent a specific answer — decline instead.
+    const label = norm(getLabel(combo) || '');
+    if (!pick && /gender|disability|veteran|race|ethnic|sex\b/.test(label)) {
+      pick = real.find(o => /prefer not|decline|do not wish|not to say/i.test(comboText(o)));
+    }
+    // Last resort, and ONLY for a required field: an empty required dropdown
+    // blocks submission outright, so any sane option beats leaving it blank.
+    if (!pick && required) pick = real[0];
+    if (!pick) { try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {} return false; }
+
+    const inner = pick.querySelector?.('spl-typography-body') ||
+      (pick.shadowRoot && pick.shadowRoot.querySelector('spl-typography-body,span,div')) || pick;
+    triggerMouse(inner);
+    await sleep(350);
+    if (!comboHasValue(combo)) { triggerMouse(pick); await sleep(300); }   // some need the row itself
+    return comboHasValue(combo);
+  }
+
+  /* Every custom dropdown on the page that still has no answer. */
+  async function fillCustomDropdowns(profile) {
+    const combos = deepAll(
+      '[role="combobox"],[ariarole="combobox"],[aria-haspopup="listbox"],' +
+      '[class*="select__control" i],[class*="Select-control" i],.MuiSelect-root,.ant-select,spl-select,oj-select-single'
+    ).filter(isVisible);
+    let filled = 0;
+    for (const combo of combos.slice(0, 40)) {
+      if (comboHasValue(combo)) continue;
+      const q = getFullQuestionText(combo) || getLabel(combo) || '';
+      const required = isFieldRequired(combo) || /\*/.test(q);
+      const guess = q ? guessFieldValue(q, profile, combo) : '';
+      try { if (await commitCustomDropdown(combo, guess, required)) filled++; } catch (_) {}
+      await sleep(150);
+    }
+    if (filled) LOG(`Custom dropdowns answered: ${filled}`);
+    return filled;
+  }
+
+  /* ── UNIVERSAL FIELD DISCOVERY ─────────────────────────────────────────────
+     $ / $$ are document.querySelector(All): they stop at a shadow boundary and
+     never enter an iframe. Every universal filler (fallbackFill,
+     getMissingRequired, guaranteeRequiredFields, handleValidationErrors,
+     hasApplicationForm…) used them, so on any ATS that renders its form in web
+     components or an embedded frame the filler saw ZERO fields and quietly did
+     nothing. That is not a per-platform bug — it is why "autofill did nothing"
+     looked different on every ATS:
+
+       SmartRecruiters  spl-input / spl-select   → open shadow roots
+       Oracle Recruiting  oj-input-text          → open shadow roots
+       Greenhouse embed, iCIMS, SuccessFactors,
+       Taleo, BrassRing                          → the form is in an <iframe>
+
+     These walk every open shadow root and every SAME-ORIGIN frame document.
+     (Cross-origin frames are unreachable from here by design; the orchestrator
+     injects the content script into those frames directly for queue jobs.) */
+  function fieldRoots() {
+    const roots = [document];
+    // Same-origin frames, one level of nesting deep — enough for every embedded
+    // ATS form seen in practice, and bounded so a page of ad frames stays cheap.
+    const collectFrames = (doc, depth) => {
+      if (!doc || depth > 2) return;
+      let frames = [];
+      try { frames = [...doc.querySelectorAll('iframe,frame')]; } catch (_) { return; }
+      for (const f of frames.slice(0, 12)) {
+        let d = null;
+        try { d = f.contentDocument; } catch (_) { d = null; }   // cross-origin → null
+        if (!d || !d.querySelectorAll) continue;
+        roots.push(d);
+        collectFrames(d, depth + 1);
+      }
+    };
+    collectFrames(document, 0);
+    return roots;
+  }
+  // All matching elements anywhere: light DOM, open shadow roots, same-origin frames.
+  function deepAll(sel, limit) {
+    const out = [];
+    const cap = limit || 800;
+    for (const root of fieldRoots()) {
+      if (out.length >= cap) break;
+      for (const el of deepQueryAll(sel, root, cap - out.length)) out.push(el);
+    }
+    return out;
+  }
+  function deepOne(sel) { return deepAll(sel, 1)[0] || null; }
+  // The root node an element actually lives in — a shadow root, a frame document,
+  // or the main document. getElementById/querySelector must be scoped to THIS, or
+  // a label lookup for a field inside a shadow root silently finds nothing.
+  function ownerScope(el) {
+    try { const r = el.getRootNode(); return (r && r.querySelector) ? r : document; }
+    catch (_) { return document; }
+  }
+
+  /* Web components frequently ignore .click() and only react to a full pointer
+     sequence (this is exactly how SmartRecruiters' spl-select options behave). */
+  function triggerMouse(el) {
+    if (!el) return false;
+    const opts = { bubbles: true, composed: true, cancelable: true, view: window };
+    for (const t of ['pointerover', 'pointerenter', 'pointerdown', 'mouseover', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      try {
+        const Ctor = t.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+        el.dispatchEvent(new Ctor(t, opts));
+      } catch (_) {}
+    }
+    try { el.click(); } catch (_) {}
+    return true;
   }
 
   // True if the element is already (roughly) within the viewport, so we don't need to
@@ -1592,7 +1959,14 @@
   function clickEl(el) { if (!el) return false; scrollIfNeeded(el); realClick(el); return true; }
   // Automation should run only when Fully Automated is ON, or a bulk (CSV) run is active
   // in this runner tab. Long loops poll this so flipping the toggle OFF halts them.
-  function autoStopped() { try { return !autoApply && !(qActive && isRunnerTab()); } catch (_) { return false; } }
+  // Fail-CLOSED: if we cannot tell, we do not automate. (This used to return
+  // false — "not stopped" — on error, i.e. it defaulted to running.)
+  function autoStopped() {
+    try {
+      if (typeof window.__uaAutoAllowed === 'function') return !window.__uaAutoAllowed();
+      return !autoApply && !(qActive && isRunnerTab());
+    } catch (_) { return true; }
+  }
 
   function waitFor(sel, ms, xpath) {
     return new Promise(res => {
@@ -1618,11 +1992,20 @@
   function getLabel(el) {
     if (!el) return '';
     if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    // Scope every lookup to the element's OWN root (shadow root / frame document).
+    // Against `document` these all missed for fields inside web components, leaving
+    // the field unlabelled — and an unlabelled field is one no guesser can fill.
+    const scope = ownerScope(el);
+    const byId = (id) => { try { return scope.getElementById ? scope.getElementById(id) : scope.querySelector('#' + CSS.escape(id)); } catch (_) { return null; } };
     const describedBy = el.getAttribute('aria-describedby');
-    if (describedBy) { const d = document.getElementById(describedBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
+    if (describedBy) { const d = byId(describedBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
     const labelledBy = el.getAttribute('aria-labelledby');
-    if (labelledBy) { const d = document.getElementById(labelledBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
-    if (el.id) { const lbl = $(`label[for="${CSS.escape(el.id)}"]`); if (lbl) return lbl.textContent.trim(); }
+    if (labelledBy) { const d = byId(labelledBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
+    if (el.id) {
+      let lbl = null;
+      try { lbl = scope.querySelector(`label[for="${CSS.escape(el.id)}"]`); } catch (_) {}
+      if (lbl) return lbl.textContent.trim();
+    }
     // A GENERIC placeholder ("Enter your answer", "Type here", "Select…") tells us nothing
     // about the field and was previously returned here — shadowing the real question label
     // from the fieldset/container below, so guessValue couldn't match and the field got the
@@ -1801,7 +2184,7 @@
     let filled = 0;
 
     // Text inputs & textareas — only unfilled ones
-    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
+    const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
       .filter(el => isVisible(el) && !el.value?.trim());
 
     for (const inp of inputs) {
@@ -1823,13 +2206,13 @@
     }
 
     // Select dropdowns — only unselected ones
-    const selects = $$('select').filter(el => isVisible(el) && !hasFieldValue(el));
+    const selects = deepAll('select').filter(el => isVisible(el) && !hasFieldValue(el));
     for (const sel of selects) {
       const lbl = getLabel(sel);
       const lblLower = (lbl || '').toLowerCase();
       const isEEO = /gender|disability|veteran|race|ethnicity|sex\b|heritage/i.test(lblLower);
       const val = guessFieldValue(lbl, p, sel);
-      const opts = $$('option', sel).filter(o => o.value && o.index > 0);
+      const opts = deepAll('option', sel).filter(o => o.value && o.index > 0);
       let opt = null;
       if (val) {
         const valLower = val.toLowerCase().trim();
@@ -1855,9 +2238,15 @@
       }
     }
 
+    // Custom dropdowns (react-select / MUI / Ant / spl-select / oj-select). Native
+    // <select> is handled above; these are what most modern ATS actually render,
+    // and an unanswered REQUIRED one blocks submission however complete the rest
+    // of the form is.
+    try { filled += await fillCustomDropdowns(p); } catch (e) { LOG('Custom dropdown pass error:', e?.message || e); }
+
     // Radio buttons — Master Knockout Question System
     const groups = {};
-    $$('input[type=radio]').filter(isVisible).forEach(r => { (groups[r.name || r.id] ||= []).push(r); });
+    deepAll('input[type=radio]').filter(isVisible).forEach(r => { (groups[r.name || r.id] ||= []).push(r); });
     for (const [, radios] of Object.entries(groups)) {
       if (radios.some(r => r.checked)) continue;
       const parent = radios[0].closest('fieldset, .question, [class*="question"], .form-group, [class*="field"]');
@@ -1868,12 +2257,12 @@
     filled += answerButtonStyleQuestions(p);
 
     // Required checkboxes
-    $$('input[type=checkbox][required],input[type=checkbox][aria-required="true"]')
+    deepAll('input[type=checkbox][required],input[type=checkbox][aria-required="true"]')
       .filter(el => isVisible(el) && !el.checked)
       .forEach(cb => { realClick(cb); filled++; });
 
     // Date fields — try to fill with reasonable defaults
-    const dateInputs = $$('input[type=date]').filter(el => isVisible(el) && !el.value);
+    const dateInputs = deepAll('input[type=date]').filter(el => isVisible(el) && !el.value);
     for (const d of dateInputs) {
       const lbl = getLabel(d);
       const l = (lbl || '').toLowerCase();
@@ -1890,7 +2279,7 @@
     }
 
     // Number fields (years of experience, salary, etc.)
-    const numInputs = $$('input[type=number]').filter(el => isVisible(el) && !el.value);
+    const numInputs = deepAll('input[type=number]').filter(el => isVisible(el) && !el.value);
     for (const n of numInputs) {
       const lbl = getLabel(n);
       const val = guessFieldValue(lbl, p, n);
@@ -1898,7 +2287,7 @@
     }
 
     // Contenteditable divs (rich text editors)
-    const editables = $$('[contenteditable="true"]').filter(el => isVisible(el) && !el.textContent?.trim());
+    const editables = deepAll('[contenteditable="true"]').filter(el => isVisible(el) && !el.textContent?.trim());
     for (const ed of editables) {
       const lbl = getLabel(ed) || ed.getAttribute('data-placeholder') || '';
       const val = guessFieldValue(lbl, p, ed);
@@ -1912,7 +2301,7 @@
     // Re-scan all visible fields and verify values stuck; re-apply if cleared by JS frameworks
     await sleep(500); // Let frameworks settle after initial fill
     let verified = 0, refilled = 0;
-    const verifyInputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
+    const verifyInputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
       .filter(el => isVisible(el) && !el.value?.trim());
     for (const inp of verifyInputs) {
       const lbl = getLabel(inp);
@@ -1928,12 +2317,12 @@
       refilled++;
       await sleep(200);
     }
-    const verifySelects = $$('select').filter(el => isVisible(el) && !hasFieldValue(el));
+    const verifySelects = deepAll('select').filter(el => isVisible(el) && !hasFieldValue(el));
     for (const sel of verifySelects) {
       const lbl = getLabel(sel);
       const val = guessFieldValue(lbl, p, sel);
       if (!val) continue;
-      const opt = $$('option', sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+      const opt = deepAll('option', sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
       if (opt) { setSelectValue(sel, opt.value); refilled++; }
     }
     if (refilled > 0) LOG(`Verification pass: re-filled ${refilled} fields that were cleared`);
@@ -1966,10 +2355,60 @@
   // ===================== SUCCESS / FAILURE / STABILITY DETECTION =====================
   // (Robustness techniques adapted from the OptimHire auto-applier for 100% reliability.)
   const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
-  const SUCCESS_URL_RE = /(thanks|thank.?you|success|confirm|complete|received|submitted|done|applied)/i;
+  /* A URL only counts as a confirmation page when one of these is a COMPLETE path
+     segment. As a substring (what this used to be) it matched ordinary job slugs and
+     declared the application submitted before anything had been submitted:
+       /jobs/customer-success-manager   → "success"
+       /jobs/applied-scientist-ii       → "applied"
+       /careers/complete-care-nurse     → "complete"
+       /job/donegal-warehouse-operative → "done"
+     Those are some of the most common titles there are, which is why filled-but-never
+     -submitted jobs were being marked done and skipped on every ATS. */
+  const SUCCESS_PATH_RE = /(^|\/)(thanks|thank-?you|thankyou|success|successful|confirmation|submitted|application-?complete|application-?submitted|apply-?success|applicationconfirmation)(\/|$)/i;
   const FAILURE_TEXT_RE = /(already\s+applied|application\s+already\s+submitted|you\s+have\s+already\s+applied|no\s+application\s+(form|available)|job\s+is\s+no\s+longer\s+available|this\s+position\s+is\s+(closed|no\s+longer)|posting\s+is\s+closed|application\s+window\s+has\s+closed|page\s+not\s+found|404\s+error|job\s+posting\s+has\s+expired|posting\s+is\s+no\s+longer\s+available|no\s+longer\s+accepting\s+applications|position\s+has\s+been\s+filled|job\s+has\s+been\s+filled|vacancy\s+(is\s+)?closed)/i;
-  let _lastSubmitAt = 0;            // set when our flow clicks a submit/apply button
+  let _lastSubmitAt = 0;            // set when our flow clicks a real submit button
   const SUBMIT_GRACE_MS = 8000;    // after a submit with no validation error, treat as success
+  /* Multi-page ATS (Taleo, Oracle, iCIMS…) submit on one document and render the
+     confirmation in the NEXT one, where _lastSubmitAt is back to 0. Persist the
+     attempt against the job so the evidence survives the navigation — without it
+     a genuine submission could never be confirmed on those platforms. */
+  const SUBMIT_MARK_KEY = 'ua_submit_mark';
+  let _submitMark = null;           // { key, ts } restored from storage on boot
+  function submitJobKey() {
+    try { return (managedIdFromTab() || '') || normalizeUrl(location.href).replace(/[?#].*$/, ''); }
+    catch (_) { return location.origin + location.pathname; }
+  }
+  function markSubmitAttempt() {
+    _lastSubmitAt = Date.now();
+    const mark = { key: submitJobKey(), ts: _lastSubmitAt, origin: location.origin };
+    _submitMark = mark;
+    try { st.set(SUBMIT_MARK_KEY, mark); } catch (_) {}
+  }
+  function clearSubmitAttempt() {
+    _lastSubmitAt = 0;
+    _submitMark = null;
+    try { st.set(SUBMIT_MARK_KEY, null); } catch (_) {}
+  }
+  // True if we pressed submit for THIS job, in this document or the one before it.
+  function submitAttempted() {
+    if (_lastSubmitAt) return true;
+    if (!_submitMark || !_submitMark.ts) return false;
+    if (Date.now() - _submitMark.ts > 3 * 60 * 1000) return false;   // stale
+    // Same job (manager id) or the same site we submitted on.
+    return _submitMark.key === submitJobKey() || _submitMark.origin === location.origin;
+  }
+  function submitAttemptAge() {
+    const ts = _lastSubmitAt || (_submitMark && _submitMark.ts) || 0;
+    return ts ? Date.now() - ts : Infinity;
+  }
+  // Why a job ended without a confirmed submission. These are different failures:
+  // "no Submit control" usually means the form has another page or the button sits
+  // in a frame we did not reach; "no confirmation" means it probably did send.
+  function submitFailureReason(validationStuck) {
+    if (validationStuck) return 'Validation errors could not be resolved';
+    if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
+    return 'Submit was clicked but no confirmation appeared';
+  }
   // A persistent inline validation error means a required field couldn't be satisfied.
   function pageHasValidationError() {
     try {
@@ -1998,9 +2437,17 @@
         ['.g-recaptcha[data-sitekey]', 'reCAPTCHA'],
         ['.h-captcha[data-sitekey]', 'hCaptcha'],
         ['.cf-turnstile', 'Cloudflare Turnstile'],
+        // Providers the old list missed entirely, all common on ATS sign-in walls.
+        ['iframe[src*="arkoselabs"],iframe[src*="funcaptcha"],#funcaptcha', 'Arkose / FunCaptcha'],
+        ['iframe[src*="geetest"],.geetest_holder,.geetest_panel', 'GeeTest'],
+        ['iframe[src*="captcha-delivery"],#px-captcha,[id^="px-captcha"]', 'DataDome / PerimeterX'],
+        ['iframe[src*="awswaf"],[id*="awswaf-captcha"]', 'AWS WAF'],
+        ['[data-testid="challenge"],[class*="press-and-hold" i]', 'Press-and-hold challenge'],
       ];
       for (const [sel, provider] of PROVIDERS) {
-        for (const el of document.querySelectorAll(sel)) {
+        // deepAll: a challenge rendered inside the application's own iframe, or in a
+        // shadow root, was previously undetectable from the top document.
+        for (const el of deepAll(sel, 40)) {
           const r = el.getBoundingClientRect();
           if (r.width < 60 || r.height < 50) continue; // v3 badge / hidden token frames
           const cs = getComputedStyle(el);
@@ -2025,22 +2472,47 @@
   }
   function hideCaptchaBanner() { try { document.getElementById('ua-captcha-banner')?.remove(); } catch (_) {} }
   // Wait (bounded) for the visible captcha to be solved/dismissed. Returns true if clear.
+  /* A CAPTCHA is a human check and this does not try to answer one. What it does
+     is make the wait VISIBLE and bounded. A queue job runs in a background tab, so
+     the on-page banner and the scroll-into-view below are drawn where nobody is
+     looking: the old behaviour was to wait silently for three minutes and then let
+     the manager's watchdog kill the job, with nothing in the log explaining why.
+     Now the queue is told, so it can raise a notification, hold off the watchdog
+     while a person is genuinely needed, and show which job is waiting. */
+  function reportCaptcha(provider, blocked) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'UA_JOB_NEEDS_HUMAN',
+        reason: blocked ? 'captcha' : null,
+        provider: provider || '',
+        url: location.href,
+        blocked: !!blocked,
+      }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
   async function waitForCaptchaClear(maxMs = 180000) {
     const start = Date.now();
     let announced = false;
     while (Date.now() - start < maxMs) {
       const c = detectCaptcha();
-      if (!c) { if (announced) { hideCaptchaBanner(); LOG('Captcha cleared — resuming automation'); } return true; }
+      if (!c) {
+        if (announced) { hideCaptchaBanner(); reportCaptcha('', false); LOG('Captcha cleared — resuming automation'); }
+        return true;
+      }
       if (!announced) {
         announced = true;
         showCaptchaBanner(c.provider);
-        LOG(`CAPTCHA (${c.provider}) detected — automation paused, waiting for manual solve`);
+        reportCaptcha(c.provider, true);
+        LOG(`CAPTCHA (${c.provider}) detected — automation paused, waiting for you to solve it`);
         try { c.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
       }
       await sleep(2000);
     }
     hideCaptchaBanner();
-    return !detectCaptcha();
+    const still = !!detectCaptcha();
+    if (announced) reportCaptcha('', false);      // stop holding the watchdog off
+    if (still) LOG('CAPTCHA still present after the wait — giving up on this job');
+    return !still;
   }
   // Resolve once the DOM has been quiet for ~300ms (or after `timeout`) — so we act on a
   // settled page instead of mid-render. Cuts races on multi-step / React forms.
@@ -2074,33 +2546,137 @@
   }
   // Confirmed submission: an explicit success signal, OR we clicked submit, waited out the
   // grace period, and no validation error came back (handles ATS with no success page).
+  /* A job may only be called submitted on real evidence. Previously ANY success
+     signal was enough, so a job could be filled to 100%, never submitted, and still
+     be marked done — the "it skips to the next one without submitting" report. */
   function confirmSubmitted() {
-    if (checkSuccess()) return true;
-    if (_lastSubmitAt && Date.now() - _lastSubmitAt > SUBMIT_GRACE_MS && !pageHasValidationError() && !hasApplicationForm()) return true;
-    return false;
+    if (hardSuccessSignal()) return true;                       // the page says so
+    if (!submitAttempted()) return false;                       // we never pressed submit
+    if (softSuccessSignal()) return true;                       // pressed + confirmation URL
+    // Pressed, the grace window elapsed, no validation error came back, and the
+    // form is gone. That combination only happens after a real submission.
+    return submitAttemptAge() > SUBMIT_GRACE_MS && !pageHasValidationError() && !hasApplicationForm();
   }
 
-  function checkSuccess() {
-    const href = location.href.toLowerCase();
-    if (SUCCESS_URL_RE.test(new URL(location.href).pathname.toLowerCase())) return true;
-    if (/\/thanks|\/thank.you|\/success|\/confirmation|\/submitted|\/done|\/complete|\/applied/i.test(href)) return true;
+  /* HARD evidence: the page itself says the application was submitted. Safe to
+     trust on its own — no ATS renders these unless something really was sent. */
+  function hardSuccessSignal() {
     const body = document.body?.innerText || '';
     if (SUCCESS_TEXT_RE.test(body)) return true;
-    if (/application submitted|thank you for applying|application received|we.ve received your|successfully submitted|application complete|thanks for applying|your application has been|application was submitted|you.ve applied|we have received|you.re all set|application is under review/i.test(body)) return true;
     if ($('#application_confirmation,.application-confirmation,.confirmation-text,.posting-confirmation,.success-message,.submission-confirmation')) return true;
     if ($('[data-automation-id="congratulationsMessage"],[data-automation-id="confirmationMessage"],[data-automation-id="applicationSubmittedPage"]')) return true;
-    // Greenhouse specific
-    if ($('#application_confirmation,#post_application_page,.application-submitted')) return true;
-    // Lever specific
-    if ($('.posting-confirmation,.application-complete')) return true;
-    // iCIMS specific
-    if ($('.iCIMS_ConfirmMessage,.iCIMS_SuccessMessage')) return true;
-    // Generic success toast/alert
-    if ($('[role="alert"],.alert-success,.toast-success')) {
-      const alert = $('[role="alert"],.alert-success,.toast-success');
-      if (alert && /submit|success|thank|received|complete/i.test(alert.textContent || '')) return true;
+    if ($('#post_application_page,.application-submitted')) return true;      // Greenhouse
+    if ($('.application-complete')) return true;                              // Lever
+    if ($('.iCIMS_ConfirmMessage,.iCIMS_SuccessMessage')) return true;        // iCIMS
+    // A status region, but only with confirmation-grade wording. The old test
+    // accepted /submit|success|thank|received|complete/, so the validation error
+    // "Please complete all required fields" counted as a successful submission.
+    for (const el of $$('[role="alert"],[role="status"],.alert-success,.toast-success').slice(0, 12)) {
+      if (SUCCESS_TEXT_RE.test(el.textContent || '')) return true;
     }
     return false;
+  }
+  /* SOFT evidence: consistent with success but also with never having submitted.
+     Only trusted once we know a submit control was actually pressed for this job. */
+  function softSuccessSignal() {
+    try { if (SUCCESS_PATH_RE.test(new URL(location.href).pathname)) return true; } catch (_) {}
+    return false;
+  }
+  function checkSuccess() { return hardSuccessSignal() || (submitAttempted() && softSuccessSignal()); }
+
+  /* ── SUBMIT-CONTROL RECOGNITION (shared by every ATS driver) ───────────────
+     Submit buttons are labelled differently on every platform, and the old test
+     ("does the label START with submit/apply/send/complete/finish") missed most
+     of the real ones while accepting "Apply", which merely opens a form.
+
+     Missed before:  "Review and Submit" · "Accept & Submit" · "I Agree and Submit"
+                     "Confirm and Submit" · "Sign and Submit" · "Send my application"
+                     "Bewerbung absenden" · "Envoyer ma candidature" · "Enviar solicitud"
+     Wrongly matched: "Apply" / "Apply Now" — those OPEN the application, and
+                     clicking one as if it were a submit started the confirmation
+                     grace timer on a form that had not been sent.
+
+     A label qualifies on a whole-word submit verb ANYWHERE in it, minus an
+     explicit exclusion list. Candidates are then scored so the real final action
+     wins over an unrelated "Submit" on the same page (newsletter, search, a
+     support form). */
+  const SUBMIT_POSITIVE_RE = new RegExp([
+    '\\bsubmit\\b',                                  // submit, submit application, review and submit
+    '\\bsubmit(ting)?\\s+(my\\s+)?application\\b',
+    '^\\s*send\\b',                                  // send, send application, send my application
+    '\\bsend\\s+(my\\s+)?(application|cv|r[eé]sum[eé])\\b',
+    '^\\s*(finish|complete)\\s*(my\\s+)?(application)?\\s*$',
+    '\\bcomplete\\s+(my\\s+)?application\\b',
+    '\\bfinish\\s+(and\\s+)?submit\\b',
+    // Common non-English finals. "postuler"/"bewerben" are deliberately absent:
+    // like "Apply", they open the form rather than send it.
+    '\\babsenden\\b', '\\babschicken\\b',          // de
+    '\\benvoyer\\b', '\\bsoumettre\\b',            // fr
+    '\\benviar\\b',                                   // es/pt
+    '\\binvia\\b', '\\binoltra\\b',                // it
+    '\\bverzenden\\b', '\\bversturen\\b',          // nl
+    '\\bwy[sś]lij\\b',                                // pl
+  ].join('|'), 'i');
+
+  const SUBMIT_NEGATIVE_RE = new RegExp([
+    '\\b(cancel|back|previous|prev|close|dismiss|skip)\\b',
+    '\\bsave\\b.*\\b(later|draft|progress)\\b', '\\bsave\\s+(as\\s+)?draft\\b',
+    '\\b(delete|remove|discard|withdraw|clear|reset)\\b',
+    '\\b(sign|log)\\s?in\\b', '\\bcreate\\s+account\\b', '\\bregister\\b',
+    '\\bupload\\b', '\\bbrowse\\b', '\\battach\\b', '\\badd\\b', '\\bedit\\b',
+    '\\bprint\\b', '\\bdownload\\b', '\\bshare\\b', '\\bsearch\\b',
+    '\\bsubscribe\\b', '\\bnewsletter\\b', '\\bfeedback\\b', '\\breport\\b',
+    '\\bcontact\\b', '\\bquestion\\b', '\\bcomment\\b', '\\bchat\\b',
+    '\\bjob\\s+alert', '\\bsave\\s+(this\\s+)?job\\b',
+    // "Apply"/"Apply now" open the application — openApplicationForm() owns them.
+    '^\\s*apply\\b', '\\bapply\\s+now\\b', '\\bapply\\s+(for|to)\\b', '\\beasy\\s+apply\\b',
+  ].join('|'), 'i');
+
+  function controlLabel(el) {
+    try {
+      const raw = (el.innerText || el.textContent || el.value ||
+        (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '');
+      return String(raw).replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+  function isSubmitLabel(text) {
+    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 60) return false;
+    if (SUBMIT_NEGATIVE_RE.test(t)) return false;
+    return SUBMIT_POSITIVE_RE.test(t);
+  }
+
+  /* Pick the most plausible FINAL submit on the page. Scored rather than
+     first-match, because a page can carry several qualifying buttons and the one
+     that ends the application is not necessarily the first in the DOM. */
+  function findSubmitControl() {
+    const enabled = el => el && isVisible(el) && !el.disabled &&
+      el.getAttribute('aria-disabled') !== 'true' && !/\bdisabled\b/.test(el.className || '');
+    const cands = deepQueryAll(
+      'button,input[type="submit"],input[type="button"],a[role="button"],[role="button"],spl-button,oj-button'
+    ).filter(enabled).filter(el => isSubmitLabel(controlLabel(el)));
+    if (!cands.length) return null;
+    if (cands.length === 1) return cands[0];
+
+    const scored = cands.map((el, i) => {
+      const label = controlLabel(el).toLowerCase();
+      let score = 0;
+      if (/\bsubmit\b/.test(label)) score += 4;              // the strongest verb
+      if (/\bapplication\b/.test(label)) score += 3;         // "...application" = the real one
+      if (el.type === 'submit' || el.tagName === 'BUTTON') score += 1;
+      // Inside the form that holds the most inputs — i.e. the application itself,
+      // not a newsletter box that happens to have a Submit.
+      try {
+        const form = el.closest('form');
+        if (form) score += Math.min(3, form.querySelectorAll('input,select,textarea').length / 5);
+      } catch (_) {}
+      // Final actions sit at the bottom of the page.
+      try { score += Math.min(2, (el.getBoundingClientRect().top + window.scrollY) / Math.max(1, document.body.scrollHeight) * 2); } catch (_) {}
+      score += i / (cands.length * 10);                      // stable tiebreak: later wins
+      return { el, score, label };
+    }).sort((a, b) => b.score - a.score);
+    LOG('Submit candidates: ' + scored.map(x => `"${x.label}"(${x.score.toFixed(1)})`).join(', '));
+    return scored[0].el;
   }
 
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
@@ -2124,7 +2700,16 @@
       await sleep(300);
       missing = getMissingRequired();
     }
-    LOG(`Missing required: ${missing.length}`, missing);
+    if (missing.length) {
+      // Third pass, after a longer wait: SPA forms mount fields after first paint,
+      // so the earlier sweeps genuinely could not see them yet.
+      await sleep(1500);
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await sleep(300);
+      missing = getMissingRequired();
+    }
+    logFillReport('Before submit');
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
     // button's own enabled/disabled state, not on our heuristic missing-field count)
@@ -2132,8 +2717,8 @@
       'button[type="submit"]', 'input[type="submit"]',
       'button[data-automation-id="submit"]', 'button[data-automation-id="submitButton"]',
       '#submit_app', '.postings-btn-submit', 'button.application-submit',
-      'button[data-qa="btn-submit"]', 'button[aria-label*="Submit" i]', 'button[aria-label*="Apply" i]',
-      '[data-testid="submit-application"]', '[data-testid="submit-button"]', '[data-testid="apply-button"]',
+      'button[data-qa="btn-submit"]', 'button[aria-label*="Submit" i]',
+      '[data-testid="submit-application"]', '[data-testid="submit-button"]',
       'button.btn-submit', '#resumeSubmitForm',
       'div.form-group.submit-button button.btn.btn-primary',
       '.application-submit-button', '#application-submit', '[name="submit_app"]',
@@ -2152,16 +2737,23 @@
     const submitEnabled = el => el && isVisible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
     for (const sel of submitSels) {
       const btn = $(sel);
-      if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await sleep(500); realClick(btn); _lastSubmitAt = Date.now(); return 'submitted'; }
+      if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
     }
     // Fallback: button by text
     {
-      const btns = $$('button,a[role="button"],input[type="submit"]').filter(submitEnabled);
-      const submitBtn = btns.find(b => {
-        const t = (b.textContent || b.value || '').trim().toLowerCase();
-        return /^(submit|apply|send|complete|finish)\b/i.test(t) && !/cancel|back|prev|close/i.test(t);
-      });
-      if (submitBtn) { LOG('Clicking submit (text):', submitBtn.textContent?.trim()); await sleep(500); realClick(submitBtn); _lastSubmitAt = Date.now(); return 'submitted'; }
+      // Label-based, shadow-piercing, scored. Covers the long tail of wordings
+      // across platforms ("Submit Application", "Review and Submit", "Accept &
+      // Submit", "Send my application", "Bewerbung absenden", …) and reaches the
+      // submit buttons that live inside web-component shadow roots.
+      const submitBtn = findSubmitControl();
+      if (submitBtn) {
+        LOG('Clicking submit: "' + controlLabel(submitBtn) + '"');
+        scrollIfNeeded(submitBtn);
+        await sleep(500);
+        realClick(submitBtn);
+        markSubmitAttempt();
+        return 'submitted';
+      }
     }
 
     // Also try Jobright's continue-button
@@ -2221,8 +2813,34 @@
     return false;
   }
 
+  /* How complete is this form right now? Reported after every fill pass so the
+     queue log says exactly which required fields were left, instead of the run
+     silently moving on and leaving you to guess. */
+  function fillReport() {
+    const required = deepAll('input:not([type=hidden]),textarea,select')
+      .filter(el => isVisible(el) && isFieldRequired(el));
+    const missing = getMissingRequired();
+    const missingLabels = [];
+    const seen = new Set();
+    for (const el of missing.slice(0, 20)) {
+      const l = (getLabel(el) || el.name || el.id || '(unlabelled)').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (l && !seen.has(l)) { seen.add(l); missingLabels.push(l); }
+    }
+    const total = required.length;
+    const done = Math.max(0, total - missing.length);
+    return { total, done, missing: missing.length, missingLabels, pct: total ? Math.round(done / total * 100) : 100 };
+  }
+  function logFillReport(where) {
+    try {
+      const r = fillReport();
+      LOG(`${where}: ${r.done}/${r.total} required fields filled (${r.pct}%)` +
+        (r.missingLabels.length ? ' — still missing: ' + r.missingLabels.join(' | ') : ''));
+      return r;
+    } catch (_) { return null; }
+  }
+
   function getMissingRequired() {
-    const required = $$('input:not([type=hidden]),textarea,select').filter(el => isVisible(el) && isFieldRequired(el));
+    const required = deepAll('input:not([type=hidden]),textarea,select').filter(el => isVisible(el) && isFieldRequired(el));
     const missing = [];
     // Dedupe named radio groups — without this, an unanswered Yes/No question reported
     // BOTH of its radio options as separate "missing" entries (inflating the count and,
@@ -2233,7 +2851,7 @@
         if (el.name) {
           if (seenRadioGroups.has(el.name)) continue; // this group already evaluated
           seenRadioGroups.add(el.name);
-          const group = $$(`input[type="radio"][name="${CSS.escape(el.name)}"]`).filter(isVisible);
+          const group = deepAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`).filter(isVisible);
           if (group.some(r => r.checked)) continue;
         } else if (el.checked) continue;
       } else if (el.type === 'checkbox') {
@@ -2354,6 +2972,9 @@
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping multi-page loop'); break; }
       if (checkSuccess()) { LOG('Success detected — stopping multi-page loop'); break; }
+      // A modal confirm swallows every subsequent click and looks exactly like a
+      // page that refuses to advance. Resolve it before spending a page budget.
+      await resolveBlockingDialog();
       // A visible captcha blocks every next step — pause for the user instead of
       // burning the page budget on retries that can't succeed.
       if (detectCaptcha()) await waitForCaptchaClear();
@@ -4405,7 +5026,7 @@
   async function handleValidationErrors() {
     // Wait a moment for validation to trigger
     await sleep(500);
-    const errors = $$('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
+    const errors = deepAll('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
       .filter(el => isVisible(el) && el.textContent?.trim());
 
     if (!errors.length) return 0;
@@ -4445,7 +5066,7 @@
       if (!val) continue;
 
       if (inp.tagName === 'SELECT') {
-        const opt = $$('option', inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+        const opt = deepAll('option', inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
         if (opt) { setSelectValue(inp, opt.value); fixed++; }
       } else {
         inp.focus({ preventScroll: true }); nativeSet(inp, val); fixed++;
@@ -4454,7 +5075,7 @@
     }
 
     // Also handle aria-invalid fields directly
-    const invalidFields = $$('[aria-invalid="true"]').filter(el => isVisible(el) && !hasFieldValue(el));
+    const invalidFields = deepAll('[aria-invalid="true"]').filter(el => isVisible(el) && !hasFieldValue(el));
     for (const inp of invalidFields) {
       const lbl = getLabel(inp);
       const val = guessFieldValue(lbl, p, inp);
@@ -4487,16 +5108,36 @@
   }
 
   // ===================== KEYBOARD SHORTCUTS =====================
+  // Is the user typing? document.activeElement stops at a shadow boundary and
+  // reports the HOST element, so on SmartRecruiters/Workday forms it says
+  // "SPL-INPUT" rather than "INPUT" and the old check waved the keystroke
+  // through. Walk into the shadow tree, and treat contenteditable as typing too.
+  function isTypingTarget() {
+    try {
+      let el = document.activeElement;
+      for (let i = 0; i < 5 && el && el.shadowRoot && el.shadowRoot.activeElement; i++) el = el.shadowRoot.activeElement;
+      if (!el) return false;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return true;
+      if (el.isContentEditable) return true;
+      if (el.getAttribute && el.getAttribute('role') === 'textbox') return true;
+      return false;
+    } catch (_) { return true; }   // unsure → assume typing, never steal the key
+  }
+
   function setupKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
-      // Only when no input is focused
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+      if (isTypingTarget()) return;
       if (!e.altKey) return;
 
       switch (e.key.toLowerCase()) {
-        case 'a': // Alt+A: Toggle Fully Automated
+        // Alt+A is a KILL SWITCH, not a toggle. Turning Fully Automated ON is a
+        // deliberate act and must go through the on-screen switch: a stray Alt+A
+        // (plenty of sites and OS layouts use it) was silently turning automation
+        // back on and starting an application on the spot.
+        case 'a':
           e.preventDefault();
-          setAutoApply(!autoApply, true);
+          if (autoApply) setAutoApply(false, false, 'Alt+A');
+          else LOG('Alt+A ignored — turn Fully Automated ON with the switch, not a shortcut');
           break;
         case 'q': // Alt+Q: Toggle drawer
           e.preventDefault();
@@ -4887,10 +5528,14 @@
 
   async function processManagedJob(c) {
     LOG(`Manager mode: driving "${c.title || c.url}"`);
+    // Native confirm/alert would block this tab's JS thread outright, so the
+    // MAIN-world hooks answer them for the lifetime of this job (and only then).
+    setAutomationFlag(true);
     let finalized = false, tId = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
       clearTimeout(tId);
+      setAutomationFlag(false);
       const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
       Object.assign(c, patch);
       // Fresh read-modify-write on ua_q: parallel job tabs each hold their own copy of
@@ -4936,7 +5581,7 @@
         return void await finalize('skipped', 'No application form found');
       }
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
-      _lastSubmitAt = 0;
+      clearSubmitAttempt();   // this job has not submitted anything yet
       let success = false, validationStuck = false;
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
         await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation');
@@ -4961,7 +5606,7 @@
       }
       if (finalized) return;
       if (success) await finalize('done', null);
-      else await finalize('failed', validationStuck ? 'Validation errors could not be resolved' : 'Could not confirm submission after retries');
+      else await finalize('failed', submitFailureReason(validationStuck));
     } catch (e) {
       if (!finalized) await finalize('failed', e?.message || String(e));
     }
@@ -5043,6 +5688,7 @@
     if (!qActive || qPaused || !queue.length) return;
     // Only the dedicated runner tab drives the queue — never hijack other tabs.
     if (!isRunnerTab()) return;
+    setAutomationFlag(true);
     const c = queue.find(j => j.status === 'applying');
     if (c) {
       try {
@@ -5122,7 +5768,7 @@
           // Verification uses OptimHire-style signals: an explicit success page/text, OR
           // a submit-click followed by an 8s grace window with no validation error. A
           // persistent validation error fast-fails instead of waiting the whole timeout.
-          _lastSubmitAt = 0; // reset the grace timer for this job
+          clearSubmitAttempt(); // no submit evidence carried over from the previous job
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
@@ -5173,7 +5819,7 @@
             // Could not confirm submission — mark failed (not a false "done") so the
             // user can see it didn't complete, and don't silently skip it as applied.
             c.status = 'failed';
-            c.error = validationStuck ? 'Validation errors could not be resolved' : 'Could not confirm submission after retries';
+            c.error = submitFailureReason(validationStuck);
             qStats.failed++;
             LOG('Queue job: submission NOT confirmed' + (validationStuck ? ' (validation stuck)' : '') + ' — marked failed');
             await recordApplication(c.url, c.title, 'failed', c.jobBoard, c.duration);
@@ -5226,6 +5872,7 @@
       st.set(SK.QA, false);
       st.set('ua_q_stopped_at', -1);
       unmarkRunnerTab(); // free this tab — run finished
+      setAutomationFlag(false); // native dialogs behave normally again
       // LazyApply-style: completion summary
       LOG('Queue complete — all jobs processed');
       const done = queue.filter(j => j.status === 'done').length;
@@ -5269,6 +5916,7 @@
     clearTimeout(_qTimeoutId);
     qActive = false; qPaused = false;
     unmarkRunnerTab();
+    setAutomationFlag(false);
     await st.set(SK.QA, false); await st.set(SK.QP, false);
     // LazyApply: save stop point for session resumption
     const applyingIdx = queue.findIndex(j => j.status === 'applying');
@@ -5327,7 +5975,7 @@
 
   // LazyApply-inspired: form analysis (check how many fields are on current page)
   function analyzeCurrentForm() {
-    const fields = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select').filter(isVisible);
+    const fields = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select').filter(isVisible);
     const filled = fields.filter(hasFieldValue).length;
     const required = fields.filter(isFieldRequired).length;
     const requiredFilled = fields.filter(f => isFieldRequired(f) && hasFieldValue(f)).length;
@@ -6371,7 +7019,7 @@
   // ===================== DRAWER EVENTS =====================
   function bindDrawer() {
     const tog = document.getElementById('ua-aa'); tog.checked = autoApply;
-    tog.addEventListener('change', e => { setAutoApply(e.target.checked, true); });
+    tog.addEventListener('change', e => { setAutoApply(e.target.checked, true, 'drawer checkbox'); });
 
     const drop = document.getElementById('ua-drop'), csv = document.getElementById('ua-csv');
     drop.addEventListener('click', () => csv.click());
@@ -7105,13 +7753,18 @@
   // automation on its own — no clicking Apply, Apply Manually, account creation, or
   // submit. The preference is persisted (SK.AA) and shared with the Alt+A shortcut and
   // the advanced-drawer checkbox.
-  async function setAutoApply(val, startNow) {
+  async function setAutoApply(val, startNow, source) {
     autoApply = !!val;
+    // Persisted immediately, so the choice survives a reload, a new tab, a
+    // browser restart and a service-worker recycle. Nothing else in the
+    // extension writes this key.
     try { await st.set(SK.AA, autoApply); } catch (_) {}
     paintAutoToggle();
     try { const d = document.getElementById('ua-aa'); if (d) d.checked = autoApply; } catch (_) {}
     try { updateStat(); } catch (_) {}
-    LOG('Fully Automated toggled ' + (autoApply ? 'ON' : 'OFF'));
+    // The source is logged so that if the switch ever appears to move on its own
+    // again, the log names what moved it.
+    LOG(`Fully Automated toggled ${autoApply ? 'ON' : 'OFF'} (by ${source || 'unknown'})`);
     if (autoApply && startNow && (detectATS() || isWorkday())) {
       LOG('Fully Automated ON — starting full automation for ' + (detectATS() || 'Workday'));
       if (isWorkday()) startWorkdayAccountWatch();
@@ -7159,7 +7812,7 @@
         </button>
       </div>
       <button id="ua-fa-gaps" type="button" title="Fill the location / visa-sponsorship / EEO fields Jobright left blank (Alt+F)" style="width:100%;margin-top:9px;padding:7px;border:1px solid #1c5743;border-radius:8px;background:transparent;color:#9ff5d3;font-size:11px;font-weight:600;cursor:pointer">🩹 Fill gaps Jobright missed</button>`;
-    card.querySelector('#ua-fa-toggle').addEventListener('click', () => setAutoApply(!autoApply, true));
+    card.querySelector('#ua-fa-toggle').addEventListener('click', () => setAutoApply(!autoApply, true, 'switch'));
     card.querySelector('#ua-fa-gaps').addEventListener('click', async (ev) => {
       const b = ev.currentTarget; const t = b.textContent; b.textContent = 'Filling…'; b.disabled = true;
       try { await resolveLocationFields(); await answerChoiceGroups(); await fallbackFill(); await guaranteeRequiredFields(); }
@@ -7369,9 +8022,9 @@
   // queue lands on the listing, finds no fields, and times out. We click through to
   // the actual application form first.
   function hasApplicationForm() {
-    const hasFile = $$('input[type=file]').some(isVisible);
+    const hasFile = deepAll('input[type=file]').some(isVisible);
     if (hasFile) return true;
-    const fields = $$('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter(isVisible);
+    const fields = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter(isVisible);
     return fields.length >= 3;
   }
   const APPLY_TEXT_RE = /^(apply now|apply for this job|apply to this job|apply online|easy apply|quick apply|apply with|i'?m interested|start (your )?application|begin application|continue application|apply)\b/i;
@@ -7583,9 +8236,362 @@
     } catch (e) { LOG('handleAccountAuth error:', e?.message || e); return false; }
   }
 
+  // ===================== BLOCKING-DIALOG RESOLVER =====================
+  // The MAIN-world hooks (ua-page-hooks.js) handle NATIVE confirm/alert. This
+  // handles the other half: in-page modals that trap the flow the same way. A
+  // destructive one ("Remove <file>?") is answered NO so the uploaded résumé
+  // survives; a proceed-style one ("Submit your application?") is answered YES so
+  // the run isn't stalled by a confirmation step.
+  const DIALOG_SEL = '[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog[open],.modal.show,.modal.in,[class*="Modal" i][class*="open" i],spl-modal,spl-dialog';
+  const DESTRUCTIVE_DIALOG_RE =
+    /\b(remove|delete|discard|erase|clear|withdraw|revert|unattach)\b[^.?!]{0,80}[?]|^\s*(remove|delete|discard)\b/i;
+  const NEGATIVE_BTN_RE = /^\s*(cancel|no|keep|don'?t|do not|dismiss|go back|nevermind|never mind|close)\s*$/i;
+  const POSITIVE_BTN_RE = /^\s*(ok|okay|yes|confirm|continue|proceed|submit|accept|agree|got it|i understand)\s*$/i;
+
+  function visibleDialogs() {
+    return deepQueryAll(DIALOG_SEL).filter(d => {
+      try { return isVisible(d) && (d.textContent || '').trim().length > 0; } catch (_) { return false; }
+    });
+  }
+  function dialogButtons(d) {
+    return deepQueryAll('button,[role="button"],a[role="button"],input[type="button"],input[type="submit"],spl-button', d)
+      .filter(isVisible);
+  }
+  // Returns true if it resolved something (caller should re-check the page).
+  async function resolveBlockingDialog() {
+    let acted = false;
+    for (const d of visibleDialogs()) {
+      const text = (d.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!text) continue;
+      const btns = dialogButtons(d);
+      if (!btns.length) continue;
+      const named = btns.map(b => ({ b, n: (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim() }));
+      const destructive = DESTRUCTIVE_DIALOG_RE.test(text);
+      const want = destructive ? NEGATIVE_BTN_RE : POSITIVE_BTN_RE;
+      const hit = named.find(x => want.test(x.n));
+      if (hit) {
+        LOG(`Blocking dialog resolved (${destructive ? 'declined' : 'accepted'}): "${text.slice(0, 80)}" → "${hit.n}"`);
+        realClick(hit.b, { force: true });   // force: the button may be named "Cancel"/"Close"
+        acted = true;
+        await sleep(600);
+        continue;
+      }
+      if (destructive) {
+        // No explicit Cancel — Escape is the safe answer; never fall through to
+        // whatever button happens to be first, which could be "Remove".
+        try { d.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true, composed: true })); } catch (_) {}
+        try { if (typeof d.close === 'function') d.close(); } catch (_) {}
+        LOG(`Blocking dialog escaped: "${text.slice(0, 80)}"`);
+        acted = true;
+        await sleep(600);
+      }
+    }
+    return acted;
+  }
+
+  // Tell the MAIN-world hooks whether the automation currently owns this tab.
+  // While this is off, native dialogs behave exactly as the site intended.
+  function setAutomationFlag(on) {
+    try {
+      const el = document.documentElement;
+      if (!el) return;
+      if (on) el.setAttribute('data-ua-auto', '1');
+      else el.removeAttribute('data-ua-auto');
+    } catch (_) {}
+  }
+  // Surface anything the page tried to ask us, so a swallowed dialog shows up in
+  // the log instead of being invisible.
+  try {
+    window.addEventListener('ua-native-dialog', (e) => {
+      const d = (e && e.detail) || {};
+      LOG(`Native ${d.kind} intercepted: "${String(d.message || '').slice(0, 100)}"` +
+        (d.answer === null || d.answer === undefined ? ' (dismissed)' : ` → answered ${d.answer ? 'YES' : 'NO'}`));
+    });
+  } catch (_) {}
+
+  // ===================== NEW-ATS SUPPORT PACK =====================
+  // Detection for the platforms the CSV runs kept landing on. Kept as predicates
+  // (not just URL regexes in one big list) so the dispatcher and the eligibility
+  // gate agree on what a page is.
+  function isSmartRecruiters() { return /(^|\.)smartrecruiters\.com$/i.test(location.hostname) || /smartrecruiters/i.test(location.href); }
+  // Oracle Recruiting Cloud (Fusion). Served from *.oraclecloud.com AND white-labelled
+  // onto company domains — the /hcmUI/CandidateExperience path is the reliable tell.
+  function isOracleCloud() {
+    return /(^|\.)oraclecloud\.com$/i.test(location.hostname) ||
+      /\/hcmUI\/CandidateExperience/i.test(location.pathname) ||
+      /oraclecloud\.com|\/hcmUI\/CandidateExperience/i.test(location.href);
+  }
+  function isTaleo() { return /(^|\.)taleo\.net$/i.test(location.hostname) || /\/careersection\//i.test(location.pathname); }
+  // ADP's candidate portal (myjobs.adp.com) is a different application from the
+  // recruiter-side workforcenow.adp.com flow the old driver targeted.
+  function isAdpMyJobs() { return /(^|\.)myjobs\.adp\.com$/i.test(location.hostname); }
+  function isAdpAny() { return isAdpMyJobs() || /(^|\.)(adp\.com|workforcenow\.adp\.com)$/i.test(location.hostname); }
+
+  /* ── SmartRecruiters ───────────────────────────────────────────────────────
+     Rewritten for the current Spark (`spl-*`) UI. The previous driver queried
+     `#firstName` etc. against `document`, which cannot cross the shadow roots
+     those components live in, so it filled nothing and then clicked around the
+     page — which is how it reached the résumé's remove button in the first place.
+     Everything here goes through the deep queries and a pointer sequence, because
+     spl components ignore a bare .click(). */
+  async function splSetInput(el, val) {
+    if (!el || !val) return false;
+    // spl-input wraps a real <input> in its shadow root.
+    const inner = el.tagName && el.tagName.toLowerCase().startsWith('spl-')
+      ? (el.shadowRoot && el.shadowRoot.querySelector('input,textarea')) || el.querySelector('input,textarea')
+      : el;
+    if (!inner) return false;
+    try { inner.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(inner, val);
+    await sleep(120);
+    return true;
+  }
+  // SmartRecruiters combobox: role="combobox" + aria-controls → a listbox of
+  // <spl-select-option>. The option only commits when the pointer sequence lands
+  // on its inner typography node.
+  async function splPickOption(combo, wanted) {
+    if (!combo) return false;
+    const id = combo.getAttribute('aria-controls') || combo.getAttribute('ariacontrols') || combo.getAttribute('list');
+    triggerMouse(combo);
+    await sleep(700);
+    let list = null;
+    if (id) { try { list = deepQuery('#' + CSS.escape(id)); } catch (_) { list = null; } }
+    const options = (list ? deepQueryAll('spl-select-option,[role="option"]', list) : deepQueryAll('spl-select-option,[role="option"]'))
+      .filter(isVisible);
+    if (!options.length) return false;
+    const norm = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+    const target = norm(wanted);
+    let pick = options.find(o => norm(o.innerText || o.textContent) === target);
+    if (!pick && target) pick = options.find(o => norm(o.innerText || o.textContent).includes(target));
+    if (!pick) return false;
+    const inner = pick.querySelector('spl-typography-body') ||
+      (pick.shadowRoot && pick.shadowRoot.querySelector('spl-typography-body,span,div')) || pick;
+    triggerMouse(inner);
+    await sleep(300);
+    return true;
+  }
+  async function smartRecruitersAutomation() {
+    LOG('SmartRecruiters automation starting (shadow-aware)...');
+    const p = await getProfile();
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    // Job page → application form.
+    if (!/\/(apply|publication)/i.test(location.pathname)) {
+      const apply = deepQueryAll('button,a,spl-button')
+        .filter(isVisible)
+        .find(b => /^\s*(apply|i'?m interested|apply now|start application)\b/i.test((b.textContent || '').trim()));
+      if (apply) { LOG('SmartRecruiters: opening the application'); realClick(apply); await sleep(3000); }
+    }
+
+    const loc = p.city ? [p.city, p.state || p.region || '', p.country || DEFAULTS.country].filter(Boolean).join(', ') : '';
+    const byName = {
+      firstName: p.first_name || p.firstName || '',
+      lastName: p.last_name || p.lastName || '',
+      email: p.email || '',
+      phoneNumber: p.phone || '',
+      phone: p.phone || '',
+      location: loc,
+    };
+
+    const MAX_STEPS = 10;
+    for (let step = 1; step <= MAX_STEPS; step++) {
+      if (checkSuccess()) { LOG('SmartRecruiters: submission confirmed'); break; }
+      await resolveBlockingDialog();
+      LOG(`SmartRecruiters: step ${step}`);
+
+      // Named fields, shadow-aware.
+      for (const [name, val] of Object.entries(byName)) {
+        if (!val) continue;
+        const el = deepQuery(`spl-input[id="${name}"],spl-input[name="${name}"],#${name},input[name="${name}"],input[id="${name}"]`);
+        if (el) {
+          const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || (el.querySelector && el.querySelector('input')) || el;
+          if (inner && !(inner.value || '').trim()) await splSetInput(el, val);
+        }
+      }
+
+      // Location typeahead needs its suggestion committed, or SmartRecruiters
+      // rejects the step with "Please select a location from the list".
+      if (loc) {
+        const locCombo = deepQueryAll('[role="combobox"],spl-input[id="location"]').filter(isVisible)[0];
+        if (locCombo) await splPickOption(locCombo, p.city || loc);
+      }
+
+      // Every remaining combobox: answer from the bank, else take the first real option
+      // so a required dropdown can never be what blocks the submit.
+      for (const combo of deepQueryAll('[role="combobox"][aria-haspopup="listbox"],[ariarole="combobox"]').filter(isVisible)) {
+        const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input') || combo;
+        if (inner && (inner.value || '').trim()) continue;      // already answered
+        const q = getFullQuestionText(combo) || getLabel(combo) || '';
+        const guess = q ? guessFieldValue(q, p, combo) : '';
+        if (!(await splPickOption(combo, guess))) await splPickOption(combo, '');
+        await sleep(200);
+      }
+
+      // spl-radio groups (Yes/No knockouts).
+      for (const group of deepQueryAll('fieldset[role="radiogroup"],[role="radiogroup"]').filter(isVisible)) {
+        const already = deepQueryAll('spl-radio[checked],input[type="radio"]:checked', group);
+        if (already.length) continue;
+        const q = (group.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        const want = String(guessFieldValue(q, p, group) || 'yes').toLowerCase();
+        const radios = deepQueryAll('spl-radio,input[type="radio"]', group).filter(isVisible);
+        const labelOf = r => ((r.shadowRoot && r.shadowRoot.querySelector('label')?.textContent) || r.textContent || r.value || '').trim().toLowerCase();
+        const pick = radios.find(r => labelOf(r) === want) || radios.find(r => labelOf(r).includes(want)) || radios[0];
+        if (pick) { triggerMouse(pick); await sleep(150); }
+      }
+
+      // Consent boxes.
+      for (const cb of deepQueryAll('input[type="checkbox"],spl-checkbox').filter(isVisible)) {
+        const checked = cb.checked || cb.hasAttribute('checked');
+        if (checked) continue;
+        const lbl = getLabel(cb) || (cb.textContent || '');
+        if (/consent|agree|privacy|gdpr|terms|data.?process|acknowledg/i.test(lbl)) { triggerMouse(cb); await sleep(120); }
+      }
+
+      await fallbackFill();
+      await triggerAutofillQuick();
+      await sleep(800);
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+      await resolveBlockingDialog();
+
+      // Advance. Text-matched so it survives SmartRecruiters renaming its test ids.
+      const buttons = deepQueryAll('button,spl-button,[role="button"]').filter(isVisible);
+      const nameOf = b => (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      const submit = findSubmitControl() || buttons.find(b => isSubmitLabel(nameOf(b)));
+      if (submit) {
+        LOG('SmartRecruiters: submitting via "' + controlLabel(submit) + '"');
+        realClick(submit);
+        markSubmitAttempt();
+        await sleep(3500);
+        await resolveBlockingDialog();
+        break;
+      }
+      const next = buttons.find(b => /^\s*(next|continue|save (and|&) continue|review)\b/i.test(nameOf(b)));
+      if (next) { LOG('SmartRecruiters: next step'); realClick(next); await sleep(2800); continue; }
+      break;
+    }
+    learnFromFilledFields();
+    LOG('SmartRecruiters automation complete');
+  }
+
+  /* ── Oracle Recruiting Cloud (Fusion) + Taleo ──────────────────────────────
+     Oracle ships two unrelated candidate products and a CSV run hits both:
+       • Oracle Recruiting Cloud / Fusion — *.oraclecloud.com/hcmUI/CandidateExperience,
+         an Oracle JET app (oj-* components, some in shadow roots).
+       • Classic Taleo — *.taleo.net/careersection, server-rendered, frames, and
+         numeric field ids that differ per tenant, so it has to be label-driven. */
+  async function oracleCloudAutomation() {
+    LOG('Oracle Recruiting Cloud automation starting...');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    // Requisition page → application. Oracle labels this "Apply" / "Apply Now".
+    const applyNames = /^\s*(apply|apply now|apply for (this )?job|start( your)? application)\b/i;
+    for (let i = 0; i < 3; i++) {
+      if (/\/apply/i.test(location.href) || deepQuery('input,select,textarea,oj-input-text')) break;
+      const apply = deepQueryAll('button,a,oj-button').filter(isVisible)
+        .find(b => applyNames.test((b.textContent || b.getAttribute('title') || '').trim()));
+      if (!apply) break;
+      LOG('Oracle: opening the application');
+      realClick(apply);
+      await sleep(3000);
+    }
+
+    // Oracle asks for an account before the form on many tenants; the shared
+    // credential flow already knows how to satisfy that.
+    await handleAccountAuth();
+    await resolveBlockingDialog();
+
+    // Oracle's flow is a train of numbered blocks with one primary action; the
+    // universal multi-page driver handles it once fields are filled.
+    for (let step = 1; step <= 12; step++) {
+      if (checkSuccess()) break;
+      await resolveBlockingDialog();
+      await waitForFormStable(2500);
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+
+      const r = await autoSubmitOrNext();
+      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'next_page') { await sleep(2500); continue; }
+
+      // Oracle's own wording, when the generic pass found nothing to click.
+      const sub = findSubmitControl();
+      if (sub) { LOG('Oracle: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
+      const btn = deepQueryAll('button,oj-button,a[role="button"]').filter(isVisible)
+        .find(b => /^\s*(continue|next|review|save and continue)\b/i.test((b.textContent || '').trim()));
+      if (!btn) break;
+      realClick(btn);
+      await sleep(2500);
+    }
+    learnFromFilledFields();
+    LOG('Oracle Recruiting Cloud automation complete');
+  }
+
+  /* ── ADP myjobs.adp.com ────────────────────────────────────────────────────
+     ADP's candidate experience (CX) app — a different product from the
+     workforcenow.adp.com flow the old adpAutomation() targeted, which is why
+     myjobs links fell through to the generic path and stalled. */
+  async function adpMyJobsAutomation() {
+    LOG('ADP myjobs automation starting...');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    // Listing / preview → application.
+    for (let i = 0; i < 3; i++) {
+      if (/\/(apply|application)/i.test(location.pathname)) break;
+      const apply = deepQueryAll('button,a').filter(isVisible)
+        .find(b => /^\s*(apply|apply now|apply to (this )?job|start application)\b/i.test((b.textContent || '').trim()));
+      if (!apply) break;
+      LOG('ADP: opening the application');
+      realClick(apply);
+      await sleep(3000);
+    }
+    await handleAccountAuth();
+
+    for (let step = 1; step <= 12; step++) {
+      if (checkSuccess()) break;
+      await resolveBlockingDialog();
+      await waitForFormStable(2500);
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+
+      const r = await autoSubmitOrNext();
+      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'next_page') { await sleep(2500); continue; }
+
+      const sub = findSubmitControl();
+      if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
+      const btn = deepQueryAll('button,a[role="button"]').filter(isVisible)
+        .find(b => /^\s*(next|continue|review)\b/i.test((b.textContent || '').trim()));
+      if (!btn) break;
+      realClick(btn);
+      await sleep(2500);
+    }
+    learnFromFilledFields();
+    LOG('ADP myjobs automation complete');
+  }
+
   // ===================== ATS DISPATCHER =====================
   async function dispatchATSAutomation() {
-    if (autoStopped()) { LOG('dispatchATSAutomation: Fully Automated is off — not running'); return; }
+    if (autoStopped()) { LOG(`dispatchATSAutomation: not running (${window.__uaAutoReason ? window.__uaAutoReason() : 'automation off'})`); return; }
+    // A queue job or the in-page runner owns the flag for its whole lifetime; a
+    // Fully-Automated dispatch only borrows it and must hand it back. Leaving it
+    // set kept the automation gate open on this page even after the toggle was
+    // switched off, which is one of the ways automation "kept firing".
+    const ownedElsewhere = (() => {
+      try { return document.documentElement.getAttribute('data-ua-auto') === '1'; } catch (_) { return false; }
+    })();
+    setAutomationFlag(true);
+    try {
+    // A modal left open by a previous step swallows every click that follows, so
+    // clear one before doing anything else.
+    await resolveBlockingDialog();
     // Reveal the application form first if we're on a listing/landing page.
     await openApplicationForm();
     // Create an account / sign in with saved credentials if the ATS requires it.
@@ -7599,8 +8605,12 @@
     else if (/linkedin\.com.*\/jobs/i.test(url)) await linkedinEasyApply();
     else if (/ashbyhq\.com/i.test(url)) await ashbyAutomation();
     else if (/bamboohr\.com/i.test(url)) await bamboohrAutomation();
-    else if (/smartrecruiters\.com/i.test(url)) await smartRecruitersAutomation();
-    else if (/taleo\.net|oraclecloud\.com.*Candidate/i.test(url)) await taleoAutomation();
+    else if (isSmartRecruiters()) await smartRecruitersAutomation();
+    // Oracle ships two different candidate products — route each to its own driver
+    // instead of sending every oraclecloud URL through the classic-Taleo flow.
+    else if (isOracleCloud()) await oracleCloudAutomation();
+    else if (isTaleo()) await taleoAutomation();
+    else if (isAdpMyJobs()) await adpMyJobsAutomation();
     else if (/jobvite\.com/i.test(url)) await jobviteAutomation();
     else if (/workable\.com/i.test(url)) await workableAutomation();
     else if (/indeed\.com/i.test(url)) await indeedEasyApply();
@@ -7615,8 +8625,13 @@
     else await tailorFirstFlow();
     // …then a UNIVERSAL completion driver for EVERY ATS: if the application isn't
     // confirmed submitted yet, self-navigate the remaining steps (account walls,
-    // multi-page forms, review/confirm screens) until it is.
-    if (!checkSuccess()) await multiPageLoop();
+    // multi-page forms, review/confirm screens) until it is. Gated on
+    // confirmSubmitted(), not checkSuccess(): a confirmation-looking URL alone is
+    // not a reason to skip pressing Submit.
+    if (!confirmSubmitted()) await multiPageLoop();
+    } finally {
+      if (!ownedElsewhere) setAutomationFlag(false);
+    }
   }
 
   // ===================== INIT =====================
@@ -7653,8 +8668,36 @@
     } catch (_) {}
   }
 
+  /* A frame that is NOT the top frame runs a fill-only path. Greenhouse embeds,
+     iCIMS, SuccessFactors, Taleo and BrassRing put the real application form in a
+     CROSS-ORIGIN iframe, which the top document cannot reach at all — no shadow or
+     same-origin walk gets there. The orchestrator injects this script into those
+     frames for queue jobs; here we fill what is in front of us and let the top
+     frame own navigation and submission. */
+  async function initSubframe() {
+    if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return;   // never during manual use
+    // Only frames that actually hold form fields — not ad or tracking frames.
+    const fields = () => deepAll('input:not([type=hidden]),textarea,select').filter(isVisible);
+    if (fields().length < 2) return;
+    LOG(`Sub-frame fill mode (${location.hostname}) — ${fields().length} fields`);
+    try { await load(); } catch (_) {}
+    try { await loadAnswerBank(); await loadSavedResponses(); await loadAppHistory(); await loadCustomDefaults(); } catch (_) {}
+    // A few bounded passes: the embedded form may mount its fields late, and the
+    // top frame may advance it to a second page inside the same frame.
+    for (let pass = 0; pass < 6; pass++) {
+      if (!window.__uaAutoAllowed()) return;
+      try {
+        await fallbackFill();
+        await guaranteeRequiredFields();
+        await handleValidationErrors();
+        logFillReport('Sub-frame pass ' + (pass + 1));
+      } catch (e) { LOG('Sub-frame fill error:', e?.message || e); }
+      await sleep(4000);
+    }
+  }
+
   async function init() {
-    if (window.self !== window.top) return;
+    if (window.self !== window.top) { initSubframe().catch(() => {}); return; }
     // Show the control panel IMMEDIATELY in the runner tab (before any awaits), so
     // Skip/Pause/Quit are available the instant each job page renders — no gap.
     if (isRunnerTab()) ensureOverlay();
@@ -7836,8 +8879,11 @@
 })();
 
 // === AUTO-DISMISS "Are you sure to autofill again" CONFIRMATION POPUP ===
-// This popup from the Jobright extension interferes with autofill flow.
-// We auto-click "Yes" whenever it appears, including checking shadow DOMs.
+// Jobright asks this before re-running autofill. Auto-answering "Yes" is only
+// correct while WE are driving: during manual use it silently starts an autofill
+// the user never asked for, which is exactly the "fires without me clicking it"
+// complaint. Gated on the master automation gate, and the watcher is not even
+// installed when automation is off.
 (function () {
   function findAndDismissPopup(root) {
     // Check all shadow roots for the popup
@@ -7873,18 +8919,32 @@
   }
   function startWatch() {
     if (!eligible()) return;
-    var popupObserver = new MutationObserver(function () { findAndDismissPopup(document); });
+    if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) {
+      console.log('[UA] autofill-confirm watcher not installed (' +
+        (window.__uaAutoReason ? window.__uaAutoReason() : 'automation off') + ')');
+      return;
+    }
+    var popupObserver = new MutationObserver(function () {
+      if (window.__uaAutoAllowed()) findAndDismissPopup(document);
+    });
     try { popupObserver.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
     // Periodic sweep throttled to 2.5s (was 1s on every site) and auto-stops
     // after 2 minutes if nothing happened, to avoid forever-polling on idle tabs.
     var ticks = 0;
     var iv = setInterval(function () {
       if (++ticks > 48) { clearInterval(iv); try { popupObserver.disconnect(); } catch (_) {} return; }
-      findAndDismissPopup(document);
+      if (window.__uaAutoAllowed()) findAndDismissPopup(document);
     }, 2500);
   }
-  if (document.body) startWatch();
-  else document.addEventListener('DOMContentLoaded', startWatch, { once: true });
+  var _watching = false;
+  function startWatchOnce() { if (_watching) return; if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return; _watching = true; startWatch(); }
+  if (document.body) startWatchOnce();
+  else document.addEventListener('DOMContentLoaded', startWatchOnce, { once: true });
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area === 'local' && (changes.ua_aa || changes.ua_qa)) startWatchOnce();
+    });
+  } catch (_) {}
 })();
 
 // === SMARTRECRUITERS MULTI-PAGE AUTOFILL SUPPORT ===
@@ -7915,7 +8975,7 @@
 (function () {
   'use strict';
   // Hosts that ARE an ATS end-to-end — safe to activate anywhere on the site.
-  const ATS_HOSTS = /(^|\.)(jobright\.ai|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|ashbyhq\.com|smartrecruiters\.com|icims\.com|taleo\.net|bamboohr\.com|successfactors\.com|avature\.net|recruitee\.com|workable\.com|personio\.com|rippling\.com|jobvite\.com|jazzhr\.com|applytojob\.com|brassring\.com|ukg\.com|oraclecloud\.com|paylocity\.com|gusto\.com|breezy\.hr|breezyhr\.com|teamtailor\.com|manatal\.com|pinpointhq\.com|eightfold\.ai|phenom\.com|phenompeople\.com|paradox\.ai|hirevue\.com|modernhire\.com|mya\.com|beamery\.com|joinhandshake\.com|governmentjobs\.com|usajobs\.gov|adp\.com|workforcenow\.adp\.com|dover\.com|pinpoint\.dev|polymer\.co|jobscore\.com|recruiterflow\.com|zohorecruit\.com)$/i;
+  const ATS_HOSTS = /(^|\.)(jobright\.ai|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|ashbyhq\.com|smartrecruiters\.com|icims\.com|taleo\.net|bamboohr\.com|successfactors\.com|avature\.net|recruitee\.com|workable\.com|personio\.com|rippling\.com|jobvite\.com|jazzhr\.com|applytojob\.com|brassring\.com|ukg\.com|oraclecloud\.com|paylocity\.com|gusto\.com|breezy\.hr|breezyhr\.com|teamtailor\.com|manatal\.com|pinpointhq\.com|eightfold\.ai|phenom\.com|phenompeople\.com|paradox\.ai|hirevue\.com|modernhire\.com|mya\.com|beamery\.com|joinhandshake\.com|governmentjobs\.com|usajobs\.gov|adp\.com|workforcenow\.adp\.com|dover\.com|pinpoint\.dev|polymer\.co|jobscore\.com|recruiterflow\.com|zohorecruit\.com|myjobs\.adp\.com|sapsf\.com|sapsf\.eu|talentbrew\.com|radancy\.com|join\.com|softgarden\.io|softgarden\.de|hrmdirect\.com|csod\.com|cornerstoneondemand\.com|myworkdaysite\.com|smartrecruiters\.com)$/i;
   // Generic path pattern — only relevant OUTSIDE of mixed-use hosts like
   // LinkedIn / Indeed where /jobs/ is primarily browsing.
   const CAREER_PATH = /(^|\/)(apply|application|applications|careers|career|job-application|submit-application|opportunities|vacancies|openings|employment|hiring|recruit|recruiting|candidate|applicant)(\/|\?|-|_|$)/i;
@@ -8332,7 +9392,7 @@ Result: Shipped my first production change in week three and my notes doc became
     const textareas = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
     let filled = 0;
     for (const ta of textareas) {
-      if (!ta.offsetParent) continue;
+      if (!ta.offsetParent && !ta.getClientRects().length) continue;   // fixed-position modals
       if (!textareaLooksEmpty(ta) && ta.tagName === 'TEXTAREA') continue;
       if (ta.getAttribute('contenteditable') === 'true' && ta.textContent && ta.textContent.trim().length > 10) continue;
       const label = getNearbyLabel(ta).slice(0, 400);
@@ -8502,7 +9562,7 @@ Result: Shipped my first production change in week three and my notes doc became
   }
 
   async function autoFillCoverLetter() {
-    const textareas = Array.from(document.querySelectorAll('textarea')).filter(t => t.offsetParent && (!t.value || t.value.trim().length < 20));
+    const textareas = Array.from(document.querySelectorAll('textarea')).filter(t => (t.offsetParent || t.getClientRects().length) && (!t.value || t.value.trim().length < 20));
     if (!textareas.length) return 0;
     const targets = textareas.filter(looksLikeCoverLetterField);
     if (!targets.length) return 0;
@@ -8541,8 +9601,17 @@ Result: Shipped my first production change in week three and my notes doc became
 
   function isVisible(el) {
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+    try {
+      const r = el.getBoundingClientRect();
+      // A zero-sized box already covers display:none anywhere up the ancestor chain.
+      if (r.width <= 0 || r.height <= 0) return false;
+      const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const cs = win.getComputedStyle ? win.getComputedStyle(el) : null;
+      if (!cs) return true;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+      if (parseFloat(cs.opacity || '1') === 0) return false;
+      return true;
+    } catch (_) { return false; }
   }
 
   function determineYesNo(q) {
@@ -8602,6 +9671,8 @@ Result: Shipped my first production change in week three and my notes doc became
     let chatTicks = 0;
     const chatIv = setInterval(() => {
       if (++chatTicks > 225) { clearInterval(chatIv); return; }
+      // Never answer a recruiting chatbot unless automation is actually on.
+      if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return;
       try { scanChatUI(); } catch (_) {}
     }, 4000);
     LOG('Chat-ATS handler active for', location.hostname);
@@ -8842,7 +9913,7 @@ Result: Shipped my first production change in week three and my notes doc became
   function findResumeTextareas() {
     const all = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
     return all.filter(t => {
-      if (!t.offsetParent) return false;
+      if (!t.offsetParent && !t.getClientRects().length) return false;   // fixed-position modals
       const label = (t.getAttribute('aria-label') || t.placeholder || '').toLowerCase();
       const byText = t.getAttribute('aria-labelledby')
         ? (document.getElementById(t.getAttribute('aria-labelledby'))?.textContent || '').toLowerCase() : '';
@@ -8869,7 +9940,7 @@ Result: Shipped my first production change in week three and my notes doc became
 
   // ---- Upload as file to file inputs ----
   async function uploadAsFile(text, filename) {
-    const inputs = Array.from(document.querySelectorAll('input[type=file]')).filter(i => i.offsetParent !== null || i.closest('[class*="resume"], [class*="Resume"], [class*="upload"], [class*="Upload"]'));
+    const inputs = Array.from(document.querySelectorAll('input[type=file]')).filter(i => i.offsetParent !== null || i.getClientRects().length || i.closest('[class*="resume"], [class*="Resume"], [class*="upload"], [class*="Upload"]'));
     if (!inputs.length) return 0;
     const flag = UPLOAD_FLAG_PREFIX + location.pathname;
     const already = await storageGet(flag);
@@ -8902,7 +9973,7 @@ Result: Shipped my first production change in week three and my notes doc became
   // ---- Jobright AI Tailor button auto-clicker ----
   function clickJobrightTailor() {
     if (!/jobright\.ai/i.test(location.hostname)) return false;
-    const btns = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(b => b.offsetParent !== null);
+    const btns = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(b => b.offsetParent !== null || b.getClientRects().length);
     const tailor = btns.find(b => /tailor.*(resume|cv)|ai.*tailor|auto.*tailor|generate.*resume/i.test(b.textContent || ''));
     if (tailor) { tailor.click(); LOG('Clicked Jobright Tailor Resume button'); return true; }
     return false;
@@ -10679,6 +11750,9 @@ a[href*="/checkout" i],
   }
   function processAll() {
     if (SELECTED.size === 0) return;
+    // Auto-answering is automation. During manual use the user answers this
+    // question themselves — nothing should be selected on their behalf.
+    if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return;
     try { processForm(document); } catch (_) {}
     // Also try common iframe scopes
     try {

@@ -43,6 +43,18 @@
         "<all_urls>"
       ],
       "js": [
+        "ua-page-hooks.js"
+      ],
+      "css": [],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
         "ua-enhancement.js"
       ],
       "css": [],
@@ -102,7 +114,8 @@
         "inter.42ee87cb.css",
         "ua-enhancement.js",
         "ua-queue.html",
-        "ua-queue.js"
+        "ua-queue.js",
+        "ua-page-hooks.js"
       ]
     }
   ],

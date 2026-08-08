@@ -49,6 +49,10 @@
     OLD_RUNNER: 'ua_qa',      // the legacy in-page single-tab runner — mutually exclusive
   };
   const ALARM = 'ua_mgr_watchdog';
+  // How long a job may sit waiting for a human (CAPTCHA) before the run gives up
+  // on it and moves on. Long enough to actually go and solve it, bounded so one
+  // unattended challenge cannot hold a slot for the rest of the run.
+  const HUMAN_GRACE_MS = 15 * 60 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
@@ -163,6 +167,23 @@
      form), so we retry and also re-send on every completed navigation. The
      content script can additionally PULL its assignment (UA_MGR_WHOAMI), which
      covers the case where every push landed before it booted. */
+  /* Reach the frames the manifest cannot. The content script is declared
+     all_frames:false (running the full module in every ad frame of every page
+     would be wasteful), but several ATS — Greenhouse embeds, iCIMS,
+     SuccessFactors, Taleo, BrassRing — put the actual application form in a
+     CROSS-ORIGIN iframe that the top document cannot see into. For a job tab, and
+     only a job tab, inject the script into every frame; it runs a fill-only path
+     there and is idempotent in the top frame. */
+  function injectAllFrames(tabId) {
+    try {
+      if (!chrome.scripting || !chrome.scripting.executeScript) return;
+      chrome.scripting.executeScript(
+        { target: { tabId, allFrames: true }, files: ['ua-enhancement.js'] },
+        () => void chrome.runtime.lastError,   // frames we may not touch just fail
+      );
+    } catch (_) {}
+  }
+
   function assign(tabId, job, cfg) {
     const payload = {
       type: 'UA_ASSIGN_JOB',
@@ -223,6 +244,7 @@
           m[job.id] = tab.id;
           await setTabMap(m);
           assign(tab.id, job, cfg);
+          injectAllFrames(tab.id);
           log('▶ ' + (job.title || job.url), 'act');
         } else {
           await withQueue((q) => {
@@ -317,7 +339,10 @@
     await setTabMap({});
     let total = 0;
     await withQueue((jobs) => {
-      for (const j of jobs) if (j.status === 'applying') { j.status = 'pending'; j.startedAt = null; }
+      for (const j of jobs) {
+        if (j.status === 'applying') { j.status = 'pending'; j.startedAt = null; }
+        delete j.needsHuman;
+      }
       total = jobs.filter((j) => j.status === 'pending').length;
     });
     await set({ [K.ACTIVE]: true, [K.PAUSED]: false, [K.ADVANCE]: null, [K.RUN]: { startedAt: Date.now(), total } });
@@ -402,6 +427,17 @@
       for (const j of q) {
         if (j.status !== 'applying') continue;
         if (map[j.id] == null) continue;              // orphan handling lives in fillSlots
+        // A job waiting on a human (CAPTCHA) gets extra time — but not forever.
+        if (j.needsHuman && j.needsHuman.since) {
+          const waited = Date.now() - j.needsHuman.since;
+          if (waited < HUMAN_GRACE_MS) continue;
+          j.status = 'failed';
+          j.error = `${j.needsHuman.provider || 'CAPTCHA'} was not solved within ${Math.round(HUMAN_GRACE_MS / 60000)} min`;
+          j.completedAt = Date.now();
+          delete j.needsHuman;
+          stale.push({ id: j.id, label: j.title || j.url });
+          continue;
+        }
         if (j.startedAt && Date.now() - j.startedAt > cfg.jobTimeoutMs) {
           j.status = 'timeout';
           j.error = `Watchdog: no result in ${Math.round(cfg.jobTimeoutMs / 60000)} min`;
@@ -435,7 +471,10 @@
       if (!jobId) return;
       const q = (await get(K.Q)) || [];
       const job = q.find((j) => j.id === jobId);
-      if (job && job.status === 'applying') assign(tabId, job, await settings());
+      if (job && job.status === 'applying') {
+        assign(tabId, job, await settings());
+        injectAllFrames(tabId);   // a new document means new frames to reach
+      }
     });
   } catch (_) {}
 
@@ -466,6 +505,40 @@
   try {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg || typeof msg !== 'object') return;
+
+      /* A CAPTCHA (or any other human-only wall) in a background job tab. We do
+         not answer it — that check exists for a reason. We make it visible and
+         stop it silently eating the job: notify, mark the row, and hold the
+         watchdog off while a person is genuinely needed rather than timing the
+         job out from under them. */
+      if (msg.type === 'UA_JOB_NEEDS_HUMAN') {
+        (async () => {
+          const tabId = sender && sender.tab && sender.tab.id;
+          const jobId = tabId == null ? null : await jobIdForTab(tabId);
+          if (!jobId) return sendResponse({ ok: false });
+          let label = jobId;
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === jobId);
+            if (!j) return;
+            label = j.title || j.url;
+            if (msg.blocked) {
+              j.needsHuman = { reason: msg.reason || 'captcha', provider: msg.provider || '', since: Date.now(), tabId };
+              j.error = (msg.provider ? msg.provider + ' — ' : '') + 'waiting for you to solve it';
+            } else {
+              delete j.needsHuman;
+              if (/waiting for you/.test(j.error || '')) j.error = null;
+            }
+          });
+          if (msg.blocked) {
+            log(`✋ ${label} — ${msg.provider || 'CAPTCHA'}: needs you. Open the job tab to solve it.`, 'err');
+            notify('A job needs you', `${msg.provider || 'CAPTCHA'} on ${label}. Open that tab to solve it — the run continues afterwards.`);
+          } else {
+            log(`✓ ${label} — challenge cleared, resuming`, 'ok');
+          }
+          sendResponse({ ok: true });
+        })();
+        return true;
+      }
 
       if (msg.type === 'UA_JOB_RESULT') {
         onResult({ id: msg.id, status: msg.status, error: msg.error, ts: msg.ts || Date.now() })

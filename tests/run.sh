@@ -17,7 +17,7 @@ ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 step "JavaScript syntax"
-for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
+for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
   if node --check "$f" 2>/dev/null; then ok "$(basename "$f")"; else bad "$(basename "$f")"; fi
 done
 
@@ -46,7 +46,12 @@ missing.length ? no('missing files: ' + missing.join(', ')) : ok('every referenc
 
 // The automation layer's hooks.
 const csJs = (m.content_scripts || []).flatMap((c) => c.js || []);
-csJs[0] === 'ua-enhancement.js' ? ok('ua-enhancement runs first') : no('ua-enhancement must be the first content script');
+// MAIN-world hooks must be installed before any page script can call confirm().
+const hooks = (m.content_scripts || []).find((c) => (c.js || []).includes('ua-page-hooks.js'));
+hooks ? ok('ua-page-hooks declared') : no('ua-page-hooks.js content script missing');
+hooks && hooks.world === 'MAIN' ? ok('ua-page-hooks runs in the MAIN world') : no('ua-page-hooks must set "world": "MAIN" or it cannot override the page\'s confirm()');
+hooks && hooks.run_at === 'document_start' ? ok('ua-page-hooks runs at document_start') : no('ua-page-hooks must run at document_start');
+csJs.indexOf('ua-enhancement.js') <= 1 ? ok('ua-enhancement runs early') : no('ua-enhancement must be an early content script');
 (m.side_panel || {}).default_path === 'ua-queue.html' ? ok('side panel wired to the queue manager') : no('side_panel.default_path');
 for (const perm of ['storage', 'tabs', 'scripting', 'sidePanel', 'alarms', 'contextMenus'])
   (m.permissions || []).includes(perm) ? ok('permission: ' + perm) : no('permission missing: ' + perm);
@@ -59,6 +64,21 @@ fs.existsSync(path.join(dir, 'ua-orchestrator.js')) ? ok('ua-orchestrator.js pre
 process.exit(bad ? 1 : 0);
 NODE
 [ $? -eq 0 ] || fails=$((fails + 1))
+
+step "Undeclared-function references"
+node tests/references.test.js "$EXT/ua-enhancement.js" "$EXT/ua-queue.js" "$EXT/ua-orchestrator.js" "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
+
+step "Automation gate (Fully Automated toggle)"
+node tests/gate.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
+
+step "Autofill field coverage (shadow DOM + frames)"
+node tests/fill.test.js "$EXT/ua-enhancement.js" "$EXT/ua-orchestrator.js" "$EXT/manifest.json" || fails=$((fails + 1))
+
+step "Submit detection + submission evidence"
+node tests/submit.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
+
+step "ATS detection + dialog policy"
+node tests/ats.test.js "$EXT/ua-enhancement.js" "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
 
 step "CSV + URL parsing (content script)"
 node tests/csv-parsers.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
