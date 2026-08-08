@@ -58,6 +58,11 @@
      10s interval, 15s of silence was 1.5 beats and a single delayed one would
      have looked like a dead tab. */
   const HEARTBEAT_DEAD_MS = 15 * 1000;
+  /* A page that is LOADING has no content script, so it cannot beat — a reload,
+     a redirect or a slow ATS page would otherwise look exactly like a crashed
+     tab and get killed mid-run. This is how long a tab may take to come back
+     after a navigation before we stop giving it the benefit of the doubt. */
+  const NAV_GRACE_MS = 45 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
@@ -352,7 +357,7 @@
     await withQueue((jobs) => {
       for (const j of jobs) {
         if (j.status === 'applying') { j.status = 'pending'; j.startedAt = null; }
-        delete j.needsHuman; delete j.beatAt; delete j.stage; delete j.pct;
+        delete j.needsHuman; delete j.beatAt; delete j.stage; delete j.pct; delete j.navAt;
       }
       total = jobs.filter((j) => j.status === 'pending').length;
     });
@@ -462,6 +467,9 @@
         }
         // Heartbeat gone quiet → the tab or its content script is dead. Do not
         // wait out the full per-job cap for a job that cannot report at all.
+        // Still coming back from a navigation (reload / redirect / next page):
+        // give it room to boot rather than treating silence as death.
+        if (j.navAt && Date.now() - j.navAt < NAV_GRACE_MS) continue;
         const lastBeat = j.beatAt || j.startedAt || 0;
         if (lastBeat && Date.now() - lastBeat > HEARTBEAT_DEAD_MS && Date.now() - (j.startedAt || 0) > HEARTBEAT_DEAD_MS) {
           j.status = 'timeout';
@@ -503,13 +511,33 @@
   // apply page (after Jobright → ATS redirects) is the one that gets the job.
   try {
     chrome.tabs.onUpdated.addListener(async (tabId, info) => {
-      if (info.status !== 'complete') return;
       if ((await get(K.ACTIVE)) !== true) return;
+
+      /* The tab started navigating — a manual reload, a redirect, or the next
+         page of a multi-step form. Its content script is being torn down and
+         cannot send a heartbeat until the new document boots, so mark the job as
+         navigating and restart its liveness clock. Without this, refreshing a
+         job tab killed the job and closed the tab. */
+      if (info.status === 'loading') {
+        const navJobId = await jobIdForTab(tabId);
+        if (navJobId) {
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === navJobId);
+            if (j && j.status === 'applying') { j.navAt = Date.now(); j.beatAt = Date.now(); }
+          });
+        }
+        return;
+      }
+      if (info.status !== 'complete') return;
       const jobId = await jobIdForTab(tabId);
       if (!jobId) return;
       const q = (await get(K.Q)) || [];
       const job = q.find((j) => j.id === jobId);
       if (job && job.status === 'applying') {
+        await withQueue((qq) => {
+          const j = qq.find((x) => x.id === jobId);
+          if (j) { j.navAt = Date.now(); j.beatAt = Date.now(); }   // the page is back
+        });
         assign(tabId, job, await settings());
         injectAllFrames(tabId);   // a new document means new frames to reach
       }
@@ -614,6 +642,10 @@
           if (tabId == null || (await get(K.ACTIVE)) !== true) return sendResponse({ job: null });
           const jobId = await jobIdForTab(tabId);
           if (!jobId) return sendResponse({ job: null });
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === jobId);
+            if (j && j.status === 'applying') j.beatAt = Date.now();   // it's alive
+          });
           const q = (await get(K.Q)) || [];
           const job = q.find((j) => j.id === jobId && j.status === 'applying');
           sendResponse({ job: job || null, settings: await settings() });

@@ -423,6 +423,51 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('and the reason names the configured window', /not solved within/.test(env.store.ua_q[0].error || ''), true);
   }
 
+  /* ── 13. reloading a job tab must NOT stop the job ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+
+    // The tab has been quiet long enough to look dead...
+    env.store.ua_q[0].beatAt = Date.now() - 5 * 60 * 1000;
+    env.store.ua_q[0].startedAt = Date.now() - 5 * 60 * 1000;
+    // ...but it is quiet because the user hit reload.
+    for (const l of env.listeners.tabUpdated) l(tabId, { status: 'loading' });
+    await tick(60);
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('a reloading tab is not mistaken for a dead one', env.store.ua_q[0].status, 'applying');
+    eq('its tab stays open', env.tabs.has(tabId), true);
+    eq('the next job has NOT been started in its place', env.store.ua_q[1].status, 'pending');
+
+    // The page comes back and asks who it is — that alone proves it is alive.
+    for (const l of env.listeners.tabUpdated) l(tabId, { status: 'complete' });
+    await tick(60);
+    const who = await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_MGR_WHOAMI' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve(undefined);
+    });
+    await tick(40);
+    eq('the reloaded page is handed its job straight back', who && who.job && who.job.id, 'a');
+    eq('and it is still the running job', env.store.ua_q[0].status, 'applying');
+
+    // A genuinely dead tab (no navigation) is still reclaimed.
+    env.store.ua_q[0].navAt = Date.now() - 5 * 60 * 1000;
+    env.store.ua_q[0].beatAt = Date.now() - 5 * 60 * 1000;
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('a tab that is silent WITHOUT navigating is still dropped', env.store.ua_q[0].status, 'timeout');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

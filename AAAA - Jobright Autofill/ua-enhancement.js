@@ -5799,6 +5799,18 @@
     /* Heartbeat. Without it, a tab whose content script died (crash, or a
        navigation into a page we were not injected on) looked identical to one
        working hard, and held its slot until the manager's watchdog fired. */
+    const beat = () => {
+      if (finalized) return;
+      let pct = null;
+      try { pct = fillReport().pct; } catch (_) {}
+      try {
+        chrome.runtime.sendMessage({
+          type: 'UA_JOB_PROGRESS', id: c.id, stage: _lastProgressWhat,
+          idleMs: stalledFor(), pct,
+        }, () => void chrome.runtime.lastError);
+      } catch (_) {}
+    };
+    beat();   // straight away: a page that just reloaded should not look silent
     beatIv = setInterval(() => {
       if (finalized) return;
       let pct = null;
@@ -9070,7 +9082,14 @@
       await sleep(1500);
       await dispatchATSAutomation();
     }
-    if (runnerActive) { await sleep(1000); processQ(); } // start fast — Apply fires ASAP
+    if (runnerActive) {
+      // Resumes after a manual reload too: window.name carries the runner tag
+      // across the navigation and ua_qa is in storage, so the job in flight is
+      // picked straight back up rather than the run appearing to stop.
+      LOG('Queue runner tab resumed' + (document.referrer ? ' (after navigation)' : ''));
+      await sleep(1000);
+      processQ();
+    }
     // Manager-driven tab: run this ONE job to a verified terminal status and report.
     // runManagedAssignment owns the _mgrHandledJobId guard, so this and the pushed
     // UA_ASSIGN_JOB message can both fire without ever double-driving a job.

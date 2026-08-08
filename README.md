@@ -654,6 +654,45 @@ so from the next load onward the dialog cannot block you again.
 
 ---
 
+## v14.9 — refreshing a page no longer stops the automation
+
+Reloading a job tab killed the job. The dead-tab check treats silence as death,
+and a page that is **loading has no content script at all**, so it cannot send a
+heartbeat — a manual refresh, a redirect, or just a slow ATS page looked exactly
+like a crashed tab. With the window tightened to 15s this became easy to hit: the
+job was marked `timeout` and its tab closed out from under you.
+
+Now a navigation restarts the liveness clock instead of ending the job:
+
+- **`status: 'loading'` marks the job as navigating** and gives it a 45-second
+  window to come back. A reload, a redirect and the next page of a multi-step form
+  are all the same thing to this check.
+- **Asking "which job am I?" counts as proof of life.** A freshly reloaded page
+  does that before it can send its first heartbeat, so the gap closes immediately.
+- **The first heartbeat is sent on pick-up**, not one interval later.
+- **Re-assignment after the reload** refreshes the clock too.
+
+A tab that goes silent **without** navigating is still dropped in 15s — that's a
+genuine crash, and the distinction is what the test suite pins down.
+
+### What survives a refresh
+
+| | survives | how |
+| --- | --- | --- |
+| CSV queue job | ✓ | the worker owns the state; the reloaded page asks for its job by tab id and is handed it straight back |
+| In-page runner (Start Applying) | ✓ | `window.name` carries the runner tag across the navigation, and the run flag is in storage |
+| Fully Automated toggle | ✓ | read from storage on every page load |
+| Queue Manager panel itself | ✓ | already only a view — the run is in the service worker |
+| Submit evidence | ✓ | `ua_submit_mark` persists, so a submission mid-reload is still confirmable |
+
+### Verified
+
+Mutation-checked: removing the navigation grace fails 5 assertions, including
+"a reloading tab is not mistaken for a dead one" and "a tab that is silent
+WITHOUT navigating is still dropped". Suite total: **374 assertions**.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
