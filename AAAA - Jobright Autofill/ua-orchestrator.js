@@ -53,11 +53,16 @@
   // on it and moves on. Long enough to actually go and solve it, bounded so one
   // unattended challenge cannot hold a slot for the rest of the run.
   const HUMAN_GRACE_MS = 15 * 60 * 1000;
+  /* A job tab reports a heartbeat every 10s. Silence for this long means the tab
+     is gone or its content script died — a state that used to be indistinguishable
+     from "working hard" and held the slot until the full per-job timeout. */
+  const HEARTBEAT_DEAD_MS = 75 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
     tailor: false,
     jobTimeoutMs: 6 * 60 * 1000,   // hard cap per job (content script caps itself at 150s/page)
+    stallMs: 75 * 1000,            // no progress for this long → skip the job and move on
     interJobDelayMs: 800,          // breathing room between tab opens
   };
 
@@ -145,6 +150,7 @@
       skipApplied: typeof s.skipApplied === 'boolean' ? s.skipApplied : DEFAULTS.skipApplied,
       tailor: typeof s.tailor === 'boolean' ? s.tailor : DEFAULTS.tailor,
       jobTimeoutMs: Math.max(60000, Number(s.jobTimeoutMs) || DEFAULTS.jobTimeoutMs),
+      stallMs: Math.max(20000, Number(s.stallMs) || DEFAULTS.stallMs),
       interJobDelayMs: Math.max(0, Number(s.interJobDelayMs) ?? DEFAULTS.interJobDelayMs),
     };
   }
@@ -341,7 +347,7 @@
     await withQueue((jobs) => {
       for (const j of jobs) {
         if (j.status === 'applying') { j.status = 'pending'; j.startedAt = null; }
-        delete j.needsHuman;
+        delete j.needsHuman; delete j.beatAt; delete j.stage; delete j.pct;
       }
       total = jobs.filter((j) => j.status === 'pending').length;
     });
@@ -438,6 +444,18 @@
           stale.push({ id: j.id, label: j.title || j.url });
           continue;
         }
+        // Heartbeat gone quiet → the tab or its content script is dead. Do not
+        // wait out the full per-job cap for a job that cannot report at all.
+        const lastBeat = j.beatAt || j.startedAt || 0;
+        if (lastBeat && Date.now() - lastBeat > HEARTBEAT_DEAD_MS && Date.now() - (j.startedAt || 0) > HEARTBEAT_DEAD_MS) {
+          j.status = 'timeout';
+          j.error = j.beatAt
+            ? `Stopped responding after ${Math.round((j.beatAt - j.startedAt) / 1000)}s (last: ${j.stage || 'unknown'})`
+            : 'Tab never reported any progress';
+          j.completedAt = Date.now();
+          stale.push({ id: j.id, label: j.title || j.url, why: 'unresponsive' });
+          continue;
+        }
         if (j.startedAt && Date.now() - j.startedAt > cfg.jobTimeoutMs) {
           j.status = 'timeout';
           j.error = `Watchdog: no result in ${Math.round(cfg.jobTimeoutMs / 60000)} min`;
@@ -446,7 +464,10 @@
         }
       }
     });
-    for (const s of stale) { log('⏱ ' + s.label + ' — watchdog timeout', 'err'); await closeJobTab(s.id); }
+    for (const s of stale) {
+      log('⏱ ' + s.label + (s.why === 'unresponsive' ? ' — stopped responding, moving on' : ' — watchdog timeout'), 'err');
+      await closeJobTab(s.id);
+    }
     // Close tabs belonging to jobs that are no longer running.
     const q = (await get(K.Q)) || [];
     for (const jobId of Object.keys(map)) {
@@ -535,6 +556,24 @@
           } else {
             log(`✓ ${label} — challenge cleared, resuming`, 'ok');
           }
+          sendResponse({ ok: true });
+        })();
+        return true;
+      }
+
+      /* Progress heartbeat from a running job tab. */
+      if (msg.type === 'UA_JOB_PROGRESS') {
+        (async () => {
+          const tabId = sender && sender.tab && sender.tab.id;
+          const jobId = tabId == null ? null : await jobIdForTab(tabId);
+          if (!jobId) return sendResponse({ ok: false });
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === jobId);
+            if (!j || j.status !== 'applying') return;
+            j.beatAt = Date.now();
+            j.stage = String(msg.stage || '').slice(0, 60);
+            if (typeof msg.pct === 'number') j.pct = msg.pct;
+          });
           sendResponse({ ok: true });
         })();
         return true;

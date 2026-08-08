@@ -60,6 +60,7 @@
   .rowbtn:hover{color:#34d399}
   .rowbtn.del:hover{color:#f87171}
   .url{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+  .stage-txt{color:#a78bfa;font-size:10px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .err-txt{color:#f87171;font-size:10px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #empty{padding:44px 20px;text-align:center;color:#64748b;font-size:12.5px}
   .hidden{display:none!important}
@@ -110,6 +111,7 @@
     <label class="opt" title="Never apply twice to the same job, even across separate CSV imports"><input type="checkbox" id="optSkip" checked> Skip already applied</label>
     <label class="opt" title="Use Jobright's resume generator on every job (slower, can stall)"><input type="checkbox" id="optTailor"> Tailor resume</label>
     <label class="opt" title="Give up on a job after this many minutes and move on">Timeout <input type="number" id="optTimeout" min="1" max="30" step="1" value="6" style="width:52px"> min</label>
+    <label class="opt" title="If a job makes no progress at all for this long, skip it and start the next one. This is what keeps a stuck application from eating the whole timeout.">Skip if stuck <input type="number" id="optStall" min="20" max="600" step="5" value="75" style="width:56px"> s</label>
   </div>
 
   <div class="bar">

@@ -473,6 +473,63 @@ CAPTCHA-solving service or token injection exists in the source. Suite total:
 
 ---
 
+## v14.6 — a stuck job costs seconds, not minutes
+
+Every timeout in the run used to be **wall-clock**: a job that made zero progress
+looked exactly like one working hard, and sat out the full per-job cap (6 min by
+default) before the queue moved on. One dead page could cost more time than a
+dozen good applications.
+
+Nothing measured whether anything was actually *happening*. Now three things do:
+
+**1. Progress, not elapsed time.** The content script records real activity —
+fields filled, a dropdown answered, Apply clicked, a submit pressed, the page
+itself changing. If nothing happens for **75 seconds** (configurable), the job is
+abandoned and the next one starts immediately. A spinner that never resolves, a
+redirect loop, or a form that refuses every value now costs ~75s instead of six
+minutes.
+
+**2. A heartbeat, so a dead tab is obvious.** Job tabs report every 10s. If a tab
+goes silent — it crashed, or navigated somewhere the content script isn't injected
+— the queue reclaims the slot after 75s instead of waiting out the full cap. That
+state used to be indistinguishable from "busy".
+
+**3. A CAPTCHA is a wait, not a stall.** It's explicitly exempt from both, so the
+run doesn't skip a job out from under you while you're solving it — bounded at 15
+minutes, then it moves on.
+
+### You can see it happening
+
+Each running row now shows what the job is actually doing, live:
+
+```
+Senior Engineer — Acme        92% · filled 11 field(s) · idle 34s
+```
+
+and when a job is dropped, the reason is specific:
+
+- `Stalled — no progress for 78s (last activity: clicked Apply)`
+- `Stopped responding after 42s (last: filling fields)`
+- `hCaptcha was not solved within 15 min`
+
+All are `timeout`/`failed` status, so **Retry failed** re-queues them.
+
+### Setting
+
+**Skip if stuck `[75]` s** in the panel, next to the per-job timeout. Lower it for
+a faster run that gives up sooner; raise it for slow ATS on a slow connection.
+
+### Verified
+
+`tests/orchestrator.test.js` grew to 43 assertions, driving the real engine
+through: a healthy heartbeat recording stage and completeness, a beating job being
+left alone, a silent job being dropped with the slot reused immediately, a CAPTCHA
+holding its slot against the watchdog, clearing it resuming, and an unsolved one
+finally yielding. Mutation-checked — removing the heartbeat reclamation fails 3
+assertions, removing the CAPTCHA grace fails 1. Suite total: **311 assertions**.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -572,7 +629,7 @@ tests/
 ./tests/run.sh
 ```
 
-298 assertions, no browser required: JS syntax for everything shipped, manifest
+311 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,

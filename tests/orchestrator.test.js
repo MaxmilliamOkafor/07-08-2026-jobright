@@ -265,6 +265,108 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('one job queued, duplicate and unsafe rejected', env.store.ua_q.map((j) => j.url), ['https://a.com/1']);
   }
 
+  /* ── 8. a job that stops responding is dropped and the slot reused ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+
+    // A healthy heartbeat keeps the job alive and records what it is doing.
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_PROGRESS', stage: 'filling fields', pct: 60 }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(40);
+    eq('heartbeat records the stage', env.store.ua_q[0].stage, 'filling fields');
+    eq('heartbeat records completeness', env.store.ua_q[0].pct, 60);
+
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('a beating job is left alone', env.store.ua_q[0].status, 'applying');
+
+    // Now go silent: older than the dead-heartbeat window.
+    env.store.ua_q[0].beatAt = Date.now() - 5 * 60 * 1000;
+    env.store.ua_q[0].startedAt = Date.now() - 5 * 60 * 1000;
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('an unresponsive job is dropped', env.store.ua_q[0].status, 'timeout');
+    eq('and says so', /Stopped responding/.test(env.store.ua_q[0].error || ''), true);
+    eq('the next job takes the slot straight away', env.store.ua_q[1].status, 'applying');
+    eq('still only one tab open', env.tabs.size, 1);
+  }
+
+  /* ── 9. a CAPTCHA holds the slot, but not forever ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'hCaptcha' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(60);
+    eq('the job is marked as needing a person', !!env.store.ua_q[0].needsHuman, true);
+    eq('with the provider named', env.store.ua_q[0].needsHuman.provider, 'hCaptcha');
+
+    env.store.ua_q[0].startedAt = Date.now() - 30 * 60 * 1000;   // way past the job cap
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('the watchdog does not kill it while you are solving', env.store.ua_q[0].status, 'applying');
+
+    // Solve it: the job reports itself unblocked and carries on.
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: false }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(40);
+    eq('clearing the challenge removes the marker', !!env.store.ua_q[0].needsHuman, false);
+  }
+
+  /* ── 10. an unsolved CAPTCHA eventually yields the slot ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'reCAPTCHA' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(60);
+    env.store.ua_q[0].needsHuman.since = Date.now() - 30 * 60 * 1000;   // never solved
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('an unsolved challenge gives up after the grace period', env.store.ua_q[0].status, 'failed');
+    eq('and the run continues', env.store.ua_q[1].status, 'applying');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

@@ -1873,7 +1873,7 @@
       try { if (await commitCustomDropdown(combo, guess, required)) filled++; } catch (_) {}
       await sleep(150);
     }
-    if (filled) LOG(`Custom dropdowns answered: ${filled}`);
+    if (filled) { LOG(`Custom dropdowns answered: ${filled}`); noteProgress('answered ' + filled + ' dropdown(s)'); }
     return filled;
   }
 
@@ -2336,6 +2336,7 @@
     learnFromFilledFields();
 
     LOG(`Fallback fill done: ${filled} fields filled, ${refilled} re-verified, ${locFixed} location committed`);
+    if (filled || refilled || locFixed) noteProgress(`filled ${filled + refilled + locFixed} field(s)`);
     return filled + refilled + locFixed;
   }
 
@@ -2366,6 +2367,31 @@
      -submitted jobs were being marked done and skipped on every ATS. */
   const SUCCESS_PATH_RE = /(^|\/)(thanks|thank-?you|thankyou|success|successful|confirmation|submitted|application-?complete|application-?submitted|apply-?success|applicationconfirmation)(\/|$)/i;
   const FAILURE_TEXT_RE = /(already\s+applied|application\s+already\s+submitted|you\s+have\s+already\s+applied|no\s+application\s+(form|available)|job\s+is\s+no\s+longer\s+available|this\s+position\s+is\s+(closed|no\s+longer)|posting\s+is\s+closed|application\s+window\s+has\s+closed|page\s+not\s+found|404\s+error|job\s+posting\s+has\s+expired|posting\s+is\s+no\s+longer\s+available|no\s+longer\s+accepting\s+applications|position\s+has\s+been\s+filled|job\s+has\s+been\s+filled|vacancy\s+(is\s+)?closed)/i;
+  /* ── STALL DETECTION ───────────────────────────────────────────────────────
+     A "stuck" job looks exactly like a slow one to a wall-clock timeout. These
+     track whether anything is actually happening — a field filled, a page
+     advanced, a control clicked — so a job that is going nowhere is abandoned in
+     seconds instead of holding a slot for minutes. */
+  let _lastProgressAt = Date.now();
+  let _lastProgressWhat = 'started';
+  let _stallLimitMs = 75000;        // no progress for this long → give up on the job
+  function noteProgress(what) {
+    _lastProgressAt = Date.now();
+    if (what) _lastProgressWhat = what;
+  }
+  function stalledFor() { return Date.now() - _lastProgressAt; }
+  function isStalled() { return stalledFor() > _stallLimitMs; }
+  // A page whose URL or field-set changed is making progress even if nothing we
+  // did caused it, so watch for that too rather than only crediting our own work.
+  let _progressSignature = '';
+  function pollPageProgress() {
+    try {
+      const sig = location.href + '|' + deepAll('input:not([type=hidden]),textarea,select', 200).length +
+        '|' + (document.body ? document.body.innerText.length >> 8 : 0);
+      if (sig !== _progressSignature) { _progressSignature = sig; noteProgress('page changed'); }
+    } catch (_) {}
+  }
+
   let _lastSubmitAt = 0;            // set when our flow clicks a real submit button
   const SUBMIT_GRACE_MS = 8000;    // after a submit with no validation error, treat as success
   /* Multi-page ATS (Taleo, Oracle, iCIMS…) submit on one document and render the
@@ -2752,6 +2778,7 @@
         await sleep(500);
         realClick(submitBtn);
         markSubmitAttempt();
+        noteProgress('submitted');
         return 'submitted';
       }
     }
@@ -5531,7 +5558,8 @@
     // Native confirm/alert would block this tab's JS thread outright, so the
     // MAIN-world hooks answer them for the lifetime of this job (and only then).
     setAutomationFlag(true);
-    let finalized = false, tId = null;
+    noteProgress('job started');
+    let finalized = false, tId = null, stallIv = null, beatIv = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
       clearTimeout(tId);
@@ -5555,6 +5583,7 @@
       // storage write is the fallback for the case where the worker is mid-restart
       // and the message is dropped. The orchestrator de-duplicates on (id, ts), so
       // whichever arrives second is a no-op.
+      clearInterval(stallIv); clearInterval(beatIv);
       const ts = Date.now();
       try { chrome.runtime.sendMessage({ type: 'UA_JOB_RESULT', id: c.id, status, error: error || null, ts }, () => void chrome.runtime.lastError); } catch (_) {}
       await st.set('ua_mgr_advance', { id: c.id, status, ts });
@@ -5566,6 +5595,37 @@
       await finalize('timeout', `Timed out after ${qTimeout / 1000}s`);
     };
     tId = setTimeout(onTimeout, qTimeout);
+
+    /* Give up on a job that is going NOWHERE, rather than waiting out the full
+       per-job cap. A page stuck on a spinner, a redirect loop, or a form that
+       will not accept anything costs ~75s now instead of six minutes, and the
+       slot is handed straight to the next job. A CAPTCHA is a human wait, not a
+       stall, so it is exempt. */
+    stallIv = setInterval(() => {
+      if (finalized) return;
+      pollPageProgress();
+      if (detectCaptcha()) { noteProgress('waiting for captcha'); return; }
+      if (!isStalled()) return;
+      const secs = Math.round(stalledFor() / 1000);
+      LOG(`Job stalled — no progress for ${secs}s (last: ${_lastProgressWhat}) — skipping to keep the queue moving`);
+      finalize('timeout', `Stalled — no progress for ${secs}s (last activity: ${_lastProgressWhat})`);
+    }, 5000);
+
+    /* Heartbeat. Without it, a tab whose content script died (crash, or a
+       navigation into a page we were not injected on) looked identical to one
+       working hard, and held its slot until the manager's watchdog fired. */
+    beatIv = setInterval(() => {
+      if (finalized) return;
+      let pct = null;
+      try { pct = fillReport().pct; } catch (_) {}
+      try {
+        chrome.runtime.sendMessage({
+          type: 'UA_JOB_PROGRESS', id: c.id, stage: _lastProgressWhat,
+          idleMs: stalledFor(), pct,
+        }, () => void chrome.runtime.lastError);
+      } catch (_) {}
+    }, 10000);
+
     try {
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
       await openApplicationForm();
@@ -5624,6 +5684,7 @@
     if (!s || typeof s !== 'object') return;
     if (typeof s.skipApplied === 'boolean') qSkipApplied = s.skipApplied;
     if (typeof s.tailor === 'boolean') queueUseTailor = s.tailor;
+    if (s.stallMs) _stallLimitMs = Math.max(20000, s.stallMs);
     if (s.jobTimeoutMs) {
       // Stay comfortably inside the worker's hard cap so THIS tab reports a real
       // status before the watchdog kills it — a watchdog timeout tells you nothing
@@ -8103,6 +8164,7 @@
       LOG('Clicking Apply: ' + (btn.textContent || btn.value || '').trim().slice(0, 30));
       scrollIfNeeded(btn);
       realClick(btn);
+      noteProgress('clicked Apply');
       clicks++;
       // Condition-based wait — fires the moment a form OR the choice modal appears,
       // instead of a fixed multi-second delay (faster Apply on every ATS).
