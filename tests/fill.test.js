@@ -22,10 +22,16 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
 const orch = fs.readFileSync(process.argv[3], 'utf8');
 const manifest = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
 
-/* Body of a top-level function in the module (2-space indent, closes on "  }"). */
+/* Body of a top-level function in the module (2-space indent, closes on "  }").
+   Operations wrapped by the busy guard keep their public name on a one-line
+   wrapper and move the real body to <name>__impl — always inspect the body that
+   actually does the work. */
 function body(name) {
   const lines = src.split('\n');
-  const start = lines.findIndex((l) => new RegExp('^  (async )?function ' + name + '\\(').test(l));
+  const impl = lines.findIndex((l) => new RegExp('^  (async )?function ' + name + '__impl\\(').test(l));
+  const start = impl >= 0
+    ? impl
+    : lines.findIndex((l) => new RegExp('^  (async )?function ' + name + '\\(').test(l));
   if (start < 0) throw new Error('function not found: ' + name);
   const end = lines.findIndex((l, i) => i > start && l === '  }');
   if (end < 0) throw new Error('no end for: ' + name);
@@ -160,7 +166,7 @@ eq('no CAPTCHA-solving is attempted (no solver service, no token injection)',
 
 /* ── 9. CV / résumé attachment ────────────────────────────────────────────── */
 console.log('CV attachment');
-eq('a universal attacher exists (was Workday-only)', /async function attachResume\(\)/.test(src), true);
+eq('a universal attacher exists (was Workday-only)', /async function attachResume__impl\(\)/.test(src), true);
 eq('it finds file inputs across shadow DOM and frames', /deepAll\('input\[type="file"\]', 60\)/.test(src), true);
 eq('it never re-uploads over an existing attachment',
   /if \(resumeAlreadyAttached\(\)\) \{ LOG\('CV already attached/.test(src), true);
@@ -175,6 +181,25 @@ eq('SmartRecruiters never advances mid-upload',
 eq('no ATS submits through an in-flight upload',
   /Never submit through one\.[\s\S]{0,200}?logFillReport\('Before submit'\)/.test(src), true);
 eq('the CV pass is part of the universal fill', /const cvState = await attachResume\(\);/.test(src), true);
+
+/* ── 10. the stall clock must not run during active work ──────────────────── */
+console.log('stall clock stands down while working');
+eq('a busy guard exists', /async function withBusy\(what, fn\)/.test(src), true);
+eq('the watchdog stands down while busy',
+  /if \(isBusy\(\)\) \{ noteProgress\(_busyWhat\); return; \}/.test(src), true);
+eq('the guard is depth-counted, so nesting cannot unlock it early',
+  /_busyDepth\+\+/.test(src) && /finally \{ _busyDepth--/.test(src), true);
+// Every operation that legitimately takes a while must be inside the guard.
+for (const fn of ['fallbackFill', 'guaranteeRequiredFields', 'fillCustomDropdowns',
+  'attachResume', 'triggerAutofill', 'triggerAutofillQuick', 'autoSubmitOrNext',
+  'openApplicationForm', 'handleAccountAuth', 'handleValidationErrors']) {
+  eq(`${fn} runs inside the busy guard`,
+    new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{ return withBusy\\(').test(src), true);
+}
+eq('post-submit verification counts as work, not a stall',
+  (src.match(/withBusy\('verifying submission'/g) || []).length >= 3, true);
+eq('the hard cap is still the backstop if an operation hangs outright',
+  /jobTimeoutMs: 3 \* 60 \* 1000/.test(orch), true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1552,7 +1552,7 @@
 
   // FULL-AUTO GUARANTOR: ensure no required field is left blank so the form is always submittable
   // and the queue never waits on a human. Runs location commit first, then a best-effort sweep.
-  async function guaranteeRequiredFields() {
+  async function guaranteeRequiredFields__impl() {
     await resolveLocationFields();
     await answerChoiceGroups();
     const p = await getProfile();
@@ -1601,6 +1601,8 @@
     if (fixed) LOG(`Guarantor filled ${fixed} still-required field(s)`);
     return fixed;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function guaranteeRequiredFields(...a) { return withBusy('completing required fields', () => guaranteeRequiredFields__impl(...a)); }
 
   // ===================== DOM HELPERS =====================
   const $$ = (sel, root) => [...(root || document).querySelectorAll(sel)];
@@ -1686,7 +1688,10 @@
   // Containers that hold an already-uploaded file. A bare icon button inside one
   // of these is a remove control even when it has no accessible name at all.
   const ATTACHMENT_CONTAINER_SEL =
-    '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],[class*="fileItem" i],[class*="file-list" i],[class*="dropzone" i],[class*="upload" i],spl-file-upload,spl-attachment,[data-test*="attachment" i],[data-testid*="attachment" i]';
+    '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],[class*="fileItem" i],' +
+    '[class*="file-list" i],[class*="dropzone" i],[class*="upload" i],[class*="resume" i],' +
+    'spl-file-upload,spl-attachment,spl-file,spl-file-item,oj-file-picker,' +
+    '[data-test*="attachment" i],[data-testid*="attachment" i],[data-test*="file" i],[data-testid*="file" i]';
   function controlName(el) {
     try {
       const parts = [
@@ -1701,18 +1706,36 @@
       return parts.join(' ').replace(/\s+/g, ' ').trim();
     } catch (_) { return ''; }
   }
+  /* Walk out of any shadow roots as well as up the light tree. closest() stops
+     dead at a shadow boundary, so on SmartRecruiters — where the whole upload
+     widget is spl-* web components — the remove button's attachment container was
+     invisible to the guard and the click went through. That click is what opened
+     the  Remove "…_CV"?  confirm. */
+  function closestAcrossShadow(el, selector) {
+    let node = el;
+    for (let hop = 0; node && hop < 12; hop++) {
+      try { const hit = node.closest && node.closest(selector); if (hit) return hit; } catch (_) {}
+      const root = node.getRootNode && node.getRootNode();
+      node = (root && root.host) ? root.host : null;      // step out of the shadow root
+    }
+    return null;
+  }
   function isDestructiveControl(el) {
     try {
       if (!el || !el.getAttribute) return false;
       const name = controlName(el);
       if (DESTRUCTIVE_NAME_RE.test(name)) return true;
-      // Unlabelled icon button (×, ✕, 🗑, or empty) sitting in an attachment row.
-      const txt = (el.textContent || '').replace(/\s+/g, '');
-      const iconish = txt === '' || /^[×✕✖x✗⨯🗑]{1,2}$/i.test(txt);
+      // An icon-only control anywhere near an uploaded file. Checked across shadow
+      // boundaries, and the icon may live inside the button's own shadow root.
+      const shadowTxt = (el.shadowRoot && el.shadowRoot.textContent) || '';
+      const txt = ((el.textContent || '') + shadowTxt).replace(/\s+/g, '');
+      const iconish = txt === '' || /^[×✕✖x✗⨯🗑✖️❌]{1,3}$/i.test(txt);
       if (!iconish) return false;
       const tag = (el.tagName || '').toUpperCase();
-      if (tag !== 'BUTTON' && tag !== 'A' && el.getAttribute('role') !== 'button') return false;
-      return !!(el.closest && el.closest(ATTACHMENT_CONTAINER_SEL));
+      const looksClickable = tag === 'BUTTON' || tag === 'A' || tag.startsWith('SPL-') ||
+        tag.startsWith('OJ-') || el.getAttribute('role') === 'button';
+      if (!looksClickable) return false;
+      return !!closestAcrossShadow(el, ATTACHMENT_CONTAINER_SEL);
     } catch (_) { return false; }
   }
 
@@ -1831,7 +1854,7 @@
   }
   /* Attach the CV on any ATS. Returns 'already' | 'attached' | 'no-resume' |
      'no-field' so the caller can report precisely instead of failing blind. */
-  async function attachResume() {
+  async function attachResume__impl() {
     if (resumeUploadInFlight()) { await waitForResumeUpload(20000); }
     if (resumeAlreadyAttached()) { LOG('CV already attached — leaving it alone'); return 'already'; }
     const inputs = resumeFileInputs();
@@ -1861,6 +1884,8 @@
     }
     return resumeAlreadyAttached() ? 'attached' : 'no-field';
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function attachResume(...a) { return withBusy('attaching the CV', () => attachResume__impl(...a)); }
 
   /* ── CUSTOM DROPDOWN COMMITTER (all ATS) ───────────────────────────────────
      Native <select> is handled well already, but most modern ATS do not use one.
@@ -1967,7 +1992,7 @@
   }
 
   /* Every custom dropdown on the page that still has no answer. */
-  async function fillCustomDropdowns(profile) {
+  async function fillCustomDropdowns__impl(profile) {
     const combos = deepAll(
       '[role="combobox"],[ariarole="combobox"],[aria-haspopup="listbox"],' +
       '[class*="select__control" i],[class*="Select-control" i],.MuiSelect-root,.ant-select,spl-select,oj-select-single'
@@ -1984,6 +2009,8 @@
     if (filled) { LOG(`Custom dropdowns answered: ${filled}`); noteProgress('answered ' + filled + ' dropdown(s)'); }
     return filled;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function fillCustomDropdowns(...a) { return withBusy('answering dropdowns', () => fillCustomDropdowns__impl(...a)); }
 
   /* ── UNIVERSAL FIELD DISCOVERY ─────────────────────────────────────────────
      $ / $$ are document.querySelector(All): they stop at a shadow boundary and
@@ -2042,8 +2069,14 @@
 
   /* Web components frequently ignore .click() and only react to a full pointer
      sequence (this is exactly how SmartRecruiters' spl-select options behave). */
-  function triggerMouse(el) {
+  function triggerMouse(el, opts2) {
     if (!el) return false;
+    // Same guard as realClick: this is the path web components are clicked
+    // through, so leaving it unguarded left the remove button reachable.
+    if (!(opts2 && opts2.force) && isDestructiveControl(el)) {
+      LOG('Refusing to pointer-click destructive control:', controlName(el).slice(0, 60) || '(unlabelled ×)');
+      return false;
+    }
     const opts = { bubbles: true, composed: true, cancelable: true, view: window };
     for (const t of ['pointerover', 'pointerenter', 'pointerdown', 'mouseover', 'mousedown', 'pointerup', 'mouseup', 'click']) {
       try {
@@ -2285,7 +2318,7 @@
 
   // ===================== FALLBACK FORM FILLER =====================
   // Fills fields that Jobright autofill missed
-  async function fallbackFill() {
+  async function fallbackFill__impl() {
     LOG('Fallback fill starting — catching missed fields');
     const p = await getProfile();
     await loadAnswerBank();
@@ -2455,6 +2488,8 @@
     if (filled || refilled || locFixed) noteProgress(`filled ${filled + refilled + locFixed} field(s)`);
     return filled + refilled + locFixed;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function fallbackFill(...a) { return withBusy('filling fields', () => fallbackFill__impl(...a)); }
 
   // ===================== LEARN FROM PAGE (capture filled answers) =====================
   async function learnFromPage() {
@@ -2494,6 +2529,23 @@
   function noteProgress(what) {
     _lastProgressAt = Date.now();
     if (what) _lastProgressWhat = what;
+  }
+  /* The stall clock must not run while we are actually DOING something. Filling a
+     long form, waiting for Jobright's own autofill to finish, uploading a CV or
+     verifying a submission are all slow by nature — Jobright's autofill alone can
+     take 20s+ inside triggerAutofill — and cutting any of them off mid-flight
+     would interrupt work that was going fine. Operations that do real work run
+     inside withBusy(), and the watchdog stands down for their duration. The
+     per-job hard cap is the backstop if one of them ever hangs outright. */
+  let _busyDepth = 0;
+  let _busyWhat = '';
+  function isBusy() { return _busyDepth > 0; }
+  async function withBusy(what, fn) {
+    _busyDepth++;
+    _busyWhat = what;
+    noteProgress(what);
+    try { return await fn(); }
+    finally { _busyDepth--; noteProgress(what); }
   }
   function stalledFor() { return Date.now() - _lastProgressAt; }
   function isStalled() { return stalledFor() > _stallLimitMs; }
@@ -2822,7 +2874,7 @@
   }
 
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
-  async function autoSubmitOrNext() {
+  async function autoSubmitOrNext__impl() {
     LOG('Attempting auto-submit or next...');
 
     // First: learn from the filled page before navigating away
@@ -2958,6 +3010,8 @@
     LOG('No submit/next button found');
     return false;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function autoSubmitOrNext(...a) { return withBusy('submitting / advancing', () => autoSubmitOrNext__impl(...a)); }
 
   /* How complete is this form right now? Reported after every fill pass so the
      queue log says exactly which required fields were left, instead of the run
@@ -5169,7 +5223,7 @@
   }
 
   // ===================== FORM VALIDATION ERROR HANDLER =====================
-  async function handleValidationErrors() {
+  async function handleValidationErrors__impl() {
     // Wait a moment for validation to trigger
     await sleep(500);
     const errors = deepAll('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
@@ -5233,6 +5287,8 @@
     LOG(`Fixed ${fixed} validation errors`);
     return fixed;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function handleValidationErrors(...a) { return withBusy('fixing validation errors', () => handleValidationErrors__impl(...a)); }
 
   // ===================== ERROR RECOVERY & RETRY =====================
   async function withRetry(fn, label, maxRetries) {
@@ -5380,7 +5436,7 @@
   // ===================== AUTOFILL TRIGGER =====================
   // Shadow-DOM aware: 1.14.0 renders the sidebar inside an open shadow root, so we
   // locate the button via getSidebar()/findAutofillButton() rather than document.
-  async function triggerAutofill() {
+  async function triggerAutofill__impl() {
     await waitForSidebar(8000);
     await sleep(1500);
     // Try several times — the button may still be mounting / disabled while the
@@ -5393,9 +5449,11 @@
     LOG('Autofill button not found or disabled (shadow-aware lookup)');
     return false;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function triggerAutofill(...a) { return withBusy('running Jobright autofill', () => triggerAutofill__impl(...a)); }
 
   // Quick autofill trigger with shorter timeout (won't freeze the flow)
-  async function triggerAutofillQuick() {
+  async function triggerAutofillQuick__impl() {
     let b = findAutofillButton();
     if (!b) { LOG('No sidebar/autofill button — skipping quick autofill'); return false; }
     if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered'); await sleep(3000); return true; }
@@ -5405,6 +5463,8 @@
     if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered (retry)'); await sleep(3000); return true; }
     return false;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function triggerAutofillQuick(...a) { return withBusy('running Jobright autofill', () => triggerAutofillQuick__impl(...a)); }
 
   // ===================== QUEUE ENGINE (LazyApply-enhanced) =====================
   // LazyApply-inspired: configurable delays and timeout
@@ -5726,6 +5786,9 @@
     stallIv = setInterval(() => {
       if (finalized) return;
       pollPageProgress();
+      // Actively filling, uploading, submitting or verifying: the countdown does
+      // not run at all, so a slow-but-working step is never interrupted.
+      if (isBusy()) { noteProgress(_busyWhat); return; }
       if (detectCaptcha()) { noteProgress('waiting for captcha'); return; }
       if (!isStalled()) return;
       const secs = Math.round(stalledFor() / 1000);
@@ -5767,23 +5830,27 @@
       let success = false, validationStuck = false;
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
         await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation');
-        for (let check = 0; check < 6 && !finalized; check++) {
-          await sleep(2000);
-          if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
-          if (confirmSubmitted()) { success = true; break; }
-          if (pageHasFailure()) break;
-        }
+        await withBusy('verifying submission', async () => {
+          for (let check = 0; check < 6 && !finalized; check++) {
+            await sleep(2000);
+            if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
+            if (confirmSubmitted()) { success = true; break; }
+            if (pageHasFailure()) break;
+          }
+        });
         if (success || finalized) break;
         try {
           await openApplicationForm(); await waitForFormStable(2500); await fallbackFill(); await guaranteeRequiredFields();
           const r = await autoSubmitOrNext();
           if (r === 'next_page') { await sleep(2500); await multiPageLoop(); }
         } catch (e) { LOG('Manager retry pass error:', e?.message || e); }
-        for (let check = 0; check < 5 && !finalized; check++) {
-          await sleep(2000);
-          if (confirmSubmitted()) { success = true; break; }
-          if (check >= 3 && pageHasValidationError()) { validationStuck = true; break; }
-        }
+        await withBusy('verifying submission', async () => {
+          for (let check = 0; check < 5 && !finalized; check++) {
+            await sleep(2000);
+            if (confirmSubmitted()) { success = true; break; }
+            if (check >= 3 && pageHasValidationError()) { validationStuck = true; break; }
+          }
+        });
         if (validationStuck) break;
       }
       if (finalized) return;
@@ -5956,6 +6023,7 @@
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
             // Verify submission (poll for a confirmation signal).
+            await withBusy('verifying submission', async () => {
             for (let check = 0; check < 6; check++) {
               await sleep(2000);
               // A captcha popping up post-submit blocks confirmation — wait it out.
@@ -5963,6 +6031,7 @@
               if (confirmSubmitted()) { success = true; break; }
               if (pageHasFailure()) { LOG('Failure signal during verify — stopping'); break; }
             }
+            });
             if (success) break;
             // Not confirmed — fill any remaining gaps and force another submit.
             LOG(`Submission not confirmed (attempt ${attempt + 1}/2) — retrying fill + submit`);
@@ -5974,13 +6043,15 @@
               const r = await autoSubmitOrNext();
               if (r === 'next_page') { await sleep(2500); await multiPageLoop(); }
             } catch (e) { LOG('Retry pass error:', e?.message || e); }
-            for (let check = 0; check < 5; check++) {
-              await sleep(2000);
-              if (confirmSubmitted()) { success = true; break; }
-              // Validation error that persists across the whole poll → the form can't be
-              // satisfied automatically; stop retrying and mark failed.
-              if (check >= 3 && pageHasValidationError() && !success) { validationStuck = true; break; }
-            }
+            await withBusy('verifying submission', async () => {
+              for (let check = 0; check < 5; check++) {
+                await sleep(2000);
+                if (confirmSubmitted()) { success = true; break; }
+                // Validation error that persists across the whole poll → the form can't be
+                // satisfied automatically; stop retrying and mark failed.
+                if (check >= 3 && pageHasValidationError() && !success) { validationStuck = true; break; }
+              }
+            });
             if (validationStuck) break;
           }
 
@@ -8260,7 +8331,7 @@
     }
     return hasApplicationForm() ? 'form' : null;
   }
-  async function openApplicationForm(maxClicks) {
+  async function openApplicationForm__impl(maxClicks) {
     const limit = maxClicks || 3;
     let clicks = 0;
     while (clicks < limit) {
@@ -8294,6 +8365,8 @@
     }
     return clicks > 0;
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function openApplicationForm(...a) { return withBusy('opening the application', () => openApplicationForm__impl(...a)); }
 
   // ===================== ACCOUNT CREATION / LOGIN (shared saved credentials) =====================
   // Many ATS (Workday, iCIMS, Taleo, SuccessFactors, ADP/BrassRing, Jobvite…) require
@@ -8340,7 +8413,7 @@
       btns.find(b => /^(submit|continue|next)$/i.test((b.textContent || b.value || '').trim())) || null;
   }
   // Detect a sign-in/create-account page and complete it with saved credentials.
-  async function handleAccountAuth() {
+  async function handleAccountAuth__impl() {
     try {
       // Never auto-fill credentials on the user's personal job-board / social logins —
       // only on ATS account walls. (Their LinkedIn/Indeed password isn't ours to set.)
@@ -8419,6 +8492,8 @@
       return true;
     } catch (e) { LOG('handleAccountAuth error:', e?.message || e); return false; }
   }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function handleAccountAuth(...a) { return withBusy('signing in to the ATS', () => handleAccountAuth__impl(...a)); }
 
   // ===================== BLOCKING-DIALOG RESOLVER =====================
   // The MAIN-world hooks (ua-page-hooks.js) handle NATIVE confirm/alert. This

@@ -127,5 +127,29 @@ for (const [name, want] of [
   ['Save and Continue', false], ['Upload resume', false], ['Apply', false],
 ]) eq(`"${name}" → ${want ? 'blocked' : 'allowed'}`, NAME_RE.test(name), want);
 
+/* ── 4. the dialog must be answerable even when NOT automating ────────────── */
+// The screenshot case: a manual apply on SmartRecruiters, a script-driven
+// Remove "…_CV"? confirm, and nothing armed to answer it — the page froze.
+console.log('script-driven confirms cannot freeze the page');
+eq('a trusted-gesture tracker exists', /let lastTrustedAt = 0;/.test(hooksSrc), true);
+eq('only trusted events count as a human acting', /if \(e && e\.isTrusted\) lastTrustedAt = Date\.now\(\)/.test(hooksSrc), true);
+eq('a script-driven destructive confirm is declined even when idle',
+  /if \(destructive && !humanJustActed\(\)\) \{[\s\S]{0,120}?return false;/.test(hooksSrc), true);
+eq('a confirm the user actually triggered still reaches the real dialog',
+  /return orig\.confirm\.apply\(window, arguments\);\n  \};/.test(hooksSrc), true);
+eq('the gesture window is short', /Date\.now\(\) - lastTrustedAt < 1200/.test(hooksSrc), true);
+
+/* ── 5. the remove control must be unreachable across shadow boundaries ───── */
+console.log('destructive guard reaches into shadow DOM');
+eq('the guard walks out of shadow roots', /function closestAcrossShadow\(el, selector\)/.test(enhSrc), true);
+eq('it steps through the shadow host chain', /root\.host\) \? root\.host : null/.test(enhSrc), true);
+eq('SmartRecruiters spl-* upload widgets are recognised as attachment containers',
+  /spl-file-upload,spl-attachment,spl-file,spl-file-item/.test(enhSrc), true);
+eq('spl-/oj- elements count as clickable controls', /tag\.startsWith\('SPL-'\)/.test(enhSrc), true);
+eq('the icon inside the button\'s own shadow root is read',
+  /el\.shadowRoot && el\.shadowRoot\.textContent/.test(enhSrc), true);
+eq('triggerMouse is guarded too, not just realClick',
+  /Refusing to pointer-click destructive control/.test(enhSrc), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

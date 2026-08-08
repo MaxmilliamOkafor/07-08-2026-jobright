@@ -58,6 +58,24 @@
     prompt: window.prompt,
   };
 
+  /* Was this dialog caused by a REAL click from the person at the keyboard?
+     Only a trusted event counts — a click dispatched by script (ours, or
+     Jobright's own bundle) is not one. This is what tells "the user pressed
+     Remove and means it" apart from "something clicked Remove on its own".
+
+     It matters because the automation flag alone was not enough. The flag is
+     only set for the lifetime of a queue job, so on a manual apply — or in the
+     gap after a Fully-Automated pass hands the flag back — a script-driven
+     Remove "…_CV"? confirm still froze the whole page with nothing able to
+     answer it. */
+  let lastTrustedAt = 0;
+  for (const evt of ['pointerdown', 'mousedown', 'click', 'keydown']) {
+    try {
+      window.addEventListener(evt, (e) => { if (e && e.isTrusted) lastTrustedAt = Date.now(); }, true);
+    } catch (_) {}
+  }
+  const humanJustActed = () => Date.now() - lastTrustedAt < 1200;
+
   function report(kind, message, answer) {
     try {
       window.dispatchEvent(new CustomEvent('ua-native-dialog', {
@@ -67,14 +85,30 @@
   }
 
   window.confirm = function (message) {
-    if (!automating()) return orig.confirm.apply(window, arguments);
     const text = String(message == null ? '' : message).trim();
-    // Answering "no" to a destructive prompt keeps the uploaded file / entered
-    // answers; answering "yes" to anything else lets a confirm-to-proceed step
-    // through instead of stalling on it.
-    const answer = !DESTRUCTIVE_RE.test(text);
-    report('confirm', text, answer);
-    return answer;
+    const destructive = DESTRUCTIVE_RE.test(text);
+
+    if (automating()) {
+      // Answering "no" to a destructive prompt keeps the uploaded file / entered
+      // answers; answering "yes" to anything else lets a confirm-to-proceed step
+      // through instead of stalling on it.
+      const answer = !destructive;
+      report('confirm', text, answer);
+      return answer;
+    }
+
+    /* Not automating. A destructive confirm that NO human click caused was
+       raised by script, and it blocks the page's JavaScript thread until it is
+       answered. Decline it — declining "Remove <file>?" keeps the file, so this
+       can never lose anything — and let the page carry on instead of freezing.
+
+       A confirm the user actually triggered still goes through to the real
+       dialog, so pressing Remove yourself works exactly as it always did. */
+    if (destructive && !humanJustActed()) {
+      report('confirm', text, false);
+      return false;
+    }
+    return orig.confirm.apply(window, arguments);
   };
 
   window.alert = function (message) {

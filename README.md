@@ -606,6 +606,54 @@ proving the next job starts immediately while a blocked tab stays parked.
 
 ---
 
+## v14.8 — the `Remove "…_CV"?` freeze, fixed for good, on every ATS
+
+The earlier fix had a hole, and it's the one that bit: the dialog hook only armed
+itself **while a queue job was running**. On a manual apply — or in the gap after a
+Fully-Automated pass hands its flag back — a script-driven
+`Remove "Maxmilliam_Okafor_CV"?` still froze the page with nothing able to answer
+it. A native `confirm()` blocks the JavaScript thread outright, which is why the
+page becomes unclickable and the only way out is to start over.
+
+Three layers now, none of them ATS-specific:
+
+**1. A script-driven destructive confirm is always declined.** The hook tracks
+whether a *trusted* gesture just happened. If a `Remove …?` / `Delete …?` confirm
+arrives with no real click behind it, it was raised by script — it is answered
+**no** (which keeps your CV) and the page never freezes. This works whether or not
+automation is running, and whether the click came from our code or Jobright's own
+bundle.
+
+If **you** press Remove, the real dialog still appears and behaves normally — the
+gesture window is 1.2s, so your own clicks are never swallowed.
+
+**2. The remove control is unreachable across shadow boundaries.** `closest()`
+stops dead at a shadow root, so on SmartRecruiters — where the upload widget is all
+`spl-*` web components — the guard couldn't see the attachment container and let
+the click through. It now walks out through the shadow host chain, reads the icon
+inside the button's own shadow root, and treats `spl-*` / `oj-*` elements as
+clickable controls.
+
+**3. Both click paths are guarded.** `triggerMouse()` — the pointer-event path web
+components require, since they ignore `.click()` — bypassed the guard entirely.
+It's now checked the same as `realClick()`.
+
+### Why this covers every ATS
+
+| | scope |
+| --- | --- |
+| Dialog hook | `<all_urls>`, all frames, MAIN world, `document_start` |
+| Destructive wording | generic verbs, matched anywhere in the message |
+| Attachment containers | `spl-*` (SmartRecruiters), `oj-file-picker` (Oracle), plus generic `attachment` / `uploaded` / `file-item` / `dropzone` / `upload` / `resume` class patterns |
+| Click paths | `realClick` and `triggerMouse`, both guarded |
+
+Nothing in it keys off a hostname.
+
+**If a tab is already frozen**, reload it — the hook installs at `document_start`,
+so from the next load onward the dialog cannot block you again.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
