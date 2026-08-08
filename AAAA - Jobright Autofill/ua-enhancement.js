@@ -8757,18 +8757,88 @@
     const fields = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter(isVisible);
     return fields.length >= 3;
   }
-  const APPLY_TEXT_RE = /^(apply now|apply for this job|apply to this job|apply online|easy apply|quick apply|apply with|i'?m interested|start (your )?application|begin application|continue application|apply)\b/i;
-  const APPLY_BAD_RE = /already applied|how to apply|apply filter|save job|sign ?in|log ?in|create account|^applied$/i;
+  /* ── GETTING FROM THE JOB DESCRIPTION INTO THE APPLICATION (every ATS) ──────
+     A queued URL nearly always lands on the JD page, not the form, and the
+     button that opens the form is named whatever the platform felt like:
+     SmartRecruiters says "I'm interested", Greenhouse "Apply for this job",
+     Workday "Apply", Lever "Apply for this job", Oracle "Apply Now", ADP "Apply
+     to this job", and half of Europe says it in another language entirely.
+     Getting this wrong means the job is skipped before autofill ever runs. */
+
+  // Smart quotes are not straight quotes: SmartRecruiters renders "I’m interested"
+  // with U+2019, which /i'?m interested/ does not match.
+  function normLabel(t) {
+    return String(t == null ? '' : t)
+      .replace(/[‘’ʼ´`]/g, "'")
+      .replace(/[–—]/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  const APPLY_TEXT_RE = new RegExp('^(' + [
+    'apply', 'apply now', 'apply here', 'apply today', 'apply online', 'apply instantly',
+    'apply for (this |the )?(job|role|position|opportunity|vacancy|opening)',
+    'apply to (this |the )?(job|role|position|opportunity|vacancy|opening)',
+    'apply with', 'apply via', 'apply using', 'apply on',
+    'easy apply', 'quick apply', 'fast apply', 'simple apply',
+    '(1|one)[ -]?click apply', 'apply in (1|one) click',
+    "i'm interested", 'i am interested', 'interested\\?',
+    'express (your |an )?interest', 'register (your )?interest', 'submit (your )?interest',
+    'start (your |the |an )?application', 'begin (your |the |an )?application',
+    'continue (to )?(the |your )?application', 'go to (the )?application',
+    'complete (your |the )?application', 'proceed to (the )?application',
+    'submit (your |a )?(resume|cv|cover letter)', 'send (your |a )?(resume|cv|application)',
+    'postuler', 'je postule', 'postuler maintenant', 'candidater',
+    'jetzt bewerben', 'bewerben', 'bewerbung starten',
+    'solicitar', 'postularse', 'inscribirse', 'candidatar-se', 'candidatura',
+    'solliciteer', 'sollicitatie', 'ansok', 'ansök', 'sok stillingen', 'søk', 'hae', 'aplica',
+  ].join('|') + ')\\b', 'i');
+
+  /* Things that read like Apply but are not: the already-applied state, a filter,
+     a save/share affordance, a sign-in wall, a link back to the listing. Clicking
+     any of them wastes a click and can navigate off the job entirely. */
+  const APPLY_BAD_RE = /already applied|you have applied|application (sent|submitted|received)|how to apply|apply filter|apply filters|apply changes|apply coupon|save (this )?job|share (this )?job|refer a friend|job alert|create (an )?alert|sign ?in|log ?in|create (an )?account|register now|^applied$|^apply later$|view (all )?(other )?jobs|see (all|other) jobs|similar jobs|back to (jobs|search|results)|report this|withdraw/i;
+
+  function isApplyLabel(text) {
+    const t = normLabel(text);
+    if (!t || t.length > 48) return false;
+    if (APPLY_BAD_RE.test(t)) return false;
+    return APPLY_TEXT_RE.test(t);
+  }
+
+  /* Scored, not first-match: a JD page routinely carries several qualifying
+     controls (a sticky header Apply, an inline one, a footer link, and — on
+     aggregators — one per "other jobs at this company" row). Prefer the real
+     primary action. Enumerated deeply, so an apply button inside a web component
+     or a same-origin frame is found, and our own sidebar is excluded. */
   function findApplyButton() {
     const known = ['.jobs-apply-button', 'button.jobs-apply-button--top-card', '#indeedApplyButton',
       '#applyButtonLinkContainer a', 'button[data-testid*="apply" i]', 'a[data-testid*="apply" i]',
-      '[class*="apply-button" i]', 'button[aria-label*="apply" i]', 'a[aria-label*="apply" i]'];
-    for (const sel of known) { const el = $(sel); if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test((el.textContent || '').trim())) return el; }
-    const cands = $$('button,a[role="button"],a,[role="button"],input[type=button],input[type=submit]').filter(isVisible);
-    return cands.find(b => {
-      const t = (b.textContent || b.value || '').trim();
-      return t.length > 0 && t.length < 40 && APPLY_TEXT_RE.test(t) && !APPLY_BAD_RE.test(t) && !b.disabled;
-    }) || null;
+      '[data-automation-id*="apply" i]', '[class*="apply-button" i]', '[class*="applyButton" i]',
+      'button[aria-label*="apply" i]', 'a[aria-label*="apply" i]', 'spl-button[data-test*="apply" i]'];
+    for (const sel of known) {
+      for (const el of deepAll(sel, 8)) {
+        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent))) return el;
+      }
+    }
+    const cands = deepAll('button,a[role="button"],a,[role="button"],input[type=button],input[type=submit],spl-button,oj-button', 400)
+      .filter(isVisible);
+    let best = null, bestScore = -1;
+    for (const b of cands) {
+      if (b.disabled) continue;
+      const t = normLabel(b.textContent || b.value || b.getAttribute?.('aria-label') || '');
+      if (!isApplyLabel(t)) continue;
+      let score = 10;
+      const tag = (b.tagName || '').toLowerCase();
+      if (tag === 'button' || tag === 'spl-button' || b.getAttribute?.('role') === 'button') score += 4;
+      if (/^apply\b|^i'm interested|^apply now/i.test(t)) score += 3;   // the canonical primary action
+      if (/\bwith\b|\bvia\b|\busing\b/i.test(t)) score -= 5;            // "Apply with LinkedIn" — a detour
+      if (t.length <= 24) score += 2;
+      // A control sitting in a list of OTHER jobs is not this job's Apply.
+      try { if (b.closest('[class*="similar" i],[class*="other-job" i],[class*="related" i],footer,nav')) score -= 8; } catch (_) {}
+      if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
   }
   function hasApplyButton() { return !!findApplyButton(); }
   async function waitForFormOrModal(ms) {
@@ -8777,13 +8847,13 @@
     return hasApplicationForm();
   }
   function findButtonByText(re, exclude) {
-    return $$('button,a,[role="button"],input[type=button],input[type=submit]').filter(isVisible)
-      .find(b => { const t = (b.textContent || b.value || '').trim(); return t && t.length < 60 && re.test(t) && (!exclude || !exclude.test(t)); }) || null;
+    return deepAll('button,a,[role="button"],input[type=button],input[type=submit],spl-button,oj-button', 400).filter(isVisible)
+      .find(b => { const t = normLabel(b.textContent || b.value || b.getAttribute?.('aria-label') || ''); return t && t.length < 60 && re.test(t) && (!exclude || !exclude.test(t)); }) || null;
   }
   // The "Apply Manually" choice on a Workday-style "Start Your Application" modal.
   // We never pick "Autofill with Resume" or "Use My Last Application".
   function findApplyManually() {
-    return $('[data-automation-id="applyManually"]') ||
+    return deepOne('[data-automation-id="applyManually"]') ||
       findButtonByText(/^\s*apply manually\s*$|^apply without (a )?(resume|sign)|^fill (it )?out manually|^continue manually|^enter manually/i);
   }
   async function clickApplyManually() {
@@ -9111,12 +9181,29 @@
     await loadAnswerBank();
     await resolveBlockingDialog();
 
-    // Job page → application form.
-    if (!/\/(apply|publication)/i.test(location.pathname)) {
-      const apply = deepQueryAll('button,a,spl-button')
-        .filter(isVisible)
-        .find(b => /^\s*(apply|i'?m interested|apply now|start application)\b/i.test((b.textContent || '').trim()));
-      if (apply) { LOG('SmartRecruiters: opening the application'); realClick(apply); await sleep(3000); }
+    /* Job description page → application form. The JD lives at
+       /<Company>/<id>-<slug> and its entry point is labelled "I'm interested"
+       (with a curly apostrophe); the application itself is under
+       /oneclick-ui/company/<Company>/publication/<uuid>/... — a different path
+       AND a different page, so neither the old /apply|publication/ test nor the
+       old literal label matched, and the job was skipped on the JD page. */
+    const IN_APPLICATION = /\/(apply|application|publication|oneclick|oneclick-ui|screening|questions?)\b/i;
+    if (!IN_APPLICATION.test(location.pathname) && !hasApplicationForm()) {
+      const apply = findApplyButton() ||
+        deepQueryAll('button,a,spl-button,[role="button"]').filter(isVisible)
+          .find(b => isApplyLabel(b.textContent || b.getAttribute('aria-label') || ''));
+      if (apply) {
+        LOG('SmartRecruiters: opening the application via "' + normLabel(apply.textContent).slice(0, 30) + '"');
+        const before = stepSignature();
+        if (apply.tagName === 'A' && apply.target === '_blank') apply.target = '_self';
+        realClick(apply);
+        noteProgress('clicked Apply');
+        // The JD page navigates to a different URL — wait for the form, don't guess.
+        await waitForStepChange(before, 15000);
+        await waitForFormStable(3000);
+      } else {
+        LOG('SmartRecruiters: no apply entry point found on this page');
+      }
     }
 
     const loc = p.city ? [p.city, p.state || p.region || '', p.country || DEFAULTS.country].filter(Boolean).join(', ') : '';
@@ -9249,16 +9336,18 @@
     await loadAnswerBank();
     await resolveBlockingDialog();
 
-    // Requisition page → application. Oracle labels this "Apply" / "Apply Now".
-    const applyNames = /^\s*(apply|apply now|apply for (this )?job|start( your)? application)\b/i;
+    // Requisition page → application. Shared apply-label vocabulary, so Oracle
+    // gets every wording (and every language) the other drivers understand.
     for (let i = 0; i < 3; i++) {
       if (/\/apply/i.test(location.href) || deepQuery('input,select,textarea,oj-input-text')) break;
-      const apply = deepQueryAll('button,a,oj-button').filter(isVisible)
-        .find(b => applyNames.test((b.textContent || b.getAttribute('title') || '').trim()));
+      const apply = findApplyButton() || deepQueryAll('button,a,oj-button,[role="button"]').filter(isVisible)
+        .find(b => isApplyLabel(b.textContent || b.getAttribute('title') || b.getAttribute('aria-label') || ''));
       if (!apply) break;
-      LOG('Oracle: opening the application');
+      LOG('Oracle: opening the application via "' + normLabel(apply.textContent).slice(0, 30) + '"');
+      const before = stepSignature();
       realClick(apply);
-      await sleep(3000);
+      noteProgress('clicked Apply');
+      await waitForStepChange(before, 12000);
     }
 
     // Oracle asks for an account before the form on many tenants; the shared
@@ -9308,13 +9397,15 @@
 
     // Listing / preview → application.
     for (let i = 0; i < 3; i++) {
-      if (/\/(apply|application)/i.test(location.pathname)) break;
-      const apply = deepQueryAll('button,a').filter(isVisible)
-        .find(b => /^\s*(apply|apply now|apply to (this )?job|start application)\b/i.test((b.textContent || '').trim()));
+      if (/\/(apply|application)/i.test(location.pathname) || hasApplicationForm()) break;
+      const apply = findApplyButton() || deepQueryAll('button,a,[role="button"]').filter(isVisible)
+        .find(b => isApplyLabel(b.textContent || b.getAttribute('aria-label') || ''));
       if (!apply) break;
-      LOG('ADP: opening the application');
+      LOG('ADP: opening the application via "' + normLabel(apply.textContent).slice(0, 30) + '"');
+      const before = stepSignature();
       realClick(apply);
-      await sleep(3000);
+      noteProgress('clicked Apply');
+      await waitForStepChange(before, 12000);
     }
     await handleAccountAuth();
 

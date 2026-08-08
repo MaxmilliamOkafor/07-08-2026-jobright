@@ -374,5 +374,83 @@ eq('Oracle waits for its next step rather than sleeping',
 eq('no driver still blind-sleeps 2.5s in place of a step change',
   /if \(r === 'next_page'\) \{ await sleep\(2500\); continue; \}/.test(src), false);
 
+/* ── 17. getting off the job description and into the application ─────────── */
+/* A queued URL lands on the JD page, not the form. If the entry point isn't
+   recognised the job is skipped before autofill ever runs — and every platform
+   names that button differently. SmartRecruiters' ServiceNow JD page says
+   "I'm interested", with a CURLY apostrophe. */
+console.log('the apply entry point is found on every JD page');
+const applySrc = src.slice(src.indexOf('function normLabel('));
+const applyCtx = {};
+new Function('exports', `
+  ${applySrc.slice(0, applySrc.indexOf('\n  /* Scored, not first-match'))}
+  Object.assign(exports, { normLabel, isApplyLabel, APPLY_TEXT_RE, APPLY_BAD_RE });
+`)(applyCtx);
+const { isApplyLabel } = applyCtx;
+
+eq('a curly apostrophe is normalised to a straight one', applyCtx.normLabel('I’m interested'), "I'm interested");
+for (const [label, want] of [
+  ['I’m interested', true],          // SmartRecruiters JD page, curly quote
+  ["I'm interested", true],
+  ['I am interested', true],
+  ['Apply', true],
+  ['Apply Now', true],
+  ['Apply for this job', true],           // Greenhouse / Lever
+  ['Apply to this job', true],            // ADP
+  ['Apply for this position', true],
+  ['Apply for this role', true],
+  ['Apply online', true],
+  ['Easy Apply', true],
+  ['Quick apply', true],
+  ['1-Click Apply', true],
+  ['One click apply', true],
+  ['Start your application', true],
+  ['Begin application', true],
+  ['Continue to application', true],
+  ['Go to application', true],
+  ['Express your interest', true],
+  ['Register your interest', true],
+  ['Submit your resume', true],
+  ['Postuler', true],
+  ['Jetzt bewerben', true],
+  ['Solicitar', true],
+  ['Solliciteer', true],
+  // …and the ones that only look like Apply:
+  ['Refer a friend', false],              // sits right under "I'm interested"
+  ['Share this job', false],
+  ['Save job', false],
+  ['Already applied', false],
+  ['Applied', false],
+  ['How to apply', false],
+  ['Apply filters', false],
+  ['Sign in', false],
+  ['Create an account', false],
+  ['View all jobs', false],
+  ['Similar jobs', false],
+  ['Back to search', false],
+  ['Withdraw application', false],
+  ['Show all jobs', false],
+  ['Refer', false],
+]) eq(`apply entry: "${label}" → ${want}`, isApplyLabel(label), want);
+
+const fab = body('findApplyButton');
+eq('the apply finder is shadow- and frame-aware', /deepAll\(/.test(fab) && !/(?<![\w$])\$\$?\(/.test(fab), true);
+eq('it scores rather than taking the first match in the DOM',
+  /if \(score > bestScore\) \{ bestScore = score; best = b; \}/.test(fab), true);
+eq('an Apply in a "similar jobs" list loses to the real one',
+  /similar" i\],\[class\*="other-job" i\]/.test(fab), true);
+eq('"Apply with LinkedIn" loses to a plain Apply', /\\bwith\\b\|\\bvia\\b\|\\busing\\b/.test(fab), true);
+eq('the apply-choice modal lookup is deep too', /deepOne\('\[data-automation-id="applyManually"\]'\)/.test(src), true);
+eq('findButtonByText no longer uses a blind document query',
+  !/(?<![\w$])\$\$?\(/.test(body('findButtonByText')), true);
+
+const srDriver = src.slice(src.lastIndexOf('async function smartRecruitersAutomation'));
+eq('SmartRecruiters recognises its application paths, not just /apply',
+  /oneclick-ui\|screening/.test(srDriver), true);
+eq('it uses the shared apply vocabulary', /isApplyLabel\(/.test(srDriver), true);
+eq('and waits for the JD page to actually navigate', /await waitForStepChange\(before, 15000\)/.test(srDriver), true);
+eq('Oracle and ADP use the same vocabulary',
+  (src.match(/find\(b => isApplyLabel\(/g) || []).length >= 3, true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

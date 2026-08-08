@@ -862,6 +862,66 @@ not treating our own typing as a page transition.
 
 ---
 
+## v15.2 — getting off the job description and into the application
+
+A queued URL almost never lands on the form. It lands on the **job description**,
+and something has to open the application. On the ServiceNow posting at
+`jobs.smartrecruiters.com/ServiceNow/744000142223189-…` that something is a button
+labelled **"I'm interested"** — with a curly apostrophe (U+2019).
+
+Three things were wrong, and all of them applied to every ATS:
+
+* **The apostrophe.** The pattern was `/i'?m interested/`, which matches `Im` and
+  `I'm` and **not** `I’m`. Labels are now normalised (curly quotes → straight,
+  en/em dashes → hyphen, whitespace collapsed) before any match.
+* **The vocabulary was thin.** It knew about eight phrasings. It now knows the
+  ones the supported platforms actually ship — *Apply for this job* (Greenhouse,
+  Lever), *Apply to this job* (ADP), *Apply for this position/role*, *Easy Apply*,
+  *1-Click Apply*, *Start your application*, *Continue to application*, *Express
+  your interest*, *Register your interest*, *Submit your resume* — plus
+  *Postuler*, *Jetzt bewerben*, *Solicitar*, *Solliciteer*, *Candidatar-se*,
+  *Ansök*, *Søk* for the European tenants.
+* **It was blind and first-match.** `findApplyButton` used plain
+  `document.querySelector` — no shadow roots, no same-origin frames, and no
+  exclusion of Jobright's own sidebar — and took the first qualifying control in
+  the DOM. It is now deep-enumerated and **scored**: a real `<button>` beats a
+  footer link, a short canonical label beats a long one, *"Apply with LinkedIn"*
+  loses to a plain *Apply*, and anything inside a "similar jobs" / "other jobs at
+  this company" list is pushed to the bottom — that list sits right beside the
+  real button on the ServiceNow JD page.
+
+Equally important is what must **not** be clicked. Sitting directly under
+"I'm interested" on that page is **"Refer a friend"**, and beside it *Share this
+job* and *Show all jobs*. The reject list now also covers *already applied*,
+*application submitted*, *how to apply*, *apply filters*, *save job*, *job alert*,
+*sign in*, *create an account*, *view all jobs*, *back to search* and *withdraw*.
+
+### SmartRecruiters specifically
+
+The JD lives at `/<Company>/<id>-<slug>`; the application is at
+`/oneclick-ui/company/<Company>/publication/<uuid>/screening` — a different path
+**and** a different page load. The driver's "am I already in the application?"
+test was `/\/(apply|publication)/`, so on the JD page it looked for an apply
+button (correct) but with the old literal label list (wrong), and on
+`/oneclick-ui/…/screening` it had no reliable way to know it had arrived. Both
+paths are now recognised, and after clicking the entry point the driver waits for
+the question set to actually change rather than sleeping and hoping.
+
+Oracle Recruiting Cloud and ADP now use the same shared vocabulary and the same
+post-click wait, so a JD page on either behaves identically.
+
+### Verified
+
+Mutation-checked: restoring the old narrow apply pattern fails **17** assertions
+(including every non-English label and *Apply for this position*); removing the
+curly-quote normalisation fails 2; making the finder first-match instead of
+scored fails 1; reverting SmartRecruiters' path test fails 1.
+
+The vocabulary is tested against 24 real entry-point labels and 15 look-alikes
+that must never be clicked. Suite total: **522 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
