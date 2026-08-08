@@ -319,8 +319,10 @@
 
       const tdS = document.createElement('td');
       const badge = document.createElement('span');
-      badge.className = 'badge b-' + j.status;
-      badge.textContent = j.status;
+      const blocked = !!(j.needsHuman && j.needsHuman.since);
+      badge.className = 'badge ' + (blocked ? 'b-needsyou' : 'b-' + j.status);
+      badge.textContent = blocked ? 'needs you' : j.status;
+      if (blocked) badge.title = (j.needsHuman.provider || 'CAPTCHA') + ' — open the tab and solve it';
       tdS.appendChild(badge);
       tr.appendChild(tdS);
 
@@ -350,6 +352,14 @@
 
       const tdA = document.createElement('td');
       tdA.style.whiteSpace = 'nowrap';
+      if (j.needsHuman && j.needsHuman.tabId != null) {
+        const open = document.createElement('button');
+        open.className = 'rowbtn';
+        open.dataset.focus = String(j.needsHuman.tabId);
+        open.title = 'Open this job\'s tab so you can solve the challenge';
+        open.textContent = '↗';
+        tdA.appendChild(open);
+      }
       if (j.status !== 'pending' && j.status !== 'applying') {
         const retry = document.createElement('button');
         retry.className = 'rowbtn';
@@ -484,6 +494,16 @@
   $('tbody').addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
+    if (btn.dataset.focus) {
+      const tabId = parseInt(btn.dataset.focus, 10);
+      try {
+        chrome.tabs.update(tabId, { active: true }, (t) => {
+          void chrome.runtime.lastError;
+          if (t && t.windowId != null) chrome.windows.update(t.windowId, { focused: true }, () => void chrome.runtime.lastError);
+        });
+      } catch (_) {}
+      return;
+    }
     if (btn.dataset.del) {
       const id = btn.dataset.del;
       await mutateQ((q) => { const i = q.findIndex((x) => x.id === id); if (i >= 0) q.splice(i, 1); });

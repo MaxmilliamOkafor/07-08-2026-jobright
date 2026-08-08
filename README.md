@@ -423,6 +423,56 @@ in the fill report rather than guessed at.
 
 ---
 
+## v14.5 — custom dropdowns, and CAPTCHAs that no longer eat a job
+
+### The biggest remaining reason a "filled" form wouldn't submit
+
+Native `<select>` was handled well. But most modern ATS don't use one — Greenhouse,
+Ashby, Lever, Workable, SmartRecruiters (`spl-select`) and Oracle (`oj-select`) all
+render a `role="combobox"` plus a popup listbox, and the universal filler had **no
+handler for those at all**. Any required custom dropdown stayed empty, and an empty
+required field blocks submission no matter how complete the rest of the form is.
+
+`commitCustomDropdown()` now handles every flavour: it opens the control with a
+full pointer sequence, falls back to `ArrowDown`, then to typing (many comboboxes
+only render their options once you type), picks the best match, and **verifies the
+control actually took a value** before calling it done.
+
+Two deliberate limits: it never invents an answer to a gender / disability /
+veteran / race question — it picks "prefer not to say" or leaves it — and the blind
+"just take the first option" last resort fires **only on a required field**, where
+the alternative is a form that cannot be submitted at all.
+
+### CAPTCHA
+
+This does not solve CAPTCHAs. That check exists to tell humans and bots apart, and
+defeating it isn't something I'll build. What was actually broken is everything
+around it:
+
+- **Detection was `document`-only** — a challenge inside the ATS's own iframe (where
+  the application form usually lives) was invisible, so the run just sat there
+  filling nothing until the watchdog killed it. Now shadow- and frame-aware.
+- **Only three providers were recognised.** Added Arkose/FunCaptcha, GeeTest,
+  DataDome/PerimeterX, AWS WAF and press-and-hold challenges.
+- **The job runs in a background tab you never see.** The on-page banner and
+  scroll-into-view were drawn where nobody was looking; the job waited three
+  minutes in silence and then died to the watchdog with nothing in the log
+  explaining why.
+
+Now a blocked job tells the queue. You get a **desktop notification**, the row
+shows an amber **needs you** badge with an **↗** button that focuses that tab, and
+the watchdog **stops counting** while a person is genuinely needed — bounded to 15
+minutes, so one unsolved challenge can't hold a slot for the rest of the run. When
+you solve it, the job reports itself unblocked and carries on by itself.
+
+### Verified
+
+`tests/fill.test.js` is now 58 assertions, including one that asserts **no**
+CAPTCHA-solving service or token injection exists in the source. Suite total:
+**298 assertions**.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -522,7 +572,7 @@ tests/
 ./tests/run.sh
 ```
 
-281 assertions, no browser required: JS syntax for everything shipped, manifest
+298 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,

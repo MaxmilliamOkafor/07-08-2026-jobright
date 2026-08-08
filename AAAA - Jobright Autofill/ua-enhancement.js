@@ -1754,6 +1754,129 @@
   function deepQuery(sel, root) { return deepQueryAll(sel, root, 1)[0] || null; }
   function deepVisible(sel, root) { return deepQueryAll(sel, root).filter(isVisible); }
 
+  /* ── CUSTOM DROPDOWN COMMITTER (all ATS) ───────────────────────────────────
+     Native <select> is handled well already, but most modern ATS do not use one.
+     Greenhouse, Ashby, Lever, Workable, SmartRecruiters (spl-select) and Oracle
+     (oj-select) all render a div with role="combobox" plus a popup listbox. The
+     universal filler had no handler for those at all, so any REQUIRED custom
+     dropdown stayed empty — and an empty required field is the single commonest
+     reason a fully "filled" form still refuses to submit.
+
+     One committer for every flavour: open it, wait for the options to render
+     (they are usually created on demand), pick the best match, and confirm the
+     control actually took a value. */
+  function comboText(el) {
+    try { return (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim(); }
+    catch (_) { return ''; }
+  }
+  // Does this combobox already hold an answer?
+  function comboHasValue(el) {
+    try {
+      const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || el.querySelector?.('input');
+      if (inner && (inner.value || '').trim()) return true;
+      if ((el.value || '').trim()) return true;
+      // react-select / MUI render the chosen label as a child node.
+      const shown = el.querySelector?.('[class*="singleValue" i],[class*="multiValue" i],[class*="selected" i],[class*="chip" i]');
+      if (shown && comboText(shown)) return true;
+      const t = comboText(el);
+      // Placeholder text is not an answer.
+      return !!t && !/^(select|choose|pick|--|—|none|please select|start typing|search)\b/i.test(t) && t.length > 1;
+    } catch (_) { return false; }
+  }
+  function listboxFor(combo) {
+    const id = combo.getAttribute?.('aria-controls') || combo.getAttribute?.('ariacontrols') ||
+      combo.getAttribute?.('aria-owns') || combo.getAttribute?.('list');
+    if (id) { try { const el = deepOne('#' + CSS.escape(id)); if (el) return el; } catch (_) {} }
+    return null;
+  }
+  function visibleOptions(scope) {
+    const sel = '[role="option"],spl-select-option,oj-option,li[data-value],li[role="option"],' +
+      '[class*="option" i]:not([class*="options" i]),[class*="menu-item" i],[class*="MenuItem" i]';
+    return (scope ? deepQueryAll(sel, scope, 300) : deepAll(sel, 300))
+      .filter(isVisible)
+      .filter(o => { const t = comboText(o); return t && t.length < 120; });
+  }
+  /* Pick `wanted` (or, for a required field, any sane option) in a custom
+     dropdown. Returns true only if the control ended up holding a value. */
+  async function commitCustomDropdown(combo, wanted, required) {
+    if (!combo || comboHasValue(combo)) return false;
+    const want = String(wanted == null ? '' : wanted).replace(/\s+/g, ' ').trim().toLowerCase();
+
+    // Open it. Web components need the full pointer sequence; some open only on
+    // keyboard, so fall back to ArrowDown.
+    triggerMouse(combo);
+    await sleep(450);
+    let opts = visibleOptions(listboxFor(combo));
+    if (!opts.length) {
+      try {
+        const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input') || combo;
+        inner.focus?.({ preventScroll: true });
+        inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+      } catch (_) {}
+      await sleep(450);
+      opts = visibleOptions(listboxFor(combo));
+    }
+    // Typeahead: many comboboxes only render options once you type.
+    if (!opts.length && want) {
+      const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input');
+      if (inner) {
+        try { inner.focus({ preventScroll: true }); nativeSet(inner, want.slice(0, 24)); } catch (_) {}
+        await sleep(700);
+        opts = visibleOptions(listboxFor(combo));
+      }
+    }
+    if (!opts.length) return false;
+
+    const norm = (t) => String(t).replace(/\s+/g, ' ').trim().toLowerCase();
+    const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a)\b/i.test(t);
+    const real = opts.filter(o => !isPlaceholder(comboText(o)));
+    let pick = null;
+    if (want) {
+      pick = real.find(o => norm(comboText(o)) === want)
+        || real.find(o => norm(comboText(o)).includes(want))
+        || real.find(o => want.includes(norm(comboText(o))) && norm(comboText(o)).length > 2);
+      if (!pick) {
+        const words = want.split(/\s+/).filter(w => w.length > 2);
+        if (words.length) pick = real.find(o => words.some(w => norm(comboText(o)).includes(w)));
+      }
+    }
+    // Demographic questions: never invent a specific answer — decline instead.
+    const label = norm(getLabel(combo) || '');
+    if (!pick && /gender|disability|veteran|race|ethnic|sex\b/.test(label)) {
+      pick = real.find(o => /prefer not|decline|do not wish|not to say/i.test(comboText(o)));
+    }
+    // Last resort, and ONLY for a required field: an empty required dropdown
+    // blocks submission outright, so any sane option beats leaving it blank.
+    if (!pick && required) pick = real[0];
+    if (!pick) { try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {} return false; }
+
+    const inner = pick.querySelector?.('spl-typography-body') ||
+      (pick.shadowRoot && pick.shadowRoot.querySelector('spl-typography-body,span,div')) || pick;
+    triggerMouse(inner);
+    await sleep(350);
+    if (!comboHasValue(combo)) { triggerMouse(pick); await sleep(300); }   // some need the row itself
+    return comboHasValue(combo);
+  }
+
+  /* Every custom dropdown on the page that still has no answer. */
+  async function fillCustomDropdowns(profile) {
+    const combos = deepAll(
+      '[role="combobox"],[ariarole="combobox"],[aria-haspopup="listbox"],' +
+      '[class*="select__control" i],[class*="Select-control" i],.MuiSelect-root,.ant-select,spl-select,oj-select-single'
+    ).filter(isVisible);
+    let filled = 0;
+    for (const combo of combos.slice(0, 40)) {
+      if (comboHasValue(combo)) continue;
+      const q = getFullQuestionText(combo) || getLabel(combo) || '';
+      const required = isFieldRequired(combo) || /\*/.test(q);
+      const guess = q ? guessFieldValue(q, profile, combo) : '';
+      try { if (await commitCustomDropdown(combo, guess, required)) filled++; } catch (_) {}
+      await sleep(150);
+    }
+    if (filled) LOG(`Custom dropdowns answered: ${filled}`);
+    return filled;
+  }
+
   /* ── UNIVERSAL FIELD DISCOVERY ─────────────────────────────────────────────
      $ / $$ are document.querySelector(All): they stop at a shadow boundary and
      never enter an iframe. Every universal filler (fallbackFill,
@@ -2115,6 +2238,12 @@
       }
     }
 
+    // Custom dropdowns (react-select / MUI / Ant / spl-select / oj-select). Native
+    // <select> is handled above; these are what most modern ATS actually render,
+    // and an unanswered REQUIRED one blocks submission however complete the rest
+    // of the form is.
+    try { filled += await fillCustomDropdowns(p); } catch (e) { LOG('Custom dropdown pass error:', e?.message || e); }
+
     // Radio buttons — Master Knockout Question System
     const groups = {};
     deepAll('input[type=radio]').filter(isVisible).forEach(r => { (groups[r.name || r.id] ||= []).push(r); });
@@ -2308,9 +2437,17 @@
         ['.g-recaptcha[data-sitekey]', 'reCAPTCHA'],
         ['.h-captcha[data-sitekey]', 'hCaptcha'],
         ['.cf-turnstile', 'Cloudflare Turnstile'],
+        // Providers the old list missed entirely, all common on ATS sign-in walls.
+        ['iframe[src*="arkoselabs"],iframe[src*="funcaptcha"],#funcaptcha', 'Arkose / FunCaptcha'],
+        ['iframe[src*="geetest"],.geetest_holder,.geetest_panel', 'GeeTest'],
+        ['iframe[src*="captcha-delivery"],#px-captcha,[id^="px-captcha"]', 'DataDome / PerimeterX'],
+        ['iframe[src*="awswaf"],[id*="awswaf-captcha"]', 'AWS WAF'],
+        ['[data-testid="challenge"],[class*="press-and-hold" i]', 'Press-and-hold challenge'],
       ];
       for (const [sel, provider] of PROVIDERS) {
-        for (const el of document.querySelectorAll(sel)) {
+        // deepAll: a challenge rendered inside the application's own iframe, or in a
+        // shadow root, was previously undetectable from the top document.
+        for (const el of deepAll(sel, 40)) {
           const r = el.getBoundingClientRect();
           if (r.width < 60 || r.height < 50) continue; // v3 badge / hidden token frames
           const cs = getComputedStyle(el);
@@ -2335,22 +2472,47 @@
   }
   function hideCaptchaBanner() { try { document.getElementById('ua-captcha-banner')?.remove(); } catch (_) {} }
   // Wait (bounded) for the visible captcha to be solved/dismissed. Returns true if clear.
+  /* A CAPTCHA is a human check and this does not try to answer one. What it does
+     is make the wait VISIBLE and bounded. A queue job runs in a background tab, so
+     the on-page banner and the scroll-into-view below are drawn where nobody is
+     looking: the old behaviour was to wait silently for three minutes and then let
+     the manager's watchdog kill the job, with nothing in the log explaining why.
+     Now the queue is told, so it can raise a notification, hold off the watchdog
+     while a person is genuinely needed, and show which job is waiting. */
+  function reportCaptcha(provider, blocked) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'UA_JOB_NEEDS_HUMAN',
+        reason: blocked ? 'captcha' : null,
+        provider: provider || '',
+        url: location.href,
+        blocked: !!blocked,
+      }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
   async function waitForCaptchaClear(maxMs = 180000) {
     const start = Date.now();
     let announced = false;
     while (Date.now() - start < maxMs) {
       const c = detectCaptcha();
-      if (!c) { if (announced) { hideCaptchaBanner(); LOG('Captcha cleared — resuming automation'); } return true; }
+      if (!c) {
+        if (announced) { hideCaptchaBanner(); reportCaptcha('', false); LOG('Captcha cleared — resuming automation'); }
+        return true;
+      }
       if (!announced) {
         announced = true;
         showCaptchaBanner(c.provider);
-        LOG(`CAPTCHA (${c.provider}) detected — automation paused, waiting for manual solve`);
+        reportCaptcha(c.provider, true);
+        LOG(`CAPTCHA (${c.provider}) detected — automation paused, waiting for you to solve it`);
         try { c.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
       }
       await sleep(2000);
     }
     hideCaptchaBanner();
-    return !detectCaptcha();
+    const still = !!detectCaptcha();
+    if (announced) reportCaptcha('', false);      // stop holding the watchdog off
+    if (still) LOG('CAPTCHA still present after the wait — giving up on this job');
+    return !still;
   }
   // Resolve once the DOM has been quiet for ~300ms (or after `timeout`) — so we act on a
   // settled page instead of mid-render. Cuts races on multi-step / React forms.

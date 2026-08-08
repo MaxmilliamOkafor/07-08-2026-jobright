@@ -104,5 +104,39 @@ eq('the report is logged before submitting', /logFillReport\('Before submit'\)/.
 eq('a third fill pass runs when the form is still incomplete',
   /Third pass, after a longer wait/.test(src), true);
 
+/* ── 7. custom dropdowns (what most modern ATS render instead of <select>) ─── */
+console.log('custom dropdown handling');
+eq('a universal committer exists', /async function commitCustomDropdown\(/.test(src), true);
+eq('it runs as part of the universal fill', /filled \+= await fillCustomDropdowns\(p\)/.test(src), true);
+eq('covers react-select / MUI / Ant / spl / oj', 
+  /select__control/.test(src) && /MuiSelect-root/.test(src) && /ant-select/.test(src) &&
+  /spl-select/.test(src) && /oj-select-single/.test(src), true);
+eq('opens with a pointer sequence, then keyboard, then typeahead',
+  /triggerMouse\(combo\)/.test(src) && /ArrowDown/.test(src) &&
+  /Typeahead: many comboboxes only render options once you type/.test(src), true);
+eq('never invents a demographic answer',
+  /gender\|disability\|veteran\|race\|ethnic[\s\S]{0,200}?prefer not\|decline/.test(src), true);
+eq('blind last-resort pick is limited to REQUIRED fields',
+  /if \(!pick && required\) pick = real\[0\];/.test(src), true);
+eq('it verifies the control actually took a value', /return comboHasValue\(combo\);/.test(src), true);
+eq('placeholder text is not mistaken for an answer',
+  /isPlaceholder|please select/.test(src), true);
+
+/* ── 8. CAPTCHA: not solved, but never silently eaten ─────────────────────── */
+console.log('CAPTCHA handling');
+eq('detection reaches frames and shadow roots', /for \(const el of deepAll\(sel, 40\)\)/.test(src), true);
+eq('covers Arkose, GeeTest, DataDome, AWS WAF, press-and-hold',
+  /arkoselabs/.test(src) && /geetest/.test(src) && /captcha-delivery/.test(src) &&
+  /awswaf/.test(src) && /press-and-hold/.test(src), true);
+eq('a blocked job tells the queue', /type: 'UA_JOB_NEEDS_HUMAN'/.test(src), true);
+eq('and tells it again when cleared', /reportCaptcha\('', false\)/.test(src), true);
+eq('the queue notifies and marks the row', /UA_JOB_NEEDS_HUMAN/.test(orch) && /needsHuman/.test(orch), true);
+eq('the watchdog does not time out a job waiting on a person',
+  /if \(waited < HUMAN_GRACE_MS\) continue;/.test(orch), true);
+eq('but the wait is bounded', /HUMAN_GRACE_MS = 15 \* 60 \* 1000/.test(orch), true);
+eq('a new run clears stale needs-you markers', /delete j\.needsHuman;/.test(orch), true);
+eq('no CAPTCHA-solving is attempted (no solver service, no token injection)',
+  /2captcha|anticaptcha|capmonster|deathbycaptcha|g-recaptcha-response\s*=/i.test(src), false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
