@@ -1754,6 +1754,113 @@
   function deepQuery(sel, root) { return deepQueryAll(sel, root, 1)[0] || null; }
   function deepVisible(sel, root) { return deepQueryAll(sel, root).filter(isVisible); }
 
+  /* ── CV / RESUME ATTACHMENT (all ATS) ──────────────────────────────────────
+     Attaching the CV was Workday-only: every other ATS relied on Jobright having
+     done it, and when it hadn't, the form failed validation with "Resume is
+     required" and the job died with no explanation. The résumé is already stored
+     locally as base64 (ua_resumes / ua_resume_data), so it can be attached
+     properly on any platform via DataTransfer.
+
+     Two failure modes this also removes:
+       • advancing while the upload is still in flight — the ATS then reports no
+         résumé, or silently drops it (a very common SmartRecruiters complaint);
+       • re-attaching over a file that is already there, which is what opens the
+         "Remove <file>?" confirm in the first place. */
+  const RESUME_FIELD_RE = /resume|résumé|cv\b|curriculum|lebenslauf|attach|upload/i;
+
+  function resumeFileInputs() {
+    return deepAll('input[type="file"]', 60).filter((el) => {
+      const hay = [el.name, el.id, el.accept, el.getAttribute('aria-label'),
+        el.getAttribute('data-automation-id'), el.getAttribute('data-testid'), getLabel(el)].join(' ');
+      if (RESUME_FIELD_RE.test(hay)) return true;
+      // An unlabelled file input inside an upload area still counts.
+      try { return !!el.closest('[class*="upload" i],[class*="dropzone" i],[class*="attach" i],[class*="resume" i],[class*="file" i]'); }
+      catch (_) { return false; }
+    });
+  }
+  // Is a file already attached? Checked before touching anything, so we never
+  // re-upload over a good attachment (and never reach a remove button).
+  function resumeAlreadyAttached() {
+    for (const inp of resumeFileInputs()) if (inp.files && inp.files.length) return true;
+    // The ATS usually renders the accepted file as a chip / filename row.
+    const chips = deepAll('[class*="filename" i],[class*="file-name" i],[data-automation-id="file-name"],' +
+      '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],spl-file-upload', 80);
+    for (const c of chips) {
+      const t = (c.textContent || '').trim();
+      if (t && /\.(pdf|docx?|rtf|txt|odt)\b/i.test(t)) return true;
+    }
+    return false;
+  }
+  // An upload in flight: pressing Next now is what makes the résumé vanish.
+  function resumeUploadInFlight() {
+    try {
+      const busy = deepAll('[class*="progress" i],[class*="spinner" i],[class*="loading" i],[aria-busy="true"],' +
+        'progress,[role="progressbar"]', 60).filter(isVisible);
+      if (busy.length) {
+        // Only count one that sits near an upload area.
+        for (const b of busy) {
+          if (b.closest && b.closest('[class*="upload" i],[class*="attach" i],[class*="resume" i],[class*="file" i]')) return true;
+        }
+      }
+      const txt = (document.body && document.body.innerText || '').slice(0, 4000);
+      return /uploading|processing your (resume|cv)|parsing your (resume|cv)/i.test(txt);
+    } catch (_) { return false; }
+  }
+  async function waitForResumeUpload(maxMs) {
+    const dl = Date.now() + (maxMs || 20000);
+    while (Date.now() < dl) {
+      if (!resumeUploadInFlight() && resumeAlreadyAttached()) return true;
+      if (!resumeUploadInFlight() && Date.now() > dl - 15000) break;   // nothing happening
+      await sleep(800);
+    }
+    return resumeAlreadyAttached();
+  }
+  async function storedResumeFile() {
+    try {
+      await loadResumes();
+      const r = (_resumes && _resumes[_activeResumeIdx]) || (await st.get('ua_resume_data'));
+      if (!r || !r.base64) return null;
+      const name = r.fileName || r.name || 'resume.pdf';
+      const raw = atob(String(r.base64).split(',').pop());
+      const buf = new ArrayBuffer(raw.length);
+      const view = new Uint8Array(buf);
+      for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+      return new File([buf], name, { type: r.mimeType || 'application/pdf' });
+    } catch (e) { LOG('Stored resume unreadable:', e?.message || e); return null; }
+  }
+  /* Attach the CV on any ATS. Returns 'already' | 'attached' | 'no-resume' |
+     'no-field' so the caller can report precisely instead of failing blind. */
+  async function attachResume() {
+    if (resumeUploadInFlight()) { await waitForResumeUpload(20000); }
+    if (resumeAlreadyAttached()) { LOG('CV already attached — leaving it alone'); return 'already'; }
+    const inputs = resumeFileInputs();
+    if (!inputs.length) return 'no-field';
+    const file = await storedResumeFile();
+    if (!file) {
+      LOG('CV NOT attached: no résumé saved in the extension. Add one in Jobright/the sidebar, or the ATS will reject the form.');
+      return 'no-resume';
+    }
+    for (const inp of inputs) {
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        inp.files = dt.files;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.dispatchEvent(new Event('change', { bubbles: true }));
+        // Some dropzones only listen for a real drop.
+        const zone = inp.closest && inp.closest('[class*="dropzone" i],[class*="upload" i],[class*="attach" i]');
+        if (zone) {
+          try { zone.dispatchEvent(new DragEvent('drop', { bubbles: true, composed: true, dataTransfer: dt })); } catch (_) {}
+        }
+        LOG(`CV attached: ${file.name}`);
+        noteProgress('attached CV');
+        await waitForResumeUpload(25000);
+        if (resumeAlreadyAttached()) return 'attached';
+      } catch (e) { LOG('CV attach failed on one input:', e?.message || e); }
+    }
+    return resumeAlreadyAttached() ? 'attached' : 'no-field';
+  }
+
   /* ── CUSTOM DROPDOWN COMMITTER (all ATS) ───────────────────────────────────
      Native <select> is handled well already, but most modern ATS do not use one.
      Greenhouse, Ashby, Lever, Workable, SmartRecruiters (spl-select) and Oracle
@@ -2238,6 +2345,13 @@
       }
     }
 
+    // Attach the CV if the form wants one and nothing is attached yet. Skipped
+    // silently when a file is already there, so we never touch a remove control.
+    try {
+      const cvState = await attachResume();
+      if (cvState === 'attached') filled++;
+    } catch (e) { LOG('CV attach pass error:', e?.message || e); }
+
     // Custom dropdowns (react-select / MUI / Ant / spl-select / oj-select). Native
     // <select> is handled above; these are what most modern ATS actually render,
     // and an unanswered REQUIRED one blocks submission however complete the rest
@@ -2374,7 +2488,7 @@
      seconds instead of holding a slot for minutes. */
   let _lastProgressAt = Date.now();
   let _lastProgressWhat = 'started';
-  let _stallLimitMs = 75000;        // no progress for this long → give up on the job
+  let _stallLimitMs = 45000;        // no progress for this long → give up on the job
   function noteProgress(what) {
     _lastProgressAt = Date.now();
     if (what) _lastProgressWhat = what;
@@ -2735,6 +2849,9 @@
       await sleep(300);
       missing = getMissingRequired();
     }
+    // An upload still in flight is the difference between "resume attached" and
+    // "resume required" on most ATS. Never submit through one.
+    if (resumeUploadInFlight()) { LOG('Waiting for a file upload to finish before submitting'); await waitForResumeUpload(25000); }
     logFillReport('Before submit');
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
@@ -8510,12 +8627,21 @@
         if (/consent|agree|privacy|gdpr|terms|data.?process|acknowledg/i.test(lbl)) { triggerMouse(cb); await sleep(120); }
       }
 
+      // CV first: SmartRecruiters parses it and pre-fills from it, so attaching
+      // before the field sweep means fewer fields left for us to guess at.
+      const cv = await attachResume();
+      if (cv === 'no-resume') LOG('SmartRecruiters: no résumé saved — the form will likely reject the step');
+
       await fallbackFill();
       await triggerAutofillQuick();
       await sleep(800);
       await guaranteeRequiredFields();
       await handleValidationErrors();
       await resolveBlockingDialog();
+
+      // Never press Next/Submit mid-upload: SmartRecruiters then reports no
+      // résumé attached, or drops the one that was in flight.
+      if (resumeUploadInFlight()) { LOG('SmartRecruiters: waiting for the CV upload to finish'); await waitForResumeUpload(25000); }
 
       // Advance. Text-matched so it survives SmartRecruiters renaming its test ids.
       const buttons = deepQueryAll('button,spl-button,[role="button"]').filter(isVisible);

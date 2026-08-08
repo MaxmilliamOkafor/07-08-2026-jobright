@@ -49,20 +49,21 @@
     OLD_RUNNER: 'ua_qa',      // the legacy in-page single-tab runner — mutually exclusive
   };
   const ALARM = 'ua_mgr_watchdog';
-  // How long a job may sit waiting for a human (CAPTCHA) before the run gives up
-  // on it and moves on. Long enough to actually go and solve it, bounded so one
-  // unattended challenge cannot hold a slot for the rest of the run.
-  const HUMAN_GRACE_MS = 15 * 60 * 1000;
-  /* A job tab reports a heartbeat every 10s. Silence for this long means the tab
-     is gone or its content script died — a state that used to be indistinguishable
-     from "working hard" and held the slot until the full per-job timeout. */
-  const HEARTBEAT_DEAD_MS = 75 * 1000;
+  // At most this many CAPTCHA'd tabs are left open waiting for you at once. Past
+  // that the oldest is given up on, so a challenge-heavy CSV cannot bury you in
+  // parked tabs.
+  const MAX_PARKED = 3;
+  /* A job tab reports a heartbeat every 10s, so this is four missed beats — enough
+     slack for a genuinely busy page, short enough that a crashed tab is reclaimed
+     in well under a minute instead of holding its slot until the per-job cap. */
+  const HEARTBEAT_DEAD_MS = 40 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
     tailor: false,
     jobTimeoutMs: 6 * 60 * 1000,   // hard cap per job (content script caps itself at 150s/page)
-    stallMs: 75 * 1000,            // no progress for this long → skip the job and move on
+    stallMs: 45 * 1000,            // no progress for this long → skip the job and move on
+    humanGraceMs: 2 * 60 * 1000,   // how long a CAPTCHA'd job waits for you before it is dropped
     interJobDelayMs: 800,          // breathing room between tab opens
   };
 
@@ -151,6 +152,7 @@
       tailor: typeof s.tailor === 'boolean' ? s.tailor : DEFAULTS.tailor,
       jobTimeoutMs: Math.max(60000, Number(s.jobTimeoutMs) || DEFAULTS.jobTimeoutMs),
       stallMs: Math.max(20000, Number(s.stallMs) || DEFAULTS.stallMs),
+      humanGraceMs: Math.max(15000, Number(s.humanGraceMs) || DEFAULTS.humanGraceMs),
       interJobDelayMs: Math.max(0, Number(s.interJobDelayMs) ?? DEFAULTS.interJobDelayMs),
     };
   }
@@ -223,7 +225,9 @@
       const [cfg, conc, map] = [await settings(), await concurrency(), await reconcileTabs()];
 
       const toOpen = await withQueue((q) => {
-        const running = q.filter((j) => j.status === 'applying' && map[j.id] != null).length;
+        // Jobs parked on a CAPTCHA are deliberately excluded: they are waiting on
+        // a person, not using the browser, so they must not cost a slot.
+        const running = q.filter((j) => j.status === 'applying' && map[j.id] != null && !j.needsHuman).length;
         // An `applying` job with no tab is an orphan (crash / closed tab) — recycle it.
         for (const j of q) if (j.status === 'applying' && map[j.id] == null) { j.status = 'pending'; j.startedAt = null; }
         const slots = conc - running;
@@ -429,16 +433,27 @@
     const cfg = await settings();
     const map = await reconcileTabs();
     const stale = [];
+    // Oldest-first, so when too many jobs are waiting on you it is the newest that
+    // gets dropped rather than the one you are probably already looking at.
+    const snapshot = (await get(K.Q)) || [];
+    const parked = snapshot
+      .filter((j) => j.status === 'applying' && j.needsHuman && j.needsHuman.since)
+      .sort((a, b) => a.needsHuman.since - b.needsHuman.since)
+      .map((j) => j.id);
     await withQueue((q) => {
       for (const j of q) {
         if (j.status !== 'applying') continue;
         if (map[j.id] == null) continue;              // orphan handling lives in fillSlots
-        // A job waiting on a human (CAPTCHA) gets extra time — but not forever.
+        // Parked on a CAPTCHA: it costs no slot (see fillSlots), so the only
+        // question is how long its tab stays open waiting for you.
         if (j.needsHuman && j.needsHuman.since) {
           const waited = Date.now() - j.needsHuman.since;
-          if (waited < HUMAN_GRACE_MS) continue;
+          const overParked = parked.indexOf(j.id) >= MAX_PARKED;   // oldest kept, newest dropped
+          if (waited < cfg.humanGraceMs && !overParked) continue;
           j.status = 'failed';
-          j.error = `${j.needsHuman.provider || 'CAPTCHA'} was not solved within ${Math.round(HUMAN_GRACE_MS / 60000)} min`;
+          j.error = overParked
+            ? `${j.needsHuman.provider || 'CAPTCHA'} — too many jobs waiting on you at once`
+            : `${j.needsHuman.provider || 'CAPTCHA'} not solved within ${Math.round(cfg.humanGraceMs / 60000)} min`;
           j.completedAt = Date.now();
           delete j.needsHuman;
           stale.push({ id: j.id, label: j.title || j.url });
@@ -449,9 +464,10 @@
         const lastBeat = j.beatAt || j.startedAt || 0;
         if (lastBeat && Date.now() - lastBeat > HEARTBEAT_DEAD_MS && Date.now() - (j.startedAt || 0) > HEARTBEAT_DEAD_MS) {
           j.status = 'timeout';
+          const silentFor = Math.round((Date.now() - lastBeat) / 1000);
           j.error = j.beatAt
-            ? `Stopped responding after ${Math.round((j.beatAt - j.startedAt) / 1000)}s (last: ${j.stage || 'unknown'})`
-            : 'Tab never reported any progress';
+            ? `Tab went silent for ${silentFor}s — dropped (was: ${j.stage || 'unknown'})`
+            : `Tab never responded in ${silentFor}s — dropped`;
           j.completedAt = Date.now();
           stale.push({ id: j.id, label: j.title || j.url, why: 'unresponsive' });
           continue;
@@ -551,8 +567,11 @@
             }
           });
           if (msg.blocked) {
-            log(`✋ ${label} — ${msg.provider || 'CAPTCHA'}: needs you. Open the job tab to solve it.`, 'err');
-            notify('A job needs you', `${msg.provider || 'CAPTCHA'} on ${label}. Open that tab to solve it — the run continues afterwards.`);
+            log(`✋ ${label} — ${msg.provider || 'CAPTCHA'}: needs you. Its tab stays open; the queue carries on.`, 'err');
+            notify('A job needs you', `${msg.provider || 'CAPTCHA'} on ${label}. Open that tab to solve it — the rest of the queue keeps running.`);
+            // The job no longer counts against concurrency, so a slot just came
+            // free. Use it now rather than waiting for the next watchdog tick.
+            await fillSlots();
           } else {
             log(`✓ ${label} — challenge cleared, resuming`, 'ok');
           }

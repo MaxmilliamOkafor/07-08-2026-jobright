@@ -409,7 +409,8 @@
         skipApplied: $('optSkip').checked,
         tailor: $('optTailor').checked,
         jobTimeoutMs: Math.max(1, Math.min(30, parseInt($('optTimeout').value, 10) || 6)) * 60000,
-        stallMs: Math.max(20, Math.min(600, parseInt($('optStall').value, 10) || 75)) * 1000,
+        stallMs: Math.max(20, Math.min(600, parseInt($('optStall').value, 10) || 45)) * 1000,
+        humanGraceMs: Math.max(0.5, Math.min(30, parseFloat($('optHuman').value) || 2)) * 60000,
       },
       // The content script reads these two directly for the in-page runner too.
       ua_skip_applied: $('optSkip').checked,
@@ -498,7 +499,7 @@
     render();
   });
   $('conc').addEventListener('change', (e) => set({ [K.CONC]: parseInt(e.target.value, 10) || 3 }));
-  for (const id of ['optSkip', 'optTailor', 'optTimeout', 'optStall']) $(id).addEventListener('change', saveSettings);
+  for (const id of ['optSkip', 'optTailor', 'optTimeout', 'optStall', 'optHuman']) $(id).addEventListener('change', saveSettings);
 
   $('tbody').addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
@@ -567,7 +568,8 @@
     $('optSkip').checked = s.skipApplied !== false;
     $('optTailor').checked = s.tailor === true;
     $('optTimeout').value = String(Math.round((s.jobTimeoutMs || 360000) / 60000));
-    $('optStall').value = String(Math.round((s.stallMs || 75000) / 1000));
+    $('optStall').value = String(Math.round((s.stallMs || 45000) / 1000));
+    $('optHuman').value = String((s.humanGraceMs || 120000) / 60000);
 
     const state = await cmd('state');
     setRunning(state.active === true, state.paused === true);

@@ -132,11 +132,39 @@ eq('a blocked job tells the queue', /type: 'UA_JOB_NEEDS_HUMAN'/.test(src), true
 eq('and tells it again when cleared', /reportCaptcha\('', false\)/.test(src), true);
 eq('the queue notifies and marks the row', /UA_JOB_NEEDS_HUMAN/.test(orch) && /needsHuman/.test(orch), true);
 eq('the watchdog does not time out a job waiting on a person',
-  /if \(waited < HUMAN_GRACE_MS\) continue;/.test(orch), true);
-eq('but the wait is bounded', /HUMAN_GRACE_MS = 15 \* 60 \* 1000/.test(orch), true);
+  /if \(waited < cfg\.humanGraceMs && !overParked\) continue;/.test(orch), true);
+eq('the wait is short by default, not a quarter of an hour',
+  /humanGraceMs: 2 \* 60 \* 1000/.test(orch), true);
+eq('and it is configurable from the panel', /humanGraceMs: Math\.max\(15000/.test(orch), true);
+// The important part: waiting on a person must not cost throughput.
+eq('a parked job does not occupy a concurrency slot',
+  /j\.status === 'applying' && map\[j\.id\] != null && !j\.needsHuman/.test(orch), true);
+eq('the freed slot is refilled at once, not on the next tick',
+  /The job no longer counts against concurrency[\s\S]{0,160}?await fillSlots\(\);/.test(orch), true);
+eq('parked tabs are capped so they cannot pile up', /MAX_PARKED = 3/.test(orch), true);
+eq('a dead tab is reclaimed in well under a minute', /HEARTBEAT_DEAD_MS = 40 \* 1000/.test(orch), true);
+eq('the no-progress cut-off defaults to 45s', /stallMs: 45 \* 1000/.test(orch), true);
 eq('a new run clears stale needs-you markers', /delete j\.needsHuman;/.test(orch), true);
 eq('no CAPTCHA-solving is attempted (no solver service, no token injection)',
   /2captcha|anticaptcha|capmonster|deathbycaptcha|g-recaptcha-response\s*=/i.test(src), false);
+
+/* ── 9. CV / résumé attachment ────────────────────────────────────────────── */
+console.log('CV attachment');
+eq('a universal attacher exists (was Workday-only)', /async function attachResume\(\)/.test(src), true);
+eq('it finds file inputs across shadow DOM and frames', /deepAll\('input\[type="file"\]', 60\)/.test(src), true);
+eq('it never re-uploads over an existing attachment',
+  /if \(resumeAlreadyAttached\(\)\) \{ LOG\('CV already attached/.test(src), true);
+eq('it builds a real File from the stored base64', /new File\(\[buf\], name/.test(src), true);
+eq('it also fires a drop event for dropzone-only widgets', /new DragEvent\('drop'/.test(src), true);
+eq('it waits for the upload to land', /await waitForResumeUpload\(25000\)/.test(src), true);
+eq('it says so plainly when no résumé is saved', /no résumé saved in the extension/.test(src), true);
+eq('SmartRecruiters attaches the CV before sweeping fields',
+  /CV first: SmartRecruiters parses it and pre-fills from it/.test(src), true);
+eq('SmartRecruiters never advances mid-upload',
+  /SmartRecruiters: waiting for the CV upload to finish/.test(src), true);
+eq('no ATS submits through an in-flight upload',
+  /Never submit through one\.[\s\S]{0,200}?logFillReport\('Before submit'\)/.test(src), true);
+eq('the CV pass is part of the universal fill', /const cvState = await attachResume\(\);/.test(src), true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

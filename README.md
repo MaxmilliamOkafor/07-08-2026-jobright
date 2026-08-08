@@ -530,6 +530,67 @@ assertions, removing the CAPTCHA grace fails 1. Suite total: **311 assertions**.
 
 ---
 
+## v14.7 — timings that make sense, and the CV actually gets attached
+
+### The waits were far too long
+
+Fair criticism. A bulk run should not sit on a single job for minutes. Every
+threshold is now short, and — more importantly — **waiting no longer costs
+throughput**.
+
+| | was | now |
+| --- | --- | --- |
+| No progress → skip the job | 75s | **45s** (`Skip if stuck`, 20–600s) |
+| Tab silent → reclaim the slot | 75s (7 missed beats) | **40s** (4 missed beats) |
+| CAPTCHA waits for you | **15 min, holding a slot** | **2 min, holding nothing** (`Wait for me`, 0.5–30 min) |
+| Hard cap per job | 6 min | 6 min (`Timeout`, 1–30 min) |
+
+The 15-minute CAPTCHA wait was the worst of it, and the real problem wasn't only
+the number: the waiting job **kept its concurrency slot**, so a run at 3 tabs
+quietly dropped to 2 for the duration. Now a job blocked on a CAPTCHA stops
+counting against concurrency the instant it reports in, the next job starts
+immediately, and its tab stays open so you can still solve it. At most 3 such tabs
+park at once.
+
+One clarification on an earlier log example: `Stopped responding after 42s` was
+badly worded — 42s was how long the job had been *alive*, not the threshold. It
+now reports the thing the decision was actually made on:
+
+```
+Tab went silent for 41s — dropped (was: filling fields)
+```
+
+### CV attachment
+
+Attaching the CV was **Workday-only**. Every other ATS relied on Jobright having
+done it, and when it hadn't, the form failed validation with "Resume is required"
+and the job died with no explanation.
+
+The résumé is already stored locally as base64, so `attachResume()` now works on
+any platform: it finds the file input across shadow DOM and frames, builds a real
+`File` via `DataTransfer`, and also fires a `drop` event for dropzone-only widgets.
+
+Three specific SmartRecruiters problems, all fixed:
+
+1. **Advancing mid-upload.** Pressing Next while the upload was in flight made
+   SmartRecruiters report no résumé — or silently drop the one being uploaded. No
+   step advances, and no ATS submits, through an upload in flight.
+2. **Re-attaching over a good file.** The attacher checks for an existing
+   attachment first and leaves it alone, so it can never reach the remove control
+   that opened the `Remove "…_CV"?` confirm.
+3. **CV attached too late.** SmartRecruiters parses the CV to pre-fill the form, so
+   it is now attached *before* the field sweep — fewer fields left to guess at.
+
+If no résumé is saved in the extension, that is now said plainly in the log
+instead of surfacing as a mysterious validation failure.
+
+### Verified
+
+Suite total: **336 assertions**, all green, including a new CAPTCHA-slot test
+proving the next job starts immediately while a blocked tab stays parked.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -629,7 +690,7 @@ tests/
 ./tests/run.sh
 ```
 
-311 assertions, no browser required: JS syntax for everything shipped, manifest
+336 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,

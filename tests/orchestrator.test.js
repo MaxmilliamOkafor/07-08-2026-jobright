@@ -298,7 +298,7 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
     await tick(90);
     eq('an unresponsive job is dropped', env.store.ua_q[0].status, 'timeout');
-    eq('and says so', /Stopped responding/.test(env.store.ua_q[0].error || ''), true);
+    eq('and says how long it was silent', /Tab went silent for \d+s/.test(env.store.ua_q[0].error || ''), true);
     eq('the next job takes the slot straight away', env.store.ua_q[1].status, 'applying');
     eq('still only one tab open', env.tabs.size, 1);
   }
@@ -365,6 +365,62 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     await tick(90);
     eq('an unsolved challenge gives up after the grace period', env.store.ua_q[0].status, 'failed');
     eq('and the run continues', env.store.ua_q[1].status, 'applying');
+  }
+
+  /* ── 11. a CAPTCHA'd job does not hold a concurrency slot ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2'), job('c', 'https://a.com/3')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    eq('one job running', env.tabs.size, 1);
+    const tabId = [...env.tabs.keys()][0];
+
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'hCaptcha' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(90);
+    eq('the next job starts immediately, it does not wait', env.store.ua_q[1].status, 'applying');
+    eq('the blocked tab stays open so it can still be solved', env.tabs.has(tabId), true);
+    eq('so two tabs exist at concurrency 1 — one working, one parked', env.tabs.size, 2);
+    eq('the parked job is still marked as needing you', !!env.store.ua_q[0].needsHuman, true);
+  }
+
+  /* ── 12. the wait for a person is short and configurable ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1')];
+    env.store.ua_mgr_concurrency = 1;
+    env.store.ua_mgr_settings = { humanGraceMs: 30000 };   // 30s, not 15 minutes
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'reCAPTCHA' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(60);
+    env.store.ua_q[0].needsHuman.since = Date.now() - 20000;    // 20s in: still waiting
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('still waiting inside the configured window', env.store.ua_q[0].status, 'applying');
+    env.store.ua_q[0].needsHuman.since = Date.now() - 45000;    // past 30s
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('dropped once the configured wait expires', env.store.ua_q[0].status, 'failed');
+    eq('and the reason names the configured window', /not solved within/.test(env.store.ua_q[0].error || ''), true);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
