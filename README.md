@@ -244,6 +244,103 @@ its own. Total suite: **142 assertions**.
 
 ---
 
+## v14.3 — jobs were being marked applied without ever being submitted
+
+Reported symptom: the form fills, Jobright shows *"4/4 required fields filled ·
+100%"*, and the queue moves to the next job — nothing was submitted. Three
+independent causes, all platform-agnostic, so this affected **every ATS**.
+
+### 1. Ordinary job URLs were read as confirmation pages
+
+```js
+SUCCESS_URL_RE = /(thanks|thank.?you|success|confirm|complete|received|submitted|done|applied)/i
+```
+
+Tested as a bare **substring** of the path. So these declared the application
+submitted *on arrival*, before a single field was filled:
+
+| URL | matched |
+| --- | --- |
+| `/jobs/customer-success-manager` | `success` |
+| `/jobs/applied-scientist-ii` | `applied` |
+| `/careers/complete-care-nurse` | `complete` |
+| `/job/donegal-warehouse-operative` | `done` |
+
+Two of the most common job titles in tech trip it. Once `checkSuccess()` returned
+true, `dispatchATSAutomation` skipped `multiPageLoop()` entirely — the submit step
+never ran — and the verification loop immediately agreed the job was done.
+
+Now matched only as a **complete path segment**, against a narrower token list.
+
+### 2. "Apply" was being clicked as if it were "Submit"
+
+`submitSels` contained `button[aria-label*="Apply" i]` and
+`[data-testid="apply-button"]`, and the text fallback matched `/^apply/`. Clicking
+Apply returned `'submitted'` and started the confirmation grace timer on a form
+that had not been sent. Apply *opens* an application — `openApplicationForm()`
+owns it, and the submit step no longer touches it.
+
+### 3. Any success-ish word counted as confirmation
+
+A `[role="alert"]` whose text matched `/submit|success|thank|received|complete/`
+was treated as a submitted application — so the validation error **"Please
+complete all required fields"** confirmed success. Status regions now require
+confirmation-grade wording.
+
+### Evidence, not guesswork
+
+`confirmSubmitted()` now distinguishes two kinds of signal:
+
+- **Hard** — the page states the application was submitted (confirmation text or a
+  known confirmation element). Trusted on its own.
+- **Soft** — a confirmation-looking URL. Trusted **only** once a submit control was
+  actually pressed for this job.
+
+The submit attempt is persisted (`ua_submit_mark`) so it survives the navigation
+between "clicked Submit" and "confirmation page" — multi-page platforms like
+Taleo, Oracle and iCIMS render the confirmation in a new document where the
+in-memory flag is gone, and without this a genuine submission could never be
+confirmed there. Each job clears it before starting.
+
+A job that fills but never submits is now **failed with the reason**, not a silent
+`done`:
+
+- `Form filled but no Submit control was found — nothing was submitted`
+- `Submit was clicked but no confirmation appeared`
+- `Validation errors could not be resolved`
+
+### Submit buttons are named differently on every ATS
+
+One shared recogniser, `isSubmitLabel()` + `findSubmitControl()`, used by
+`autoSubmitOrNext` and by the SmartRecruiters, Oracle and ADP drivers. It matches
+a submit verb **anywhere** in the label rather than only at the start, so these now
+work: *Submit Application · Review and Submit · Accept & Submit · I Agree and
+Submit · Confirm and Submit · Sign and Submit · Send my application · Complete
+Application · Bewerbung absenden · Envoyer ma candidature · Enviar solicitud ·
+Invia candidatura · Verzenden*.
+
+It excludes anything that isn't the final action — Apply/Apply Now/Easy Apply,
+Next, Continue, Save as draft, Save this job, Upload, Sign in, Subscribe, Submit
+feedback, Submit a question, Withdraw — and it is **shadow-piercing**, so it
+reaches submit buttons inside web components (SmartRecruiters `spl-button`, Oracle
+`oj-button`) that a document-level query could never see.
+
+When several candidates qualify, they are **scored** — submit verb, the word
+"application", membership of the form holding the most inputs, and position down
+the page — so the application's real submit wins over a newsletter or support
+widget that also says "Submit".
+
+### Verified
+
+`tests/submit.test.js` — 98 assertions: 27 labels that must submit, 33 that must
+not, confirmation URLs vs. real job slugs, confirmation text vs. validation errors
+and the *"4/4 required fields filled"* readout, plus the evidence rules in the
+shipped source. Mutation-checked: restoring the old substring URL regex fails 7
+assertions, re-allowing "Apply" as a submit fails 3. Suite total: **240
+assertions**.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -330,6 +427,7 @@ tests/
 ├── references.test.js          every called function is declared
 ├── ats.test.js                 ATS routing + dialog answer policy
 ├── gate.test.js                the Fully Automated toggle / automation gate
+├── submit.test.js              submit-button recognition + submission evidence
 ├── csv-parsers.test.js         content-script CSV/URL parsing
 ├── queue-panel.test.js         panel CSV import behaviour
 └── orchestrator.test.js        queue engine against a simulated chrome.*
@@ -341,7 +439,7 @@ tests/
 ./tests/run.sh
 ```
 
-142 assertions, no browser required: JS syntax for everything shipped, manifest
+240 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,

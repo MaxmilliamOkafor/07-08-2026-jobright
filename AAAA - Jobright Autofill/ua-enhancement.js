@@ -538,6 +538,7 @@
     // generator and can stall, so we don't use it automatically unless opted in.
     queueUseTailor = (await st.get('ua_queue_tailor')) === true;
     qSkipApplied = (await st.get('ua_skip_applied')) !== false; // default ON
+    try { _submitMark = (await st.get(SUBMIT_MARK_KEY)) || null; } catch (_) { _submitMark = null; }
   }
   async function saveQ() { await st.set(SK.Q, queue); }
   async function saveStats() { await st.set('ua_q_stats', qStats); }
@@ -2147,10 +2148,60 @@
   // ===================== SUCCESS / FAILURE / STABILITY DETECTION =====================
   // (Robustness techniques adapted from the OptimHire auto-applier for 100% reliability.)
   const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
-  const SUCCESS_URL_RE = /(thanks|thank.?you|success|confirm|complete|received|submitted|done|applied)/i;
+  /* A URL only counts as a confirmation page when one of these is a COMPLETE path
+     segment. As a substring (what this used to be) it matched ordinary job slugs and
+     declared the application submitted before anything had been submitted:
+       /jobs/customer-success-manager   → "success"
+       /jobs/applied-scientist-ii       → "applied"
+       /careers/complete-care-nurse     → "complete"
+       /job/donegal-warehouse-operative → "done"
+     Those are some of the most common titles there are, which is why filled-but-never
+     -submitted jobs were being marked done and skipped on every ATS. */
+  const SUCCESS_PATH_RE = /(^|\/)(thanks|thank-?you|thankyou|success|successful|confirmation|submitted|application-?complete|application-?submitted|apply-?success|applicationconfirmation)(\/|$)/i;
   const FAILURE_TEXT_RE = /(already\s+applied|application\s+already\s+submitted|you\s+have\s+already\s+applied|no\s+application\s+(form|available)|job\s+is\s+no\s+longer\s+available|this\s+position\s+is\s+(closed|no\s+longer)|posting\s+is\s+closed|application\s+window\s+has\s+closed|page\s+not\s+found|404\s+error|job\s+posting\s+has\s+expired|posting\s+is\s+no\s+longer\s+available|no\s+longer\s+accepting\s+applications|position\s+has\s+been\s+filled|job\s+has\s+been\s+filled|vacancy\s+(is\s+)?closed)/i;
-  let _lastSubmitAt = 0;            // set when our flow clicks a submit/apply button
+  let _lastSubmitAt = 0;            // set when our flow clicks a real submit button
   const SUBMIT_GRACE_MS = 8000;    // after a submit with no validation error, treat as success
+  /* Multi-page ATS (Taleo, Oracle, iCIMS…) submit on one document and render the
+     confirmation in the NEXT one, where _lastSubmitAt is back to 0. Persist the
+     attempt against the job so the evidence survives the navigation — without it
+     a genuine submission could never be confirmed on those platforms. */
+  const SUBMIT_MARK_KEY = 'ua_submit_mark';
+  let _submitMark = null;           // { key, ts } restored from storage on boot
+  function submitJobKey() {
+    try { return (managedIdFromTab() || '') || normalizeUrl(location.href).replace(/[?#].*$/, ''); }
+    catch (_) { return location.origin + location.pathname; }
+  }
+  function markSubmitAttempt() {
+    _lastSubmitAt = Date.now();
+    const mark = { key: submitJobKey(), ts: _lastSubmitAt, origin: location.origin };
+    _submitMark = mark;
+    try { st.set(SUBMIT_MARK_KEY, mark); } catch (_) {}
+  }
+  function clearSubmitAttempt() {
+    _lastSubmitAt = 0;
+    _submitMark = null;
+    try { st.set(SUBMIT_MARK_KEY, null); } catch (_) {}
+  }
+  // True if we pressed submit for THIS job, in this document or the one before it.
+  function submitAttempted() {
+    if (_lastSubmitAt) return true;
+    if (!_submitMark || !_submitMark.ts) return false;
+    if (Date.now() - _submitMark.ts > 3 * 60 * 1000) return false;   // stale
+    // Same job (manager id) or the same site we submitted on.
+    return _submitMark.key === submitJobKey() || _submitMark.origin === location.origin;
+  }
+  function submitAttemptAge() {
+    const ts = _lastSubmitAt || (_submitMark && _submitMark.ts) || 0;
+    return ts ? Date.now() - ts : Infinity;
+  }
+  // Why a job ended without a confirmed submission. These are different failures:
+  // "no Submit control" usually means the form has another page or the button sits
+  // in a frame we did not reach; "no confirmation" means it probably did send.
+  function submitFailureReason(validationStuck) {
+    if (validationStuck) return 'Validation errors could not be resolved';
+    if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
+    return 'Submit was clicked but no confirmation appeared';
+  }
   // A persistent inline validation error means a required field couldn't be satisfied.
   function pageHasValidationError() {
     try {
@@ -2255,33 +2306,137 @@
   }
   // Confirmed submission: an explicit success signal, OR we clicked submit, waited out the
   // grace period, and no validation error came back (handles ATS with no success page).
+  /* A job may only be called submitted on real evidence. Previously ANY success
+     signal was enough, so a job could be filled to 100%, never submitted, and still
+     be marked done — the "it skips to the next one without submitting" report. */
   function confirmSubmitted() {
-    if (checkSuccess()) return true;
-    if (_lastSubmitAt && Date.now() - _lastSubmitAt > SUBMIT_GRACE_MS && !pageHasValidationError() && !hasApplicationForm()) return true;
-    return false;
+    if (hardSuccessSignal()) return true;                       // the page says so
+    if (!submitAttempted()) return false;                       // we never pressed submit
+    if (softSuccessSignal()) return true;                       // pressed + confirmation URL
+    // Pressed, the grace window elapsed, no validation error came back, and the
+    // form is gone. That combination only happens after a real submission.
+    return submitAttemptAge() > SUBMIT_GRACE_MS && !pageHasValidationError() && !hasApplicationForm();
   }
 
-  function checkSuccess() {
-    const href = location.href.toLowerCase();
-    if (SUCCESS_URL_RE.test(new URL(location.href).pathname.toLowerCase())) return true;
-    if (/\/thanks|\/thank.you|\/success|\/confirmation|\/submitted|\/done|\/complete|\/applied/i.test(href)) return true;
+  /* HARD evidence: the page itself says the application was submitted. Safe to
+     trust on its own — no ATS renders these unless something really was sent. */
+  function hardSuccessSignal() {
     const body = document.body?.innerText || '';
     if (SUCCESS_TEXT_RE.test(body)) return true;
-    if (/application submitted|thank you for applying|application received|we.ve received your|successfully submitted|application complete|thanks for applying|your application has been|application was submitted|you.ve applied|we have received|you.re all set|application is under review/i.test(body)) return true;
     if ($('#application_confirmation,.application-confirmation,.confirmation-text,.posting-confirmation,.success-message,.submission-confirmation')) return true;
     if ($('[data-automation-id="congratulationsMessage"],[data-automation-id="confirmationMessage"],[data-automation-id="applicationSubmittedPage"]')) return true;
-    // Greenhouse specific
-    if ($('#application_confirmation,#post_application_page,.application-submitted')) return true;
-    // Lever specific
-    if ($('.posting-confirmation,.application-complete')) return true;
-    // iCIMS specific
-    if ($('.iCIMS_ConfirmMessage,.iCIMS_SuccessMessage')) return true;
-    // Generic success toast/alert
-    if ($('[role="alert"],.alert-success,.toast-success')) {
-      const alert = $('[role="alert"],.alert-success,.toast-success');
-      if (alert && /submit|success|thank|received|complete/i.test(alert.textContent || '')) return true;
+    if ($('#post_application_page,.application-submitted')) return true;      // Greenhouse
+    if ($('.application-complete')) return true;                              // Lever
+    if ($('.iCIMS_ConfirmMessage,.iCIMS_SuccessMessage')) return true;        // iCIMS
+    // A status region, but only with confirmation-grade wording. The old test
+    // accepted /submit|success|thank|received|complete/, so the validation error
+    // "Please complete all required fields" counted as a successful submission.
+    for (const el of $$('[role="alert"],[role="status"],.alert-success,.toast-success').slice(0, 12)) {
+      if (SUCCESS_TEXT_RE.test(el.textContent || '')) return true;
     }
     return false;
+  }
+  /* SOFT evidence: consistent with success but also with never having submitted.
+     Only trusted once we know a submit control was actually pressed for this job. */
+  function softSuccessSignal() {
+    try { if (SUCCESS_PATH_RE.test(new URL(location.href).pathname)) return true; } catch (_) {}
+    return false;
+  }
+  function checkSuccess() { return hardSuccessSignal() || (submitAttempted() && softSuccessSignal()); }
+
+  /* ── SUBMIT-CONTROL RECOGNITION (shared by every ATS driver) ───────────────
+     Submit buttons are labelled differently on every platform, and the old test
+     ("does the label START with submit/apply/send/complete/finish") missed most
+     of the real ones while accepting "Apply", which merely opens a form.
+
+     Missed before:  "Review and Submit" · "Accept & Submit" · "I Agree and Submit"
+                     "Confirm and Submit" · "Sign and Submit" · "Send my application"
+                     "Bewerbung absenden" · "Envoyer ma candidature" · "Enviar solicitud"
+     Wrongly matched: "Apply" / "Apply Now" — those OPEN the application, and
+                     clicking one as if it were a submit started the confirmation
+                     grace timer on a form that had not been sent.
+
+     A label qualifies on a whole-word submit verb ANYWHERE in it, minus an
+     explicit exclusion list. Candidates are then scored so the real final action
+     wins over an unrelated "Submit" on the same page (newsletter, search, a
+     support form). */
+  const SUBMIT_POSITIVE_RE = new RegExp([
+    '\\bsubmit\\b',                                  // submit, submit application, review and submit
+    '\\bsubmit(ting)?\\s+(my\\s+)?application\\b',
+    '^\\s*send\\b',                                  // send, send application, send my application
+    '\\bsend\\s+(my\\s+)?(application|cv|r[eé]sum[eé])\\b',
+    '^\\s*(finish|complete)\\s*(my\\s+)?(application)?\\s*$',
+    '\\bcomplete\\s+(my\\s+)?application\\b',
+    '\\bfinish\\s+(and\\s+)?submit\\b',
+    // Common non-English finals. "postuler"/"bewerben" are deliberately absent:
+    // like "Apply", they open the form rather than send it.
+    '\\babsenden\\b', '\\babschicken\\b',          // de
+    '\\benvoyer\\b', '\\bsoumettre\\b',            // fr
+    '\\benviar\\b',                                   // es/pt
+    '\\binvia\\b', '\\binoltra\\b',                // it
+    '\\bverzenden\\b', '\\bversturen\\b',          // nl
+    '\\bwy[sś]lij\\b',                                // pl
+  ].join('|'), 'i');
+
+  const SUBMIT_NEGATIVE_RE = new RegExp([
+    '\\b(cancel|back|previous|prev|close|dismiss|skip)\\b',
+    '\\bsave\\b.*\\b(later|draft|progress)\\b', '\\bsave\\s+(as\\s+)?draft\\b',
+    '\\b(delete|remove|discard|withdraw|clear|reset)\\b',
+    '\\b(sign|log)\\s?in\\b', '\\bcreate\\s+account\\b', '\\bregister\\b',
+    '\\bupload\\b', '\\bbrowse\\b', '\\battach\\b', '\\badd\\b', '\\bedit\\b',
+    '\\bprint\\b', '\\bdownload\\b', '\\bshare\\b', '\\bsearch\\b',
+    '\\bsubscribe\\b', '\\bnewsletter\\b', '\\bfeedback\\b', '\\breport\\b',
+    '\\bcontact\\b', '\\bquestion\\b', '\\bcomment\\b', '\\bchat\\b',
+    '\\bjob\\s+alert', '\\bsave\\s+(this\\s+)?job\\b',
+    // "Apply"/"Apply now" open the application — openApplicationForm() owns them.
+    '^\\s*apply\\b', '\\bapply\\s+now\\b', '\\bapply\\s+(for|to)\\b', '\\beasy\\s+apply\\b',
+  ].join('|'), 'i');
+
+  function controlLabel(el) {
+    try {
+      const raw = (el.innerText || el.textContent || el.value ||
+        (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '');
+      return String(raw).replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+  function isSubmitLabel(text) {
+    const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 60) return false;
+    if (SUBMIT_NEGATIVE_RE.test(t)) return false;
+    return SUBMIT_POSITIVE_RE.test(t);
+  }
+
+  /* Pick the most plausible FINAL submit on the page. Scored rather than
+     first-match, because a page can carry several qualifying buttons and the one
+     that ends the application is not necessarily the first in the DOM. */
+  function findSubmitControl() {
+    const enabled = el => el && isVisible(el) && !el.disabled &&
+      el.getAttribute('aria-disabled') !== 'true' && !/\bdisabled\b/.test(el.className || '');
+    const cands = deepQueryAll(
+      'button,input[type="submit"],input[type="button"],a[role="button"],[role="button"],spl-button,oj-button'
+    ).filter(enabled).filter(el => isSubmitLabel(controlLabel(el)));
+    if (!cands.length) return null;
+    if (cands.length === 1) return cands[0];
+
+    const scored = cands.map((el, i) => {
+      const label = controlLabel(el).toLowerCase();
+      let score = 0;
+      if (/\bsubmit\b/.test(label)) score += 4;              // the strongest verb
+      if (/\bapplication\b/.test(label)) score += 3;         // "...application" = the real one
+      if (el.type === 'submit' || el.tagName === 'BUTTON') score += 1;
+      // Inside the form that holds the most inputs — i.e. the application itself,
+      // not a newsletter box that happens to have a Submit.
+      try {
+        const form = el.closest('form');
+        if (form) score += Math.min(3, form.querySelectorAll('input,select,textarea').length / 5);
+      } catch (_) {}
+      // Final actions sit at the bottom of the page.
+      try { score += Math.min(2, (el.getBoundingClientRect().top + window.scrollY) / Math.max(1, document.body.scrollHeight) * 2); } catch (_) {}
+      score += i / (cands.length * 10);                      // stable tiebreak: later wins
+      return { el, score, label };
+    }).sort((a, b) => b.score - a.score);
+    LOG('Submit candidates: ' + scored.map(x => `"${x.label}"(${x.score.toFixed(1)})`).join(', '));
+    return scored[0].el;
   }
 
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
@@ -2313,8 +2468,8 @@
       'button[type="submit"]', 'input[type="submit"]',
       'button[data-automation-id="submit"]', 'button[data-automation-id="submitButton"]',
       '#submit_app', '.postings-btn-submit', 'button.application-submit',
-      'button[data-qa="btn-submit"]', 'button[aria-label*="Submit" i]', 'button[aria-label*="Apply" i]',
-      '[data-testid="submit-application"]', '[data-testid="submit-button"]', '[data-testid="apply-button"]',
+      'button[data-qa="btn-submit"]', 'button[aria-label*="Submit" i]',
+      '[data-testid="submit-application"]', '[data-testid="submit-button"]',
       'button.btn-submit', '#resumeSubmitForm',
       'div.form-group.submit-button button.btn.btn-primary',
       '.application-submit-button', '#application-submit', '[name="submit_app"]',
@@ -2333,16 +2488,23 @@
     const submitEnabled = el => el && isVisible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
     for (const sel of submitSels) {
       const btn = $(sel);
-      if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await sleep(500); realClick(btn); _lastSubmitAt = Date.now(); return 'submitted'; }
+      if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
     }
     // Fallback: button by text
     {
-      const btns = $$('button,a[role="button"],input[type="submit"]').filter(submitEnabled);
-      const submitBtn = btns.find(b => {
-        const t = (b.textContent || b.value || '').trim().toLowerCase();
-        return /^(submit|apply|send|complete|finish)\b/i.test(t) && !/cancel|back|prev|close/i.test(t);
-      });
-      if (submitBtn) { LOG('Clicking submit (text):', submitBtn.textContent?.trim()); await sleep(500); realClick(submitBtn); _lastSubmitAt = Date.now(); return 'submitted'; }
+      // Label-based, shadow-piercing, scored. Covers the long tail of wordings
+      // across platforms ("Submit Application", "Review and Submit", "Accept &
+      // Submit", "Send my application", "Bewerbung absenden", …) and reaches the
+      // submit buttons that live inside web-component shadow roots.
+      const submitBtn = findSubmitControl();
+      if (submitBtn) {
+        LOG('Clicking submit: "' + controlLabel(submitBtn) + '"');
+        scrollIfNeeded(submitBtn);
+        await sleep(500);
+        realClick(submitBtn);
+        markSubmitAttempt();
+        return 'submitted';
+      }
     }
 
     // Also try Jobright's continue-button
@@ -5144,7 +5306,7 @@
         return void await finalize('skipped', 'No application form found');
       }
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
-      _lastSubmitAt = 0;
+      clearSubmitAttempt();   // this job has not submitted anything yet
       let success = false, validationStuck = false;
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
         await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation');
@@ -5169,7 +5331,7 @@
       }
       if (finalized) return;
       if (success) await finalize('done', null);
-      else await finalize('failed', validationStuck ? 'Validation errors could not be resolved' : 'Could not confirm submission after retries');
+      else await finalize('failed', submitFailureReason(validationStuck));
     } catch (e) {
       if (!finalized) await finalize('failed', e?.message || String(e));
     }
@@ -5331,7 +5493,7 @@
           // Verification uses OptimHire-style signals: an explicit success page/text, OR
           // a submit-click followed by an 8s grace window with no validation error. A
           // persistent validation error fast-fails instead of waiting the whole timeout.
-          _lastSubmitAt = 0; // reset the grace timer for this job
+          clearSubmitAttempt(); // no submit evidence carried over from the previous job
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
@@ -5382,7 +5544,7 @@
             // Could not confirm submission — mark failed (not a false "done") so the
             // user can see it didn't complete, and don't silently skip it as applied.
             c.status = 'failed';
-            c.error = validationStuck ? 'Validation errors could not be resolved' : 'Could not confirm submission after retries';
+            c.error = submitFailureReason(validationStuck);
             qStats.failed++;
             LOG('Queue job: submission NOT confirmed' + (validationStuck ? ' (validation stuck)' : '') + ' — marked failed');
             await recordApplication(c.url, c.title, 'failed', c.jobBoard, c.duration);
@@ -8021,11 +8183,11 @@
       // Advance. Text-matched so it survives SmartRecruiters renaming its test ids.
       const buttons = deepQueryAll('button,spl-button,[role="button"]').filter(isVisible);
       const nameOf = b => (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-      const submit = buttons.find(b => /^\s*(submit( application)?|send application|finish)\b/i.test(nameOf(b)));
+      const submit = findSubmitControl() || buttons.find(b => isSubmitLabel(nameOf(b)));
       if (submit) {
-        LOG('SmartRecruiters: submitting');
+        LOG('SmartRecruiters: submitting via "' + controlLabel(submit) + '"');
         realClick(submit);
-        _lastSubmitAt = Date.now();
+        markSubmitAttempt();
         await sleep(3500);
         await resolveBlockingDialog();
         break;
@@ -8082,8 +8244,10 @@
       if (r === 'next_page') { await sleep(2500); continue; }
 
       // Oracle's own wording, when the generic pass found nothing to click.
+      const sub = findSubmitControl();
+      if (sub) { LOG('Oracle: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
       const btn = deepQueryAll('button,oj-button,a[role="button"]').filter(isVisible)
-        .find(b => /^\s*(continue|next|review|submit|save and continue)\b/i.test((b.textContent || '').trim()));
+        .find(b => /^\s*(continue|next|review|save and continue)\b/i.test((b.textContent || '').trim()));
       if (!btn) break;
       realClick(btn);
       await sleep(2500);
@@ -8126,8 +8290,10 @@
       if (r === 'submitted') { await sleep(3000); break; }
       if (r === 'next_page') { await sleep(2500); continue; }
 
+      const sub = findSubmitControl();
+      if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
       const btn = deepQueryAll('button,a[role="button"]').filter(isVisible)
-        .find(b => /^\s*(next|continue|review|submit( application)?)\b/i.test((b.textContent || '').trim()));
+        .find(b => /^\s*(next|continue|review)\b/i.test((b.textContent || '').trim()));
       if (!btn) break;
       realClick(btn);
       await sleep(2500);
@@ -8184,8 +8350,10 @@
     else await tailorFirstFlow();
     // …then a UNIVERSAL completion driver for EVERY ATS: if the application isn't
     // confirmed submitted yet, self-navigate the remaining steps (account walls,
-    // multi-page forms, review/confirm screens) until it is.
-    if (!checkSuccess()) await multiPageLoop();
+    // multi-page forms, review/confirm screens) until it is. Gated on
+    // confirmSubmitted(), not checkSuccess(): a confirmation-looking URL alone is
+    // not a reason to skip pressing Submit.
+    if (!confirmSubmitted()) await multiPageLoop();
     } finally {
       if (!ownedElsewhere) setAutomationFlag(false);
     }
