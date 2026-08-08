@@ -86,6 +86,11 @@
 
 (function () {
   'use strict';
+  // The orchestrator injects this file into every frame of a job tab (see
+  // ua-orchestrator.js). The top frame already has it from the manifest, so
+  // without this guard the module would initialise twice there.
+  if (window.__uaEnhancementLoaded) return;
+  window.__uaEnhancementLoaded = true;
 
   // ===================== TEMP IN-DEPTH DEBUG LOGGER (toggle with Alt+D) =====================
   // A deep instrumentation layer that records, on the live ATS page, without DevTools:
@@ -868,7 +873,7 @@
   }
 
   function learnFromFilledFields() {
-    $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
+    deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
       .filter(el => isVisible(el) && hasFieldValue(el))
       .forEach(el => {
         // Radio/checkbox: question is the GROUP's, answer is the checked option's label.
@@ -1504,7 +1509,7 @@
   async function answerChoiceGroups() {
     let n = 0;
     const groups = new Map();
-    for (const r of $$('input[type=radio],[role="radio"]').filter(isVisible)) {
+    for (const r of deepAll('input[type=radio],[role="radio"]').filter(isVisible)) {
       // Group by (in order of preference): native radio name, the closest shared
       // question/fieldset container, or the immediate parent element. We deliberately
       // never fall back to the radio ITSELF as a key — that split a single Yes/No
@@ -1551,7 +1556,7 @@
     await resolveLocationFields();
     await answerChoiceGroups();
     const p = await getProfile();
-    const required = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
+    const required = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
       .filter(el => isVisible(el) && isFieldRequired(el) && !hasFieldValue(el));
     let fixed = 0;
     for (const el of required) {
@@ -1569,7 +1574,7 @@
       }
       if (el.type === 'radio') continue;
       if (el.tagName === 'SELECT') {
-        const opts = $$('option', el).filter(o => o.value && o.index > 0);
+        const opts = deepAll('option', el).filter(o => o.value && o.index > 0);
         // Decision-aware pick (reads the real option wording); then EEO/decline; then
         // first real option as a last resort so a required select is never left blank.
         let opt = selectOptionForQuestion(el, lbl, p);
@@ -1607,8 +1612,17 @@
 
   function isVisible(el) {
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+    try {
+      const r = el.getBoundingClientRect();
+      // A zero-sized box already covers display:none anywhere up the ancestor chain.
+      if (r.width <= 0 || r.height <= 0) return false;
+      const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const cs = win.getComputedStyle ? win.getComputedStyle(el) : null;
+      if (!cs) return true;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+      if (parseFloat(cs.opacity || '1') === 0) return false;
+      return true;
+    } catch (_) { return false; }
   }
 
   function nativeSet(el, val) {
@@ -1740,6 +1754,61 @@
   function deepQuery(sel, root) { return deepQueryAll(sel, root, 1)[0] || null; }
   function deepVisible(sel, root) { return deepQueryAll(sel, root).filter(isVisible); }
 
+  /* ── UNIVERSAL FIELD DISCOVERY ─────────────────────────────────────────────
+     $ / $$ are document.querySelector(All): they stop at a shadow boundary and
+     never enter an iframe. Every universal filler (fallbackFill,
+     getMissingRequired, guaranteeRequiredFields, handleValidationErrors,
+     hasApplicationForm…) used them, so on any ATS that renders its form in web
+     components or an embedded frame the filler saw ZERO fields and quietly did
+     nothing. That is not a per-platform bug — it is why "autofill did nothing"
+     looked different on every ATS:
+
+       SmartRecruiters  spl-input / spl-select   → open shadow roots
+       Oracle Recruiting  oj-input-text          → open shadow roots
+       Greenhouse embed, iCIMS, SuccessFactors,
+       Taleo, BrassRing                          → the form is in an <iframe>
+
+     These walk every open shadow root and every SAME-ORIGIN frame document.
+     (Cross-origin frames are unreachable from here by design; the orchestrator
+     injects the content script into those frames directly for queue jobs.) */
+  function fieldRoots() {
+    const roots = [document];
+    // Same-origin frames, one level of nesting deep — enough for every embedded
+    // ATS form seen in practice, and bounded so a page of ad frames stays cheap.
+    const collectFrames = (doc, depth) => {
+      if (!doc || depth > 2) return;
+      let frames = [];
+      try { frames = [...doc.querySelectorAll('iframe,frame')]; } catch (_) { return; }
+      for (const f of frames.slice(0, 12)) {
+        let d = null;
+        try { d = f.contentDocument; } catch (_) { d = null; }   // cross-origin → null
+        if (!d || !d.querySelectorAll) continue;
+        roots.push(d);
+        collectFrames(d, depth + 1);
+      }
+    };
+    collectFrames(document, 0);
+    return roots;
+  }
+  // All matching elements anywhere: light DOM, open shadow roots, same-origin frames.
+  function deepAll(sel, limit) {
+    const out = [];
+    const cap = limit || 800;
+    for (const root of fieldRoots()) {
+      if (out.length >= cap) break;
+      for (const el of deepQueryAll(sel, root, cap - out.length)) out.push(el);
+    }
+    return out;
+  }
+  function deepOne(sel) { return deepAll(sel, 1)[0] || null; }
+  // The root node an element actually lives in — a shadow root, a frame document,
+  // or the main document. getElementById/querySelector must be scoped to THIS, or
+  // a label lookup for a field inside a shadow root silently finds nothing.
+  function ownerScope(el) {
+    try { const r = el.getRootNode(); return (r && r.querySelector) ? r : document; }
+    catch (_) { return document; }
+  }
+
   /* Web components frequently ignore .click() and only react to a full pointer
      sequence (this is exactly how SmartRecruiters' spl-select options behave). */
   function triggerMouse(el) {
@@ -1800,11 +1869,20 @@
   function getLabel(el) {
     if (!el) return '';
     if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    // Scope every lookup to the element's OWN root (shadow root / frame document).
+    // Against `document` these all missed for fields inside web components, leaving
+    // the field unlabelled — and an unlabelled field is one no guesser can fill.
+    const scope = ownerScope(el);
+    const byId = (id) => { try { return scope.getElementById ? scope.getElementById(id) : scope.querySelector('#' + CSS.escape(id)); } catch (_) { return null; } };
     const describedBy = el.getAttribute('aria-describedby');
-    if (describedBy) { const d = document.getElementById(describedBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
+    if (describedBy) { const d = byId(describedBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
     const labelledBy = el.getAttribute('aria-labelledby');
-    if (labelledBy) { const d = document.getElementById(labelledBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
-    if (el.id) { const lbl = $(`label[for="${CSS.escape(el.id)}"]`); if (lbl) return lbl.textContent.trim(); }
+    if (labelledBy) { const d = byId(labelledBy); if (d?.textContent?.trim()) return d.textContent.trim(); }
+    if (el.id) {
+      let lbl = null;
+      try { lbl = scope.querySelector(`label[for="${CSS.escape(el.id)}"]`); } catch (_) {}
+      if (lbl) return lbl.textContent.trim();
+    }
     // A GENERIC placeholder ("Enter your answer", "Type here", "Select…") tells us nothing
     // about the field and was previously returned here — shadowing the real question label
     // from the fieldset/container below, so guessValue couldn't match and the field got the
@@ -1983,7 +2061,7 @@
     let filled = 0;
 
     // Text inputs & textareas — only unfilled ones
-    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
+    const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
       .filter(el => isVisible(el) && !el.value?.trim());
 
     for (const inp of inputs) {
@@ -2005,13 +2083,13 @@
     }
 
     // Select dropdowns — only unselected ones
-    const selects = $$('select').filter(el => isVisible(el) && !hasFieldValue(el));
+    const selects = deepAll('select').filter(el => isVisible(el) && !hasFieldValue(el));
     for (const sel of selects) {
       const lbl = getLabel(sel);
       const lblLower = (lbl || '').toLowerCase();
       const isEEO = /gender|disability|veteran|race|ethnicity|sex\b|heritage/i.test(lblLower);
       const val = guessFieldValue(lbl, p, sel);
-      const opts = $$('option', sel).filter(o => o.value && o.index > 0);
+      const opts = deepAll('option', sel).filter(o => o.value && o.index > 0);
       let opt = null;
       if (val) {
         const valLower = val.toLowerCase().trim();
@@ -2039,7 +2117,7 @@
 
     // Radio buttons — Master Knockout Question System
     const groups = {};
-    $$('input[type=radio]').filter(isVisible).forEach(r => { (groups[r.name || r.id] ||= []).push(r); });
+    deepAll('input[type=radio]').filter(isVisible).forEach(r => { (groups[r.name || r.id] ||= []).push(r); });
     for (const [, radios] of Object.entries(groups)) {
       if (radios.some(r => r.checked)) continue;
       const parent = radios[0].closest('fieldset, .question, [class*="question"], .form-group, [class*="field"]');
@@ -2050,12 +2128,12 @@
     filled += answerButtonStyleQuestions(p);
 
     // Required checkboxes
-    $$('input[type=checkbox][required],input[type=checkbox][aria-required="true"]')
+    deepAll('input[type=checkbox][required],input[type=checkbox][aria-required="true"]')
       .filter(el => isVisible(el) && !el.checked)
       .forEach(cb => { realClick(cb); filled++; });
 
     // Date fields — try to fill with reasonable defaults
-    const dateInputs = $$('input[type=date]').filter(el => isVisible(el) && !el.value);
+    const dateInputs = deepAll('input[type=date]').filter(el => isVisible(el) && !el.value);
     for (const d of dateInputs) {
       const lbl = getLabel(d);
       const l = (lbl || '').toLowerCase();
@@ -2072,7 +2150,7 @@
     }
 
     // Number fields (years of experience, salary, etc.)
-    const numInputs = $$('input[type=number]').filter(el => isVisible(el) && !el.value);
+    const numInputs = deepAll('input[type=number]').filter(el => isVisible(el) && !el.value);
     for (const n of numInputs) {
       const lbl = getLabel(n);
       const val = guessFieldValue(lbl, p, n);
@@ -2080,7 +2158,7 @@
     }
 
     // Contenteditable divs (rich text editors)
-    const editables = $$('[contenteditable="true"]').filter(el => isVisible(el) && !el.textContent?.trim());
+    const editables = deepAll('[contenteditable="true"]').filter(el => isVisible(el) && !el.textContent?.trim());
     for (const ed of editables) {
       const lbl = getLabel(ed) || ed.getAttribute('data-placeholder') || '';
       const val = guessFieldValue(lbl, p, ed);
@@ -2094,7 +2172,7 @@
     // Re-scan all visible fields and verify values stuck; re-apply if cleared by JS frameworks
     await sleep(500); // Let frameworks settle after initial fill
     let verified = 0, refilled = 0;
-    const verifyInputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
+    const verifyInputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
       .filter(el => isVisible(el) && !el.value?.trim());
     for (const inp of verifyInputs) {
       const lbl = getLabel(inp);
@@ -2110,12 +2188,12 @@
       refilled++;
       await sleep(200);
     }
-    const verifySelects = $$('select').filter(el => isVisible(el) && !hasFieldValue(el));
+    const verifySelects = deepAll('select').filter(el => isVisible(el) && !hasFieldValue(el));
     for (const sel of verifySelects) {
       const lbl = getLabel(sel);
       const val = guessFieldValue(lbl, p, sel);
       if (!val) continue;
-      const opt = $$('option', sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+      const opt = deepAll('option', sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
       if (opt) { setSelectValue(sel, opt.value); refilled++; }
     }
     if (refilled > 0) LOG(`Verification pass: re-filled ${refilled} fields that were cleared`);
@@ -2460,7 +2538,16 @@
       await sleep(300);
       missing = getMissingRequired();
     }
-    LOG(`Missing required: ${missing.length}`, missing);
+    if (missing.length) {
+      // Third pass, after a longer wait: SPA forms mount fields after first paint,
+      // so the earlier sweeps genuinely could not see them yet.
+      await sleep(1500);
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await sleep(300);
+      missing = getMissingRequired();
+    }
+    logFillReport('Before submit');
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
     // button's own enabled/disabled state, not on our heuristic missing-field count)
@@ -2564,8 +2651,34 @@
     return false;
   }
 
+  /* How complete is this form right now? Reported after every fill pass so the
+     queue log says exactly which required fields were left, instead of the run
+     silently moving on and leaving you to guess. */
+  function fillReport() {
+    const required = deepAll('input:not([type=hidden]),textarea,select')
+      .filter(el => isVisible(el) && isFieldRequired(el));
+    const missing = getMissingRequired();
+    const missingLabels = [];
+    const seen = new Set();
+    for (const el of missing.slice(0, 20)) {
+      const l = (getLabel(el) || el.name || el.id || '(unlabelled)').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (l && !seen.has(l)) { seen.add(l); missingLabels.push(l); }
+    }
+    const total = required.length;
+    const done = Math.max(0, total - missing.length);
+    return { total, done, missing: missing.length, missingLabels, pct: total ? Math.round(done / total * 100) : 100 };
+  }
+  function logFillReport(where) {
+    try {
+      const r = fillReport();
+      LOG(`${where}: ${r.done}/${r.total} required fields filled (${r.pct}%)` +
+        (r.missingLabels.length ? ' — still missing: ' + r.missingLabels.join(' | ') : ''));
+      return r;
+    } catch (_) { return null; }
+  }
+
   function getMissingRequired() {
-    const required = $$('input:not([type=hidden]),textarea,select').filter(el => isVisible(el) && isFieldRequired(el));
+    const required = deepAll('input:not([type=hidden]),textarea,select').filter(el => isVisible(el) && isFieldRequired(el));
     const missing = [];
     // Dedupe named radio groups — without this, an unanswered Yes/No question reported
     // BOTH of its radio options as separate "missing" entries (inflating the count and,
@@ -2576,7 +2689,7 @@
         if (el.name) {
           if (seenRadioGroups.has(el.name)) continue; // this group already evaluated
           seenRadioGroups.add(el.name);
-          const group = $$(`input[type="radio"][name="${CSS.escape(el.name)}"]`).filter(isVisible);
+          const group = deepAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`).filter(isVisible);
           if (group.some(r => r.checked)) continue;
         } else if (el.checked) continue;
       } else if (el.type === 'checkbox') {
@@ -4751,7 +4864,7 @@
   async function handleValidationErrors() {
     // Wait a moment for validation to trigger
     await sleep(500);
-    const errors = $$('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
+    const errors = deepAll('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
       .filter(el => isVisible(el) && el.textContent?.trim());
 
     if (!errors.length) return 0;
@@ -4791,7 +4904,7 @@
       if (!val) continue;
 
       if (inp.tagName === 'SELECT') {
-        const opt = $$('option', inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+        const opt = deepAll('option', inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
         if (opt) { setSelectValue(inp, opt.value); fixed++; }
       } else {
         inp.focus({ preventScroll: true }); nativeSet(inp, val); fixed++;
@@ -4800,7 +4913,7 @@
     }
 
     // Also handle aria-invalid fields directly
-    const invalidFields = $$('[aria-invalid="true"]').filter(el => isVisible(el) && !hasFieldValue(el));
+    const invalidFields = deepAll('[aria-invalid="true"]').filter(el => isVisible(el) && !hasFieldValue(el));
     for (const inp of invalidFields) {
       const lbl = getLabel(inp);
       const val = guessFieldValue(lbl, p, inp);
@@ -5700,7 +5813,7 @@
 
   // LazyApply-inspired: form analysis (check how many fields are on current page)
   function analyzeCurrentForm() {
-    const fields = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select').filter(isVisible);
+    const fields = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select').filter(isVisible);
     const filled = fields.filter(hasFieldValue).length;
     const required = fields.filter(isFieldRequired).length;
     const requiredFilled = fields.filter(f => isFieldRequired(f) && hasFieldValue(f)).length;
@@ -7747,9 +7860,9 @@
   // queue lands on the listing, finds no fields, and times out. We click through to
   // the actual application form first.
   function hasApplicationForm() {
-    const hasFile = $$('input[type=file]').some(isVisible);
+    const hasFile = deepAll('input[type=file]').some(isVisible);
     if (hasFile) return true;
-    const fields = $$('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter(isVisible);
+    const fields = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter(isVisible);
     return fields.length >= 3;
   }
   const APPLY_TEXT_RE = /^(apply now|apply for this job|apply to this job|apply online|easy apply|quick apply|apply with|i'?m interested|start (your )?application|begin application|continue application|apply)\b/i;
@@ -8393,8 +8506,36 @@
     } catch (_) {}
   }
 
+  /* A frame that is NOT the top frame runs a fill-only path. Greenhouse embeds,
+     iCIMS, SuccessFactors, Taleo and BrassRing put the real application form in a
+     CROSS-ORIGIN iframe, which the top document cannot reach at all — no shadow or
+     same-origin walk gets there. The orchestrator injects this script into those
+     frames for queue jobs; here we fill what is in front of us and let the top
+     frame own navigation and submission. */
+  async function initSubframe() {
+    if (!window.__uaAutoAllowed || !window.__uaAutoAllowed()) return;   // never during manual use
+    // Only frames that actually hold form fields — not ad or tracking frames.
+    const fields = () => deepAll('input:not([type=hidden]),textarea,select').filter(isVisible);
+    if (fields().length < 2) return;
+    LOG(`Sub-frame fill mode (${location.hostname}) — ${fields().length} fields`);
+    try { await load(); } catch (_) {}
+    try { await loadAnswerBank(); await loadSavedResponses(); await loadAppHistory(); await loadCustomDefaults(); } catch (_) {}
+    // A few bounded passes: the embedded form may mount its fields late, and the
+    // top frame may advance it to a second page inside the same frame.
+    for (let pass = 0; pass < 6; pass++) {
+      if (!window.__uaAutoAllowed()) return;
+      try {
+        await fallbackFill();
+        await guaranteeRequiredFields();
+        await handleValidationErrors();
+        logFillReport('Sub-frame pass ' + (pass + 1));
+      } catch (e) { LOG('Sub-frame fill error:', e?.message || e); }
+      await sleep(4000);
+    }
+  }
+
   async function init() {
-    if (window.self !== window.top) return;
+    if (window.self !== window.top) { initSubframe().catch(() => {}); return; }
     // Show the control panel IMMEDIATELY in the runner tab (before any awaits), so
     // Skip/Pause/Quit are available the instant each job page renders — no gap.
     if (isRunnerTab()) ensureOverlay();
@@ -9089,7 +9230,7 @@ Result: Shipped my first production change in week three and my notes doc became
     const textareas = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
     let filled = 0;
     for (const ta of textareas) {
-      if (!ta.offsetParent) continue;
+      if (!ta.offsetParent && !ta.getClientRects().length) continue;   // fixed-position modals
       if (!textareaLooksEmpty(ta) && ta.tagName === 'TEXTAREA') continue;
       if (ta.getAttribute('contenteditable') === 'true' && ta.textContent && ta.textContent.trim().length > 10) continue;
       const label = getNearbyLabel(ta).slice(0, 400);
@@ -9259,7 +9400,7 @@ Result: Shipped my first production change in week three and my notes doc became
   }
 
   async function autoFillCoverLetter() {
-    const textareas = Array.from(document.querySelectorAll('textarea')).filter(t => t.offsetParent && (!t.value || t.value.trim().length < 20));
+    const textareas = Array.from(document.querySelectorAll('textarea')).filter(t => (t.offsetParent || t.getClientRects().length) && (!t.value || t.value.trim().length < 20));
     if (!textareas.length) return 0;
     const targets = textareas.filter(looksLikeCoverLetterField);
     if (!targets.length) return 0;
@@ -9298,8 +9439,17 @@ Result: Shipped my first production change in week three and my notes doc became
 
   function isVisible(el) {
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+    try {
+      const r = el.getBoundingClientRect();
+      // A zero-sized box already covers display:none anywhere up the ancestor chain.
+      if (r.width <= 0 || r.height <= 0) return false;
+      const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const cs = win.getComputedStyle ? win.getComputedStyle(el) : null;
+      if (!cs) return true;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+      if (parseFloat(cs.opacity || '1') === 0) return false;
+      return true;
+    } catch (_) { return false; }
   }
 
   function determineYesNo(q) {
@@ -9601,7 +9751,7 @@ Result: Shipped my first production change in week three and my notes doc became
   function findResumeTextareas() {
     const all = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
     return all.filter(t => {
-      if (!t.offsetParent) return false;
+      if (!t.offsetParent && !t.getClientRects().length) return false;   // fixed-position modals
       const label = (t.getAttribute('aria-label') || t.placeholder || '').toLowerCase();
       const byText = t.getAttribute('aria-labelledby')
         ? (document.getElementById(t.getAttribute('aria-labelledby'))?.textContent || '').toLowerCase() : '';
@@ -9628,7 +9778,7 @@ Result: Shipped my first production change in week three and my notes doc became
 
   // ---- Upload as file to file inputs ----
   async function uploadAsFile(text, filename) {
-    const inputs = Array.from(document.querySelectorAll('input[type=file]')).filter(i => i.offsetParent !== null || i.closest('[class*="resume"], [class*="Resume"], [class*="upload"], [class*="Upload"]'));
+    const inputs = Array.from(document.querySelectorAll('input[type=file]')).filter(i => i.offsetParent !== null || i.getClientRects().length || i.closest('[class*="resume"], [class*="Resume"], [class*="upload"], [class*="Upload"]'));
     if (!inputs.length) return 0;
     const flag = UPLOAD_FLAG_PREFIX + location.pathname;
     const already = await storageGet(flag);
@@ -9661,7 +9811,7 @@ Result: Shipped my first production change in week three and my notes doc became
   // ---- Jobright AI Tailor button auto-clicker ----
   function clickJobrightTailor() {
     if (!/jobright\.ai/i.test(location.hostname)) return false;
-    const btns = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(b => b.offsetParent !== null);
+    const btns = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(b => b.offsetParent !== null || b.getClientRects().length);
     const tailor = btns.find(b => /tailor.*(resume|cv)|ai.*tailor|auto.*tailor|generate.*resume/i.test(b.textContent || ''));
     if (tailor) { tailor.click(); LOG('Clicked Jobright Tailor Resume button'); return true; }
     return false;

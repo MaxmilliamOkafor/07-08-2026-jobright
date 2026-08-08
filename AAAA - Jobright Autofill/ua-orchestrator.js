@@ -163,6 +163,23 @@
      form), so we retry and also re-send on every completed navigation. The
      content script can additionally PULL its assignment (UA_MGR_WHOAMI), which
      covers the case where every push landed before it booted. */
+  /* Reach the frames the manifest cannot. The content script is declared
+     all_frames:false (running the full module in every ad frame of every page
+     would be wasteful), but several ATS — Greenhouse embeds, iCIMS,
+     SuccessFactors, Taleo, BrassRing — put the actual application form in a
+     CROSS-ORIGIN iframe that the top document cannot see into. For a job tab, and
+     only a job tab, inject the script into every frame; it runs a fill-only path
+     there and is idempotent in the top frame. */
+  function injectAllFrames(tabId) {
+    try {
+      if (!chrome.scripting || !chrome.scripting.executeScript) return;
+      chrome.scripting.executeScript(
+        { target: { tabId, allFrames: true }, files: ['ua-enhancement.js'] },
+        () => void chrome.runtime.lastError,   // frames we may not touch just fail
+      );
+    } catch (_) {}
+  }
+
   function assign(tabId, job, cfg) {
     const payload = {
       type: 'UA_ASSIGN_JOB',
@@ -223,6 +240,7 @@
           m[job.id] = tab.id;
           await setTabMap(m);
           assign(tab.id, job, cfg);
+          injectAllFrames(tab.id);
           log('▶ ' + (job.title || job.url), 'act');
         } else {
           await withQueue((q) => {
@@ -435,7 +453,10 @@
       if (!jobId) return;
       const q = (await get(K.Q)) || [];
       const job = q.find((j) => j.id === jobId);
-      if (job && job.status === 'applying') assign(tabId, job, await settings());
+      if (job && job.status === 'applying') {
+        assign(tabId, job, await settings());
+        injectAllFrames(tabId);   // a new document means new frames to reach
+      }
     });
   } catch (_) {}
 

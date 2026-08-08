@@ -341,6 +341,88 @@ assertions**.
 
 ---
 
+## v14.4 — autofill coverage across every ATS
+
+Before any per-platform cleverness, autofill depends on one thing: **can the
+filler see the fields?** It often could not.
+
+`$` / `$$` are `document.querySelector(All)`. They stop at a shadow boundary and
+never enter a frame — and *every* universal filler used them:
+
+| Function | Blind queries |
+| --- | --- |
+| `fallbackFill` | 11 |
+| `handleValidationErrors` | 3 |
+| `getMissingRequired` | 2 |
+| `guaranteeRequiredFields` | 2 |
+| `hasApplicationForm` | 2 |
+| `analyzeCurrentForm`, `answerChoiceGroups`, `learnFromFilledFields` | 1 each |
+
+So on any ATS that renders its form in web components or an embedded frame, the
+universal filler enumerated **zero fields** and did nothing — which is why
+"autofill doesn't work here" looked like a different bug on every platform:
+
+| ATS | Where the fields actually live |
+| --- | --- |
+| SmartRecruiters | `spl-input` / `spl-select` — open shadow roots |
+| Oracle Recruiting | `oj-input-text` — open shadow roots |
+| Greenhouse embed, iCIMS, SuccessFactors, Taleo, BrassRing | a **cross-origin `<iframe>`** |
+
+### What changed
+
+**One shared enumerator.** `deepAll()` walks every open shadow root and every
+same-origin frame document (depth- and count-bounded). All 23 blind queries in the
+universal fillers now go through it.
+
+**Labels resolve in the right root.** `getLabel()` looked up `label[for=…]` and
+`aria-labelledby` against `document`, which finds nothing for a field inside a
+shadow root — leaving it unlabelled, and an unlabelled field is one no guesser can
+fill. Lookups are now scoped to the element's own root node.
+
+**Fields in modals are visible again.** `isVisible()` required
+`offsetParent !== null`, which is **null for `position: fixed`** — so every field
+in an apply-in-a-dialog modal read as invisible to the filler *and* to the submit
+search. It now uses the box + computed style from the element's own window. Five
+more bare `offsetParent` checks elsewhere were paired with `getClientRects()`.
+
+**Cross-origin frames are reached.** No same-origin walk can enter them. For a
+queue job — and only a queue job — the orchestrator injects the content script
+into every frame of that tab (`scripting`, `allFrames: true`), re-running it after
+each navigation. Sub-frames run a **fill-only** path: no UI, no queue, no submit —
+the top frame still owns navigation. It is gated on the automation gate, ignores
+frames without a form, and is bounded to six passes. The content script carries an
+idempotency guard so re-injection is a no-op in the top frame. The manifest still
+declares `all_frames: false`, so the heavy module is *not* loaded into every ad
+frame of every page you browse.
+
+**You can now see the result.** `fillReport()` counts required fields and names
+the ones still empty; it's logged before every submit:
+
+```
+Before submit: 11/12 required fields filled (92%) — still missing: Desired salary
+```
+
+If a job can't be completed, that detail is what tells you why. A third fill pass
+now runs when the form is still incomplete, since SPA forms mount fields after
+first paint.
+
+### Verified
+
+`tests/fill.test.js` — 41 assertions: every universal filler is checked to contain
+**zero** blind queries and to use the enumerator, plus the bounds, the label
+scoping, the visibility rules, the all-frames injection wiring, and the sub-frame
+gating. Suite total: **281 assertions**.
+
+### Honest limits
+
+This is a large coverage increase, not a guarantee. Not verified against live ATS
+pages — there is no browser in this environment. Still out of reach by design: a
+CAPTCHA (the run pauses for you), an ATS account wall needing email verification,
+and questions with no answer in your profile or answer bank — those are reported
+in the fill report rather than guessed at.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -428,6 +510,7 @@ tests/
 ├── ats.test.js                 ATS routing + dialog answer policy
 ├── gate.test.js                the Fully Automated toggle / automation gate
 ├── submit.test.js              submit-button recognition + submission evidence
+├── fill.test.js                autofill field coverage (shadow DOM + frames)
 ├── csv-parsers.test.js         content-script CSV/URL parsing
 ├── queue-panel.test.js         panel CSV import behaviour
 └── orchestrator.test.js        queue engine against a simulated chrome.*
@@ -439,7 +522,7 @@ tests/
 ./tests/run.sh
 ```
 
-240 assertions, no browser required: JS syntax for everything shipped, manifest
+281 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,
