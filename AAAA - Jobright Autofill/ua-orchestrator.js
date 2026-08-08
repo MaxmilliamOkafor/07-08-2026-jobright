@@ -230,7 +230,7 @@
       if ((await get(K.PAUSED)) === true) return;
       const [cfg, conc, map] = [await settings(), await concurrency(), await reconcileTabs()];
 
-      const toOpen = await withQueue((q) => {
+      const toOpen = (await withQueue((q) => {
         // Jobs parked on a CAPTCHA are deliberately excluded: they are waiting on
         // a person, not using the browser, so they must not cost a slot.
         const running = q.filter((j) => j.status === 'applying' && map[j.id] != null && !j.needsHuman).length;
@@ -247,7 +247,7 @@
           picked.push({ id: j.id, url: j.url, title: j.title, jobBoard: j.jobBoard, startedAt: j.startedAt });
         }
         return picked;
-      });
+      })) || [];   // withQueue returns undefined if its callback threw
 
       for (const job of toOpen) {
         const tab = await new Promise((res) => {
@@ -290,12 +290,21 @@
   }
 
   async function finish() {
+    const q = (await get(K.Q)) || [];
+    const n = (st) => q.filter((j) => j.status === st).length;
+    const pending = n('pending');
+    /* Refuse to end a run that still has work. Ending here with jobs left is the
+       "automation disappeared" symptom — better to say so and pick them up than
+       to stop quietly. */
+    if (pending > 0) {
+      log(`Not finishing — ${pending} job${pending === 1 ? '' : 's'} still pending; restarting the queue`, 'err');
+      await fillSlots();
+      return;
+    }
     await set({ [K.ACTIVE]: false, [K.PAUSED]: false, [K.ADVANCE]: null });
     try { chrome.alarms.clear(ALARM); } catch (_) {}
-    const q = (await get(K.Q)) || [];
-    const n = (s) => q.filter((j) => j.status === s).length;
     const done = n('done'), failed = n('failed') + n('timeout'), skipped = n('skipped');
-    await log(`Queue complete — ${done} applied, ${failed} failed, ${skipped} skipped`, 'ok');
+    await log(`Queue complete — ${done} applied, ${failed} failed, ${skipped} skipped (${q.length} in the list)`, 'ok');
     notify('Jobright queue complete', `${done} applied · ${failed} failed · ${skipped} skipped`);
   }
 
@@ -492,6 +501,22 @@
     for (const s of stale) {
       log('⏱ ' + s.label + (s.why === 'unresponsive' ? ' — stopped responding, moving on' : ' — watchdog timeout'), 'err');
       await closeJobTab(s.id);
+    }
+
+    /* Stall supervisor. If the run is active with jobs still pending but nothing
+       actually running, something went wrong between finishing one job and
+       starting the next. That state used to be silent and permanent — the
+       automation appeared to vanish while the queue still had work in it. */
+    if ((await get(K.PAUSED)) !== true) {
+      const liveMap = await reconcileTabs();
+      const qNow = (await get(K.Q)) || [];
+      const pending = qNow.filter((j) => j.status === 'pending').length;
+      const running = qNow.filter((j) => j.status === 'applying' && liveMap[j.id] != null).length;
+      if (pending > 0 && running === 0) {
+        log(`Queue stalled with ${pending} job${pending === 1 ? '' : 's'} left and nothing running — restarting`, 'err');
+        _filling = false;   // clear a guard left set by a crashed pass
+        await fillSlots();
+      }
     }
     // Close tabs belonging to jobs that are no longer running.
     const q = (await get(K.Q)) || [];

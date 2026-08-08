@@ -468,6 +468,57 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('a tab that is silent WITHOUT navigating is still dropped', env.store.ua_q[0].status, 'timeout');
   }
 
+  /* ── 14. a run must never stall silently with jobs left ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2'), job('c', 'https://a.com/3')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+
+    // Simulate the failure shape: the run is active, jobs are still pending, but
+    // nothing is running — every tab gone and no job marked applying.
+    for (const id of [...env.tabs.keys()]) env.tabs.delete(id);
+    env.store.ua_mgr_tabs = {};
+    env.store.ua_q[0].status = 'skipped';
+    env.store.ua_q[1].status = 'pending';
+    env.store.ua_q[2].status = 'pending';
+    await tick(20);
+
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(120);
+    eq('the supervisor restarts a stalled run', env.store.ua_q[1].status, 'applying');
+    eq('and a tab is open again', env.tabs.size, 1);
+    eq('the run is still active', env.store.ua_mgr_active, true);
+    const logged = (env.store.ua_mgr_log || []).map((l) => JSON.parse(l).m).join(' | ');
+    eq('and it said so rather than vanishing', /Queue stalled with \d+ job/.test(logged), true);
+  }
+
+  /* ── 15. finish() refuses to end a run that still has work ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+
+    // Job a completes; b is still pending. Nothing may end the run here.
+    await send(env.listeners, { type: 'UA_JOB_RESULT', id: 'a', status: 'skipped', ts: 1 });
+    await tick(90);
+    eq('run continues while a job is pending', env.store.ua_mgr_active, true);
+    eq('the pending job was picked up', env.store.ua_q[1].status, 'applying');
+
+    await send(env.listeners, { type: 'UA_JOB_RESULT', id: 'b', status: 'done', ts: 2 });
+    await tick(90);
+    eq('run ends only when nothing is left', env.store.ua_mgr_active, false);
+    const logged = (env.store.ua_mgr_log || []).map((l) => JSON.parse(l).m).join(' | ');
+    eq('the ending is announced with a breakdown', /Queue complete — \d+ applied/.test(logged), true);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

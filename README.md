@@ -693,6 +693,57 @@ WITHOUT navigating is still dropped". Suite total: **374 assertions**.
 
 ---
 
+## v15.0 — a run can no longer stall silently
+
+Reported: the automation "disappeared" after 3 skips and 3 applications, with a
+Zoho Recruit job third in the queue.
+
+I could not reproduce it without a browser, but reading the engine found a path
+that produces exactly that shape — an active run with jobs left and nothing
+running, permanently, with nothing in the log:
+
+`withQueue()` swallows an error from its callback and returns `undefined`.
+`fillSlots` then does `for (const job of toOpen)` on `undefined`, which throws a
+`TypeError`, which the outer handler catches — so **no tabs are opened and
+`maybeFinish` is never reached**. The next watchdog tick repeats the same crash a
+minute later. The run stays `active`, the queue keeps its pending jobs, and
+nothing ever happens again.
+
+Three fixes:
+
+1. **`toOpen` is guarded** — `(await withQueue(...)) || []` — so a failed queue
+   mutation can no longer crash the slot filler.
+2. **A stall supervisor** runs on every watchdog tick: if the run is active, jobs
+   are pending, and nothing is actually running, it says so in the log and
+   restarts the slot fill. It also clears a `_filling` guard left set by a crashed
+   pass, which would otherwise block every future attempt.
+3. **`finish()` refuses to end a run that still has pending jobs**, restarting the
+   queue instead. (Belt-and-braces: `maybeFinish` already checks this, so this
+   guard is an invariant rather than a live code path — the mutation test
+   confirms it isn't currently reachable.)
+
+Every end-of-run is now announced with a breakdown, so a run that stops is never
+just absent:
+
+```
+Queue complete — 3 applied, 0 failed, 3 skipped (12 in the list)
+Queue stalled with 6 jobs left and nothing running — restarting
+```
+
+### Verified
+
+Mutation-checked: removing the stall supervisor fails 7 assertions, including
+"the supervisor restarts a stalled run" and "it said so rather than vanishing".
+Suite total: **382 assertions**.
+
+### If it happens again
+
+The queue log now records what the engine believed. Open the Queue Manager and
+send me the last lines — that will say whether the run finished legitimately, hit
+the supervisor, or died somewhere still unaccounted for.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
