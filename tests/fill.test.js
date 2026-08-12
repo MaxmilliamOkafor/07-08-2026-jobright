@@ -171,7 +171,8 @@ eq('it finds file inputs across shadow DOM and frames', /deepAll\('input\[type="
 eq('it never re-uploads over an existing attachment',
   /if \(resumeAlreadyAttached\(\)\) \{ LOG\('CV already attached/.test(src), true);
 eq('it builds a real File from the stored base64', /new File\(\[buf\], name/.test(src), true);
-eq('it also fires a drop event for dropzone-only widgets', /new DragEvent\('drop'/.test(src), true);
+eq('it also performs a real drag-and-drop for dropzone-only widgets',
+  /for \(const type of \['dragenter', 'dragover', 'drop'\]\)/.test(src), true);
 eq('it waits for the upload to land', /await waitForResumeUpload\(25000\)/.test(src), true);
 eq('it says so plainly when no résumé is saved', /no résumé saved in the extension/.test(src), true);
 eq('SmartRecruiters attaches the CV before sweeping fields',
@@ -190,11 +191,16 @@ eq('the watchdog stands down while busy',
 eq('the guard is depth-counted, so nesting cannot unlock it early',
   /_busyDepth\+\+/.test(src) && /finally \{ _busyDepth--/.test(src), true);
 // Every operation that legitimately takes a while must be inside the guard.
-for (const fn of ['fallbackFill', 'guaranteeRequiredFields', 'fillCustomDropdowns',
+for (const fn of ['guaranteeRequiredFields', 'fillCustomDropdowns',
   'attachResume', 'triggerAutofill', 'triggerAutofillQuick', 'autoSubmitOrNext',
   'openApplicationForm', 'handleAccountAuth', 'handleValidationErrors']) {
   eq(`${fn} runs inside the busy guard`,
     new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{ return withBusy\\(').test(src), true);
+}
+// These two also carry re-entrancy guards, so their wrappers are multi-line.
+for (const fn of ['fallbackFill', 'resolveDependentQuestions']) {
+  eq(`${fn} runs inside the busy guard`,
+    new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{[\\s\\S]{0,400}?withBusy\\(').test(src), true);
 }
 eq('post-submit verification counts as work, not a stall',
   (src.match(/withBusy\('verifying submission'/g) || []).length >= 3, true);
@@ -269,9 +275,9 @@ eq('the guarantor re-scans after answering, it is not a single pass',
 eq('it exits as soon as a round reveals nothing',
   /if \(stepSignature\(\) === before\) break;/.test(grf), true);
 eq('newly revealed text boxes and dropdowns get filled too',
-  /await fallbackFill__impl\(\)/.test(grf), true);
+  /await fallbackFill\(\)/.test(grf), true);
 eq('the general fill also chases dependent questions',
-  /resolveDependentQuestions__impl\(3\)/.test(body('fallbackFill')), true);
+  /resolveDependentQuestions\(3\)/.test(body('fallbackFill')), true);
 
 /* ── 14. declaration / consent boxes on every platform ─────────────────────── */
 /* "You declare that you have read and understand the privacy notice of X. *
@@ -451,6 +457,81 @@ eq('it uses the shared apply vocabulary', /isApplyLabel\(/.test(srDriver), true)
 eq('and waits for the JD page to actually navigate', /await waitForStepChange\(before, 15000\)/.test(srDriver), true);
 eq('Oracle and ADP use the same vocabulary',
   (src.match(/find\(b => isApplyLabel\(/g) || []).length >= 3, true);
+
+/* ── 18. the autofill must converge ────────────────────────────────────────── */
+/* SmartRecruiters re-filled the same fields over and over. Two causes:
+   the step fingerprint was unstable, so every caller believed the page kept
+   changing; and a Spark <spl-input> never heard our events, so its model stayed
+   empty, it re-rendered the field blank, and the next pass typed it again. */
+console.log('filling converges instead of looping');
+
+const sig = body('stepSignature');
+eq('the fingerprint never reads a label — labels carry validation text that changes as we fill',
+  /getLabel\(/.test(sig), false);
+eq('it keys on stable identifiers', /getAttribute\('data-automation-id'\)/.test(sig), true);
+eq('and falls back to a structural position, not text',
+  /while \(\(n = n\.previousElementSibling\)\) idx\+\+;/.test(sig), true);
+
+eq('every synthetic event can leave a shadow root',
+  (src.match(/bubbles: true \}\)/g) || []).length, 0);
+eq('there is one place that builds them', /function fireEvent\(el, type, init\)/.test(src), true);
+eq('composed is not optional there', /Object\.assign\(\{ bubbles: true, composed: true \}, init \|\| \{\}\)/.test(src), true);
+eq('and the wrapping web component is told as well', /function fireOnHostChain\(el, types\)/.test(src), true);
+eq('nativeSet uses it, so a spl-input actually learns the value',
+  /fireOnHostChain\(el, \['focus', 'input', 'change'\]\)/.test(body('nativeSet')), true);
+eq('setSelectValue too', /fireOnHostChain\(sel, \['input', 'change', 'blur'\]\)/.test(body('setSelectValue')), true);
+
+const ffw = src.match(/async function fallbackFill\(\.\.\.a\) \{[\s\S]*?\n  \}/)[0];
+eq('a fill cannot start inside another fill', /if \(_fillDepth > 0\) return 0;/.test(ffw), true);
+eq('and an unchanged step gets a bounded number of passes', /if \(!fillBudgetOk\(\)\) return 0;/.test(ffw), true);
+const budget = body('fillBudgetOk');
+eq('the budget resets when the step really does change',
+  /if \(sig !== _fillBudgetSig\) \{ _fillBudgetSig = sig; _fillBudgetUsed = 0;/.test(budget), true);
+eq('the cap is small enough to notice', /const FILL_PASSES_PER_STEP = 4;/.test(src), true);
+eq('and it says so once rather than silently stopping', /not filling it again/.test(budget), true);
+const rdw = src.match(/async function resolveDependentQuestions\(\.\.\.a\) \{[\s\S]*?\n  \}/)[0];
+eq('the dependent-question loop cannot nest either', /if \(_dependentDepth > 0\) return 0;/.test(rdw), true);
+
+const ledger = body('writeAllowed');
+eq('a field that will not keep its value is written at most three times', /rec\.tries >= 3/.test(ledger), true);
+eq('a different value resets the count', /if \(!rec \|\| rec\.val !== val\)/.test(ledger), true);
+eq('and it is reported once, not every pass', /if \(!rec\.warned\)/.test(ledger), true);
+eq('the fill pass consults the ledger before typing',
+  (body('fallbackFill').match(/if \(!writeAllowed\(inp, val\)\) continue;/g) || []).length, 2);
+
+const sr = src.slice(src.lastIndexOf('async function smartRecruitersAutomation'));
+eq('a SmartRecruiters step that will not advance is abandoned, not re-filled',
+  /if \(stuckSteps >= 2\) \{/.test(sr), true);
+eq('and a step that does advance resets the counter', /if \(moved\) \{ stuckSteps = 0; continue; \}/.test(sr), true);
+
+/* ── 19. the CV actually reaches the uploader ──────────────────────────────── */
+console.log('CV attachment on web-component uploaders');
+const att = body('attachResume');
+eq('the file input is told with composed events on the host chain',
+  /fireOnHostChain\(inp, \['input', 'change'\]\)/.test(att), true);
+eq('a drag-and-drop is tried when the change event alone does nothing',
+  /for \(const zone of uploadDropTargets\(inp\)\)/.test(att), true);
+eq('and a failure is reported rather than assumed to have worked',
+  /the uploader never acknowledged the file/.test(att), true);
+const targets = body('uploadDropTargets');
+eq('drop targets include the shadow hosts above the input, which closest() cannot reach',
+  /r\.host/.test(targets) && /spl-file-upload/.test(targets), true);
+const already = body('resumeAlreadyAttached');
+eq('a format hint is not mistaken for an attached file', /const HINT_RE =/.test(already), true);
+eq('and the filter is actually applied, not just declared',
+  /if \(HINT_RE\.test\(t\)\) continue;/.test(already), true);
+for (const [text, want] of [
+  ['Maxmilliam_Okafor_CV.pdf', true],
+  ['resume.docx', true],
+  ['PDF, DOC, DOCX up to 5MB', false],
+  ['e.g. resume.pdf', false],
+  ['Drag and drop your file here, or browse', false],
+  ['Accepted formats: .pdf, .doc', false],
+]) {
+  const HINT = new Function('return ' + already.match(/const HINT_RE = (\/[\s\S]*?\/i);/)[1])();
+  const looksLikeFile = /[\w)]\.(pdf|docx?|rtf|txt|odt)\b/i.test(text) && !HINT.test(text);
+  eq(`attachment chip: "${text}" → ${want ? 'a real file' : 'just instructions'}`, looksLikeFile, want);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

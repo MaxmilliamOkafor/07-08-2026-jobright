@@ -922,6 +922,79 @@ that must never be clicked. Suite total: **522 assertions**, all green.
 
 ---
 
+## v15.3 — the autofill loop, and the CV that wouldn't attach
+
+Both reports came from `jobs.smartrecruiters.com`, and both had the **same root
+cause**: every synthetic event we dispatched had `composed: false`.
+
+### `composed` is not optional inside a shadow root
+
+SmartRecruiters builds its form out of Spark web components — `spl-input`,
+`spl-file-upload`, `spl-select`. The real `<input>` lives inside a shadow root;
+the component listens for its events **on the host, outside that root**. A DOM
+event only crosses a shadow boundary when it is `composed`, and every event we
+made used the default, which is `false`. So:
+
+* **The infinite re-fill.** We set the value. The input displayed it. The
+  component never heard about it, its own model stayed empty, it re-rendered the
+  field blank — and the next pass saw an empty field and typed it again. Forever.
+* **The CV.** We set `input.files` and dispatched `change`. The uploader, which
+  listens on the host, never received it. The file was on the input and nothing
+  knew.
+
+All **82** synthetic events in the file are now `composed: true`, built through a
+single `fireEvent()` helper so a future edit can't reintroduce a bare one — and
+`nativeSet` / `setSelectValue` / the CV attach now re-fire on the shadow **host
+chain** as well, for components that listen a level up.
+
+### Three more things kept the loop running
+
+* **The step fingerprint was unstable.** `stepSignature()` fell back to the
+  field's label when it had no `name`/`id` — and the label lookup reaches into
+  the field's container, which also holds validation messages and helper text. So
+  the fingerprint changed *every time we filled something or the site showed an
+  error*, and every caller concluded the page had advanced or new questions had
+  appeared. It now keys on stable identifiers (`name`, `id`,
+  `data-automation-id`, `data-testid`, `aria-labelledby`) and falls back to the
+  element's **structural position** — which changes when questions are added or
+  removed, and at no other time.
+* **The passes nested.** The general fill chases dependent questions, the
+  guarantor re-runs the general fill when answering reveals more, and the
+  multi-page driver runs all of it once per page. Each is bounded alone; nested
+  they multiply. `fallbackFill` and `resolveDependentQuestions` now refuse to
+  re-enter, and an unchanged step gets at most **4** full fill passes before the
+  budget stops it and says so.
+* **A field that won't hold a value was retyped forever.** The write ledger
+  allows three attempts at the same value per field, then leaves it and logs it
+  once. A SmartRecruiters step that refuses to advance twice is now handed over
+  rather than re-filled for the rest of its budget.
+
+### The CV attach itself
+
+* Composed events on the input **and** its host chain.
+* If nothing registers, a genuine **drag-and-drop** — `dragenter`, `dragover`,
+  `drop` — because uploaders that gate on `dragover` to set `dropEffect` ignore a
+  lone `drop`. Drop targets now include the shadow hosts above the input, which
+  `closest()` cannot reach, plus any `spl-file-upload` on the page.
+* A failed upload is **reported**, not assumed to have worked.
+* `resumeAlreadyAttached()` no longer mistakes instructions for an attachment.
+  *"PDF, DOC, DOCX up to 5MB"*, *"e.g. resume.pdf"*, *"Drag and drop your file
+  here, or browse"* and *"Accepted formats: .pdf, .doc"* all used to read as a
+  file already being there — which made us skip the upload entirely and then fail
+  the step with "Resume is required".
+
+### Verified
+
+Nine mutations, nine failures: un-composing the events, dropping the host-chain
+re-fire, removing the fill budget, removing the re-entrancy guard, ignoring the
+write ledger, restoring the label fallback in the fingerprint, removing the
+SmartRecruiters stuck-step break, removing the drag-and-drop fallback, and
+removing the format-hint filter each fail the suite.
+
+Suite total: **556 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

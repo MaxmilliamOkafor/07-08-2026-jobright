@@ -1029,8 +1029,8 @@
       const native = innerNative(el, 'input[type=radio],input[type=checkbox]') || el;
       try {
         if (typeof native.checked === 'boolean') native.checked = true;
-        native.dispatchEvent(new Event('input', { bubbles: true }));
-        native.dispatchEvent(new Event('change', { bubbles: true }));
+        native.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        native.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } catch (_) {}
       try { if (el.setAttribute && el !== native) el.setAttribute('aria-checked', 'true'); } catch (_) {}
     }
@@ -1289,9 +1289,9 @@
     await sleep(60);
     // Set full value, then emit a trailing keystroke so frameworks open the dropdown.
     nativeSet(el, value);
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Unidentified', bubbles: true }));
-    el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
-    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Unidentified', bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Unidentified', bubbles: true, composed: true }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Unidentified', bubbles: true, composed: true }));
   }
 
   // Commit an autocomplete field to a real, accepted value. Returns true on commit.
@@ -1322,10 +1322,10 @@
         realClick(best);
         await sleep(400);
         // Google Places needs ArrowDown+Enter on some builds — do it as a reinforcement.
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
         LOG('Location committed via Google Places suggestion');
         return true;
       }
@@ -1336,18 +1336,18 @@
         scrollIfNeeded(match);
         realClick(match);
         await sleep(300);
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
         LOG('Location committed via typeahead suggestion');
         return true;
       }
 
       // No dropdown at all — fall back to keyboard selection (ArrowDown+Enter) then commit raw.
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
       await sleep(200);
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      el.dispatchEvent(new Event('blur', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
       LOG('Location: no dropdown — committed via keyboard/raw value');
       return !!el.value?.trim();
     } catch (e) {
@@ -1654,10 +1654,30 @@
     try {
       bits = questionControls(400).map((el) => {
         const tag = (el.tagName || '').toLowerCase();
+        let type = '';
         let key = '';
-        try { key = (el.getAttribute('name') || el.getAttribute('id') || '').trim(); } catch (_) {}
-        if (!key) key = (getLabel(el) || '').replace(/\s+/g, ' ').trim().slice(0, 48);
-        return tag + '|' + key;
+        try {
+          type = el.getAttribute('type') || '';
+          key = (el.getAttribute('name') || el.getAttribute('id') ||
+            el.getAttribute('data-automation-id') || el.getAttribute('data-testid') ||
+            el.getAttribute('aria-labelledby') || '').trim();
+        } catch (_) {}
+        /* Never fall back to the LABEL. The label lookup reaches into the
+           field's container, which picks up validation messages and helper text
+           as well as the question — so the
+           signature changed every time we filled something or the site showed an
+           error, every caller concluded "the page advanced / new questions
+           appeared", and the fill passes ran again and again. That is the
+           infinite re-fill. A structural key changes when questions are added or
+           removed and at no other time. */
+        if (!key) {
+          let idx = 0, n = el;
+          try { while ((n = n.previousElementSibling)) idx++; } catch (_) {}
+          let parentTag = '';
+          try { parentTag = (el.parentElement && el.parentElement.tagName || '').toLowerCase(); } catch (_) {}
+          key = parentTag + '#' + idx;
+        }
+        return tag + '|' + type + '|' + key;
       });
     } catch (_) {}
     let where = '';
@@ -1768,7 +1788,7 @@
         try {
           cb.focus({ preventScroll: true });
           for (const type of ['keydown', 'keyup'])
-            cb.dispatchEvent(new KeyboardEvent(type, { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true }));
+            cb.dispatchEvent(new KeyboardEvent(type, { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, composed: true }));
         } catch (_) {}
       },
       () => {
@@ -1776,8 +1796,8 @@
         const i = innerNative(cb, 'input[type=checkbox],input[type=radio]') || cb;
         try {
           i.checked = true;
-          i.dispatchEvent(new Event('input', { bubbles: true }));
-          i.dispatchEvent(new Event('change', { bubbles: true }));
+          i.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          i.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         } catch (_) {}
         try { if (cb.setAttribute) { cb.setAttribute('checked', ''); cb.setAttribute('aria-checked', 'true'); } } catch (_) {}
       },
@@ -1849,7 +1869,12 @@
     return total;
   }
   // Stall watchdog stands down while this runs — see withBusy.
-  async function resolveDependentQuestions(...a) { return withBusy('answering follow-up questions', () => resolveDependentQuestions__impl(...a)); }
+  async function resolveDependentQuestions(...a) {
+    if (_dependentDepth > 0) return 0;                  // already running higher up the stack
+    _dependentDepth++;
+    try { return await withBusy('answering follow-up questions', () => resolveDependentQuestions__impl(...a)); }
+    finally { _dependentDepth--; }
+  }
 
   // FULL-AUTO GUARANTOR: ensure no required field is left blank so the form is always submittable
   // and the queue never waits on a human. Runs location commit first, then a best-effort sweep.
@@ -1868,7 +1893,7 @@
       if (el.type === 'checkbox') {
         if (!isMarketingCheckbox(el)) {
           realClick(el);
-          if (!el.checked) { try { el.checked = true; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {} }
+          if (!el.checked) { try { el.checked = true; el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); } catch (_) {} }
           if (el.checked) fixed++;
         }
         continue;
@@ -1897,7 +1922,7 @@
         else if (el.tagName === 'TEXTAREA') val = 'N/A';
         else if (el.type === 'number') val = '0';
       }
-      if (val) { el.focus({ preventScroll: true }); await sleep(60); nativeSet(el, val); el.dispatchEvent(new Event('change', { bubbles: true })); fixed++; await sleep(120); }
+      if (val) { el.focus({ preventScroll: true }); await sleep(60); nativeSet(el, val); el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); fixed++; await sleep(120); }
     }
     if (fixed) LOG(`Guarantor filled ${fixed} still-required field(s)`);
     return fixed;
@@ -1918,7 +1943,7 @@
       if (stepSignature() === before) break;
       LOG(`Answering revealed more questions (round ${round}) — filling those too`);
       noteProgress('answering revealed questions');
-      try { await fallbackFill__impl(); } catch (e) { LOG('follow-up fill error:', e?.message || e); }
+      try { await fallbackFill(); } catch (e) { LOG('follow-up fill error:', e?.message || e); }
     }
     return fixed;
   }
@@ -1948,7 +1973,43 @@
     } catch (_) { return false; }
   }
 
-  function nativeSet(el, val) {
+  /* THE bug behind "SmartRecruiters re-fills forever" and "the CV won't attach".
+     Spark (spl-*), Oracle JET (oj-*) and every other web-component ATS put the
+     real <input> inside a shadow root and listen for its events on the HOST,
+     outside that root. A DOM event only escapes a shadow tree when it is
+     `composed` — and every synthetic event we dispatched had `composed: false`
+     (the default). So:
+
+       • we set the value, the input showed it, the component never heard about
+         it, its own model stayed empty, it re-rendered the field blank, our next
+         pass saw an empty field and typed it again — forever;
+       • we set input.files on the hidden file input and dispatched `change`,
+         which never reached the uploader — so the CV never attached.
+
+     Every synthetic event now goes through here. */
+  function fireEvent(el, type, init) {
+    if (!el || !el.dispatchEvent) return false;
+    try {
+      el.dispatchEvent(new Event(type, Object.assign({ bubbles: true, composed: true }, init || {})));
+      return true;
+    } catch (_) { return false; }
+  }
+  function fireAll(el, types) { for (const t of types) fireEvent(el, t); }
+  /* Tell the web component that wraps this input, too — some listen on the host
+     rather than on their own inner field. */
+  function fireOnHostChain(el, types) {
+    fireAll(el, types);
+    let node = el;
+    for (let hop = 0; node && hop < 4; hop++) {
+      let host = null;
+      try { const r = node.getRootNode && node.getRootNode(); host = r && r.host; } catch (_) {}
+      if (!host) break;
+      fireAll(host, types);
+      node = host;
+    }
+  }
+
+  function nativeSetLegacyUnused(el, val) {
     if (el.disabled || el.readOnly) return false;
     try {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype :
@@ -1956,23 +2017,23 @@
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) { setter.call(el, ''); setter.call(el, val); } else el.value = val;
     } catch (_) { el.value = val; }
-    el.dispatchEvent(new Event('focus', { bubbles: true }));
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    const reactEvt = new Event('input', { bubbles: true });
+    el.dispatchEvent(new Event('focus', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    const reactEvt = new Event('input', { bubbles: true, composed: true });
     Object.defineProperty(reactEvt, 'simulated', { value: true });
     el.dispatchEvent(reactEvt);
     if (el.type === 'tel' || /phone|mobile|cell/i.test(el.name || el.id || '')) {
       for (const ch of String(val)) {
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keypress', { key: ch, bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keypress', { key: ch, bubbles: true, composed: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true, composed: true }));
       }
     }
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
     if (el.getAttribute('ng-model') || el.getAttribute('[(ngModel)]') || el.getAttribute('formControlName')) {
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     }
     return true;
   }
@@ -1990,9 +2051,7 @@
     } catch (_) { try { sel.value = value; } catch (__) {} }
     // Some frameworks track by selectedIndex — keep it consistent with the value we set.
     try { if (sel.value !== value) { for (let i = 0; i < sel.options.length; i++) { if (sel.options[i].value === value) { sel.selectedIndex = i; break; } } } } catch (_) {}
-    sel.dispatchEvent(new Event('input', { bubbles: true }));
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    sel.dispatchEvent(new Event('blur', { bubbles: true }));
+    fireOnHostChain(sel, ['input', 'change', 'blur']);
     return true;
   }
 
@@ -2068,11 +2127,11 @@
       LOG('Refusing to click destructive control:', controlName(el).slice(0, 60) || '(unlabelled ×)');
       return false;
     }
-    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, composed: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
     el.click();
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     return true;
   }
 
@@ -2172,11 +2231,54 @@
     // The ATS usually renders the accepted file as a chip / filename row.
     const chips = deepAll('[class*="filename" i],[class*="file-name" i],[data-automation-id="file-name"],' +
       '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],spl-file-upload', 80);
+    // "PDF, DOC, DOCX up to 5MB" and "e.g. resume.pdf" are instructions, not an
+    // attachment. Reading them as one made us skip the upload entirely and then
+    // fail the step with "Resume is required".
+    const HINT_RE = /\b(up to|max(imum)?|accepted|supported|allowed|formats?|file ?types?|e\.?g\.?|for example|drag|drop|browse|choose a file|select a file)\b/i;
     for (const c of chips) {
-      const t = (c.textContent || '').trim();
-      if (t && /\.(pdf|docx?|rtf|txt|odt)\b/i.test(t)) return true;
+      const t = (c.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!t || t.length > 200) continue;
+      if (!/[\w)]\.(pdf|docx?|rtf|txt|odt)\b/i.test(t)) continue;
+      if (HINT_RE.test(t)) continue;
+      return true;
     }
     return false;
+  }
+
+  /* Where a file can actually be handed to an uploader: the input itself, the
+     dropzone around it, and the web-component hosts above it. `closest()` stops
+     at a shadow boundary, so on SmartRecruiters the real <spl-file-upload>
+     dropzone was never in the list. */
+  function uploadDropTargets(inp) {
+    const out = [];
+    const push = (el) => { if (el && !out.includes(el)) out.push(el); };
+    push(inp);
+    try { push(inp.closest('[class*="dropzone" i],[class*="drop-zone" i],[class*="upload" i],[class*="attach" i],[class*="file" i]')); } catch (_) {}
+    let node = inp;
+    for (let hop = 0; node && hop < 4; hop++) {
+      let host = null;
+      try { const r = node.getRootNode && node.getRootNode(); host = r && r.host; } catch (_) {}
+      if (!host) break;
+      push(host);
+      try { push(host.closest('[class*="dropzone" i],[class*="upload" i],[class*="attach" i]')); } catch (_) {}
+      node = host;
+    }
+    for (const z of deepAll('spl-file-upload,[class*="dropzone" i],[class*="drop-zone" i]', 12)) push(z);
+    return out.filter(Boolean);
+  }
+
+  /* A real drag-and-drop, not just a `drop`. Uploaders that gate on dragenter /
+     dragover (to set dropEffect) ignore a lone drop event. */
+  function dropFileOn(target, file) {
+    if (!target || !target.dispatchEvent) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      for (const type of ['dragenter', 'dragover', 'drop']) {
+        target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: dt }));
+      }
+      return true;
+    } catch (_) { return false; }
   }
   // An upload in flight: pressing Next now is what makes the résumé vanish.
   function resumeUploadInFlight() {
@@ -2232,21 +2334,33 @@
       try {
         const dt = new DataTransfer();
         dt.items.add(file);
-        inp.files = dt.files;
-        inp.dispatchEvent(new Event('input', { bubbles: true }));
-        inp.dispatchEvent(new Event('change', { bubbles: true }));
-        // Some dropzones only listen for a real drop.
-        const zone = inp.closest && inp.closest('[class*="dropzone" i],[class*="upload" i],[class*="attach" i]');
-        if (zone) {
-          try { zone.dispatchEvent(new DragEvent('drop', { bubbles: true, composed: true, dataTransfer: dt })); } catch (_) {}
+        try { inp.files = dt.files; } catch (_) {}
+        /* Composed, and repeated up the shadow host chain. A Spark
+           <spl-file-upload> listens OUTSIDE the shadow root that holds this
+           input, so the old non-composed `change` never reached it — the file
+           was on the input and the uploader never knew. That is why the CV
+           "struggled to attach" on SmartRecruiters. */
+        fireOnHostChain(inp, ['input', 'change']);
+        noteProgress('attaching CV');
+        await sleep(500);
+        if (resumeUploadInFlight() || resumeAlreadyAttached()) {
+          await waitForResumeUpload(25000);
+          if (resumeAlreadyAttached()) { LOG(`CV attached: ${file.name}`); noteProgress('attached CV'); return 'attached'; }
         }
-        LOG(`CV attached: ${file.name}`);
-        noteProgress('attached CV');
+        // Nothing happened — some uploaders only accept a genuine drag-and-drop.
+        for (const zone of uploadDropTargets(inp)) {
+          if (!dropFileOn(zone, file)) continue;
+          await sleep(500);
+          if (resumeUploadInFlight() || resumeAlreadyAttached()) break;
+        }
         await waitForResumeUpload(25000);
-        if (resumeAlreadyAttached()) return 'attached';
+        if (resumeAlreadyAttached()) { LOG(`CV attached: ${file.name}`); noteProgress('attached CV'); return 'attached'; }
+        LOG('CV upload did not register on this field — trying the next one');
       } catch (e) { LOG('CV attach failed on one input:', e?.message || e); }
     }
-    return resumeAlreadyAttached() ? 'attached' : 'no-field';
+    if (resumeAlreadyAttached()) return 'attached';
+    LOG('CV NOT attached: the uploader never acknowledged the file. The step will likely be rejected.');
+    return 'no-field';
   }
   // Stall watchdog stands down while this runs — see withBusy.
   async function attachResume(...a) { return withBusy('attaching the CV', () => attachResume__impl(...a)); }
@@ -2701,11 +2815,10 @@
       if (!isFieldRequired(inp) && (inp.type === 'date' || /MM\s*\/\s*YYYY|DD\s*\/\s*MM/i.test(inp.placeholder || '') || /\b(start|end)\s+date\b/i.test(lbl))) continue;
       const val = guessFieldValue(lbl, p, inp);
       if (!val) continue;
+      if (!writeAllowed(inp, val)) continue;   // it has already refused this value
       inp.focus({ preventScroll: true });
       await sleep(100); // Stabilize focus before setting value
-      nativeSet(inp, val);
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      nativeSet(inp, val);                     // fires composed events on the host chain
       filled++;
       noteProgress('filling fields');   // per field: a long form is not a stall
       await sleep(200); // Accuracy-first: deliberate pacing between fields
@@ -2777,7 +2890,7 @@
     try { filled += await tickConsentBoxes(); } catch (e) { LOG('Consent pass error:', e?.message || e); }
 
     // Anything those answers just revealed (conditional sub-questions).
-    try { filled += await resolveDependentQuestions__impl(3); } catch (e) { LOG('Dependent question pass error:', e?.message || e); }
+    try { filled += await resolveDependentQuestions(3); } catch (e) { LOG('Dependent question pass error:', e?.message || e); }
 
     // Date fields — try to fill with reasonable defaults
     const dateInputs = deepAll('input[type=date]').filter(el => isVisible(el) && !el.value);
@@ -2801,7 +2914,7 @@
     for (const n of numInputs) {
       const lbl = getLabel(n);
       const val = guessFieldValue(lbl, p, n);
-      if (val && !isNaN(Number(val))) { nativeSet(n, val); n.dispatchEvent(new Event('change', { bubbles: true })); filled++; await sleep(150); }
+      if (val && !isNaN(Number(val))) { nativeSet(n, val); n.dispatchEvent(new Event('change', { bubbles: true, composed: true })); filled++; await sleep(150); }
     }
 
     // Contenteditable divs (rich text editors)
@@ -2809,7 +2922,7 @@
     for (const ed of editables) {
       const lbl = getLabel(ed) || ed.getAttribute('data-placeholder') || '';
       const val = guessFieldValue(lbl, p, ed);
-      if (val) { ed.textContent = val; ed.dispatchEvent(new Event('input', { bubbles: true })); filled++; await sleep(150); }
+      if (val) { ed.textContent = val; ed.dispatchEvent(new Event('input', { bubbles: true, composed: true })); filled++; await sleep(150); }
     }
 
     // Fix phone country code on every fallback fill pass
@@ -2826,12 +2939,11 @@
       if (!lbl) continue;
       const val = guessFieldValue(lbl, p, inp);
       if (!val) continue;
-      // Field was supposed to be filled but is empty — framework may have cleared it
+      // Field was supposed to be filled but is empty — the framework may have
+      // cleared it. Retry, but only while the write ledger still allows it.
+      if (!writeAllowed(inp, val)) continue;
       inp.focus({ preventScroll: true }); await sleep(100);
       nativeSet(inp, val);
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-      inp.dispatchEvent(new Event('change', { bubbles: true }));
-      inp.dispatchEvent(new Event('blur', { bubbles: true }));
       refilled++;
       await sleep(200);
     }
@@ -2857,8 +2969,66 @@
     if (filled || refilled || locFixed) noteProgress(`filled ${filled + refilled + locFixed} field(s)`);
     return filled + refilled + locFixed;
   }
+  /* Re-entrancy and budget guards.
+
+     The fill passes call each other: the general fill chases dependent
+     questions, the guarantor runs the general fill again when answering reveals
+     more, and the multi-page driver runs all of it once per page. Each is
+     bounded on its own, but nested they multiply — and with an unstable step
+     signature (fixed above) they never converged at all. Two guards make
+     runaway filling impossible rather than merely unlikely. */
+  let _fillDepth = 0;
+  let _dependentDepth = 0;
+
+  // A step may only be fully re-filled so many times. If a field refuses to keep
+  // the value we write (a web component that never heard our events, a
+  // server-side reset), the budget stops us retyping it forever.
+  const FILL_PASSES_PER_STEP = 4;
+  let _fillBudgetSig = '';
+  let _fillBudgetUsed = 0;
+  let _fillBudgetWarned = false;
+  function fillBudgetOk() {
+    const sig = stepSignature();
+    if (sig !== _fillBudgetSig) { _fillBudgetSig = sig; _fillBudgetUsed = 0; _fillBudgetWarned = false; }
+    if (_fillBudgetUsed >= FILL_PASSES_PER_STEP) {
+      if (!_fillBudgetWarned) {
+        _fillBudgetWarned = true;
+        LOG(`This step has been filled ${FILL_PASSES_PER_STEP} times without changing — not filling it again`);
+      }
+      return false;
+    }
+    _fillBudgetUsed++;
+    return true;
+  }
+
+  /* A field that will not keep what we write must not be retyped indefinitely —
+     that is what "infinite autofill" looks like from the outside. Three attempts
+     at the same value, then we leave it and say so once. */
+  const _writeLedger = new WeakMap();
+  function writeAllowed(el, val) {
+    try {
+      const rec = _writeLedger.get(el);
+      if (!rec || rec.val !== val) { _writeLedger.set(el, { val, tries: 1 }); return true; }
+      if (rec.tries >= 3) {
+        if (!rec.warned) {
+          rec.warned = true;
+          LOG('Field will not keep its value, leaving it: ' + String(getLabel(el) || el.name || el.id || 'field').slice(0, 60));
+        }
+        return false;
+      }
+      rec.tries++;
+      return true;
+    } catch (_) { return true; }
+  }
+
   // Stall watchdog stands down while this runs — see withBusy.
-  async function fallbackFill(...a) { return withBusy('filling fields', () => fallbackFill__impl(...a)); }
+  async function fallbackFill(...a) {
+    if (_fillDepth > 0) return 0;                       // never nest a fill inside a fill
+    if (!fillBudgetOk()) return 0;                      // this step has had its passes
+    _fillDepth++;
+    try { return await withBusy('filling fields', () => fallbackFill__impl(...a)); }
+    finally { _fillDepth--; }
+  }
 
   // ===================== LEARN FROM PAGE (capture filled answers) =====================
   async function learnFromPage() {
@@ -3793,7 +3963,7 @@
       if (filtered.length) { realClick(filtered[0]); await sleep(300); return true; }
     }
     // Escape to close popup if nothing matched
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
     return false;
   }
 
@@ -3991,9 +4161,9 @@
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
         input.focus({ preventScroll: true });
         if (setter) setter.call(input, text); else input.value = text;
-        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
-        input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
-        input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, composed: true }));
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, cancelable: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, composed: true }));
       } catch (_) {}
     };
     const optionEls = () => $$('[role="option"],[data-automation-id="promptOption"],[data-automation-id="menuItem"],[data-automation-id="promptLeafNode"],ul[role="listbox"] li')
@@ -4113,9 +4283,9 @@
     const icimsStartYear = xpath("//input[contains(@id,'CandProfileFields.EducationStartDate_Year')]");
     const icimsEndMonth = xpath("//select[contains(@id,'CandProfileFields.EducationEndDate_Month')]");
     const icimsEndYear = xpath("//input[contains(@id,'CandProfileFields.EducationEndDate_Year')]");
-    if (icimsStartMonth && p.graduation_year) { icimsStartMonth.value = '09'; icimsStartMonth.dispatchEvent(new Event('change', { bubbles: true })); }
+    if (icimsStartMonth && p.graduation_year) { icimsStartMonth.value = '09'; icimsStartMonth.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }
     if (icimsStartYear && !icimsStartYear.value && p.graduation_year) nativeSet(icimsStartYear, (parseInt(p.graduation_year) - 4).toString());
-    if (icimsEndMonth && p.graduation_year) { icimsEndMonth.value = '05'; icimsEndMonth.dispatchEvent(new Event('change', { bubbles: true })); }
+    if (icimsEndMonth && p.graduation_year) { icimsEndMonth.value = '05'; icimsEndMonth.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }
     if (icimsEndYear && !icimsEndYear.value && p.graduation_year) nativeSet(icimsEndYear, p.graduation_year);
 
     // Graduated status
@@ -4202,9 +4372,9 @@
     const expStartYear = xpath("//input[contains(@id,'CandProfileFields.WorkStartDate_Year')]");
     const expEndMonth = xpath("//select[contains(@id,'CandProfileFields.WorkEndDate_Month')]");
     const expEndYear = xpath("//input[contains(@id,'CandProfileFields.WorkEndDate_Year')]");
-    if (expStartMonth && startYear) { expStartMonth.value = '01'; expStartMonth.dispatchEvent(new Event('change', { bubbles: true })); }
+    if (expStartMonth && startYear) { expStartMonth.value = '01'; expStartMonth.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }
     if (expStartYear && !expStartYear.value && startYear) nativeSet(expStartYear, startYear);
-    if (expEndMonth) { expEndMonth.value = '12'; expEndMonth.dispatchEvent(new Event('change', { bubbles: true })); }
+    if (expEndMonth) { expEndMonth.value = '12'; expEndMonth.dispatchEvent(new Event('change', { bubbles: true, composed: true })); }
     if (expEndYear && !expEndYear.value) nativeSet(expEndYear, endYear);
 
     // Workday dateSectionMonth/Year-input for experience From/To dates
@@ -4454,7 +4624,7 @@
         const dt = new DataTransfer();
         dt.items.add(file);
         fileInput.files = dt.files;
-        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         LOG(`Workday: resume injected via DataTransfer — ${resumeData.fileName}`);
         await sleep(1500);
         return true;
@@ -4516,7 +4686,7 @@
     for (const rt of richTexts) {
       const lbl = getLabel(rt);
       const val = guessFieldValue(lbl, p, rt);
-      if (val) { rt.textContent = val; rt.dispatchEvent(new Event('input', { bubbles: true })); }
+      if (val) { rt.textContent = val; rt.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }
     }
     learnFromFilledFields();
     LOG('Workday: question page filled');
@@ -5049,7 +5219,7 @@
         }
         if (idx >= 0 && opts[idx]) { realClick(opts[idx]); await sleep(200); }
         else { // close the abandoned menu with Escape (a re-click can just re-open it)
-          try { ctrl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); document.body.click(); } catch (_) {}
+          try { ctrl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); document.body.click(); } catch (_) {}
           await sleep(100);
         }
       } catch (_) {}
@@ -5919,16 +6089,16 @@
     try {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value') && Object.getOwnPropertyDescriptor(proto, 'value').set;
-      const KE = (t) => el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, cancelable: false }));
+      const KE = (t) => el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, composed: true, cancelable: false }));
       el.focus({ preventScroll: true });
       KE('keydown'); KE('keypress');
       if (setter) setter.call(el, value); else el.value = value; // native setter → React registers the change
       KE('keyup');
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      el.dispatchEvent(new Event('blur', { bubbles: true })); // Workday validates on blur
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, cancelable: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true, composed: true })); // Workday validates on blur
     } catch (_) {
-      try { el.value = value; ['input', 'change'].forEach(t => el.dispatchEvent(new Event(t, { bubbles: true }))); } catch (_) {}
+      try { el.value = value; ['input', 'change'].forEach(t => el.dispatchEvent(new Event(t, { bubbles: true, composed: true }))); } catch (_) {}
     }
   }
 
@@ -9217,6 +9387,9 @@
     };
 
     const MAX_STEPS = 10;
+    // A step that refuses to advance must not be re-filled for the rest of the
+    // budget — that is the other half of "it autofills over and over".
+    let stuckSteps = 0;
     for (let step = 1; step <= MAX_STEPS; step++) {
       if (checkSuccess()) { LOG('SmartRecruiters: submission confirmed'); break; }
       await resolveBlockingDialog();
@@ -9311,12 +9484,16 @@
         // fixed delay either read the old step (too short) or wasted time (too
         // long), and told us nothing when the step refused to advance.
         const moved = await waitForStepChange(stepSig, 15000);
-        if (!moved) {
-          LOG('SmartRecruiters: step did not advance — fixing what is blocking it');
-          await resolveBlockingDialog();
-          await handleValidationErrors();
-          await guaranteeRequiredFields();
+        if (moved) { stuckSteps = 0; continue; }
+        stuckSteps++;
+        if (stuckSteps >= 2) {
+          LOG('SmartRecruiters: the step will not advance after two attempts — handing over instead of re-filling it');
+          break;
         }
+        LOG('SmartRecruiters: step did not advance — fixing what is blocking it');
+        await resolveBlockingDialog();
+        await handleValidationErrors();
+        await guaranteeRequiredFields();
         continue;
       }
       break;
@@ -10240,19 +10417,41 @@ Result: Shipped my first production change in week three and my notes doc became
   }
 
   function nativeSet(el, val) {
+    if (!el || el.disabled || el.readOnly) return false;
     // On Workday, plain .value assignment leaves fields "unregistered" (validation
     // fails, Continue/Create stays disabled). Use real-typing there so React commits.
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+    if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
         el.type !== 'checkbox' && el.type !== 'radio' &&
         typeof isWorkday === 'function' && isWorkday()) {
       return reactTypeValue(el, String(val));
     }
     try {
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype :
+        el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) { setter.call(el, ''); setter.call(el, val); } else el.value = val;
-    } catch (_) { el.value = val; }
-    ['focus', 'input', 'change', 'blur'].forEach(t => el.dispatchEvent(new Event(t, { bubbles: true })));
+    } catch (_) { try { el.value = val; } catch (__) { return false; } }
+    // Composed, and repeated on the shadow host chain — otherwise the component
+    // that owns this input never learns the value and re-renders it empty.
+    fireOnHostChain(el, ['focus', 'input', 'change']);
+    // React's synthetic-event bridge wants its own marked input event.
+    try {
+      const reactEvt = new Event('input', { bubbles: true, composed: true });
+      Object.defineProperty(reactEvt, 'simulated', { value: true });
+      el.dispatchEvent(reactEvt);
+    } catch (_) {}
+    if (el.type === 'tel' || /phone|mobile|cell/i.test(el.name || el.id || '')) {
+      for (const ch of String(val)) {
+        for (const t of ['keydown', 'keypress', 'keyup']) {
+          try { el.dispatchEvent(new KeyboardEvent(t, { key: ch, bubbles: true, composed: true })); } catch (_) {}
+        }
+      }
+    }
+    fireOnHostChain(el, ['blur']);
+    if (el.getAttribute && (el.getAttribute('ng-model') || el.getAttribute('[(ngModel)]') || el.getAttribute('formControlName'))) {
+      fireAll(el, ['input', 'change']);
+    }
+    return true;
   }
 
   function scanAndAnswer() {
@@ -10272,8 +10471,8 @@ Result: Shipped my first production change in week three and my notes doc became
         nativeSet(ta, hit.answer);
       } else {
         ta.textContent = hit.answer;
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        ta.dispatchEvent(new Event('change', { bubbles: true }));
+        ta.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        ta.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       }
       filled++;
     }
@@ -10327,7 +10526,7 @@ Result: Shipped my first production change in week three and my notes doc became
       if (f.__uaTouched) continue;
       f.__uaTouched = true;
       // The main IIFE scans the top document; we just mark shadow/iframe fields as visible to autofill engines.
-      try { f.dispatchEvent(new Event('focus', { bubbles: true })); } catch (_) {}
+      try { f.dispatchEvent(new Event('focus', { bubbles: true, composed: true })); } catch (_) {}
     }
     return filled;
   }
@@ -10442,7 +10641,7 @@ Result: Shipped my first production change in week three and my notes doc became
         const proto = HTMLTextAreaElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
         if (setter) { setter.call(ta, ''); setter.call(ta, letter); } else ta.value = letter;
-        ['focus', 'input', 'change', 'blur'].forEach(t => ta.dispatchEvent(new Event(t, { bubbles: true })));
+        ['focus', 'input', 'change', 'blur'].forEach(t => ta.dispatchEvent(new Event(t, { bubbles: true, composed: true })));
         filled++;
       } catch (_) {}
     }
@@ -10514,9 +10713,9 @@ Result: Shipped my first production change in week three and my notes doc became
                    : /start|available/i.test(q) ? 'Immediately'
                    : 'Yes';
       setter?.call(inputEl, answer);
-      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-      inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      inputEl.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+      inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+      inputEl.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true, composed: true }));
       return true;
     }
     return false;
@@ -10800,7 +10999,7 @@ Result: Shipped my first production change in week three and my notes doc became
       } else {
         el.textContent = text;
       }
-      ['focus', 'input', 'change', 'blur'].forEach(t => el.dispatchEvent(new Event(t, { bubbles: true })));
+      ['focus', 'input', 'change', 'blur'].forEach(t => el.dispatchEvent(new Event(t, { bubbles: true, composed: true })));
       return true;
     } catch (_) { return false; }
   }
@@ -10828,7 +11027,7 @@ Result: Shipped my first production change in week three and my notes doc became
         const dt = new DataTransfer();
         dt.items.add(file);
         input.files = dt.files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         uploaded++;
         LOG(`Uploaded tailored resume to file input: ${fname}`);
       } catch (e) { LOG('File upload error:', e.message); }
@@ -10966,7 +11165,7 @@ Result: Shipped my first production change in week three and my notes doc became
     if (!el) return;
     try {
       if (!inViewLocal(el)) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      ['mouseover', 'mousedown', 'mouseup'].forEach(t => el.dispatchEvent(new MouseEvent(t, { bubbles: true })));
+      ['mouseover', 'mousedown', 'mouseup'].forEach(t => el.dispatchEvent(new MouseEvent(t, { bubbles: true, composed: true })));
       el.click();
     } catch (_) {}
   }
@@ -11974,9 +12173,9 @@ a[href*="/checkout" i],
       const tag = (el.tagName || '').toUpperCase();
       const setter = tag === 'TEXTAREA' ? taSetter : tag === 'SELECT' ? selectSetter : inputSetter;
       if (setter) setter.call(el, v); else el.value = v;
-      el.dispatchEvent(new Event('input',  { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      el.dispatchEvent(new Event('blur',   { bubbles: true }));
+      el.dispatchEvent(new Event('input',  { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('blur',   { bubbles: true, composed: true }));
     } catch (_) {}
   }
 
@@ -12540,8 +12739,8 @@ a[href*="/checkout" i],
       const tag = (el.tagName || '').toUpperCase();
       const setter = tag === 'TEXTAREA' ? taSetter : tag === 'SELECT' ? selectSetter : inputSetter;
       if (setter) setter.call(el, v); else el.value = v;
-      el.dispatchEvent(new Event('input',  { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input',  { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     } catch (_) {}
   }
 
@@ -13209,8 +13408,8 @@ a[href*="/checkout" i],
       const tag = (el.tagName || '').toUpperCase();
       const setter = tag === 'TEXTAREA' ? taSetter : inSetter;
       if (setter) setter.call(el, v); else el.value = v;
-      el.dispatchEvent(new Event('input',  { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input',  { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     } catch (_) {}
   }
 
@@ -13515,9 +13714,9 @@ a[href*="/checkout" i],
     try { ok = document.execCommand('insertText', false, text); } catch (_) {}
     if (!ok) {
       box.textContent = text;
-      box.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+      box.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: text, inputType: 'insertText' }));
     }
-    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
   }
   async function openMessageComposer() {
     // Already open?
