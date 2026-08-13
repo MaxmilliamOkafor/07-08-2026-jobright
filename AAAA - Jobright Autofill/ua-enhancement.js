@@ -644,6 +644,10 @@
   // ===================== SMART VALUE GUESSER =====================
   function guessValue(label, p) {
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
+    // "What state do you reside in?" is a value question; it kept coming back
+    // "Yes" from a fuzzy saved-answer match, so answer it properly and early.
+    if (/what state|which state|state do you (reside|live)|state you (reside|live)|state of (residence|resident)|home state|state province/.test(l))
+      return p.state || p.region || p.province || '';
     if (/first.?name|given.?name|prenom/.test(l)) return p.first_name || p.firstName || '';
     if (/last.?name|family.?name|surname/.test(l)) return p.last_name || p.lastName || '';
     if (/middle.?name/.test(l)) return p.middle_name || '';
@@ -770,13 +774,95 @@
     return '';
   }
 
+  /* ── DOES THE ANSWER FIT THE CONTROL? ──────────────────────────────────────
+     Everything else decides WHAT to answer. This decides whether that answer is
+     the right SHAPE for the box it is going into — the step that was missing.
+
+     Two real failures it prevents:
+
+       • A BUCKET WHERE A NUMBER BELONGS. "5-8" is exactly the right thing to
+         click in a dropdown whose options are ranges. Typed into a free-text
+         "How many years of X experience do you have?" box it is a string the
+         ATS cannot parse — and a saved answer learned from a dropdown gets
+         reused on text fields. Ranges become a single integer there, taking the
+         TOP of the range: an employer screening on a minimum never prefers the
+         lower number, and it is the honest reading of "5-8 years".
+
+       • A YES/NO WHERE PROSE BELONGS. "If answered Yes, please provide the name
+         of the employee who works at Heartflow" came back "Yes" from a fuzzy
+         saved-answer match. When the parent answer was No, the answer the form
+         itself asks for is N/A. */
+  const YEARS_RANGE_RE = /^\s*(\d+)\s*(?:[-–—]|\s+to\s+)\s*(\d+)\s*\+?\s*(?:years?)?\s*$/i;
+  // "More than 5" / "At least 10" — a floor with no upper bound.
+  const YEARS_ATLEAST_RE = /^\s*(?:more than|over|at least|greater than|>)\s*(\d+)\s*\+?\s*(?:years?)?\s*(?:of experience)?\s*$/i;
+  // "8+" / "10 or more" / "8 plus".
+  const YEARS_PLUS_RE = /^\s*(\d+)\s*(?:\+|or more|plus)\s*(?:years?)?\s*(?:of experience)?\s*$/i;
+  const YEARS_Q_RE = /how many years|years of (experience|exp)\b|number of years|years.{0,24}experience|experience.{0,12}years/i;
+  const PROSE_Q_RE = /\b(please (explain|describe|provide|specify|list|elaborate|detail|share)|explain|describe|provide the name|name of the|which of|tell us|give details|reason for)\b/i;
+  const NA_HINT_RE = /\b(if no,? (add|enter|type|put|write)|if not applicable|otherwise (add|enter|put|write)|add n\/?a|enter n\/?a|write n\/?a|put n\/?a|n\/?a if)\b/i;
+  const CONDITIONAL_Q_RE = /^\s*if\s+(you\s+)?(have\s+)?(answered|selected|applicable|yes|no|so)\b|^\s*if\s+applicable\b|^\s*if\s+yes\b|^\s*if\s+no\b/i;
+
+  function isFreeTextControl(el) {
+    if (!el) return false;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA') return true;
+    if (tag !== 'INPUT') return false;
+    const t = (el.type || 'text').toLowerCase();
+    return t === 'text' || t === 'number' || t === 'search' || t === '';
+  }
+
+  /* Is this a question a bare Yes/No can even answer? The saved-answer matcher
+     is fuzzy by design — 40% keyword overlap — which a long question reaches just
+     by sharing nouns. That is how "What state do you reside in?" and "…provide
+     the name of the employee…" both came back "Yes". */
+  function looksLikeYesNoQuestion(q) {
+    const t = String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!t) return false;
+    if (/\b(what|which|where|when|how many|how much|how long|how old|name of|provide the name|please (explain|describe|provide|specify|list)|explain|describe|list|specify)\b/.test(t)) return false;
+    return /^(are|is|am|do|does|did|have|has|had|will|would|can|could|should|shall|may|might|was|were|must)\b/.test(t) ||
+      /\byes\b\s*(\/|,|or)\s*\bno\b/.test(t);
+  }
+
+  function refineAnswerForControl(val, label, p, el) {
+    const v = String(val == null ? '' : val).trim();
+    if (!v) return v;
+    let q = String(label || '');
+    try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
+    q = q.replace(/\s+/g, ' ');
+
+    // A Yes/No answer to a question that asks for a value is always wrong. On a
+    // dropdown, dropping it lets the option matcher choose a real option instead.
+    if (/^(yes|no|y|n|true|false)$/i.test(v) && !looksLikeYesNoQuestion(q)) {
+      if (!isFreeTextControl(el)) return '';
+      return (PROSE_Q_RE.test(q) || CONDITIONAL_Q_RE.test(q) || NA_HINT_RE.test(q)) ? 'N/A' : '';
+    }
+    if (!isFreeTextControl(el)) return v;      // a dropdown/radio wants the option text
+
+    const isNumberBox = (el.type || '').toLowerCase() === 'number';
+    if (YEARS_Q_RE.test(q) || isNumberBox) {
+      const r = v.match(YEARS_RANGE_RE);
+      if (r) return String(Math.max(parseInt(r[1], 10), parseInt(r[2], 10)));
+      const a = v.match(YEARS_ATLEAST_RE);
+      if (a) return String(parseInt(a[1], 10));
+      const o = v.match(YEARS_PLUS_RE);
+      if (o) return String(parseInt(o[1], 10));
+      if (isNumberBox && !/^-?\d+(\.\d+)?$/.test(v)) {
+        const first = v.match(/\d+/);
+        return first ? first[0] : '';
+      }
+    }
+    return v;
+  }
+
   function guessFieldValue(label, p, el) {
     // Priority: saved responses → an EXACT learned answer (the user answered this very
     // question before — their answer must beat any generic guess) → built-in guesses →
     // fuzzy learned match as the last resort (kept last to avoid contamination).
     const questionText = el ? getFullQuestionText(el) : label;
     const fromSaved = findSavedResponseMatch(questionText);
-    return fromSaved || getLearnedAnswer(label, el, true) || guessValue(label, p) || getLearnedAnswer(label, el) || '';
+    const raw = fromSaved || getLearnedAnswer(label, el, true) || guessValue(label, p) || getLearnedAnswer(label, el) || '';
+    // Last step: make the answer fit the control it is going into.
+    return refineAnswerForControl(raw, label, p, el);
   }
 
   // ===================== SAVED RESPONSES SYSTEM (SpeedyApply-style) =====================
@@ -989,21 +1075,27 @@
   }
 
   // Experience range scoring (7+, 5-7, 3-5, 0-3)
+  /* Which experience band to pick. Bands overlap on their boundaries — 5 years
+     qualifies for both "3-5" and "5-8" — and whichever came first in the DOM used
+     to win. More experience is never the worse answer to an employer screening on
+     a minimum, so every qualifying band gets a bonus for its lower bound and the
+     highest one wins. */
   function scoreExperienceRange(text, yearsExp) {
-    const t = text.toLowerCase().trim();
+    const t = String(text || '').toLowerCase().trim();
+    const band = (n) => Math.max(0, Math.min(parseInt(n, 10) || 0, 25));
     const plusM = t.match(/(\d+)\s*\+/);
-    if (plusM && yearsExp >= parseInt(plusM[1])) return 100;
-    const moreM = t.match(/more\s+than\s+(\d+)/i);
-    if (moreM && yearsExp > parseInt(moreM[1])) return 95;
-    const rangeM = t.match(/(\d+)\s*[-–]\s*(\d+)/);
+    if (plusM && yearsExp >= parseInt(plusM[1])) return 200 + band(plusM[1]);
+    const moreM = t.match(/(?:more\s+than|over|at\s+least)\s+(\d+)/i);
+    if (moreM && yearsExp >= parseInt(moreM[1])) return 190 + band(moreM[1]);
+    const rangeM = t.match(/(\d+)\s*(?:[-–—]|\s+to\s+)\s*(\d+)/);
     if (rangeM) {
       const low = parseInt(rangeM[1]), high = parseInt(rangeM[2]);
-      if (yearsExp >= low && yearsExp <= high) return 90;
+      if (yearsExp >= low && yearsExp <= high) return 150 + band(low);
       if (yearsExp > high) return 50 - (yearsExp - high);
       if (yearsExp < low) return 30 - (low - yearsExp);
     }
     const numM = t.match(/^(\d+)\s*years?/);
-    if (numM && parseInt(numM[1]) <= yearsExp) return 80;
+    if (numM && parseInt(numM[1]) <= yearsExp) return 100 + band(numM[1]);
     return 0;
   }
 
@@ -1812,10 +1904,72 @@
 
   /* Tick every declaration/consent box the form needs, on any ATS, whether it is
      a native checkbox or a web component — and never a marketing opt-in. */
+  /* A question answered WITH checkboxes is not a pile of independent consents.
+     "How did you hear about this job?" ships nine boxes — Job site, LinkedIn,
+     Job fair, Indeed, Glassdoor, ZipRecruiter, Employee, Handshake, Other — and
+     because the question is required, the required-checkbox sweep ticked every
+     one of them. That tells the employer the candidate found the job on all nine
+     channels at once.
+
+     A group of two or more checkboxes sharing a question gets exactly ONE answer:
+     the option that matches what we would have said in a text box, else the first
+     real option (never "Other" / "None" / "Prefer not to say"). One selection also
+     satisfies a "select all that apply" that happens to be required. */
+  function checkboxGroup(el) {
+    let peers = [];
+    try {
+      const name = el.getAttribute && el.getAttribute('name');
+      if (name) peers = deepAll(`input[type=checkbox][name="${CSS.escape(name)}"]`, 40).filter(isVisible);
+    } catch (_) {}
+    if (peers.length < 2) {
+      let container = null;
+      try { container = el.closest('fieldset,[role=group],.question,[class*="question" i],.form-group,.field,[class*="field" i],li'); } catch (_) {}
+      if (container) {
+        try { peers = deepQueryAll('input[type=checkbox],[role="checkbox"],spl-checkbox,mat-checkbox', container, 40).filter(isVisible); } catch (_) {}
+      }
+    }
+    // Two is a question; forty is the whole form matched by an over-wide container.
+    return (peers.length >= 2 && peers.length <= 25) ? peers : [];
+  }
+
+  async function answerCheckboxGroups() {
+    const seen = new Set();
+    let n = 0;
+    let p = null;
+    try { p = await getProfile(); } catch (_) {}
+    for (const cb of deepAll('input[type=checkbox],[role="checkbox"],spl-checkbox,mat-checkbox', 200).filter(isVisible)) {
+      const group = checkboxGroup(cb);
+      if (!group.length) continue;
+      if (seen.has(group[0])) continue;
+      seen.add(group[0]);
+      if (group.some(checkboxChecked)) continue;                  // already answered
+      const q = (getFullQuestionText(cb) || getLabel(cb) || '').replace(/\s+/g, ' ').trim();
+      const want = String((p && guessFieldValue(q, p, null)) || '').toLowerCase().trim();
+      let pick = null;
+      if (want && want !== 'n/a') {
+        pick = group.find(c => choiceLabel(c) === want)
+          || group.find(c => choiceLabel(c) && choiceLabel(c).includes(want))
+          || group.find(c => { const cl = choiceLabel(c); return cl.length > 2 && want.includes(cl); });
+      }
+      if (!pick) pick = group.find(c => !/^\s*(other|none|n\/?a|prefer not|do not|decline)\b/i.test(choiceLabel(c)));
+      if (!pick) pick = group[0];
+      if (await setCheckboxChecked(pick)) {
+        n++;
+        noteProgress('answered a multiple-choice question');
+        await sleep(120);
+      }
+    }
+    if (n) LOG(`Answered ${n} checkbox question(s) with a single option`);
+    return n;
+  }
+
   async function tickConsentBoxes() {
     let n = 0;
     for (const cb of deepAll(CONSENT_CONTROL_SEL, 150).filter(isVisible)) {
       if (checkboxChecked(cb)) continue;
+      // One option of a multiple-choice question, not a declaration — leave it to
+      // answerCheckboxGroups, which picks exactly one.
+      if (checkboxGroup(cb).length) continue;
       const txt = controlText(cb);
       let required = false;
       try { required = isFieldRequired(cb); } catch (_) {}
@@ -1854,6 +2008,7 @@
       try { did += (await answerChoiceGroups()) || 0; } catch (e) { LOG('choice pass error:', e?.message || e); }
       try { if (p) did += answerButtonStyleQuestions(p) || 0; } catch (e) { LOG('button-question pass error:', e?.message || e); }
       try { if (p) did += (await fillCustomDropdowns(p)) || 0; } catch (e) { LOG('dropdown pass error:', e?.message || e); }
+      try { did += (await answerCheckboxGroups()) || 0; } catch (e) { LOG('checkbox-question pass error:', e?.message || e); }
       try { did += (await tickConsentBoxes()) || 0; } catch (e) { LOG('consent pass error:', e?.message || e); }
       total += did;
       // Give the framework a beat to render whatever those answers unlocked.
@@ -1891,6 +2046,10 @@
       // or the form can't submit — the text-default path below was a no-op on checkboxes.
       // Marketing opt-ins are still skipped. Radios are handled by answerChoiceGroups.
       if (el.type === 'checkbox') {
+        // One option of a required multiple-choice question — ticking each of them
+        // in turn is what selected all nine "How did you hear about this job?"
+        // answers. answerCheckboxGroups picks a single one.
+        if (checkboxGroup(el).length) continue;
         if (!isMarketingCheckbox(el)) {
           realClick(el);
           if (!el.checked) { try { el.checked = true; el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); } catch (_) {} }

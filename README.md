@@ -995,6 +995,78 @@ Suite total: **556 assertions**, all green.
 
 ---
 
+## v15.4 — the answer has to fit the box it goes into
+
+Everything up to here decided **what** to answer. Nothing checked whether that
+answer was the right **shape** for the control receiving it. Four things on one
+Greenhouse form (`job-boards.greenhouse.io/heartflowinc`) came from that gap.
+
+### "5-8" typed into a number box
+
+`5-8` is exactly the right thing to click in a dropdown whose options are ranges.
+Typed into a free-text *"How many years of Software/Risk Quality Assurance
+experience do you have?"* box it is a string the ATS cannot parse — and answers
+learned from a dropdown get reused on text fields, which is how it got there.
+
+Ranges are now collapsed to a single integer whenever the target is a free-text
+or number input, taking the **top** of the range: an employer screening on a
+minimum never prefers the lower number, and "5-8 years" honestly means up to 8.
+`5-8`→`8`, `3-5`→`5`, `5 to 8`→`8`, `8+`→`8`, `more than 5`→`5`, `at least 10`→`10`.
+A dropdown still receives `5-8` unchanged, because there it is a real option.
+
+### Overlapping bands took whichever came first
+
+Bands share their boundaries: 5 years qualifies for both `3-5` and `5-8`, and
+whichever appeared first in the DOM won. Every qualifying band now gets a bonus
+for its lower bound, so the **highest** one wins — 5 years picks `5-8`, 9 years
+picks `8+`, and `10+` beats `5+` for a 12-year candidate. DOM order no longer
+decides it.
+
+### "Yes" as the name of an employee
+
+The saved-answer matcher is fuzzy by design — 40% keyword overlap — which a long
+question reaches just by sharing nouns. So *"If answered Yes, please provide the
+name of the employee who works at Heartflow"*, *"If yes, please explain. If no,
+add N/A"* and *"What state do you reside in?"* all came back **"Yes"**.
+
+A bare Yes/No is now rejected on any question a Yes/No cannot answer — one that
+opens with *what / which / where / how many / name of / please explain*. In a
+text box the answer becomes `N/A` (which is what those questions ask for when
+the parent was No); on a dropdown it is dropped so the option matcher can choose
+a real option instead. Genuine Yes/No questions — *"Are you legally authorized to
+work…"*, *"Do you have any immediate family that work at Heartflow?"* — keep
+their answer. *"What state do you reside in?"* is also answered properly now,
+from the profile.
+
+### Nine ways of hearing about the job, all at once
+
+*"How did you hear about this job?"* ships nine checkboxes — Job site, LinkedIn,
+Job fair, Indeed, Glassdoor, ZipRecruiter, Employee, Handshake, Other. Because
+the question is required, the required-checkbox sweep ticked **every one**.
+
+A group of two or more checkboxes sharing a name or a question container is now
+treated as one question and gets exactly one answer: the option matching what we
+would have typed in a text box (LinkedIn, here), else the first real option —
+never *Other*, *None* or *Prefer not to say* unless nothing else fits. The
+consent sweep and the required-field sweep both leave grouped options alone. A
+container matching more than 25 checkboxes is not treated as one giant question,
+so an over-wide selector can't collapse a whole form into a single pick.
+
+### Verified
+
+The shape logic is lifted out of the shipped file and **executed** by the tests,
+not pattern-matched: 11 range conversions, 9 yes/no-answerability judgements, 8
+band selections and the full set of look-alike questions all run for real.
+
+Seven mutations, seven failures: not narrowing the range, taking the low end of
+it, removing the yes/no guard, dropping the band tie-break, letting the required
+sweep tick grouped checkboxes, preferring "Other", and letting dropdown answers
+be rewritten each fail the suite.
+
+Suite total: **604 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

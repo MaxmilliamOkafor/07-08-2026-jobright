@@ -533,5 +533,116 @@ for (const [text, want] of [
   eq(`attachment chip: "${text}" → ${want ? 'a real file' : 'just instructions'}`, looksLikeFile, want);
 }
 
+/* ── 20. the answer has to fit the control it goes into ───────────────────── */
+/* "5-8" is the right thing to click in a dropdown of ranges and the wrong thing
+   to type into a "How many years…?" box — the ATS parses that box as a number.
+   And a fuzzy saved-answer match kept putting "Yes" into boxes asking for a
+   name, an explanation, or a US state. Both are run for real here, not
+   pattern-matched: the shape logic is lifted out of the shipped file. */
+console.log('answers are shaped for the control');
+const shapeStart = src.indexOf('  const YEARS_RANGE_RE =');
+const shapeEnd = src.indexOf('\n  function guessFieldValue(');
+if (shapeStart < 0 || shapeEnd < 0) throw new Error('answer-shape block not found');
+const shapeCtx = {};
+new Function('exports', `
+  const getFullQuestionText = () => '';
+${src.slice(shapeStart, shapeEnd)}
+  Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl });
+`)(shapeCtx);
+const refine = (val, q, el) => shapeCtx.refineAnswerForControl(val, q, {}, el);
+const textBox = { tagName: 'INPUT', type: 'text' };
+const numberBox = { tagName: 'INPUT', type: 'number' };
+const area = { tagName: 'TEXTAREA' };
+const dropdown = { tagName: 'SELECT' };
+
+// A range in a free-text years box becomes one integer — the top of the range.
+for (const [val, want] of [
+  ['5-8', '8'], ['3-5', '5'], ['0-2', '2'], ['5 - 8', '8'], ['5 to 8', '8'],
+  ['8+', '8'], ['more than 5', '5'], ['at least 10', '10'], ['10+ years', '10'],
+  ['5-8 years', '8'],
+  ['7', '7'],                       // already a number — untouched
+]) eq(`"${val}" in a "How many years…" box → ${want}`,
+  refine(val, 'How many years of Software/Risk Quality Assurance experience do you have?', textBox), want);
+
+eq('the same range is left alone for a dropdown, where it is a real option',
+  refine('5-8', 'How many years of SaMD/Digital health experience do you have?', dropdown), '5-8');
+eq('a number box gets the number out of a wordy answer',
+  refine('about 8 years', 'Years of experience', numberBox), '8');
+eq('and is left empty rather than given prose it cannot parse',
+  refine('about eight', 'Years of experience', numberBox), '');
+eq('a salary box is untouched', refine('45000', 'What are your base salary expectations for this role?', numberBox), '45000');
+
+// A Yes/No where a value belongs.
+eq('"Yes" is not the name of an employee',
+  refine('Yes', 'If answered Yes, please provide the name of the employee who works at Heartflow.', textBox), 'N/A');
+eq('"Yes" is not an explanation', refine('Yes', 'If yes, please explain. If no, add N/A', textBox), 'N/A');
+eq('"Yes" is not a relative and an organization',
+  refine('Yes', 'If answered Yes, please provide the name of the relative and the name of the organization in which they are employed.', area), 'N/A');
+eq('"Yes" is dropped on a state dropdown so a real option can be chosen',
+  refine('Yes', 'What state do you reside in?', dropdown), '');
+eq('a genuine Yes/No question keeps its Yes',
+  refine('Yes', 'Are you legally authorized to work in the United States?', textBox), 'Yes');
+eq('and so does a No', refine('No', 'Do you have any immediate family that work at Heartflow?', textBox), 'No');
+eq('a real answer is never rewritten', refine('Dublin', 'Location (City)', textBox), 'Dublin');
+
+for (const [q, want] of [
+  ['Are you legally authorized to work in the United States?', true],
+  ['Do you have previous SaMD/digital health experience?', true],
+  ['Have you ever been debarred by the U.S. FDA?', true],
+  ['Will you now or in the future require sponsorship?', true],
+  ['What state do you reside in?', false],
+  ['How many years of experience do you have?', false],
+  ['If answered Yes, please provide the name of the employee who works at Heartflow.', false],
+  ['Which of the following certifications do you hold?', false],
+  ['Please explain your answer', false],
+]) eq(`yes/no answerable: "${q.slice(0, 44)}…" → ${want}`, shapeCtx.looksLikeYesNoQuestion(q), want);
+
+/* ── 21. the higher qualifying experience band wins ───────────────────────── */
+/* Bands overlap on their boundaries — 5 years qualifies for both "3-5" and
+   "5-8" — and whichever came first in the DOM used to win. */
+console.log('experience bands prefer more experience');
+const scoreCtx = {};
+new Function('exports', body('scoreExperienceRange') + '\nexports.scoreExperienceRange = scoreExperienceRange;')(scoreCtx);
+const pickBand = (options, years) => {
+  let best = null, bestScore = 0;
+  for (const o of options) { const sc = scoreCtx.scoreExperienceRange(o, years); if (sc > bestScore) { bestScore = sc; best = o; } }
+  return best;
+};
+const BANDS = ['0-2', '3-5', '5-8', '8+'];
+eq('5 years on overlapping bands takes the higher one', pickBand(BANDS, 5), '5-8');
+eq('4 years takes 3-5', pickBand(BANDS, 4), '3-5');
+eq('9 years takes 8+', pickBand(BANDS, 9), '8+');
+eq('1 year takes 0-2', pickBand(BANDS, 1), '0-2');
+eq('order in the DOM does not decide it', pickBand([...BANDS].reverse(), 5), '5-8');
+eq('"more than 5" qualifies at exactly 5', scoreCtx.scoreExperienceRange('More than 5 years', 5) > 0, true);
+eq('a band above the candidate is not claimed', scoreCtx.scoreExperienceRange('8+', 5), 0);
+eq('"10+" beats "5+" for a 12-year candidate',
+  scoreCtx.scoreExperienceRange('10+', 12) > scoreCtx.scoreExperienceRange('5+', 12), true);
+
+/* ── 22. a checkbox question gets ONE answer, not all of them ─────────────── */
+/* "How did you hear about this job?" ships nine boxes and the question is
+   required, so the required-checkbox sweep ticked every one — telling the
+   employer the candidate found the job on all nine channels at once. */
+console.log('checkbox questions get a single answer');
+const groups = body('answerCheckboxGroups');
+eq('a group is answered once', /if \(group\.some\(checkboxChecked\)\) continue;/.test(groups), true);
+eq('the option matching what we would have typed is preferred',
+  /guessFieldValue\(q, p, null\)/.test(groups), true);
+eq('"Other" / "None" / "Prefer not to say" is a last resort',
+  /\(other\|none\|n\\\/\?a\|prefer not\|do not\|decline\)/.test(groups), true);
+eq('exactly one box is ticked per question',
+  (groups.match(/await setCheckboxChecked\(pick\)/g) || []).length, 1);
+const grp = body('checkboxGroup');
+eq('a group is found by shared name or shared question container',
+  /input\[type=checkbox\]\[name=/.test(grp) && /closest\('fieldset/.test(grp), true);
+eq('an over-wide container is not treated as one giant question',
+  /peers\.length >= 2 && peers\.length <= 25/.test(grp), true);
+eq('the consent sweep leaves multiple-choice options alone',
+  /if \(checkboxGroup\(cb\)\.length\) continue;/.test(body('tickConsentBoxes')), true);
+eq('and so does the required-field sweep',
+  /if \(checkboxGroup\(el\)\.length\) continue;/.test(body('guaranteeRequiredFieldsPass')), true);
+eq('checkbox questions are answered in every dependent-question round',
+  /await answerCheckboxGroups\(\)/.test(body('resolveDependentQuestions')), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
