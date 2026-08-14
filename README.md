@@ -1067,6 +1067,93 @@ Suite total: **604 assertions**, all green.
 
 ---
 
+## v15.5 — the work-authorisation knockout, fixed properly
+
+> "You applied to our vacancy of Solutions consultant at Predikt. I see that you
+> filled in you're not allowed to work in Belgium. Is that correct? I see you're
+> willing to move. We do not provide Visa sponsorship."
+
+That answer cost a live application. It came from **two** bugs, one in deciding
+the answer and one in choosing the option — and both pointed the same wrong way.
+
+### 1. One rule answered No to anything containing "visa"
+
+```js
+if (/sponsor|visa|work\s?permit|immigration|h-?1b/.test(q)) return 'no';
+```
+
+That is right for *"Do you now or in the future **require** visa sponsorship?"*
+and catastrophically wrong for *"Are you allowed to work in Belgium **without**
+visa sponsorship?"* — both sentences contain "sponsorship", and the rule ran
+**before** the authorisation rule, so eligibility questions never got a chance.
+
+What separates the two is what the verb does to sponsorship, not whether the word
+is present. One decider now handles both families:
+
+| Family | Examples | Answer |
+| --- | --- | --- |
+| **Eligibility** | allowed / authorised / entitled / eligible / permitted / have the right to work — with or without a "…and will not require sponsorship" clause | **Yes** |
+| **Possession** | do you hold a valid visa / work permit / settled status / citizenship / permanent residency | **Yes** |
+| **Need** | do you (now or in the future) require / need / seek / depend on sponsorship, a visa, a work permit, a Tier 2 / Skilled Worker visa | **No** |
+
+**British spelling was the other half of it.** `/authoriz/` never matched
+*"authorised"*, and European ATS — most of what this queue applies to — spell it
+that way, so those questions fell straight through to the sponsorship rule.
+
+The decider also refuses to claim questions that merely borrow its vocabulary.
+*"Have you ever been convicted of a crime that would prevent you from being
+legally permitted to work in this role?"* contains both the work context and the
+words — answering that **Yes** would be far worse than the bug being fixed, so
+criminal record, debarment, non-compete, termination, drug test and background
+check are excluded outright and fall back to the normal knockout logic.
+
+### 2. The grammar pointed the opposite way to the meaning
+
+Deciding "yes" is only half of it — most ATS word their options instead of
+offering a literal Yes/No, and there the grammar is actively misleading:
+
+* **"I require visa sponsorship"** — grammatically affirmative, wrong answer.
+* **"Does not require sponsorship"** — grammatically negative, right answer.
+* **"Yes, I am authorized to work in the US without sponsorship"** — read as
+  NEGATIVE, because it contains the word *without*.
+
+On a two-option question that last one is decisive: with no positive option
+found, the answerer fell through to "pick the other one" and selected **"No, I
+require sponsorship"**. That is the answer the recruiter read.
+
+Work-authorisation options are now scored on **meaning**, not polarity. There is
+only one stance to express — *I can work in this country and do not need
+sponsoring* — however the question is phrased, so no decision needs threading
+through: each option is scored for how well it says that, and the best wins.
+Every caller (radio groups, button-style questions, native selects, custom
+dropdowns, `pickChoice`) passes the question through so the family is recognised.
+
+### 3. Mobility
+
+*"I see you're willing to move"* was already right, but only four literal
+phrasings were known. It now covers *willing to relocate / willing to move /
+open to relocation / prepared to move / happy to relocate / would you consider
+relocating / relocate at your own expense / able to commute / willing to travel*
+— and it is evaluated **after** the strong-No knockouts, so "have you ever
+relocated for a former employer?" can't be hijacked.
+
+### Verified
+
+The decider and the option matcher are lifted out of the shipped file and **run
+for real** against the phrasings the supported ATS ship: 23 eligibility
+variations, 10 sponsorship-need variations, 12 look-alikes that must be left
+alone, 9 mobility phrasings, 11 option polarities and 7 two-option pairs — each
+pair checked in both orders, so DOM order can never decide it.
+
+Six mutations, six failures: restoring the old visa rule, reading "without
+sponsorship" as a negation again, bypassing the work-auth option matcher,
+dropping British spelling, removing the excluded-topic guard, and removing the
+negated-sponsorship case each fail the suite.
+
+Suite total: **698 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

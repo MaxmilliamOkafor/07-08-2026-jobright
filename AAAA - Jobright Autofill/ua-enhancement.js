@@ -705,9 +705,15 @@
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
     if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return DEFAULTS.years;
     if (/availab|start.?date|notice|when.*start/.test(l)) return DEFAULTS.availability;
-    if (/authoriz|eligible|work.*right|legal.*right/.test(l)) return DEFAULTS.authorized;
-    if (/sponsor|visa|immigration|work.?permit/.test(l)) return DEFAULTS.sponsorship;
-    if (/relocat|willing.*move/.test(l)) return DEFAULTS.relocation;
+    // Both directions from one decider — see workAuthorisationAnswer. The old
+    // pair ran /authoriz/ (which never matched the British "authorised") and then
+    // /sponsor|visa/, so every European eligibility question answered "No".
+    {
+      const wa = workAuthorisationAnswer(label || '');
+      if (wa === 'yes') return DEFAULTS.authorized;
+      if (wa === 'no') return DEFAULTS.sponsorship;
+    }
+    if (RELOCATION_RE.test(label || '')) return DEFAULTS.relocation;
     if (/remote|work.*home|hybrid|on.?site/.test(l)) return DEFAULTS.remote;
     if (/veteran|military|armed.?forces/.test(l)) return p.veteran || DEFAULTS.veteran;
     if (/disabilit/.test(l)) return p.disability || DEFAULTS.disability;
@@ -1018,11 +1024,97 @@
     return getLabel(el);
   }
 
+  /* ── WORK AUTHORISATION: the knockout that costs the most to get wrong ─────
+     A recruiter wrote back: "I see that you filled in you're not allowed to work
+     in Belgium. Is that correct? I see you're willing to move. We do not provide
+     Visa sponsorship." The application had answered NO to an eligibility
+     question, and that answer came from a single rule: any question mentioning
+     visa or sponsorship was answered No. That is right for
+
+         "Do you now or in the future REQUIRE visa sponsorship?"          → No
+
+     and catastrophically wrong for
+
+         "Are you allowed to work in Belgium WITHOUT visa sponsorship?"   → Yes
+
+     Both sentences contain the word "sponsorship". What separates them is what
+     the verb does to it, not whether the word is present:
+
+       ELIGIBILITY — allowed / authorised / entitled / eligible / permitted / do
+       you have the right to work — with or without a "…and will not require
+       sponsorship" clause → YES.
+
+       NEED — do you (now or in the future) require / need / seek / depend on
+       sponsorship, a visa, or a work permit → NO.
+
+       POSSESSION — do you hold a valid visa / work permit / right to work → YES.
+
+     Also fixed here: British spelling. /authoriz/ never matched "authorised",
+     and European ATS — most of what this queue applies to — spell it that way,
+     so those questions fell through to the sponsorship rule and came back No. */
+  const SPONSORSHIP_WORD_RE = /\b(sponsor\w*|visa|visas|work[\s-]?permit|working[\s-]?permit|immigration|h-?1b|tier[\s-]?2|skilled[\s-]?worker|green[\s-]?card|employment pass)\b/i;
+  /* Phrases that ON THEIR OWN mean this is a right-to-work question, whatever
+     else the sentence says. "Do you hold citizenship or permanent residency?"
+     and "Do you require a Tier 2 / Skilled Worker visa?" contain no form of the
+     word "work" at all. */
+  const AUTH_STRONG_RE = /\b(sponsor\w*|visa|visas|work[\s-]?permit|working[\s-]?permit|immigration|h-?1b|tier[\s-]?2|skilled[\s-]?worker|green[\s-]?card|employment pass|right to work|work(ing)? rights?|work authoris\w+|work authoriz\w+|settled status|pre-?settled|citizenship|permanent residen\w*|residency|residence permit)\b/i;
+  /* Weaker words — "allowed", "permitted", "legally" — that only mean right to
+     work when the sentence is about working somewhere. */
+  const ELIGIBILITY_WORD_RE = /\b(authoris\w+|authoriz\w+|eligib\w+|allowed|permitted|entitled|permission|lawful\w*|legally|legal right|able to work|can (you|i) work|freedom to work|unrestricted|proof of (your )?right)\b/i;
+  // The verbs that turn a sponsorship mention into a request for the employer's help.
+  const SPONSORSHIP_NEED_RE = /\b(requir\w*|need\w*|seek\w*|request\w*|obtain\w*|appl(y|ying) for|depend\w*|reliant|rely|assistance|support)\b/i;
+  // …unless it is negated: "without requiring sponsorship", "does not require
+  // sponsorship", "no sponsorship needed", "will not need a visa".
+  const SPONSORSHIP_NEGATED_RE = /\b(without|not|non|no|never|free from|independent of|don'?t|doesn'?t|do not|does not|won'?t|will not)\b[^.?!]{0,48}?\b(sponsor\w*|visa|work[\s-]?permit|requir\w*|need\w*)/i;
+  // "Do you HOLD a valid work permit / visa / right to work?"
+  const HOLDS_AUTHORISATION_RE = /\b(have|has|hold|holds|holding|possess\w*|in possession of)\b[^.?!]{0,40}\b(valid |current |existing |unrestricted )?(visa|work[\s-]?permit|right to work|permission|authoris\w+|authoriz\w+|citizenship|residency|residence permit|green[\s-]?card|settled status)\b/i;
+
+  /* 'yes' | 'no' | null. null means "this is not a work-authorisation question",
+     so the caller carries on with its other rules. */
+  function workAuthorisationAnswer(question) {
+    const q = String(question || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!q) return null;
+    const sponsorship = SPONSORSHIP_WORD_RE.test(q);
+    const strong = AUTH_STRONG_RE.test(q);
+    const eligibility = ELIGIBILITY_WORD_RE.test(q);
+    if (!strong && !eligibility) return null;
+    /* "legally", "permitted" and "allowed" turn up in questions that have nothing
+       to do with the right to work — "have you ever been legally convicted?" is
+       one, and answering that Yes would be far worse than the bug being fixed.
+       A weak word only counts when the sentence is about working somewhere; a
+       strong phrase ("visa", "right to work", "citizenship") needs no such help. */
+    if (!strong && !/\b(work|working|worked|employ\w*|job|jobs|role|position|hire[dsr]?|career|country|nationality)\b/.test(q)) return null;
+    // And never hijack a different knockout that happens to share the vocabulary.
+    if (/\b(criminal|convict\w*|felony|misdemean\w*|debarr\w*|excluded by|non.?compete|restrictive covenant|terminated|dismissed|discharged|disciplin\w*|pending charges|drug (test|screen)|background check)\b/.test(q)) return null;
+    // No sponsorship mentioned at all: a plain "are you allowed to work here?".
+    if (!sponsorship) return 'yes';
+    // Sponsorship IS mentioned — is it being ruled out, held, or asked for?
+    if (SPONSORSHIP_NEGATED_RE.test(q)) return 'yes';
+    if (HOLDS_AUTHORISATION_RE.test(q)) return 'yes';
+    if (SPONSORSHIP_NEED_RE.test(q)) return 'no';
+    if (eligibility) return 'yes';
+    return 'no';                                   // bare "Visa sponsorship?" → No
+  }
+
+  // Exposed for the tests; kept next to the decider so the two cannot drift.
+  function isWorkAuthorisationQuestion(q) {
+    return workAuthorisationAnswer(q) !== null;
+  }
+
+  /* Relocation / mobility is the other half of that email ("I see you're willing
+     to move") and is always Yes. The old list only knew four literal phrasings. */
+  const RELOCATION_RE = /\b(relocat\w*|willing to move|open to (moving|relocation|relocating)|prepared to (move|relocate)|happy to (move|relocate)|consider (moving|relocating)|able to move|move (to|for)|willing to travel|able to commute|commute to)\b/i;
+
   // Smart Yes/No determination based on question context
   function determineYesNo(questionText) {
     const q = questionText.toLowerCase();
     // EEO/Diversity — prefer "Prefer not to say/answer"
     if (/gender|sex\b|disability|veteran|military|ethnic|race|racial|heritage|hispanic|latino/.test(q)) return 'eeo';
+
+    // Work authorisation / sponsorship, decided by what the sentence actually
+    // asks rather than by whether it contains the word "visa".
+    const wa = workAuthorisationAnswer(q);
+    if (wa) return wa;
 
     // STRONG "No" intents. These MUST take precedence over the generic yes-trigger
     // words ("will you", "can you", "do you"…) below. Previously a question like
@@ -1048,12 +1140,15 @@
       return 'no';
     }
 
+    // Relocation / mobility, once the strong-No knockouts have had their say.
+    if (RELOCATION_RE.test(q)) return 'yes';
+
     // Softer "No" intents — only applied when NO yes-word is present.
     const softNo = [/accommodation.*require/, /\brestriction/, /do you have.*(disability|felony|conviction|criminal)/];
 
     // Questions that should be "Yes".
     const yesPatterns = [
-      /authorized|eligible|right.*work|legally|lawfully/, /proficien/, /experience.*have/,
+      ELIGIBILITY_WORD_RE, /proficien/, /experience.*have/,
       /comfortable/, /familiar/, /willing/, /\bable\b/, /available/, /can.*start/,
       /can.*commute/, /relocat/, /consent|agree|acknowledge|certify|confirm|attest/,
       /background.*check/, /drug.*test|screening/, /over.*18|18.*years|at.*least.*18/,
@@ -1191,7 +1286,7 @@
         decision = /hispanic|latino|latina|latinx/i.test(questionText) ? 'no' : 'decline';
       }
       if (decision) {
-        const idx = optionIndexForDecision(labels, decision);
+        const idx = optionIndexForDecision(labels, decision, questionText);
         if (idx >= 0 && radios[idx]) return commitChoice(radios[idx]);
       }
     }
@@ -1281,7 +1376,7 @@
         let decision = determineYesNo(groupText);
         if (decision === 'eeo') decision = /hispanic|latino|latina|latinx/i.test(groupText) ? 'no' : 'decline';
         if (decision) {
-          const bi = optionIndexForDecision(btnTexts, decision);
+          const bi = optionIndexForDecision(btnTexts, decision, groupText);
           if (bi >= 0 && btns[bi]) { realClick(btns[bi]); answered++; continue; }
         }
       }
@@ -1483,8 +1578,12 @@
   function chooseChoiceAnswer(q) {
     q = (q || '').toLowerCase();
     if (!q) return null;
-    if (/sponsor|visa|work\s?permit|immigration|h-?1b/.test(q)) return 'no';   // "require sponsorship?" → No
-    if (/authori[sz]ed|eligible to work|legally\s+(work|authorized|able)|right to work|currently.*authorized|are you.*authorized/.test(q)) return 'yes';
+    /* One decider for both directions. This used to be two rules in the wrong
+       order — ANY mention of visa/sponsorship answered No, so "are you allowed to
+       work in Belgium without visa sponsorship?" was answered No and the employer
+       read it as "not allowed to work in Belgium". */
+    const wa = workAuthorisationAnswer(q);
+    if (wa) return wa;
     if (/hispanic|latino|latina|latinx/.test(q)) return 'no';   // "Are you Hispanic/Latino?" → No
     if (/veteran/.test(q)) return 'decline';
     if (/disab/.test(q)) return 'decline';
@@ -1494,7 +1593,7 @@
     if (/agree|consent|terms|certif|acknowledge|read and understood/.test(q)) return 'yes';
     // Knockouts where anything but Yes ends the application: location/relocation
     // commitment, in-office/hybrid attendance, commute, start availability.
-    if (/live in.*relocat|plan to relocate|willing to relocate|relocate to/.test(q)) return 'yes';
+    if (RELOCATION_RE.test(q)) return 'yes';
     if (/in.?office|on.?site|onsite|hybrid|days per week|commute|report to.*office|work from the office/.test(q)) return 'yes';
     if (/able to start|available to start|start (date|immediately|within)/.test(q)) return 'yes';
     if (/background check|drug (test|screen)|reference check|pre.?employment screen/.test(q)) return 'yes';
@@ -1538,20 +1637,77 @@
   function optionPolarity(text) {
     const t = ' ' + (text || '').toLowerCase().replace(/[^a-z0-9'’\s]/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
     if (!t.trim()) return 0;
+    /* A leading Yes / No is the answer; the rest of the option is elaboration.
+       "Yes, I am authorized to work in the US without sponsorship" used to read
+       as NEGATIVE, because it contains "without" — and on a two-option question
+       that selected "No, I require sponsorship" instead. That is the answer the
+       recruiter saw as "you filled in you're not allowed to work in Belgium". */
+    if (/^ (no|nope|false|incorrect|i do not|i don'?t|i am not|i'?m not|i will not|i won'?t|i cannot|i can'?t|not)\b/.test(t)) return -1;
+    if (/^ (yes|yeah|yep|true|correct)\b/.test(t)) return 1;
+    /* An eligibility assertion whose only negative word is attached to
+       sponsorship is affirmative: "authorized to work without sponsorship",
+       "eligible to work, no visa required". A statement that negates the
+       ELIGIBILITY itself still reads negative. */
+    const assertsEligibility = /\b(authoriz\w+|authoris\w+|eligible|allowed|permitted|entitled|right to work|work rights?|work permit|citizen\w*|permanent resident\w*|lawfully)\b/.test(t);
+    const negativeIsOnSponsorship = /\b(without|no|not|never|don'?t|doesn'?t|won'?t)\b[^.]{0,26}?\b(sponsor\w*|visa|work permit|immigration)\b/.test(t);
+    const negatesEligibility = /\b(not|n['’]?t|never|cannot|cant|unable|ineligible)\b[^.]{0,20}?\b(authoriz\w+|authoris\w+|eligible|allowed|permitted|entitled)\b/.test(t);
+    if (assertsEligibility && negativeIsOnSponsorship && !negatesEligibility) return 1;
     // An explicit negator makes the statement negative regardless of where it sits —
     // "I am NOT authorized" / "Does NOT require" must read as -1 even though "i am" /
     // "require" appear. Negation dominates; affirmative only counts when none is present.
     const NEG = /\b(no|not|n['’]?t|dont|doesnt|does not|do not|will not|wont|cannot|cant|never|without|none|neither|unable|unwilling)\b/;
-    const AFF = /\b(yes|requires?|needs?|need|authorized|authorised|eligible|agree|accept|consent|confirm|i do|i am|i will|i have|currently)\b/;
+    const AFF = /\b(yes|requires?|needs?|need|authorized|authorised|eligible|allowed|permitted|entitled|agree|accept|consent|confirm|i do|i am|i will|i have|i hold|holds?|possess\w*|currently)\b/;
     if (NEG.test(t)) return -1;
     if (AFF.test(t)) return 1;
     return 0;
   }
   // Return the index of the option (from an array of label texts) that best satisfies the
   // decision, or -1 if nothing fits confidently.
-  function optionIndexForDecision(texts, decision) {
+  /* Choosing the option for a work-authorisation question is not a generic
+     polarity problem, and treating it as one is what produced the answer the
+     recruiter read as "not allowed to work in Belgium".
+
+     "I require visa sponsorship" is grammatically AFFIRMATIVE. "Does not require
+     sponsorship" is grammatically NEGATIVE. Yet for an eligibility question the
+     first is the wrong answer, and for a sponsorship question the second is the
+     right one — the grammar points the opposite way to the meaning in both.
+
+     There is only ever one stance to express here: I can work in this country and
+     I do not need the employer to sponsor me. Whether the question asks it
+     positively ("are you allowed to work here?") or negatively ("do you require
+     sponsorship?"), that stance is the answer — so score each option for how well
+     it SAYS that, and take the best. No decision needs to be threaded through. */
+  function workAuthOptionIndex(texts) {
+    if (!texts || !texts.length) return -1;
+    const score = (raw) => {
+      const t = ' ' + String(raw || '').toLowerCase().replace(/[^a-z0-9'’\s]/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+      if (!t.trim()) return 0;
+      const negatedSponsor = /\b(without|no|not|never|don'?t|doesn'?t|won'?t|will not|do not|does not)\b[^.]{0,26}?\b(sponsor\w*|visa|work permit|immigration)\b/.test(t);
+      const needsSponsor = /\b(requir\w*|need\w*|seek\w*|depend\w*|reliant|rely)\b[^.]{0,26}?\b(sponsor\w*|visa|work permit|immigration)\b/.test(t) ||
+        /\b(sponsor\w*|visa|work permit)\b[^.]{0,20}?\b(requir\w*|need\w*)\b/.test(t);
+      const asserts = /\b(authoriz\w+|authoris\w+|eligible|allowed|permitted|entitled|right to work|work rights?|work permit|citizen\w*|permanent resident\w*|lawfully|hold\w*|have|possess\w*)\b/.test(t);
+      const negatesEligibility = /\b(not|n'?t|never|cannot|unable|ineligible)\b[^.]{0,18}?\b(authoriz\w+|authoris\w+|eligible|allowed|permitted|entitled)\b/.test(t);
+      let sc = 0;                                  // > 0 = "I can work here"
+      if (/^ (yes|yeah|yep|true|correct)\b/.test(t)) sc += 6;
+      if (/^ (no|nope|false|incorrect|not)\b/.test(t)) sc -= 6;
+      if (negatedSponsor) sc += 4; else if (needsSponsor) sc -= 4;
+      if (asserts) sc += 2;
+      if (negatesEligibility) sc -= 8;
+      return sc;
+    };
+    let best = -1, bestScore = 0;
+    texts.forEach((t, i) => { const v = score(t); if (v > bestScore) { bestScore = v; best = i; } });
+    return best;
+  }
+
+  function optionIndexForDecision(texts, decision, question) {
     if (!texts || !texts.length || !decision) return -1;
     const norm = texts.map(t => (t || '').trim().toLowerCase());
+    // Work authorisation / sponsorship gets its own matcher — see above.
+    if (question && workAuthorisationAnswer(question)) {
+      const wi = workAuthOptionIndex(norm);
+      if (wi >= 0) return wi;
+    }
     if (decision === 'decline' || decision === 'eeo') {
       const di = norm.findIndex(isDeclineOption);
       if (di >= 0) return di;
@@ -1593,7 +1749,7 @@
       let decision = determineYesNo(q);
       if (decision === 'eeo') decision = /hispanic|latino|latina|latinx/i.test(q) ? 'no' : 'decline';
       if (decision) {
-        const idx = optionIndexForDecision(texts, decision);
+        const idx = optionIndexForDecision(texts, decision, q);
         if (idx >= 0) return opts[idx];
       }
     }
@@ -1608,10 +1764,10 @@
     return null;
   }
 
-  async function pickChoice(radios, want) {
+  async function pickChoice(radios, want, question) {
     // First: semantic mapping onto the real option wording.
     const labels = radios.map(choiceLabel);
-    const idx = optionIndexForDecision(labels, want);
+    const idx = optionIndexForDecision(labels, want, question);
     let target = idx >= 0 ? radios[idx] : null;
     if (!target) {
       // Legacy literal fallback.
@@ -1683,7 +1839,7 @@
       const want = chooseChoiceAnswer(q);
       if (!want) continue;
       _choiceAnsweredAt.set(nq, Date.now());
-      if (await pickChoice(radios, want)) { n++; await sleep(120); }
+      if (await pickChoice(radios, want, q)) { n++; await sleep(120); }
     }
     if (n) LOG(`Workaround: answered ${n} choice group(s) Jobright left blank (sponsorship/auth/EEO)`);
     return n;
@@ -5370,7 +5526,7 @@
         const texts = opts.map(o => (o.textContent || '').trim());
         let decision = determineYesNo(lbl || '');
         if (decision === 'eeo') decision = /hispanic|latino/i.test(lbl || '') ? 'no' : 'decline';
-        let idx = decision ? optionIndexForDecision(texts, decision) : -1;
+        let idx = decision ? optionIndexForDecision(texts, decision, lbl || '') : -1;
         // Non-binary dropdown → try a value/keyword match instead of forcing yes/no.
         if (idx < 0) {
           const val = guessFieldValue(lbl, p, ctrl);

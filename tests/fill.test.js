@@ -644,5 +644,198 @@ eq('and so does the required-field sweep',
 eq('checkbox questions are answered in every dependent-question round',
   /await answerCheckboxGroups\(\)/.test(body('resolveDependentQuestions')), true);
 
+/* ── 23. work authorisation — the knockout that costs a real application ───── */
+/* A recruiter wrote back: "I see that you filled in you're not allowed to work
+   in Belgium. Is that correct? I see you're willing to move. We do not provide
+   Visa sponsorship." The form had answered NO to an eligibility question,
+   because ONE rule answered No to any question containing "visa" or "sponsor".
+
+   These run the real decider — pulled out of the shipped file — against the
+   phrasings the supported ATS actually ship, in both spellings. */
+console.log('work authorisation is decided by what the question asks');
+const waStart = src.indexOf('  const SPONSORSHIP_WORD_RE =');
+const waEnd = src.indexOf('\n  // Smart Yes/No determination based on question context');
+if (waStart < 0 || waEnd < 0) throw new Error('work-authorisation block not found');
+const waCtx = {};
+new Function('exports', `
+${src.slice(waStart, waEnd)}
+  Object.assign(exports, { workAuthorisationAnswer, RELOCATION_RE });
+`)(waCtx);
+const wa = waCtx.workAuthorisationAnswer;
+
+// ELIGIBILITY — "can you work here?" — always Yes.
+for (const q of [
+  'Are you allowed to work in Belgium?',
+  'Are you legally allowed to work in Belgium?',
+  'Are you legally authorised to work in the country in which you are applying for a role?',
+  'Are you legally authorized to work in the United States?',
+  'Are you eligible to work in the EU?',
+  'Do you have the right to work in the UK?',
+  'Do you have permission to work in Ireland?',
+  'Are you entitled to work in the Netherlands?',
+  'Are you permitted to work in Germany?',
+  'Can you work in Canada without restriction?',
+  'Do you have unrestricted work rights in Australia?',
+  'Are you lawfully able to work in this country?',
+  'Can you provide proof of your right to work?',
+  'Do you have settled status in the UK?',
+  // …and the same question with sponsorship named only to RULE IT OUT:
+  'Are you legally authorised to work in Belgium without visa sponsorship?',
+  'Are you authorized to work in the US for any employer without sponsorship?',
+  'Are you legally authorized to work in the country of hire and will not require sponsorship now or in the future?',
+  'Do you have the right to work in the UK that does not require sponsorship?',
+  'Are you eligible to work in Ireland with no sponsorship needed?',
+  // POSSESSION — holding the document is the same as being allowed.
+  'Do you hold a valid work permit for Belgium?',
+  'Do you have a current visa allowing you to work in Singapore?',
+  'Do you hold citizenship or permanent residency in the country of employment?',
+]) eq(`eligible → Yes: "${q.slice(0, 58)}${q.length > 58 ? '…' : ''}"`, wa(q), 'yes');
+
+// NEED — "do you need us to sponsor you?" — always No.
+for (const q of [
+  'Do you now or in the future require visa sponsorship?',
+  'Will you now or in the future require sponsorship for employment visa status (e.g. F-1 STEM OPT, H-1B, TN, E-3, O-1)?',
+  'Do you require sponsorship to work in the United Kingdom?',
+  'Would you need visa sponsorship for this role?',
+  'Do you need a work permit to work in Belgium?',
+  'Are you dependent on visa sponsorship to maintain employment?',
+  'Do you require a Tier 2 / Skilled Worker visa?',
+  'Will you require immigration support to work in this position?',
+  'Do you seek sponsorship for employment authorization?',
+  'Visa sponsorship required for this job?',
+]) eq(`needs sponsorship → No: "${q.slice(0, 58)}${q.length > 58 ? '…' : ''}"`, wa(q), 'no');
+
+/* The decider must not claim questions that merely use its vocabulary. Answering
+   "have you ever been legally convicted?" Yes would be worse than the bug. */
+for (const q of [
+  'Have you ever been legally convicted of a felony?',
+  // The dangerous ones: they carry BOTH the work context and the vocabulary, so
+  // only the excluded-topic guard keeps the decider off them. Answering these
+  // "Yes" would be far worse than the bug that prompted the decider.
+  'Have you ever been convicted of a crime that would prevent you from being legally permitted to work in this role?',
+  'Have you ever been terminated from a job you were legally authorised to hold?',
+  'Are you subject to any restrictive covenant that limits where you are permitted to work?',
+  'Will you consent to a background check before you are permitted to start work?',
+  'Have you ever been debarred or excluded by the U.S. FDA or the OIG?',
+  'Are you subject to a non-compete or restrictive covenant?',
+  'Have you ever been terminated or dismissed from a position?',
+  'Are you willing to complete a background check?',
+  'Are you legally permitted to disclose your notice period?',   // no work/employment context
+  'What is your preferred pronoun?',
+  'How many years of experience do you have?',
+]) eq(`not a work-authorisation question: "${q.slice(0, 52)}…"`, wa(q), null);
+
+// Relocation / mobility — the other half of that email.
+for (const q of [
+  'Are you willing to relocate?',
+  'Are you willing to move to Belgium?',
+  'Would you consider relocating for a role with ServiceNow?',
+  'If you selected Yes, would you consider relocating at your own expense?',
+  'Are you open to relocation?',
+  'Are you prepared to move for this position?',
+  'Are you happy to relocate to the San Francisco Bay Area?',
+  'Are you able to commute to the office three days a week?',
+  'Are you willing to travel up to 25%?',
+]) eq(`mobility → Yes: "${q.slice(0, 52)}${q.length > 52 ? '…' : ''}"`, waCtx.RELOCATION_RE.test(q.toLowerCase()), true);
+
+// The exact regression, both spellings, end to end through the choice answerer.
+const cca = body('chooseChoiceAnswer');
+eq('the choice answerer uses the one decider, not a bare visa/sponsor rule',
+  /const wa = workAuthorisationAnswer\(q\);/.test(cca), true);
+eq('the old "any mention of visa → No" rule is gone',
+  /if \(\/sponsor\|visa\|work\\s\?permit\|immigration\|h-\?1b\/\.test\(q\)\) return 'no';/.test(src), false);
+eq('British spelling is recognised', wa('Are you authorised to work in Belgium?'), 'yes');
+eq('American spelling still is', wa('Are you authorized to work in Belgium?'), 'yes');
+eq('the guessers share the decider too',
+  /const wa = workAuthorisationAnswer\(label \|\| ''\);/.test(body('guessValue')), true);
+eq('and so does the yes/no analyser',
+  /const wa = workAuthorisationAnswer\(q\);/.test(body('determineYesNo')), true);
+eq('relocation is decided after the strong-No knockouts, not before',
+  body('determineYesNo').indexOf('RELOCATION_RE.test(q)') > body('determineYesNo').indexOf('strongNo.some'), true);
+
+/* ── 24. the decision must land on the right OPTION ───────────────────────── */
+/* Deciding "yes" is only half of it. Most ATS word their options rather than
+   offering literal Yes/No, and the grammar points the opposite way to the
+   meaning in both directions:
+
+     "I require visa sponsorship"     — grammatically affirmative, wrong answer
+     "Does not require sponsorship"   — grammatically negative,   right answer
+
+   "Yes, I am authorized to work in the US without sponsorship" was read as
+   NEGATIVE because it contains "without", so on a two-option question the
+   answerer selected "No, I require sponsorship". That is what the Predikt
+   recruiter read as "you filled in you're not allowed to work in Belgium". */
+console.log('a work-authorisation answer lands on the right option');
+const optCtx = {};
+new Function('exports', `
+${src.slice(src.indexOf('  const SPONSORSHIP_WORD_RE ='), src.indexOf('\n  // Smart Yes/No determination based on question context'))}
+${body('isDeclineOption')}
+${body('optionPolarity')}
+${body('workAuthOptionIndex')}
+${body('optionIndexForDecision')}
+  Object.assign(exports, { optionPolarity, optionIndexForDecision, workAuthOptionIndex });
+`)(optCtx);
+
+for (const [text, want] of [
+  ['Yes, I am authorized to work in the US without sponsorship', 1],
+  ['Yes', 1],
+  ['I am authorized to work without sponsorship', 1],
+  ['I am legally authorised to work in Belgium and do not require a visa', 1],
+  ['Eligible to work, no visa required', 1],
+  ['I hold a valid work permit', 1],
+  ['No, I require sponsorship', -1],
+  ['No', -1],
+  ['I am not authorized to work in this country', -1],
+  ['Not authorized', -1],
+  ['Does not require sponsorship', -1],
+]) eq(`option polarity: "${text.slice(0, 50)}${text.length > 50 ? '…' : ''}" → ${want}`,
+  optCtx.optionPolarity(text), want);
+
+/* The dedicated matcher needs no decision threaded through it: there is only one
+   stance to express — I can work here and do not need sponsoring — however the
+   question is phrased. */
+const stance = (opts) => { const i = optCtx.workAuthOptionIndex(opts.map(o => o.toLowerCase())); return i >= 0 ? opts[i] : null; };
+const PAIRS = [
+  ['Yes, I am authorized to work in the US without sponsorship', 'No, I require sponsorship'],
+  ['I am legally authorised to work in Belgium', 'I require visa sponsorship to work in Belgium'],
+  ['Yes', 'No'],
+  ['I have the right to work in the UK without sponsorship', 'I will need sponsorship'],
+  ['Does not require sponsorship', 'Requires sponsorship'],
+  ['I am authorized to work in this country', 'I am not authorized to work in this country'],
+  ['I hold citizenship or permanent residency', 'I would need a Tier 2 / Skilled Worker visa'],
+];
+for (const pair of PAIRS) {
+  const label = pair[0].slice(0, 42) + (pair[0].length > 42 ? '…' : '');
+  eq(`picks "${label}"`, stance(pair), pair[0]);
+  eq(`  …whichever order the options are listed in`, stance([...pair].reverse()), pair[0]);
+}
+
+// End to end: the question decides the family, the family picks the option.
+const pick = (opts, q) => {
+  const decision = optCtx.workAuthorisationAnswer ? null : null;
+  const i = optCtx.optionIndexForDecision(opts.map(o => o.toLowerCase()), 'yes', q);
+  return i >= 0 ? opts[i] : null;
+};
+eq('an eligibility question picks the eligible option',
+  pick(['No, I require sponsorship', 'Yes, I am authorized to work in the US without sponsorship'],
+    'Are you legally authorised to work in Belgium?'),
+  'Yes, I am authorized to work in the US without sponsorship');
+eq('a sponsorship question picks the does-not-require option even on a "yes" decision',
+  pick(['Requires sponsorship', 'Does not require sponsorship'],
+    'Will you now or in the future require visa sponsorship?'),
+  'Does not require sponsorship');
+eq('a question outside the family is untouched by the work-auth matcher',
+  optCtx.optionIndexForDecision(['yes', 'no'], 'decline', 'What is your gender?') , -1);
+eq('EEO still declines',
+  (() => { const i = optCtx.optionIndexForDecision(['male', 'female', 'i prefer not to say'], 'decline', 'What is your gender?'); return i; })(), 2);
+
+// Every caller passes the question through, or the family is never recognised.
+eq('the knockout radio answerer passes the question',
+  /optionIndexForDecision\(labels, decision, questionText\)/.test(src), true);
+eq('the button-style answerer does', /optionIndexForDecision\(btnTexts, decision, groupText\)/.test(src), true);
+eq('the native select answerer does', /optionIndexForDecision\(texts, decision, q\)/.test(src), true);
+eq('the custom dropdown answerer does', /optionIndexForDecision\(texts, decision, lbl \|\| ''\)/.test(src), true);
+eq('and pickChoice does', /optionIndexForDecision\(labels, want, question\)/.test(src), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
