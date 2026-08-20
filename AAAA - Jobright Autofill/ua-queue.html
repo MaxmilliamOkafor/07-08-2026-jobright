@@ -60,6 +60,7 @@
   .rowbtn:hover{color:#34d399}
   .rowbtn.del:hover{color:#f87171}
   .url{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+  .stage-txt{color:#a78bfa;font-size:10px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .err-txt{color:#f87171;font-size:10px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #empty{padding:44px 20px;text-align:center;color:#64748b;font-size:12.5px}
   .hidden{display:none!important}
@@ -109,7 +110,10 @@
   <div class="bar">
     <label class="opt" title="Never apply twice to the same job, even across separate CSV imports"><input type="checkbox" id="optSkip" checked> Skip already applied</label>
     <label class="opt" title="Use Jobright's resume generator on every job (slower, can stall)"><input type="checkbox" id="optTailor"> Tailor resume</label>
-    <label class="opt" title="Give up on a job after this many minutes and move on">Timeout <input type="number" id="optTimeout" min="1" max="30" step="1" value="6" style="width:52px"> min</label>
+    <label class="opt" title="How many jobs to apply to at the same time, each in its own background tab. A 1000-job CSV at 1 job at a time takes as long as 1000 applications; at 6 it takes a sixth of that. Raise it until your machine or the sites start complaining.">Parallel jobs <input type="number" id="optConc" min="1" max="8" step="1" value="3" style="width:48px"></label>
+    <label class="opt" title="Give up on a job after this many minutes and move on">Timeout <input type="number" id="optTimeout" min="1" max="30" step="1" value="3" style="width:52px"> min</label>
+    <label class="opt" title="If a job makes no progress for this long, skip it and start the next one. The countdown is PAUSED while it is actively filling, uploading, submitting or verifying — it only runs when nothing is happening.">Skip if stuck <input type="number" id="optStall" min="5" max="600" step="5" value="15" style="width:56px"> s</label>
+    <label class="opt" title="How long a job blocked by a CAPTCHA keeps its tab open waiting for you. It does NOT hold a slot — the rest of the queue keeps running at full speed meanwhile.">Wait for me <input type="number" id="optHuman" min="0.5" max="30" step="0.5" value="1" style="width:52px"> min</label>
   </div>
 
   <div class="bar">

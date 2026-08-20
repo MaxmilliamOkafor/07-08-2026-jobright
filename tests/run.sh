@@ -79,6 +79,7 @@ node tests/submit.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
 
 step "ATS detection + dialog policy"
 node tests/ats.test.js "$EXT/ua-enhancement.js" "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
+node tests/beforeunload.test.js "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
 
 step "CSV + URL parsing (content script)"
 node tests/csv-parsers.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))

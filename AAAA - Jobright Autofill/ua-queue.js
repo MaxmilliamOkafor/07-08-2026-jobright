@@ -333,6 +333,14 @@
       a.title = j.url;
       if (isSafeUrl(j.url)) { a.href = j.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
       tdJ.appendChild(a);
+      if (j.status === 'applying' && j.stage) {
+        const st = document.createElement('span');
+        st.className = 'stage-txt';
+        const idle = j.beatAt ? Math.round((Date.now() - j.beatAt) / 1000) : null;
+        st.textContent = (j.pct != null ? j.pct + '% · ' : '') + j.stage + (idle != null && idle > 20 ? ` · idle ${idle}s` : '');
+        st.title = 'What this job is currently doing';
+        tdJ.appendChild(st);
+      }
       if (j.error) {
         const e = document.createElement('span');
         e.className = 'err-txt';
@@ -400,9 +408,14 @@
       [K.SETTINGS]: {
         skipApplied: $('optSkip').checked,
         tailor: $('optTailor').checked,
-        jobTimeoutMs: Math.max(1, Math.min(30, parseInt($('optTimeout').value, 10) || 6)) * 60000,
+        jobTimeoutMs: Math.max(1, Math.min(30, parseInt($('optTimeout').value, 10) || 3)) * 60000,
+        stallMs: Math.max(5, Math.min(600, parseInt($('optStall').value, 10) || 15)) * 1000,
+        humanGraceMs: Math.max(0.5, Math.min(30, parseFloat($('optHuman').value) || 1)) * 60000,
       },
       // The content script reads these two directly for the in-page runner too.
+      // Parallel tabs. The orchestrator reads this key directly when it refills
+      // slots, so a change takes effect on the very next job — no restart.
+      ua_mgr_concurrency: Math.max(1, Math.min(8, parseInt($('optConc').value, 10) || 3)),
       ua_skip_applied: $('optSkip').checked,
       ua_queue_tailor: $('optTailor').checked,
     });
@@ -489,7 +502,7 @@
     render();
   });
   $('conc').addEventListener('change', (e) => set({ [K.CONC]: parseInt(e.target.value, 10) || 3 }));
-  for (const id of ['optSkip', 'optTailor', 'optTimeout']) $(id).addEventListener('change', saveSettings);
+  for (const id of ['optSkip', 'optTailor', 'optConc', 'optTimeout', 'optStall', 'optHuman']) $(id).addEventListener('change', saveSettings);
 
   $('tbody').addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
@@ -556,8 +569,11 @@
     }
     const s = (await get(K.SETTINGS)) || {};
     $('optSkip').checked = s.skipApplied !== false;
+    if (typeof s.concurrency === 'number') $('optConc').value = String(s.concurrency);
     $('optTailor').checked = s.tailor === true;
-    $('optTimeout').value = String(Math.round((s.jobTimeoutMs || 360000) / 60000));
+    $('optTimeout').value = String(Math.round((s.jobTimeoutMs || 180000) / 60000));
+    $('optStall').value = String(Math.round((s.stallMs || 15000) / 1000));
+    $('optHuman').value = String((s.humanGraceMs || 60000) / 60000);
 
     const state = await cmd('state');
     setRunning(state.active === true, state.paused === true);

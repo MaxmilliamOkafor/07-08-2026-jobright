@@ -473,6 +473,926 @@ CAPTCHA-solving service or token injection exists in the source. Suite total:
 
 ---
 
+## v14.6 — a stuck job costs seconds, not minutes
+
+Every timeout in the run used to be **wall-clock**: a job that made zero progress
+looked exactly like one working hard, and sat out the full per-job cap (6 min by
+default) before the queue moved on. One dead page could cost more time than a
+dozen good applications.
+
+Nothing measured whether anything was actually *happening*. Now three things do:
+
+**1. Progress, not elapsed time.** The content script records real activity —
+fields filled, a dropdown answered, Apply clicked, a submit pressed, the page
+itself changing. If nothing happens for **75 seconds** (configurable), the job is
+abandoned and the next one starts immediately. A spinner that never resolves, a
+redirect loop, or a form that refuses every value now costs ~75s instead of six
+minutes.
+
+**2. A heartbeat, so a dead tab is obvious.** Job tabs report every 10s. If a tab
+goes silent — it crashed, or navigated somewhere the content script isn't injected
+— the queue reclaims the slot after 75s instead of waiting out the full cap. That
+state used to be indistinguishable from "busy".
+
+**3. A CAPTCHA is a wait, not a stall.** It's explicitly exempt from both, so the
+run doesn't skip a job out from under you while you're solving it — bounded at 15
+minutes, then it moves on.
+
+### You can see it happening
+
+Each running row now shows what the job is actually doing, live:
+
+```
+Senior Engineer — Acme        92% · filled 11 field(s) · idle 34s
+```
+
+and when a job is dropped, the reason is specific:
+
+- `Stalled — no progress for 78s (last activity: clicked Apply)`
+- `Stopped responding after 42s (last: filling fields)`
+- `hCaptcha was not solved within 15 min`
+
+All are `timeout`/`failed` status, so **Retry failed** re-queues them.
+
+### Setting
+
+**Skip if stuck `[75]` s** in the panel, next to the per-job timeout. Lower it for
+a faster run that gives up sooner; raise it for slow ATS on a slow connection.
+
+### Verified
+
+`tests/orchestrator.test.js` grew to 43 assertions, driving the real engine
+through: a healthy heartbeat recording stage and completeness, a beating job being
+left alone, a silent job being dropped with the slot reused immediately, a CAPTCHA
+holding its slot against the watchdog, clearing it resuming, and an unsolved one
+finally yielding. Mutation-checked — removing the heartbeat reclamation fails 3
+assertions, removing the CAPTCHA grace fails 1. Suite total: **311 assertions**.
+
+---
+
+## v14.7 — timings that make sense, and the CV actually gets attached
+
+### The waits were far too long
+
+Fair criticism. A bulk run should not sit on a single job for minutes. Every
+threshold is now short, and — more importantly — **waiting no longer costs
+throughput**.
+
+| | originally | now |
+| --- | --- | --- |
+| No progress → skip the job | 75s | **15s** (`Skip if stuck`, 5–600s) |
+| Tab silent → reclaim the slot | 75s (7 missed beats) | **15s** (3 missed beats) |
+| CAPTCHA waits for you | **15 min, holding a slot** | **1 min, holding nothing** (`Wait for me`, 0.5–30 min) |
+| Hard cap per job | 6 min | **3 min** (`Timeout`, 1–30 min) |
+
+A 15-second window only means "stuck" if two other things change with it, and both
+did:
+
+- **The heartbeat runs every 5s** (was 10s). At the old interval, 15s of silence
+  was 1.5 beats — a single delayed one would have killed a healthy job.
+- **Progress is credited as it happens, not at the end of a pass.** `fallbackFill`
+  paces itself ~200ms per field and only reported progress once the whole pass
+  finished; on a long form that pass alone exceeds 15s, so the watchdog would have
+  skipped a job that was filling perfectly. Each field now counts, as do waiting
+  for a slow page, a navigation, and a CV upload in flight.
+
+With those in place, 15s genuinely means nothing is happening — the fill loop,
+the page, and the upload all keep the clock alive while they work.
+
+The 15-minute CAPTCHA wait was the worst of it, and the real problem wasn't only
+the number: the waiting job **kept its concurrency slot**, so a run at 3 tabs
+quietly dropped to 2 for the duration. Now a job blocked on a CAPTCHA stops
+counting against concurrency the instant it reports in, the next job starts
+immediately, and its tab stays open so you can still solve it. At most 3 such tabs
+park at once. The default wait is **1 minute** — long enough to catch it if you're
+at the keyboard, short enough that an unattended run barely notices.
+
+One clarification on an earlier log example: `Stopped responding after 42s` was
+badly worded — 42s was how long the job had been *alive*, not the threshold. It
+now reports the thing the decision was actually made on:
+
+```
+Tab went silent for 41s — dropped (was: filling fields)
+```
+
+### CV attachment
+
+Attaching the CV was **Workday-only**. Every other ATS relied on Jobright having
+done it, and when it hadn't, the form failed validation with "Resume is required"
+and the job died with no explanation.
+
+The résumé is already stored locally as base64, so `attachResume()` now works on
+any platform: it finds the file input across shadow DOM and frames, builds a real
+`File` via `DataTransfer`, and also fires a `drop` event for dropzone-only widgets.
+
+Three specific SmartRecruiters problems, all fixed:
+
+1. **Advancing mid-upload.** Pressing Next while the upload was in flight made
+   SmartRecruiters report no résumé — or silently drop the one being uploaded. No
+   step advances, and no ATS submits, through an upload in flight.
+2. **Re-attaching over a good file.** The attacher checks for an existing
+   attachment first and leaves it alone, so it can never reach the remove control
+   that opened the `Remove "…_CV"?` confirm.
+3. **CV attached too late.** SmartRecruiters parses the CV to pre-fill the form, so
+   it is now attached *before* the field sweep — fewer fields left to guess at.
+
+If no résumé is saved in the extension, that is now said plainly in the log
+instead of surfacing as a mysterious validation failure.
+
+### Verified
+
+Suite total: **336 assertions**, all green, including a new CAPTCHA-slot test
+proving the next job starts immediately while a blocked tab stays parked.
+
+---
+
+## v14.8 — the `Remove "…_CV"?` freeze, fixed for good, on every ATS
+
+The earlier fix had a hole, and it's the one that bit: the dialog hook only armed
+itself **while a queue job was running**. On a manual apply — or in the gap after a
+Fully-Automated pass hands its flag back — a script-driven
+`Remove "Maxmilliam_Okafor_CV"?` still froze the page with nothing able to answer
+it. A native `confirm()` blocks the JavaScript thread outright, which is why the
+page becomes unclickable and the only way out is to start over.
+
+Three layers now, none of them ATS-specific:
+
+**1. A script-driven destructive confirm is always declined.** The hook tracks
+whether a *trusted* gesture just happened. If a `Remove …?` / `Delete …?` confirm
+arrives with no real click behind it, it was raised by script — it is answered
+**no** (which keeps your CV) and the page never freezes. This works whether or not
+automation is running, and whether the click came from our code or Jobright's own
+bundle.
+
+If **you** press Remove, the real dialog still appears and behaves normally — the
+gesture window is 1.2s, so your own clicks are never swallowed.
+
+**2. The remove control is unreachable across shadow boundaries.** `closest()`
+stops dead at a shadow root, so on SmartRecruiters — where the upload widget is all
+`spl-*` web components — the guard couldn't see the attachment container and let
+the click through. It now walks out through the shadow host chain, reads the icon
+inside the button's own shadow root, and treats `spl-*` / `oj-*` elements as
+clickable controls.
+
+**3. Both click paths are guarded.** `triggerMouse()` — the pointer-event path web
+components require, since they ignore `.click()` — bypassed the guard entirely.
+It's now checked the same as `realClick()`.
+
+### Why this covers every ATS
+
+| | scope |
+| --- | --- |
+| Dialog hook | `<all_urls>`, all frames, MAIN world, `document_start` |
+| Destructive wording | generic verbs, matched anywhere in the message |
+| Attachment containers | `spl-*` (SmartRecruiters), `oj-file-picker` (Oracle), plus generic `attachment` / `uploaded` / `file-item` / `dropzone` / `upload` / `resume` class patterns |
+| Click paths | `realClick` and `triggerMouse`, both guarded |
+
+Nothing in it keys off a hostname.
+
+**If a tab is already frozen**, reload it — the hook installs at `document_start`,
+so from the next load onward the dialog cannot block you again.
+
+---
+
+## v14.9 — refreshing a page no longer stops the automation
+
+Reloading a job tab killed the job. The dead-tab check treats silence as death,
+and a page that is **loading has no content script at all**, so it cannot send a
+heartbeat — a manual refresh, a redirect, or just a slow ATS page looked exactly
+like a crashed tab. With the window tightened to 15s this became easy to hit: the
+job was marked `timeout` and its tab closed out from under you.
+
+Now a navigation restarts the liveness clock instead of ending the job:
+
+- **`status: 'loading'` marks the job as navigating** and gives it a 45-second
+  window to come back. A reload, a redirect and the next page of a multi-step form
+  are all the same thing to this check.
+- **Asking "which job am I?" counts as proof of life.** A freshly reloaded page
+  does that before it can send its first heartbeat, so the gap closes immediately.
+- **The first heartbeat is sent on pick-up**, not one interval later.
+- **Re-assignment after the reload** refreshes the clock too.
+
+A tab that goes silent **without** navigating is still dropped in 15s — that's a
+genuine crash, and the distinction is what the test suite pins down.
+
+### What survives a refresh
+
+| | survives | how |
+| --- | --- | --- |
+| CSV queue job | ✓ | the worker owns the state; the reloaded page asks for its job by tab id and is handed it straight back |
+| In-page runner (Start Applying) | ✓ | `window.name` carries the runner tag across the navigation, and the run flag is in storage |
+| Fully Automated toggle | ✓ | read from storage on every page load |
+| Queue Manager panel itself | ✓ | already only a view — the run is in the service worker |
+| Submit evidence | ✓ | `ua_submit_mark` persists, so a submission mid-reload is still confirmable |
+
+### Verified
+
+Mutation-checked: removing the navigation grace fails 5 assertions, including
+"a reloading tab is not mistaken for a dead one" and "a tab that is silent
+WITHOUT navigating is still dropped". Suite total: **374 assertions**.
+
+---
+
+## v15.0 — a run can no longer stall silently
+
+Reported: the automation "disappeared" after 3 skips and 3 applications, with a
+Zoho Recruit job third in the queue.
+
+I could not reproduce it without a browser, but reading the engine found a path
+that produces exactly that shape — an active run with jobs left and nothing
+running, permanently, with nothing in the log:
+
+`withQueue()` swallows an error from its callback and returns `undefined`.
+`fillSlots` then does `for (const job of toOpen)` on `undefined`, which throws a
+`TypeError`, which the outer handler catches — so **no tabs are opened and
+`maybeFinish` is never reached**. The next watchdog tick repeats the same crash a
+minute later. The run stays `active`, the queue keeps its pending jobs, and
+nothing ever happens again.
+
+Three fixes:
+
+1. **`toOpen` is guarded** — `(await withQueue(...)) || []` — so a failed queue
+   mutation can no longer crash the slot filler.
+2. **A stall supervisor** runs on every watchdog tick: if the run is active, jobs
+   are pending, and nothing is actually running, it says so in the log and
+   restarts the slot fill. It also clears a `_filling` guard left set by a crashed
+   pass, which would otherwise block every future attempt.
+3. **`finish()` refuses to end a run that still has pending jobs**, restarting the
+   queue instead. (Belt-and-braces: `maybeFinish` already checks this, so this
+   guard is an invariant rather than a live code path — the mutation test
+   confirms it isn't currently reachable.)
+
+Every end-of-run is now announced with a breakdown, so a run that stops is never
+just absent:
+
+```
+Queue complete — 3 applied, 0 failed, 3 skipped (12 in the list)
+Queue stalled with 6 jobs left and nothing running — restarting
+```
+
+### Verified
+
+Mutation-checked: removing the stall supervisor fails 7 assertions, including
+"the supervisor restarts a stalled run" and "it said so rather than vanishing".
+Suite total: **382 assertions**.
+
+### If it happens again
+
+The queue log now records what the engine believed. Open the Queue Manager and
+send me the last lines — that will say whether the run finished legitimately, hit
+the supervisor, or died somewhere still unaccounted for.
+
+---
+
+## v15.1 — the step on screen, follow-up questions, and declaration boxes
+
+Three separate reports, one build. All three were platform-independent even
+though each was hit on one site, so all three are fixed for every ATS.
+
+### 1. The autofill was reading the step it had just left
+
+`jobs.smartrecruiters.com/.../screening` reported *"6/6 required fields filled ·
+100%"* while every question on screen was empty — the values it listed belonged
+to the **previous** step.
+
+Two causes, both now removed:
+
+* **The step comparison was blind to shadow DOM.** `getPageHash()` — what the
+  multi-page loop uses to decide "did the page advance?" — was a plain
+  `document.querySelectorAll`. SmartRecruiters (Spark `spl-*`), Oracle (JET
+  `oj-*`) and Workday's newer steps put their fields inside shadow roots, so the
+  hash was **identical on every step**. The loop concluded nothing had changed
+  and re-filled the step it was already on.
+* **Advancing was a flat sleep.** `realClick(next); await sleep(2800)` — too
+  short and you read the old step, too long and you waste the job's budget, and
+  either way it tells you nothing when the step *refuses* to advance.
+
+Now there is a real fingerprint of **which questions are on screen** —
+`stepSignature()`, built on the deep enumerator, so it sees shadow roots and
+same-origin frames, and (since the previous build) excludes Jobright's own
+sidebar. Deliberately value-free: filling a field must not look like a new step.
+
+`waitForStepChange()` waits until that set genuinely changes **and then stops
+moving**, up to 15s, inside `withBusy` so a legitimate page transition can't be
+mistaken for a stalled job. If the step never changes, the driver now says so and
+goes looking for what is blocking it (validation error, missed required field)
+instead of cheerfully re-filling.
+
+Wired into SmartRecruiters, Oracle, ADP and the universal multi-page driver — and
+since every driver ends in the multi-page driver, into all of them.
+
+### 2. A question revealed by an answer was never answered
+
+> If applicable, would you consider relocating for a role with ServiceNow?\* **Yes**
+> &nbsp;&nbsp;&nbsp;&nbsp;↳ If you selected Yes, would you consider relocating at your own expense?\* ☐ Yes ☐ No
+
+The sub-question only renders **after** the parent is answered. Nothing ever
+looked at the form again after answering something, so it was never seen — which
+is exactly how a form reads 17/17 · 100% with an unanswered required question
+sitting underneath.
+
+`resolveDependentQuestions()` answers what is on screen, waits for the framework
+to render whatever that unlocked, then compares the question fingerprint and goes
+round again. It stops on the first round that reveals nothing new, is capped at 5
+rounds, and aborts immediately if you turn the automation off. The required-field
+guarantor now does the same at a higher level: if a pass revealed more questions,
+it re-runs the general fill so newly revealed **text boxes and dropdowns** get
+answered too, not only the choices.
+
+### 3. "Value is required" under a declaration box
+
+> You declare that you have read and understand the privacy notice of ServiceNow.\*
+> *Value is required*
+
+That box is a `<spl-checkbox>` web component, so `input[type=checkbox]` — which is
+all the old consent pass matched — never found it. And the wording matched none of
+the old `consent|agree|privacy|gdpr|terms|acknowledg` list either.
+
+Now:
+
+* **Found everywhere**: `spl-checkbox`, `oj-checkboxset`, `mat-checkbox`,
+  `md-checkbox`, `sl-checkbox`, `ion-checkbox`, `vaadin-checkbox`,
+  `role="checkbox"`, `role="switch"` and plain inputs.
+* **Read properly**: the sentence is pulled from the component's own shadow root,
+  its label, and its question container — wherever the platform keeps it.
+* **Recognised**: *declare · certify · confirm · attest · affirm · understand ·
+  authorise · disclosure · electronic signature · have read · to the best of my
+  knowledge* on top of the original list.
+* **Ticked reliably**: a web-component checkbox ignores `.click()`, so it
+  escalates — inner native input → click → full pointer sequence → associated
+  `<label>` → Space key → native set plus `input`/`change` — checking the
+  control's own state after each attempt and stopping the moment it reports
+  checked. If none of them work, it says so in the log rather than moving on
+  silently.
+* **Still never a marketing opt-in.** Job alerts, newsletters, talent community
+  and "similar roles" are excluded explicitly, regardless of how the markup
+  labels them.
+
+The same escalation now backs **multiple-choice questions** too: `spl-radio`,
+`oj-radio`, `mat-radio-button`, `md-radio`, `sl-radio`, `ion-radio`,
+`vaadin-radio-button` and `role="radio"` widgets are enumerated, labelled (from
+their shadow roots where that's where the text lives) and committed the same way.
+Unanswered ones now also count toward "missing required fields", so the loop can
+no longer conclude "nothing left to fix" on a form that plainly still has
+something to fix.
+
+### Verified
+
+Mutation-checked — each of these fails the suite when reverted:
+
+| Reverted to | Assertions that fail |
+| --- | --- |
+| flat `sleep(2800)` after Next | *SmartRecruiters waits for the next step instead of sleeping 2.8s* |
+| `stepSignature` including field values | *fingerprints WHICH questions, never their values* |
+| guarantor as a single pass | *the guarantor re-scans after answering* |
+| dependent loop not re-reading the page | *it answers, then looks again* |
+| marketing guard removed | *marketing opt-ins are never ticked* |
+| the old narrow consent regex | 6 wording assertions, including the ServiceNow declaration |
+
+Suite total: **471 assertions**, all green.
+
+### Honest limits
+
+Cross-origin iframes are still only reachable through the all-frames injection,
+not the deep enumerator — a question inside a third-party iframe is answered by
+the copy running in that frame, not by the parent's fingerprint. And
+`stepSignature` deliberately ignores values, so a step that changes *only* a
+value and nothing structural reads as unchanged; that is the right trade for
+not treating our own typing as a page transition.
+
+---
+
+## v15.2 — getting off the job description and into the application
+
+A queued URL almost never lands on the form. It lands on the **job description**,
+and something has to open the application. On the ServiceNow posting at
+`jobs.smartrecruiters.com/ServiceNow/744000142223189-…` that something is a button
+labelled **"I'm interested"** — with a curly apostrophe (U+2019).
+
+Three things were wrong, and all of them applied to every ATS:
+
+* **The apostrophe.** The pattern was `/i'?m interested/`, which matches `Im` and
+  `I'm` and **not** `I’m`. Labels are now normalised (curly quotes → straight,
+  en/em dashes → hyphen, whitespace collapsed) before any match.
+* **The vocabulary was thin.** It knew about eight phrasings. It now knows the
+  ones the supported platforms actually ship — *Apply for this job* (Greenhouse,
+  Lever), *Apply to this job* (ADP), *Apply for this position/role*, *Easy Apply*,
+  *1-Click Apply*, *Start your application*, *Continue to application*, *Express
+  your interest*, *Register your interest*, *Submit your resume* — plus
+  *Postuler*, *Jetzt bewerben*, *Solicitar*, *Solliciteer*, *Candidatar-se*,
+  *Ansök*, *Søk* for the European tenants.
+* **It was blind and first-match.** `findApplyButton` used plain
+  `document.querySelector` — no shadow roots, no same-origin frames, and no
+  exclusion of Jobright's own sidebar — and took the first qualifying control in
+  the DOM. It is now deep-enumerated and **scored**: a real `<button>` beats a
+  footer link, a short canonical label beats a long one, *"Apply with LinkedIn"*
+  loses to a plain *Apply*, and anything inside a "similar jobs" / "other jobs at
+  this company" list is pushed to the bottom — that list sits right beside the
+  real button on the ServiceNow JD page.
+
+Equally important is what must **not** be clicked. Sitting directly under
+"I'm interested" on that page is **"Refer a friend"**, and beside it *Share this
+job* and *Show all jobs*. The reject list now also covers *already applied*,
+*application submitted*, *how to apply*, *apply filters*, *save job*, *job alert*,
+*sign in*, *create an account*, *view all jobs*, *back to search* and *withdraw*.
+
+### SmartRecruiters specifically
+
+The JD lives at `/<Company>/<id>-<slug>`; the application is at
+`/oneclick-ui/company/<Company>/publication/<uuid>/screening` — a different path
+**and** a different page load. The driver's "am I already in the application?"
+test was `/\/(apply|publication)/`, so on the JD page it looked for an apply
+button (correct) but with the old literal label list (wrong), and on
+`/oneclick-ui/…/screening` it had no reliable way to know it had arrived. Both
+paths are now recognised, and after clicking the entry point the driver waits for
+the question set to actually change rather than sleeping and hoping.
+
+Oracle Recruiting Cloud and ADP now use the same shared vocabulary and the same
+post-click wait, so a JD page on either behaves identically.
+
+### Verified
+
+Mutation-checked: restoring the old narrow apply pattern fails **17** assertions
+(including every non-English label and *Apply for this position*); removing the
+curly-quote normalisation fails 2; making the finder first-match instead of
+scored fails 1; reverting SmartRecruiters' path test fails 1.
+
+The vocabulary is tested against 24 real entry-point labels and 15 look-alikes
+that must never be clicked. Suite total: **522 assertions**, all green.
+
+---
+
+## v15.3 — the autofill loop, and the CV that wouldn't attach
+
+Both reports came from `jobs.smartrecruiters.com`, and both had the **same root
+cause**: every synthetic event we dispatched had `composed: false`.
+
+### `composed` is not optional inside a shadow root
+
+SmartRecruiters builds its form out of Spark web components — `spl-input`,
+`spl-file-upload`, `spl-select`. The real `<input>` lives inside a shadow root;
+the component listens for its events **on the host, outside that root**. A DOM
+event only crosses a shadow boundary when it is `composed`, and every event we
+made used the default, which is `false`. So:
+
+* **The infinite re-fill.** We set the value. The input displayed it. The
+  component never heard about it, its own model stayed empty, it re-rendered the
+  field blank — and the next pass saw an empty field and typed it again. Forever.
+* **The CV.** We set `input.files` and dispatched `change`. The uploader, which
+  listens on the host, never received it. The file was on the input and nothing
+  knew.
+
+All **82** synthetic events in the file are now `composed: true`, built through a
+single `fireEvent()` helper so a future edit can't reintroduce a bare one — and
+`nativeSet` / `setSelectValue` / the CV attach now re-fire on the shadow **host
+chain** as well, for components that listen a level up.
+
+### Three more things kept the loop running
+
+* **The step fingerprint was unstable.** `stepSignature()` fell back to the
+  field's label when it had no `name`/`id` — and the label lookup reaches into
+  the field's container, which also holds validation messages and helper text. So
+  the fingerprint changed *every time we filled something or the site showed an
+  error*, and every caller concluded the page had advanced or new questions had
+  appeared. It now keys on stable identifiers (`name`, `id`,
+  `data-automation-id`, `data-testid`, `aria-labelledby`) and falls back to the
+  element's **structural position** — which changes when questions are added or
+  removed, and at no other time.
+* **The passes nested.** The general fill chases dependent questions, the
+  guarantor re-runs the general fill when answering reveals more, and the
+  multi-page driver runs all of it once per page. Each is bounded alone; nested
+  they multiply. `fallbackFill` and `resolveDependentQuestions` now refuse to
+  re-enter, and an unchanged step gets at most **4** full fill passes before the
+  budget stops it and says so.
+* **A field that won't hold a value was retyped forever.** The write ledger
+  allows three attempts at the same value per field, then leaves it and logs it
+  once. A SmartRecruiters step that refuses to advance twice is now handed over
+  rather than re-filled for the rest of its budget.
+
+### The CV attach itself
+
+* Composed events on the input **and** its host chain.
+* If nothing registers, a genuine **drag-and-drop** — `dragenter`, `dragover`,
+  `drop` — because uploaders that gate on `dragover` to set `dropEffect` ignore a
+  lone `drop`. Drop targets now include the shadow hosts above the input, which
+  `closest()` cannot reach, plus any `spl-file-upload` on the page.
+* A failed upload is **reported**, not assumed to have worked.
+* `resumeAlreadyAttached()` no longer mistakes instructions for an attachment.
+  *"PDF, DOC, DOCX up to 5MB"*, *"e.g. resume.pdf"*, *"Drag and drop your file
+  here, or browse"* and *"Accepted formats: .pdf, .doc"* all used to read as a
+  file already being there — which made us skip the upload entirely and then fail
+  the step with "Resume is required".
+
+### Verified
+
+Nine mutations, nine failures: un-composing the events, dropping the host-chain
+re-fire, removing the fill budget, removing the re-entrancy guard, ignoring the
+write ledger, restoring the label fallback in the fingerprint, removing the
+SmartRecruiters stuck-step break, removing the drag-and-drop fallback, and
+removing the format-hint filter each fail the suite.
+
+Suite total: **556 assertions**, all green.
+
+---
+
+## v15.4 — the answer has to fit the box it goes into
+
+Everything up to here decided **what** to answer. Nothing checked whether that
+answer was the right **shape** for the control receiving it. Four things on one
+Greenhouse form (`job-boards.greenhouse.io/heartflowinc`) came from that gap.
+
+### "5-8" typed into a number box
+
+`5-8` is exactly the right thing to click in a dropdown whose options are ranges.
+Typed into a free-text *"How many years of Software/Risk Quality Assurance
+experience do you have?"* box it is a string the ATS cannot parse — and answers
+learned from a dropdown get reused on text fields, which is how it got there.
+
+Ranges are now collapsed to a single integer whenever the target is a free-text
+or number input, taking the **top** of the range: an employer screening on a
+minimum never prefers the lower number, and "5-8 years" honestly means up to 8.
+`5-8`→`8`, `3-5`→`5`, `5 to 8`→`8`, `8+`→`8`, `more than 5`→`5`, `at least 10`→`10`.
+A dropdown still receives `5-8` unchanged, because there it is a real option.
+
+### Overlapping bands took whichever came first
+
+Bands share their boundaries: 5 years qualifies for both `3-5` and `5-8`, and
+whichever appeared first in the DOM won. Every qualifying band now gets a bonus
+for its lower bound, so the **highest** one wins — 5 years picks `5-8`, 9 years
+picks `8+`, and `10+` beats `5+` for a 12-year candidate. DOM order no longer
+decides it.
+
+### "Yes" as the name of an employee
+
+The saved-answer matcher is fuzzy by design — 40% keyword overlap — which a long
+question reaches just by sharing nouns. So *"If answered Yes, please provide the
+name of the employee who works at Heartflow"*, *"If yes, please explain. If no,
+add N/A"* and *"What state do you reside in?"* all came back **"Yes"**.
+
+A bare Yes/No is now rejected on any question a Yes/No cannot answer — one that
+opens with *what / which / where / how many / name of / please explain*. In a
+text box the answer becomes `N/A` (which is what those questions ask for when
+the parent was No); on a dropdown it is dropped so the option matcher can choose
+a real option instead. Genuine Yes/No questions — *"Are you legally authorized to
+work…"*, *"Do you have any immediate family that work at Heartflow?"* — keep
+their answer. *"What state do you reside in?"* is also answered properly now,
+from the profile.
+
+### Nine ways of hearing about the job, all at once
+
+*"How did you hear about this job?"* ships nine checkboxes — Job site, LinkedIn,
+Job fair, Indeed, Glassdoor, ZipRecruiter, Employee, Handshake, Other. Because
+the question is required, the required-checkbox sweep ticked **every one**.
+
+A group of two or more checkboxes sharing a name or a question container is now
+treated as one question and gets exactly one answer: the option matching what we
+would have typed in a text box (LinkedIn, here), else the first real option —
+never *Other*, *None* or *Prefer not to say* unless nothing else fits. The
+consent sweep and the required-field sweep both leave grouped options alone. A
+container matching more than 25 checkboxes is not treated as one giant question,
+so an over-wide selector can't collapse a whole form into a single pick.
+
+### Verified
+
+The shape logic is lifted out of the shipped file and **executed** by the tests,
+not pattern-matched: 11 range conversions, 9 yes/no-answerability judgements, 8
+band selections and the full set of look-alike questions all run for real.
+
+Seven mutations, seven failures: not narrowing the range, taking the low end of
+it, removing the yes/no guard, dropping the band tie-break, letting the required
+sweep tick grouped checkboxes, preferring "Other", and letting dropdown answers
+be rewritten each fail the suite.
+
+Suite total: **604 assertions**, all green.
+
+---
+
+## v15.5 — the work-authorisation knockout, fixed properly
+
+> "You applied to our vacancy of Solutions consultant at Predikt. I see that you
+> filled in you're not allowed to work in Belgium. Is that correct? I see you're
+> willing to move. We do not provide Visa sponsorship."
+
+That answer cost a live application. It came from **two** bugs, one in deciding
+the answer and one in choosing the option — and both pointed the same wrong way.
+
+### 1. One rule answered No to anything containing "visa"
+
+```js
+if (/sponsor|visa|work\s?permit|immigration|h-?1b/.test(q)) return 'no';
+```
+
+That is right for *"Do you now or in the future **require** visa sponsorship?"*
+and catastrophically wrong for *"Are you allowed to work in Belgium **without**
+visa sponsorship?"* — both sentences contain "sponsorship", and the rule ran
+**before** the authorisation rule, so eligibility questions never got a chance.
+
+What separates the two is what the verb does to sponsorship, not whether the word
+is present. One decider now handles both families:
+
+| Family | Examples | Answer |
+| --- | --- | --- |
+| **Eligibility** | allowed / authorised / entitled / eligible / permitted / have the right to work — with or without a "…and will not require sponsorship" clause | **Yes** |
+| **Possession** | do you hold a valid visa / work permit / settled status / citizenship / permanent residency | **Yes** |
+| **Need** | do you (now or in the future) require / need / seek / depend on sponsorship, a visa, a work permit, a Tier 2 / Skilled Worker visa | **No** |
+
+**British spelling was the other half of it.** `/authoriz/` never matched
+*"authorised"*, and European ATS — most of what this queue applies to — spell it
+that way, so those questions fell straight through to the sponsorship rule.
+
+The decider also refuses to claim questions that merely borrow its vocabulary.
+*"Have you ever been convicted of a crime that would prevent you from being
+legally permitted to work in this role?"* contains both the work context and the
+words — answering that **Yes** would be far worse than the bug being fixed, so
+criminal record, debarment, non-compete, termination, drug test and background
+check are excluded outright and fall back to the normal knockout logic.
+
+### 2. The grammar pointed the opposite way to the meaning
+
+Deciding "yes" is only half of it — most ATS word their options instead of
+offering a literal Yes/No, and there the grammar is actively misleading:
+
+* **"I require visa sponsorship"** — grammatically affirmative, wrong answer.
+* **"Does not require sponsorship"** — grammatically negative, right answer.
+* **"Yes, I am authorized to work in the US without sponsorship"** — read as
+  NEGATIVE, because it contains the word *without*.
+
+On a two-option question that last one is decisive: with no positive option
+found, the answerer fell through to "pick the other one" and selected **"No, I
+require sponsorship"**. That is the answer the recruiter read.
+
+Work-authorisation options are now scored on **meaning**, not polarity. There is
+only one stance to express — *I can work in this country and do not need
+sponsoring* — however the question is phrased, so no decision needs threading
+through: each option is scored for how well it says that, and the best wins.
+Every caller (radio groups, button-style questions, native selects, custom
+dropdowns, `pickChoice`) passes the question through so the family is recognised.
+
+### 3. Mobility
+
+*"I see you're willing to move"* was already right, but only four literal
+phrasings were known. It now covers *willing to relocate / willing to move /
+open to relocation / prepared to move / happy to relocate / would you consider
+relocating / relocate at your own expense / able to commute / willing to travel*
+— and it is evaluated **after** the strong-No knockouts, so "have you ever
+relocated for a former employer?" can't be hijacked.
+
+### Verified
+
+The decider and the option matcher are lifted out of the shipped file and **run
+for real** against the phrasings the supported ATS ship: 23 eligibility
+variations, 10 sponsorship-need variations, 12 look-alikes that must be left
+alone, 9 mobility phrasings, 11 option polarities and 7 two-option pairs — each
+pair checked in both orders, so DOM order can never decide it.
+
+Six mutations, six failures: restoring the old visa rule, reading "without
+sponsorship" as a negation again, bypassing the work-auth option matcher,
+dropping British spelling, removing the excluded-topic guard, and removing the
+negated-sponsorship case each fail the suite.
+
+Suite total: **698 assertions**, all green.
+
+---
+
+## v15.6 — white-labelled ATS: detect the platform, not the company
+
+`apply.deloitte.com/en_US/careers/RegisterEdit?jobId=363384` is **Avature**.
+The registry only knew `/avature\.net.*careers/`, which matches almost nothing
+real — every tenant white-labels Avature onto their own domain — so that URL fell
+through to the generic `Career` catch-all, no driver ran, and the queue sat on an
+account wall it did not recognise as one.
+
+That is not a Deloitte problem. JPMorgan runs Oracle Recruiting at
+`jpmc.fa.oraclecloud.com` and fronts it from `careers.jpmorgan.com`. A host list
+can only ever cover companies someone has already hit.
+
+### Two layers, no domain list
+
+**Route signatures.** Every platform ships fixed route names, and those don't
+change when the domain does. `/hcmUI/CandidateExperience` is Oracle wherever it
+is served from; `/careersection/` is Taleo; `/careers/JobDetail` is Avature.
+Added for Avature, iCIMS (`/jobs/<id>/<slug>/job`), Phenom (`/us/en/job/<id>` —
+JPMorgan's shape), SuccessFactors (`/sfcareer/`), Cornerstone (`/ux/candidate`),
+Brassring (`/TGnewUI/`), PageUp (`/caw/en/job/`), Dayforce (`/CandidatePortal/`),
+UltiPro (`/JobBoard/…/JobDetails`) and Workday (`/wday/cxs/`).
+
+**DOM fingerprints.** When the URL says nothing — a bare `careers.acme.com` —
+the page still does. Workday stamps `data-automation-id` on everything;
+SmartRecruiters renders `spl-*`; Oracle renders `oj-*`; iCIMS wraps its form in
+`#icims_content_iframe`; Greenhouse in `#grnhse_app`; Phenom in `#phApp`.
+Checked most-specific first, and **only** when the URL was inconclusive — a
+confident route match always wins, because a page can carry a marker for a widget
+it merely embeds.
+
+The dispatcher now routes on the resolved platform, so an unknown employer domain
+reaches the right driver instead of the generic fallback.
+
+### The Avature driver
+
+Avature is unusual in where it puts the account wall: not at the front, but in
+the middle, at `/careers/RegisterEdit?jobId=…` — and that page is not an
+email/password box, it is the **whole candidate profile plus the credentials**.
+Until the credentials are in, nothing else on it will submit, so filling the form
+first (which is what the generic flow did) was wasted work every time.
+
+The driver:
+
+* recognises the route it is on — `JobDetail`, `ApplicationMethods`,
+  `RegisterEdit`, `SubmitApplication`, `ApplicationConfirmation`;
+* on `ApplicationMethods`, takes the path that stays on Avature and lets us fill
+  the form — **never** LinkedIn, Indeed, Xing or any other third party, which
+  navigates off-site and strands the job;
+* completes the credentials **first** on any register/login route, or on any page
+  that has grown a password field, then attaches the CV (Avature parses it to
+  prefill), then fills, then advances;
+* advances by waiting for the question set to change, and hands over after two
+  attempts on a step that will not move rather than re-filling it;
+* matches Avature's `<input type="submit" value="Next">` actions, which carry
+  their label in `.value` rather than in text.
+
+`.mandatory` — Avature's required-field marker — now counts as required, along
+with `.req` and `.is-required`.
+
+### Verified
+
+Detection is run for real against 16 white-labelled URLs, including the exact
+Deloitte link that was struggling and JPMorgan's Oracle and Phenom shapes, plus
+three ordinary pages that must **not** be mistaken for an ATS.
+
+Five mutations, five failures: restoring the host-only Avature pattern (7
+assertions), never consulting the fingerprints, letting a fingerprint override a
+confident URL match, removing the white-label routes, and dropping `.mandatory`.
+
+Suite total: **735 assertions**, all green.
+
+### Honest limit
+
+`apply.deloitte.com` is not reachable from the environment this was built in, so
+the driver is written against Avature's documented route structure and the
+universal, label-driven filling machinery — not against a DOM I was able to open.
+The routing and the account-wall ordering are the parts I am confident about. If
+a specific field or button on that form still misbehaves, send the label and I
+will handle it directly.
+
+---
+
+## v15.7 — rebased onto Jobright 1.20.0
+
+The build now sits on the official **1.20.0** patch (was 1.19.0). Three of the
+shipped files actually changed:
+
+| File | 1.19.0 | 1.20.0 |
+| --- | --- | --- |
+| `helper-app.41ea2652.js` | 6,582,824 | 6,858,995 |
+| `global.f36301ce.css` | 261,734 | 269,326 |
+| `static/background/index.js` | 555,473 | 594,883 |
+
+`contents.d42e7fcf.js`, `scroll-to-anchor.45fefb1b.js` and `inter.42ee87cb.css`
+are byte-identical, and none of the five files this build adds
+(`ua-enhancement.js`, `ua-orchestrator.js`, `ua-page-hooks.js`, `ua-queue.html`,
+`ua-queue.js`) is touched by the patch — they were designed to be additive for
+exactly this reason.
+
+### What the rebase had to re-apply
+
+**The service-worker hook.** The new `static/background/index.js` replaced ours,
+and ours carried the single appended line that loads the queue engine:
+
+```js
+try { importScripts("/ua-orchestrator.js"); } catch (e) { … }
+```
+
+Without it the CSV queue silently does nothing — the panel opens, jobs sit in the
+list, and no tab ever opens. **The suite caught this**, not a manual review:
+*"service worker does not import ua-orchestrator.js"* failed the moment the file
+was copied in. That assertion exists precisely because this is the one thing a
+patch drop always clobbers.
+
+**The manifest**, rebuilt on the 1.20.0 base rather than hand-edited: our two
+content scripts prepended so `ua-page-hooks.js` (MAIN world, `document_start`)
+and `ua-enhancement.js` run *before* Jobright's own; `sidePanel`, `alarms`,
+`contextMenus` and `notifications` added to permissions; `side_panel` pointed at
+`ua-queue.html`; and the web-accessible-resources list filtered to files that
+actually exist in the drop plus our own — the stock list names assets the unpacked
+build does not ship, and Chrome refuses to load an extension that lists a missing
+resource.
+
+### Checked, not assumed
+
+Every selector this build reaches into Jobright's own sidebar with still exists in
+1.20.0 — `auto-fill-button`, `application-dashboard-tailor-resume`,
+`continue-button`, `continue-button-disabled`,
+`tailor-resume-loading-linear-progress`, `spin-loading`, `jobright-helper-id`,
+`jobright-helper-content-container`, `plasmo-csui`. Two optional ones
+(`external-job-generate-resume-button`, `resume-loading-container`) are absent —
+and were absent in 1.19.0 too, so that is not a regression; both sit behind `||`
+fallbacks.
+
+Suite total: **735 assertions**, all green on 1.20.0.
+
+---
+
+## v15.8 — the run stopping, the panel vanishing, and "Leave site?"
+
+### One bug, three symptoms
+
+The run halting on its own, the **Automation In Progress** panel disappearing
+mid-run, and a queue reporting `0 applied` while looking busy were all the same
+defect.
+
+A content script has exactly one piece of per-tab scratch space: `window.name`.
+**Chrome clears it every time a tab navigates between different sites**
+(window.name isolation). A CSV run drives *one* tab from `greenhouse.io` to
+`lever.co` to `smartrecruiters.com` — so the runner marker was wiped at the
+**first cross-site job**, and from that moment:
+
+* `processQ()` returned at `if (!isRunnerTab()) return;` — **the queue stopped
+  advancing, permanently**;
+* the master gate answered "toggle OFF", so the automation was **forbidden from
+  acting at all** on that page;
+* `updateCtrl()` took its else branch and removed the panel;
+* the watchdog that would have re-mounted the panel was itself gated on
+  `isRunnerTab()`, so nothing brought it back.
+
+It looked random because it depends on whether consecutive jobs happen to share a
+site. It isn't random — it's the first cross-site hop.
+
+The service worker's view of a tab id is unaffected by navigation, so it now
+answers `UA_WHICH_TAB`, and the tab driving the run is recorded in
+`ua_runner_tab`. `window.name` stays as the cheap synchronous path for same-site
+hops; the tab id is the evidence that outlives them. Both copies of the check
+were fixed — the fail-closed master gate has its own, in its own scope, and that
+one going false is what silenced the automation entirely. It is **still
+fail-closed**: with no evidence either way, the gate stays shut, a different tab
+is still refused, and a stale `ua_runner_tab` cannot reopen it once the run ends.
+
+The panel also now hangs off `<html>` rather than `<body>` (single-page apps
+replace `<body>` wholesale and took the panel with it), carries `!important` on
+display and z-index so a site's CSS cannot hide the only Pause/Skip/Quit controls
+the run has, and may only be hidden by a run that has genuinely **finished** —
+never merely because identity has not been re-confirmed yet.
+
+### "Leave site? Changes you made may not be saved."
+
+A `beforeunload` dialog is not a `confirm()`. The page cannot dismiss it, nothing
+runs while it is up, and it waits for a human to press **Leave** — which is what
+it was doing on Deloitte's `/careers/ProfileEdit` between application steps.
+
+There was already a hook here and it could not work: it registered a
+capture-phase listener that cleared `returnValue`, but a capture listener runs
+**before** the page's own handler, which then sets it again afterwards. And
+clearing `returnValue` does nothing about `preventDefault()`, which arms the
+dialog on its own and cannot be un-set once called.
+
+So the handler is now never able to arm it. Every `beforeunload` listener is
+wrapped, and while automating it receives a **shielded** event whose
+`preventDefault()` does nothing and whose `returnValue` cannot be assigned; the
+wrapper also returns `undefined`, because returning a string arms the dialog too.
+`window.onbeforeunload = fn` bypasses `addEventListener` entirely, so it has its
+own shim. Only `beforeunload` is touched — every other event type passes through
+untouched.
+
+The site's own handler still **runs** (sites do real bookkeeping in there); it
+simply comes out unable to raise a prompt. And the decision is made when the
+event **fires**, not when the listener is registered — the page registers its
+handler at load, long before a job starts, so while you are browsing manually you
+get the warning exactly as the site intended. The shield is also now armed for
+the *whole* run rather than only while a dispatch is in flight: the prompt fires
+during the navigation **between** steps, which is precisely the gap where the
+flag used to be handed back.
+
+### 1000+ jobs
+
+The engine has always supported up to 8 parallel job tabs, but there was no way
+to change it and it defaulted to 3. **Parallel jobs** is now a control in the
+Queue Manager (1–8). The slot filler re-reads it on every pass, so raising it
+takes effect on the next job rather than the next run.
+
+### Verified
+
+A new `beforeunload.test.js` runs the real hook file in a sandbox with a working
+`EventTarget` and asks the only question that matters — *after every listener has
+run, would Chrome raise the dialog?* — across all three ways a site arms it
+(`preventDefault()`, `returnValue = string`, returning a string), via both
+`addEventListener` and `window.onbeforeunload`, automating and not.
+
+Sixteen mutations, sixteen failures, including: the queue driver bailing on a
+wiped marker again, the panel hidden whenever identity is unconfirmed, the
+watchdog gated on the thing it repairs, the panel back on `<body>`, the gate copy
+reverted, the worker no longer answering *which tab*, the old capture-listener
+`beforeunload` approach, `preventDefault` not neutralised, a returned string still
+arming the dialog, and the shield armed while **not** automating.
+
+One of those mutations found a real bug in this change: the new
+`chrome.runtime.sendMessage` probe sat in the same `try` block as the storage
+listener registration, so a context where it threw would have left the gate
+unable to notice the toggle at all. It is isolated in its own `try` now, and the
+gate suite covers a context with no `sendMessage`.
+
+Suite total: **806 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
@@ -485,6 +1405,18 @@ automation navigates to the job, clicks Apply if needed, creates or signs into t
 ATS account, runs Jobright's autofill, fills any gaps, commits location/typeahead
 fields, submits, and **verifies the submission was confirmed** before the job counts
 as `done`. Unconfirmed submissions are marked `failed`, never a false "applied".
+
+### Importing
+
+Both import surfaces take a **drag and drop** as well as the file picker:
+
+- **Queue Manager panel** — drop a CSV anywhere on the panel.
+- **⚡ Bulk Auto-Apply card** (in Jobright's own sidebar) — drop onto the dashed
+  strip under the buttons, or anywhere on the card.
+
+Dropped **text** works too, so a column of links dragged out of a spreadsheet or an
+email goes straight in. Multiple files at once are fine, from either the picker or
+a drop.
 
 ### CSV format
 
@@ -572,7 +1504,7 @@ tests/
 ./tests/run.sh
 ```
 
-298 assertions, no browser required: JS syntax for everything shipped, manifest
+336 assertions, no browser required: JS syntax for everything shipped, manifest
 validity (including that every referenced file exists and the worker imports the
 orchestrator), CSV/URL parsing in all three places it happens, and the queue engine
 driven end to end — slot filling, results, duplicate results, requeue on tab close,

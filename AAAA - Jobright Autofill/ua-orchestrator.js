@@ -49,15 +49,27 @@
     OLD_RUNNER: 'ua_qa',      // the legacy in-page single-tab runner — mutually exclusive
   };
   const ALARM = 'ua_mgr_watchdog';
-  // How long a job may sit waiting for a human (CAPTCHA) before the run gives up
-  // on it and moves on. Long enough to actually go and solve it, bounded so one
-  // unattended challenge cannot hold a slot for the rest of the run.
-  const HUMAN_GRACE_MS = 15 * 60 * 1000;
+  // At most this many CAPTCHA'd tabs are left open waiting for you at once. Past
+  // that the oldest is given up on, so a challenge-heavy CSV cannot bury you in
+  // parked tabs.
+  const MAX_PARKED = 3;
+  /* A job tab reports a heartbeat every 5s, so this is three missed beats. The
+     beat had to be made twice as fast to support a window this tight: at the old
+     10s interval, 15s of silence was 1.5 beats and a single delayed one would
+     have looked like a dead tab. */
+  const HEARTBEAT_DEAD_MS = 15 * 1000;
+  /* A page that is LOADING has no content script, so it cannot beat — a reload,
+     a redirect or a slow ATS page would otherwise look exactly like a crashed
+     tab and get killed mid-run. This is how long a tab may take to come back
+     after a navigation before we stop giving it the benefit of the doubt. */
+  const NAV_GRACE_MS = 45 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
     tailor: false,
-    jobTimeoutMs: 6 * 60 * 1000,   // hard cap per job (content script caps itself at 150s/page)
+    jobTimeoutMs: 3 * 60 * 1000,   // hard cap per job — the backstop, not the usual exit
+    stallMs: 15 * 1000,            // no progress for this long → skip the job and move on
+    humanGraceMs: 60 * 1000,       // how long a CAPTCHA'd job waits for you before it is dropped
     interJobDelayMs: 800,          // breathing room between tab opens
   };
 
@@ -145,7 +157,13 @@
       skipApplied: typeof s.skipApplied === 'boolean' ? s.skipApplied : DEFAULTS.skipApplied,
       tailor: typeof s.tailor === 'boolean' ? s.tailor : DEFAULTS.tailor,
       jobTimeoutMs: Math.max(60000, Number(s.jobTimeoutMs) || DEFAULTS.jobTimeoutMs),
+      stallMs: Math.max(5000, Number(s.stallMs) || DEFAULTS.stallMs),
+      humanGraceMs: Math.max(15000, Number(s.humanGraceMs) || DEFAULTS.humanGraceMs),
       interJobDelayMs: Math.max(0, Number(s.interJobDelayMs) ?? DEFAULTS.interJobDelayMs),
+      // Lives in its own key (the slot filler reads it directly on every pass, so
+      // a change takes effect on the next job rather than the next run), but it is
+      // reported here so the panel can show the value actually in force.
+      concurrency: Math.min(8, Math.max(1, parseInt(await get(K.CONC), 10) || 3)),
     };
   }
   async function concurrency() {
@@ -216,8 +234,10 @@
       if ((await get(K.PAUSED)) === true) return;
       const [cfg, conc, map] = [await settings(), await concurrency(), await reconcileTabs()];
 
-      const toOpen = await withQueue((q) => {
-        const running = q.filter((j) => j.status === 'applying' && map[j.id] != null).length;
+      const toOpen = (await withQueue((q) => {
+        // Jobs parked on a CAPTCHA are deliberately excluded: they are waiting on
+        // a person, not using the browser, so they must not cost a slot.
+        const running = q.filter((j) => j.status === 'applying' && map[j.id] != null && !j.needsHuman).length;
         // An `applying` job with no tab is an orphan (crash / closed tab) — recycle it.
         for (const j of q) if (j.status === 'applying' && map[j.id] == null) { j.status = 'pending'; j.startedAt = null; }
         const slots = conc - running;
@@ -231,7 +251,7 @@
           picked.push({ id: j.id, url: j.url, title: j.title, jobBoard: j.jobBoard, startedAt: j.startedAt });
         }
         return picked;
-      });
+      })) || [];   // withQueue returns undefined if its callback threw
 
       for (const job of toOpen) {
         const tab = await new Promise((res) => {
@@ -274,12 +294,21 @@
   }
 
   async function finish() {
+    const q = (await get(K.Q)) || [];
+    const n = (st) => q.filter((j) => j.status === st).length;
+    const pending = n('pending');
+    /* Refuse to end a run that still has work. Ending here with jobs left is the
+       "automation disappeared" symptom — better to say so and pick them up than
+       to stop quietly. */
+    if (pending > 0) {
+      log(`Not finishing — ${pending} job${pending === 1 ? '' : 's'} still pending; restarting the queue`, 'err');
+      await fillSlots();
+      return;
+    }
     await set({ [K.ACTIVE]: false, [K.PAUSED]: false, [K.ADVANCE]: null });
     try { chrome.alarms.clear(ALARM); } catch (_) {}
-    const q = (await get(K.Q)) || [];
-    const n = (s) => q.filter((j) => j.status === s).length;
     const done = n('done'), failed = n('failed') + n('timeout'), skipped = n('skipped');
-    await log(`Queue complete — ${done} applied, ${failed} failed, ${skipped} skipped`, 'ok');
+    await log(`Queue complete — ${done} applied, ${failed} failed, ${skipped} skipped (${q.length} in the list)`, 'ok');
     notify('Jobright queue complete', `${done} applied · ${failed} failed · ${skipped} skipped`);
   }
 
@@ -341,7 +370,7 @@
     await withQueue((jobs) => {
       for (const j of jobs) {
         if (j.status === 'applying') { j.status = 'pending'; j.startedAt = null; }
-        delete j.needsHuman;
+        delete j.needsHuman; delete j.beatAt; delete j.stage; delete j.pct; delete j.navAt;
       }
       total = jobs.filter((j) => j.status === 'pending').length;
     });
@@ -423,19 +452,46 @@
     const cfg = await settings();
     const map = await reconcileTabs();
     const stale = [];
+    // Oldest-first, so when too many jobs are waiting on you it is the newest that
+    // gets dropped rather than the one you are probably already looking at.
+    const snapshot = (await get(K.Q)) || [];
+    const parked = snapshot
+      .filter((j) => j.status === 'applying' && j.needsHuman && j.needsHuman.since)
+      .sort((a, b) => a.needsHuman.since - b.needsHuman.since)
+      .map((j) => j.id);
     await withQueue((q) => {
       for (const j of q) {
         if (j.status !== 'applying') continue;
         if (map[j.id] == null) continue;              // orphan handling lives in fillSlots
-        // A job waiting on a human (CAPTCHA) gets extra time — but not forever.
+        // Parked on a CAPTCHA: it costs no slot (see fillSlots), so the only
+        // question is how long its tab stays open waiting for you.
         if (j.needsHuman && j.needsHuman.since) {
           const waited = Date.now() - j.needsHuman.since;
-          if (waited < HUMAN_GRACE_MS) continue;
+          const overParked = parked.indexOf(j.id) >= MAX_PARKED;   // oldest kept, newest dropped
+          if (waited < cfg.humanGraceMs && !overParked) continue;
           j.status = 'failed';
-          j.error = `${j.needsHuman.provider || 'CAPTCHA'} was not solved within ${Math.round(HUMAN_GRACE_MS / 60000)} min`;
+          j.error = overParked
+            ? `${j.needsHuman.provider || 'CAPTCHA'} — too many jobs waiting on you at once`
+            : `${j.needsHuman.provider || 'CAPTCHA'} not solved within ${Math.round(cfg.humanGraceMs / 60000)} min`;
           j.completedAt = Date.now();
           delete j.needsHuman;
           stale.push({ id: j.id, label: j.title || j.url });
+          continue;
+        }
+        // Heartbeat gone quiet → the tab or its content script is dead. Do not
+        // wait out the full per-job cap for a job that cannot report at all.
+        // Still coming back from a navigation (reload / redirect / next page):
+        // give it room to boot rather than treating silence as death.
+        if (j.navAt && Date.now() - j.navAt < NAV_GRACE_MS) continue;
+        const lastBeat = j.beatAt || j.startedAt || 0;
+        if (lastBeat && Date.now() - lastBeat > HEARTBEAT_DEAD_MS && Date.now() - (j.startedAt || 0) > HEARTBEAT_DEAD_MS) {
+          j.status = 'timeout';
+          const silentFor = Math.round((Date.now() - lastBeat) / 1000);
+          j.error = j.beatAt
+            ? `Tab went silent for ${silentFor}s — dropped (was: ${j.stage || 'unknown'})`
+            : `Tab never responded in ${silentFor}s — dropped`;
+          j.completedAt = Date.now();
+          stale.push({ id: j.id, label: j.title || j.url, why: 'unresponsive' });
           continue;
         }
         if (j.startedAt && Date.now() - j.startedAt > cfg.jobTimeoutMs) {
@@ -446,7 +502,26 @@
         }
       }
     });
-    for (const s of stale) { log('⏱ ' + s.label + ' — watchdog timeout', 'err'); await closeJobTab(s.id); }
+    for (const s of stale) {
+      log('⏱ ' + s.label + (s.why === 'unresponsive' ? ' — stopped responding, moving on' : ' — watchdog timeout'), 'err');
+      await closeJobTab(s.id);
+    }
+
+    /* Stall supervisor. If the run is active with jobs still pending but nothing
+       actually running, something went wrong between finishing one job and
+       starting the next. That state used to be silent and permanent — the
+       automation appeared to vanish while the queue still had work in it. */
+    if ((await get(K.PAUSED)) !== true) {
+      const liveMap = await reconcileTabs();
+      const qNow = (await get(K.Q)) || [];
+      const pending = qNow.filter((j) => j.status === 'pending').length;
+      const running = qNow.filter((j) => j.status === 'applying' && liveMap[j.id] != null).length;
+      if (pending > 0 && running === 0) {
+        log(`Queue stalled with ${pending} job${pending === 1 ? '' : 's'} left and nothing running — restarting`, 'err');
+        _filling = false;   // clear a guard left set by a crashed pass
+        await fillSlots();
+      }
+    }
     // Close tabs belonging to jobs that are no longer running.
     const q = (await get(K.Q)) || [];
     for (const jobId of Object.keys(map)) {
@@ -465,13 +540,33 @@
   // apply page (after Jobright → ATS redirects) is the one that gets the job.
   try {
     chrome.tabs.onUpdated.addListener(async (tabId, info) => {
-      if (info.status !== 'complete') return;
       if ((await get(K.ACTIVE)) !== true) return;
+
+      /* The tab started navigating — a manual reload, a redirect, or the next
+         page of a multi-step form. Its content script is being torn down and
+         cannot send a heartbeat until the new document boots, so mark the job as
+         navigating and restart its liveness clock. Without this, refreshing a
+         job tab killed the job and closed the tab. */
+      if (info.status === 'loading') {
+        const navJobId = await jobIdForTab(tabId);
+        if (navJobId) {
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === navJobId);
+            if (j && j.status === 'applying') { j.navAt = Date.now(); j.beatAt = Date.now(); }
+          });
+        }
+        return;
+      }
+      if (info.status !== 'complete') return;
       const jobId = await jobIdForTab(tabId);
       if (!jobId) return;
       const q = (await get(K.Q)) || [];
       const job = q.find((j) => j.id === jobId);
       if (job && job.status === 'applying') {
+        await withQueue((qq) => {
+          const j = qq.find((x) => x.id === jobId);
+          if (j) { j.navAt = Date.now(); j.beatAt = Date.now(); }   // the page is back
+        });
         assign(tabId, job, await settings());
         injectAllFrames(tabId);   // a new document means new frames to reach
       }
@@ -530,8 +625,11 @@
             }
           });
           if (msg.blocked) {
-            log(`✋ ${label} — ${msg.provider || 'CAPTCHA'}: needs you. Open the job tab to solve it.`, 'err');
-            notify('A job needs you', `${msg.provider || 'CAPTCHA'} on ${label}. Open that tab to solve it — the run continues afterwards.`);
+            log(`✋ ${label} — ${msg.provider || 'CAPTCHA'}: needs you. Its tab stays open; the queue carries on.`, 'err');
+            notify('A job needs you', `${msg.provider || 'CAPTCHA'} on ${label}. Open that tab to solve it — the rest of the queue keeps running.`);
+            // The job no longer counts against concurrency, so a slot just came
+            // free. Use it now rather than waiting for the next watchdog tick.
+            await fillSlots();
           } else {
             log(`✓ ${label} — challenge cleared, resuming`, 'ok');
           }
@@ -540,9 +638,41 @@
         return true;
       }
 
+      /* Progress heartbeat from a running job tab. */
+      if (msg.type === 'UA_JOB_PROGRESS') {
+        (async () => {
+          const tabId = sender && sender.tab && sender.tab.id;
+          const jobId = tabId == null ? null : await jobIdForTab(tabId);
+          if (!jobId) return sendResponse({ ok: false });
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === jobId);
+            if (!j || j.status !== 'applying') return;
+            j.beatAt = Date.now();
+            j.stage = String(msg.stage || '').slice(0, 60);
+            if (typeof msg.pct === 'number') j.pct = msg.pct;
+          });
+          sendResponse({ ok: true });
+        })();
+        return true;
+      }
+
       if (msg.type === 'UA_JOB_RESULT') {
         onResult({ id: msg.id, status: msg.status, error: msg.error, ts: msg.ts || Date.now() })
           .then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
+        return true;
+      }
+
+      /* "Which tab am I?" — the one thing a content script cannot work out for
+         itself, and the thing the in-page runner needs to survive a cross-origin
+         navigation. window.name is the only per-tab scratch space a content
+         script has, and Chrome CLEARS IT whenever a tab navigates between sites
+         (window.name isolation). A CSV run drives ONE tab from greenhouse.io to
+         lever.co to smartrecruiters.com, so the runner marker was wiped at the
+         first cross-site hop. The service worker's view of a tab id is not
+         affected by any of that. */
+      if (msg.type === 'UA_WHICH_TAB') {
+        const tabId = sender && sender.tab && sender.tab.id;
+        sendResponse({ tabId: tabId == null ? null : tabId });
         return true;
       }
 
@@ -555,6 +685,10 @@
           if (tabId == null || (await get(K.ACTIVE)) !== true) return sendResponse({ job: null });
           const jobId = await jobIdForTab(tabId);
           if (!jobId) return sendResponse({ job: null });
+          await withQueue((q) => {
+            const j = q.find((x) => x.id === jobId);
+            if (j && j.status === 'applying') j.beatAt = Date.now();   // it's alive
+          });
           const q = (await get(K.Q)) || [];
           const job = q.find((j) => j.id === jobId && j.status === 'applying');
           sendResponse({ job: job || null, settings: await settings() });

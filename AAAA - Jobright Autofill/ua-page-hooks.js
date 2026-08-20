@@ -58,6 +58,24 @@
     prompt: window.prompt,
   };
 
+  /* Was this dialog caused by a REAL click from the person at the keyboard?
+     Only a trusted event counts — a click dispatched by script (ours, or
+     Jobright's own bundle) is not one. This is what tells "the user pressed
+     Remove and means it" apart from "something clicked Remove on its own".
+
+     It matters because the automation flag alone was not enough. The flag is
+     only set for the lifetime of a queue job, so on a manual apply — or in the
+     gap after a Fully-Automated pass hands the flag back — a script-driven
+     Remove "…_CV"? confirm still froze the whole page with nothing able to
+     answer it. */
+  let lastTrustedAt = 0;
+  for (const evt of ['pointerdown', 'mousedown', 'click', 'keydown']) {
+    try {
+      window.addEventListener(evt, (e) => { if (e && e.isTrusted) lastTrustedAt = Date.now(); }, true);
+    } catch (_) {}
+  }
+  const humanJustActed = () => Date.now() - lastTrustedAt < 1200;
+
   function report(kind, message, answer) {
     try {
       window.dispatchEvent(new CustomEvent('ua-native-dialog', {
@@ -67,14 +85,30 @@
   }
 
   window.confirm = function (message) {
-    if (!automating()) return orig.confirm.apply(window, arguments);
     const text = String(message == null ? '' : message).trim();
-    // Answering "no" to a destructive prompt keeps the uploaded file / entered
-    // answers; answering "yes" to anything else lets a confirm-to-proceed step
-    // through instead of stalling on it.
-    const answer = !DESTRUCTIVE_RE.test(text);
-    report('confirm', text, answer);
-    return answer;
+    const destructive = DESTRUCTIVE_RE.test(text);
+
+    if (automating()) {
+      // Answering "no" to a destructive prompt keeps the uploaded file / entered
+      // answers; answering "yes" to anything else lets a confirm-to-proceed step
+      // through instead of stalling on it.
+      const answer = !destructive;
+      report('confirm', text, answer);
+      return answer;
+    }
+
+    /* Not automating. A destructive confirm that NO human click caused was
+       raised by script, and it blocks the page's JavaScript thread until it is
+       answered. Decline it — declining "Remove <file>?" keeps the file, so this
+       can never lose anything — and let the page carry on instead of freezing.
+
+       A confirm the user actually triggered still goes through to the real
+       dialog, so pressing Remove yourself works exactly as it always did. */
+    if (destructive && !humanJustActed()) {
+      report('confirm', text, false);
+      return false;
+    }
+    return orig.confirm.apply(window, arguments);
   };
 
   window.alert = function (message) {
@@ -88,13 +122,99 @@
     return defaultValue == null ? '' : defaultValue;
   };
 
-  /* `beforeunload` handlers turn a navigation into another blocking dialog
-     ("Leave site?"). Chrome only raises it after a user gesture in the tab, which
-     a background job tab normally never has — but a stray gesture is enough to
-     wedge a run, so while automating we neutralise the return value that triggers
-     it. The listener itself is left alone; only the prompt is suppressed. */
-  window.addEventListener('beforeunload', function (e) {
-    if (!automating()) return;
-    try { e.returnValue = undefined; delete e.returnValue; } catch (_) {}
-  }, true);
+  /* ── "Leave site? Changes you made may not be saved." ──────────────────────
+     A `beforeunload` dialog is not a confirm() — the page cannot dismiss it and
+     nothing on the page runs while it is up. It stops the run dead and waits for
+     a human to click Leave, which is exactly what it was doing on Deloitte's
+     /careers/ProfileEdit between application steps.
+
+     The previous attempt here registered a capture-phase listener that cleared
+     `returnValue`. That cannot work: a capture listener runs BEFORE the page's
+     own handler, which then sets `returnValue` again afterwards. And clearing
+     `returnValue` does nothing about `preventDefault()`, which arms the dialog
+     on its own and cannot be un-set once called.
+
+     So the handler must never be able to arm it in the first place. Every
+     beforeunload listener is wrapped, and while automating it is handed a
+     SHIELDED event whose preventDefault() does nothing and whose returnValue
+     cannot be assigned. The handler still runs — sites do real bookkeeping in
+     there — it simply comes out unable to raise a prompt. The wrapper also
+     returns undefined, because returning a string arms the dialog too.
+
+     Gated at DISPATCH time, not at registration: the page registers its handler
+     once at load, long before a job starts. While you are browsing manually the
+     listener runs untouched and you get the warning exactly as the site intended.
+     Only the automation's own navigations are silent. */
+  const origAdd = EventTarget.prototype.addEventListener;
+  const origRemove = EventTarget.prototype.removeEventListener;
+
+  function shieldEvent(e) {
+    try {
+      return new Proxy(e, {
+        get(t, p) {
+          if (p === 'preventDefault') return function () {};   // cannot arm the dialog
+          if (p === 'returnValue') return '';
+          const v = Reflect.get(t, p, t);
+          return typeof v === 'function' ? v.bind(t) : v;
+        },
+        set(t, p, v) {
+          // Belt and braces — the wrapper clears the real event afterwards too,
+          // so this alone is not what suppresses the prompt.
+          if (p === 'returnValue') return true;
+          try { t[p] = v; } catch (_) {}
+          return true;
+        },
+      });
+    } catch (_) { return e; }
+  }
+
+  const wrapped = new WeakMap();
+  function wrapBeforeUnload(listener) {
+    if (typeof listener !== 'function') return listener;
+    const already = wrapped.get(listener);
+    if (already) return already;
+    const w = function (e) {
+      if (!automating()) return listener.apply(this, arguments);   // exactly as the site intended
+      let r;
+      try { r = listener.call(this, shieldEvent(e)); } catch (_) {}
+      // Belt and braces: clear anything the handler managed to set on the real
+      // event, and never pass a string back — either would raise the prompt.
+      try { e.returnValue = undefined; } catch (_) {}
+      report('beforeunload', 'Leave site? suppressed while automating', true);
+      return undefined;
+    };
+    wrapped.set(listener, w);
+    return w;
+  }
+
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    if (type === 'beforeunload' && typeof listener === 'function') {
+      return origAdd.call(this, type, wrapBeforeUnload(listener), options);
+    }
+    return origAdd.apply(this, arguments);
+  };
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+    if (type === 'beforeunload' && typeof listener === 'function' && wrapped.has(listener)) {
+      return origRemove.call(this, type, wrapped.get(listener), options);
+    }
+    return origRemove.apply(this, arguments);
+  };
+
+  /* The other way a page arms it: `window.onbeforeunload = fn`. Assigning the
+     property bypasses addEventListener entirely, so it needs its own shim. */
+  try {
+    let handler = null;
+    let registered = null;
+    Object.defineProperty(window, 'onbeforeunload', {
+      configurable: true,
+      enumerable: true,
+      get() { return handler; },
+      set(fn) {
+        if (registered) { try { origRemove.call(window, 'beforeunload', registered); } catch (_) {} }
+        handler = typeof fn === 'function' ? fn : null;
+        registered = handler ? wrapBeforeUnload(handler) : null;
+        if (registered) { try { origAdd.call(window, 'beforeunload', registered); } catch (_) {} }
+      },
+    });
+  } catch (_) {}
 })();

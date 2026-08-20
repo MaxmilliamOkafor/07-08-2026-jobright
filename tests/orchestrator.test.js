@@ -265,6 +265,260 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('one job queued, duplicate and unsafe rejected', env.store.ua_q.map((j) => j.url), ['https://a.com/1']);
   }
 
+  /* ── 8. a job that stops responding is dropped and the slot reused ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+
+    // A healthy heartbeat keeps the job alive and records what it is doing.
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_PROGRESS', stage: 'filling fields', pct: 60 }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(40);
+    eq('heartbeat records the stage', env.store.ua_q[0].stage, 'filling fields');
+    eq('heartbeat records completeness', env.store.ua_q[0].pct, 60);
+
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('a beating job is left alone', env.store.ua_q[0].status, 'applying');
+
+    // Now go silent: older than the dead-heartbeat window.
+    env.store.ua_q[0].beatAt = Date.now() - 5 * 60 * 1000;
+    env.store.ua_q[0].startedAt = Date.now() - 5 * 60 * 1000;
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('an unresponsive job is dropped', env.store.ua_q[0].status, 'timeout');
+    eq('and says how long it was silent', /Tab went silent for \d+s/.test(env.store.ua_q[0].error || ''), true);
+    eq('the next job takes the slot straight away', env.store.ua_q[1].status, 'applying');
+    eq('still only one tab open', env.tabs.size, 1);
+  }
+
+  /* ── 9. a CAPTCHA holds the slot, but not forever ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'hCaptcha' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(60);
+    eq('the job is marked as needing a person', !!env.store.ua_q[0].needsHuman, true);
+    eq('with the provider named', env.store.ua_q[0].needsHuman.provider, 'hCaptcha');
+
+    env.store.ua_q[0].startedAt = Date.now() - 30 * 60 * 1000;   // way past the job cap
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('the watchdog does not kill it while you are solving', env.store.ua_q[0].status, 'applying');
+
+    // Solve it: the job reports itself unblocked and carries on.
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: false }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(40);
+    eq('clearing the challenge removes the marker', !!env.store.ua_q[0].needsHuman, false);
+  }
+
+  /* ── 10. an unsolved CAPTCHA eventually yields the slot ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'reCAPTCHA' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(60);
+    env.store.ua_q[0].needsHuman.since = Date.now() - 30 * 60 * 1000;   // never solved
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('an unsolved challenge gives up after the grace period', env.store.ua_q[0].status, 'failed');
+    eq('and the run continues', env.store.ua_q[1].status, 'applying');
+  }
+
+  /* ── 11. a CAPTCHA'd job does not hold a concurrency slot ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2'), job('c', 'https://a.com/3')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    eq('one job running', env.tabs.size, 1);
+    const tabId = [...env.tabs.keys()][0];
+
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'hCaptcha' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(90);
+    eq('the next job starts immediately, it does not wait', env.store.ua_q[1].status, 'applying');
+    eq('the blocked tab stays open so it can still be solved', env.tabs.has(tabId), true);
+    eq('so two tabs exist at concurrency 1 — one working, one parked', env.tabs.size, 2);
+    eq('the parked job is still marked as needing you', !!env.store.ua_q[0].needsHuman, true);
+  }
+
+  /* ── 12. the wait for a person is short and configurable ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1')];
+    env.store.ua_mgr_concurrency = 1;
+    env.store.ua_mgr_settings = { humanGraceMs: 30000 };   // 30s, not 15 minutes
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_NEEDS_HUMAN', blocked: true, provider: 'reCAPTCHA' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(60);
+    env.store.ua_q[0].needsHuman.since = Date.now() - 20000;    // 20s in: still waiting
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('still waiting inside the configured window', env.store.ua_q[0].status, 'applying');
+    env.store.ua_q[0].needsHuman.since = Date.now() - 45000;    // past 30s
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('dropped once the configured wait expires', env.store.ua_q[0].status, 'failed');
+    eq('and the reason names the configured window', /not solved within/.test(env.store.ua_q[0].error || ''), true);
+  }
+
+  /* ── 13. reloading a job tab must NOT stop the job ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+
+    // The tab has been quiet long enough to look dead...
+    env.store.ua_q[0].beatAt = Date.now() - 5 * 60 * 1000;
+    env.store.ua_q[0].startedAt = Date.now() - 5 * 60 * 1000;
+    // ...but it is quiet because the user hit reload.
+    for (const l of env.listeners.tabUpdated) l(tabId, { status: 'loading' });
+    await tick(60);
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('a reloading tab is not mistaken for a dead one', env.store.ua_q[0].status, 'applying');
+    eq('its tab stays open', env.tabs.has(tabId), true);
+    eq('the next job has NOT been started in its place', env.store.ua_q[1].status, 'pending');
+
+    // The page comes back and asks who it is — that alone proves it is alive.
+    for (const l of env.listeners.tabUpdated) l(tabId, { status: 'complete' });
+    await tick(60);
+    const who = await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_MGR_WHOAMI' }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve(undefined);
+    });
+    await tick(40);
+    eq('the reloaded page is handed its job straight back', who && who.job && who.job.id, 'a');
+    eq('and it is still the running job', env.store.ua_q[0].status, 'applying');
+
+    // A genuinely dead tab (no navigation) is still reclaimed.
+    env.store.ua_q[0].navAt = Date.now() - 5 * 60 * 1000;
+    env.store.ua_q[0].beatAt = Date.now() - 5 * 60 * 1000;
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('a tab that is silent WITHOUT navigating is still dropped', env.store.ua_q[0].status, 'timeout');
+  }
+
+  /* ── 14. a run must never stall silently with jobs left ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2'), job('c', 'https://a.com/3')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+
+    // Simulate the failure shape: the run is active, jobs are still pending, but
+    // nothing is running — every tab gone and no job marked applying.
+    for (const id of [...env.tabs.keys()]) env.tabs.delete(id);
+    env.store.ua_mgr_tabs = {};
+    env.store.ua_q[0].status = 'skipped';
+    env.store.ua_q[1].status = 'pending';
+    env.store.ua_q[2].status = 'pending';
+    await tick(20);
+
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(120);
+    eq('the supervisor restarts a stalled run', env.store.ua_q[1].status, 'applying');
+    eq('and a tab is open again', env.tabs.size, 1);
+    eq('the run is still active', env.store.ua_mgr_active, true);
+    const logged = (env.store.ua_mgr_log || []).map((l) => JSON.parse(l).m).join(' | ');
+    eq('and it said so rather than vanishing', /Queue stalled with \d+ job/.test(logged), true);
+  }
+
+  /* ── 15. finish() refuses to end a run that still has work ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+
+    // Job a completes; b is still pending. Nothing may end the run here.
+    await send(env.listeners, { type: 'UA_JOB_RESULT', id: 'a', status: 'skipped', ts: 1 });
+    await tick(90);
+    eq('run continues while a job is pending', env.store.ua_mgr_active, true);
+    eq('the pending job was picked up', env.store.ua_q[1].status, 'applying');
+
+    await send(env.listeners, { type: 'UA_JOB_RESULT', id: 'b', status: 'done', ts: 2 });
+    await tick(90);
+    eq('run ends only when nothing is left', env.store.ua_mgr_active, false);
+    const logged = (env.store.ua_mgr_log || []).map((l) => JSON.parse(l).m).join(' | ');
+    eq('the ending is announced with a breakdown', /Queue complete — \d+ applied/.test(logged), true);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
