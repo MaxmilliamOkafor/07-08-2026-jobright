@@ -1154,6 +1154,88 @@ Suite total: **698 assertions**, all green.
 
 ---
 
+## v15.6 — white-labelled ATS: detect the platform, not the company
+
+`apply.deloitte.com/en_US/careers/RegisterEdit?jobId=363384` is **Avature**.
+The registry only knew `/avature\.net.*careers/`, which matches almost nothing
+real — every tenant white-labels Avature onto their own domain — so that URL fell
+through to the generic `Career` catch-all, no driver ran, and the queue sat on an
+account wall it did not recognise as one.
+
+That is not a Deloitte problem. JPMorgan runs Oracle Recruiting at
+`jpmc.fa.oraclecloud.com` and fronts it from `careers.jpmorgan.com`. A host list
+can only ever cover companies someone has already hit.
+
+### Two layers, no domain list
+
+**Route signatures.** Every platform ships fixed route names, and those don't
+change when the domain does. `/hcmUI/CandidateExperience` is Oracle wherever it
+is served from; `/careersection/` is Taleo; `/careers/JobDetail` is Avature.
+Added for Avature, iCIMS (`/jobs/<id>/<slug>/job`), Phenom (`/us/en/job/<id>` —
+JPMorgan's shape), SuccessFactors (`/sfcareer/`), Cornerstone (`/ux/candidate`),
+Brassring (`/TGnewUI/`), PageUp (`/caw/en/job/`), Dayforce (`/CandidatePortal/`),
+UltiPro (`/JobBoard/…/JobDetails`) and Workday (`/wday/cxs/`).
+
+**DOM fingerprints.** When the URL says nothing — a bare `careers.acme.com` —
+the page still does. Workday stamps `data-automation-id` on everything;
+SmartRecruiters renders `spl-*`; Oracle renders `oj-*`; iCIMS wraps its form in
+`#icims_content_iframe`; Greenhouse in `#grnhse_app`; Phenom in `#phApp`.
+Checked most-specific first, and **only** when the URL was inconclusive — a
+confident route match always wins, because a page can carry a marker for a widget
+it merely embeds.
+
+The dispatcher now routes on the resolved platform, so an unknown employer domain
+reaches the right driver instead of the generic fallback.
+
+### The Avature driver
+
+Avature is unusual in where it puts the account wall: not at the front, but in
+the middle, at `/careers/RegisterEdit?jobId=…` — and that page is not an
+email/password box, it is the **whole candidate profile plus the credentials**.
+Until the credentials are in, nothing else on it will submit, so filling the form
+first (which is what the generic flow did) was wasted work every time.
+
+The driver:
+
+* recognises the route it is on — `JobDetail`, `ApplicationMethods`,
+  `RegisterEdit`, `SubmitApplication`, `ApplicationConfirmation`;
+* on `ApplicationMethods`, takes the path that stays on Avature and lets us fill
+  the form — **never** LinkedIn, Indeed, Xing or any other third party, which
+  navigates off-site and strands the job;
+* completes the credentials **first** on any register/login route, or on any page
+  that has grown a password field, then attaches the CV (Avature parses it to
+  prefill), then fills, then advances;
+* advances by waiting for the question set to change, and hands over after two
+  attempts on a step that will not move rather than re-filling it;
+* matches Avature's `<input type="submit" value="Next">` actions, which carry
+  their label in `.value` rather than in text.
+
+`.mandatory` — Avature's required-field marker — now counts as required, along
+with `.req` and `.is-required`.
+
+### Verified
+
+Detection is run for real against 16 white-labelled URLs, including the exact
+Deloitte link that was struggling and JPMorgan's Oracle and Phenom shapes, plus
+three ordinary pages that must **not** be mistaken for an ATS.
+
+Five mutations, five failures: restoring the host-only Avature pattern (7
+assertions), never consulting the fingerprints, letting a fingerprint override a
+confident URL match, removing the white-label routes, and dropping `.mandatory`.
+
+Suite total: **735 assertions**, all green.
+
+### Honest limit
+
+`apply.deloitte.com` is not reachable from the environment this was built in, so
+the driver is written against Avature's documented route structure and the
+universal, label-driven filling machinery — not against a DOM I was able to open.
+The routing and the account-wall ordering are the parts I am confident about. If
+a specific field or button on that form still misbehaves, send the label and I
+will handle it directly.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

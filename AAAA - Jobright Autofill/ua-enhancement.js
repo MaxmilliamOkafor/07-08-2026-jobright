@@ -415,6 +415,29 @@
   // ===================== CONFIG =====================
   const SK = { AA: 'ua_aa', Q: 'ua_q', QA: 'ua_qa', QP: 'ua_qp', POS: 'ua_pos', ANS: 'ua_answers', PROF: 'ua_profile' };
   const ATS = [
+    /* Avature is almost never served from avature.net. Every tenant white-labels
+       it onto their own domain — Deloitte runs it at apply.deloitte.com — so the
+       old /avature\.net.*careers/ pattern matched nothing real, the URL fell
+       through to the generic "Career" catch-all, and the account wall at
+       /careers/RegisterEdit was never recognised as one.
+
+       What IS stable across every tenant is Avature's route names. Matching those
+       makes detection work for any company running it, not just Deloitte. */
+    { n: 'Avature', p: /avature\.net|apply\.deloitte\.com|\/careers\/(JobDetail|ApplicationMethods|QuickApply|RegisterEdit|SubmitApplication|Register|Login|MyProfile|SearchJobs|ForgotPassword|ApplicationConfirmation|EmailFriend)\b/i },
+    /* The same reasoning for the other platforms big employers white-label.
+       Each of these is a ROUTE the platform always uses, whatever domain it is
+       served from, so they work for companies nobody has hit yet. */
+    // careers.acme.com/jobs/12345/software-engineer/job
+    { n: 'iCIMS', p: /icims\.com|\/jobs\/\d+\/[^/]+\/job\b/i },
+    // careers.jpmorgan.com/us/en/job/210536215 — Phenom's fixed locale/job shape
+    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com|\/[a-z]{2}\/[a-z]{2}\/job\/\d{4,}/i },
+    { n: 'SuccessFactors', p: /successfactors\.(com|eu)|sapsf\.(com|eu)|\/sfcareer\/|[?&]company=[A-Za-z0-9]+.*career/i },
+    { n: 'Cornerstone', p: /csod\.com|cornerstoneondemand\.com|\/ux\/candidate|\/careersite\b/i },
+    { n: 'Brassring', p: /brassring\.com|\/TGnewUI\/|\/TGWebHost\//i },
+    { n: 'PageUp', p: /pageuppeople\.com|\/caw\/[a-z]{2}\/job\//i },
+    { n: 'Dayforce', p: /dayforce\.com|\/CandidatePortal\//i },
+    { n: 'UltiPro', p: /ultipro\.com|\/JobBoard\/[^/]+\/JobDetails|OpportunityDetail\?opportunityId/i },
+    { n: 'Workday', p: /myworkdayjobs\.com|myworkdaysite\.com|\/wday\/cxs\//i },
     // --- Platforms added after the CareerHound runs surfaced them (v14.1) ---
     // ADP ships two unrelated candidate apps; myjobs is the one CSV links land on.
     { n: 'ADP myjobs', p: /myjobs\.adp\.com/i },
@@ -2989,7 +3012,8 @@
     if (container) {
       if (container.classList.contains('required')) return true;
       if (container.getAttribute('data-required') === 'true') return true;
-      if (container.querySelector('.required,.asterisk,[aria-label*="required" i]')) return true;
+      // .mandatory is Avature's marker; .req/.is-required turn up elsewhere.
+      if (container.querySelector('.required,.mandatory,.req,.is-required,.asterisk,[aria-label*="required" i]')) return true;
     }
     return false;
   }
@@ -3105,7 +3129,69 @@
   }
 
   // ===================== ATS =====================
-  function detectATS() { for (const a of ATS) if (a.p.test(location.href)) return a.n; return null; }
+  /* ── WHITE-LABELLED ATS: DETECT THE PLATFORM, NOT THE COMPANY ──────────────
+     Deloitte runs Avature at apply.deloitte.com. JPMorgan runs Oracle Recruiting
+     at jpmc.fa.oraclecloud.com and fronts it from careers.jpmorgan.com. Large
+     employers nearly always put the ATS behind their own domain, so a host list
+     can only ever cover the handful of companies someone has already hit — every
+     other one falls through to the generic path and struggles.
+
+     Two layers fix that without needing a domain list:
+
+       1. ROUTE SIGNATURES. Every platform ships fixed route names, and those do
+          not change when the domain does. /hcmUI/CandidateExperience is Oracle
+          wherever it is served from; /careersection/ is Taleo; /careers/JobDetail
+          is Avature. These are in the ATS table above.
+
+       2. DOM FINGERPRINTS. When the URL says nothing — a bare careers.acme.com —
+          the page itself still does. Workday stamps data-automation-id on
+          everything; SmartRecruiters renders spl-* elements; Oracle renders oj-*;
+          iCIMS wraps its form in an #icims_content_iframe. Checked in order of
+          how specific the marker is, and only used when the URL was inconclusive,
+          so it can never override a confident URL match. */
+  const DOM_FINGERPRINTS = [
+    // marker              → driver name        (most specific first)
+    { n: 'iCIMS', sel: '#icims_content_iframe,iframe[src*="icims.com"],.iCIMS_MainWrapper,[id^="icims_"]' },
+    { n: 'SmartRecruiters', sel: 'spl-input,spl-select,spl-button,spl-file-upload,[class*="spl-"]' },
+    { n: 'Oracle Recruiting', sel: 'oj-input-text,oj-select-single,oj-radioset,oj-button,[id^="oj-"]' },
+    { n: 'Workday', sel: '[data-automation-id="jobPostingHeader"],[data-automation-id="applyManually"],[data-automation-id]' },
+    { n: 'Phenom', sel: '#phApp,.phApp-ph-page,[class^="ph-"],[data-ph-at-id]' },
+    { n: 'Eightfold', sel: '[class*="pcs-"],#pcs-body-container,[data-test-id^="position-"]' },
+    { n: 'Greenhouse', sel: '#grnhse_app,iframe[src*="greenhouse.io"],#application_form,[id^="job_application_"]' },
+    { n: 'Lever', sel: '.application-form .application-question,[name^="cards["],.lever-application' },
+    { n: 'Ashby', sel: '[data-testid="application-form"],._container_ashby,[class*="ashby"]' },
+    { n: 'Avature', sel: 'form[action*="/careers/"] .mandatory,#avature,[id^="avature"],[class*="avature"]' },
+    { n: 'SuccessFactors', sel: '[id*="sfCareer"],[class*="jobDescription"][class*="sf"],#careerSiteHeader' },
+    { n: 'Cornerstone', sel: '[data-tag="csod"],[class*="csod-"],#csod-main' },
+    { n: 'Taleo', sel: '#requisitionDescriptionInterface,[id^="requisitionDescriptionInterface"],.taleo' },
+  ];
+
+  /* The name of the platform this page is built with, or null. Deliberately
+     conservative: one marker is not enough if it is a generic one, so the
+     broad selectors are only trusted when nothing more specific matched. */
+  function detectATSByDom() {
+    for (const f of DOM_FINGERPRINTS) {
+      try { if (deepAll(f.sel, 3).some(isVisible) || deepAll(f.sel, 3).length >= 2) return f.n; }
+      catch (_) {}
+    }
+    return null;
+  }
+
+  /* URL first — a confident route match is stronger evidence than a DOM marker,
+     which a page can carry for an embedded widget it merely links to. The generic
+     "Career" catch-all is NOT confident, so a fingerprint is allowed to replace
+     it: that is the case a white-labelled employer domain lands in. */
+  function detectATS() {
+    let byUrl = null;
+    for (const a of ATS) { if (a.p.test(location.href)) { byUrl = a.n; break; } }
+    if (byUrl && byUrl !== 'Career') return byUrl;
+    const byDom = detectATSByDom();
+    if (byDom) {
+      if (byUrl !== byDom) LOG(`ATS recognised from the page itself: ${byDom}${byUrl ? ' (URL only said "' + byUrl + '")' : ''}`);
+      return byDom;
+    }
+    return byUrl;
+  }
   function isWorkday() { return /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i.test(location.href); }
   function isJobright() { return /jobright\.ai/i.test(location.hostname); }
 
@@ -9817,6 +9903,134 @@
     LOG('SmartRecruiters automation complete');
   }
 
+  /* ── Avature (Deloitte and many others) ────────────────────────────────────
+     Avature's candidate portal is white-labelled onto the employer's own domain
+     — apply.deloitte.com is one — so a host-based pattern finds almost none of
+     them. Its ROUTE NAMES are the stable part, and they also tell us which step
+     we are on, which matters because Avature puts an account wall in the middle
+     of the flow rather than at the front:
+
+       /careers/JobDetail/<slug>/<id>   the posting
+       /careers/ApplicationMethods      "apply with resume / manually / LinkedIn"
+       /careers/RegisterEdit?jobId=     register AND fill the application, together
+       /careers/Register, /careers/Login
+       /careers/SubmitApplication       the final step
+       /careers/ApplicationConfirmation done
+
+     RegisterEdit is the one the queue kept stalling on: it is not just an
+     email/password box, it is the whole candidate profile plus the credentials,
+     and until the credentials are in the rest of the page will not submit. */
+  const AVATURE_ROUTE_RE = /\/careers\/(JobDetail|ApplicationMethods|QuickApply|RegisterEdit|SubmitApplication|Register|Login|MyProfile|SearchJobs|ForgotPassword|ApplicationConfirmation|EmailFriend)\b/i;
+  function isAvature() {
+    try {
+      if (/(^|\.)avature\.net$/i.test(location.hostname)) return true;
+      if (/(^|\.)apply\.deloitte\.com$/i.test(location.hostname)) return true;
+      return AVATURE_ROUTE_RE.test(location.pathname);
+    } catch (_) { return false; }
+  }
+  const avatureRoute = () => {
+    try { const m = location.pathname.match(AVATURE_ROUTE_RE); return m ? m[1] : ''; } catch (_) { return ''; }
+  };
+
+  async function avatureAutomation() {
+    LOG('Avature automation starting (route: ' + (avatureRoute() || 'unknown') + ')');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+
+    /* The posting page. Avature's entry point is usually "Apply" or "Apply Now",
+       but some tenants relabel it — the shared apply vocabulary covers those. */
+    if (/JobDetail|SearchJobs/i.test(avatureRoute())) {
+      const apply = findApplyButton();
+      if (apply) {
+        LOG('Avature: opening the application via "' + normLabel(apply.textContent).slice(0, 30) + '"');
+        const before = stepSignature();
+        if (apply.tagName === 'A' && apply.target === '_blank') apply.target = '_self';
+        realClick(apply);
+        noteProgress('clicked Apply');
+        await waitForStepChange(before, 15000);
+      }
+    }
+
+    /* ApplicationMethods offers a choice. Take the one that keeps us on Avature
+       and lets us fill the form ourselves — never LinkedIn or another third
+       party, which navigates off-site and strands the job. */
+    if (/ApplicationMethods|QuickApply/i.test(avatureRoute()) ||
+        /how would you like to apply|application method/i.test((document.body && document.body.innerText || '').slice(0, 3000))) {
+      const methods = deepAll('a,button,[role="button"],input[type=submit],input[type=button]', 120).filter(isVisible);
+      const nameOf = (b) => normLabel(b.textContent || b.value || b.getAttribute('aria-label') || '');
+      const offsite = /linkedin|indeed|google|facebook|xing|seek\b|social/i;
+      const preferred = methods.find(b => !offsite.test(nameOf(b)) && /^(apply (with|using) (my |your )?(resume|cv|profile)|upload (my |your )?(resume|cv)|use (my |your )?(resume|cv))\b/i.test(nameOf(b)))
+        || methods.find(b => !offsite.test(nameOf(b)) && /^(apply manually|manual|fill (it )?(in|out) manually|enter (my )?details|complete the form|without (a )?(resume|cv))\b/i.test(nameOf(b)))
+        || methods.find(b => !offsite.test(nameOf(b)) && /^(continue|next|proceed|apply)\b/i.test(nameOf(b)));
+      if (preferred) {
+        LOG('Avature: application method "' + nameOf(preferred).slice(0, 40) + '"');
+        const before = stepSignature();
+        realClick(preferred);
+        await waitForStepChange(before, 15000);
+      }
+    }
+
+    /* The main loop. RegisterEdit combines account creation with the application,
+       so the credentials go in FIRST — otherwise every later pass re-fills a form
+       the site will refuse anyway. */
+    let stuckSteps = 0;
+    for (let step = 1; step <= 12; step++) {
+      if (autoStopped()) break;
+      if (checkSuccess()) { LOG('Avature: submission confirmed'); break; }
+      await resolveBlockingDialog();
+      if (detectCaptcha()) await waitForCaptchaClear();
+      await waitForFormStable(3000);
+      const stepSig = stepSignature();
+      LOG('Avature: step ' + step + ' (' + (avatureRoute() || 'form') + ')');
+
+      // Credentials first on any register/login route, and on any page that has
+      // grown a password field.
+      if (/RegisterEdit|Register|Login/i.test(avatureRoute()) || deepAll('input[type=password]', 6).some(isVisible)) {
+        await handleAccountAuth();
+        await sleep(600);
+      }
+
+      // Avature parses the CV to prefill, so attach before the field sweep.
+      const cv = await attachResume();
+      if (cv === 'no-resume') LOG('Avature: no résumé saved — the form will likely reject the step');
+
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+      await resolveBlockingDialog();
+      if (resumeUploadInFlight()) { LOG('Avature: waiting for the CV upload to finish'); await waitForResumeUpload(25000); }
+
+      const action = await autoSubmitOrNext();
+      if (action === 'submitted') {
+        await sleep(3000);
+        if (confirmSubmitted()) { LOG('Avature: success confirmed'); break; }
+        continue;
+      }
+      if (action === 'next_page') {
+        if (await waitForStepChange(stepSig, 15000)) { stuckSteps = 0; continue; }
+      }
+
+      // Avature renders its own actions as <input type="submit" value="Next">,
+      // which carries its label in .value rather than in text — controlLabel reads
+      // both, so match on that rather than on textContent alone.
+      const btn = deepAll('input[type=submit],input[type=button],button,a.button,[role="button"]', 150)
+        .filter(isVisible)
+        .find(b => /^\s*(next|continue|save (and|&) continue|proceed|review|submit|apply|finish|done)\b/i.test(controlLabel(b)));
+      if (btn) {
+        LOG('Avature: advancing via "' + controlLabel(btn).slice(0, 30) + '"');
+        realClick(btn);
+        if (isSubmitLabel(controlLabel(btn))) markSubmitAttempt();
+        if (await waitForStepChange(stepSig, 15000)) { stuckSteps = 0; continue; }
+      }
+
+      stuckSteps++;
+      if (stuckSteps >= 2) { LOG('Avature: the step will not advance after two attempts — handing over'); break; }
+    }
+    learnFromFilledFields();
+    LOG('Avature automation complete');
+  }
+
   /* ── Oracle Recruiting Cloud (Fusion) + Taleo ──────────────────────────────
      Oracle ships two unrelated candidate products and a CSV run hits both:
        • Oracle Recruiting Cloud / Fusion — *.oraclecloud.com/hcmUI/CandidateExperience,
@@ -9949,19 +10163,28 @@
     // Create an account / sign in with saved credentials if the ATS requires it.
     await handleAccountAuth();
     const url = location.href;
-    // Route to the platform-specific flow…
-    if (isWorkday()) await workdayAutomation();
-    else if (/greenhouse\.io|boards\.greenhouse/i.test(url)) await greenhouseAutomation();
-    else if (/lever\.co|jobs\.lever/i.test(url)) await leverAutomation();
-    else if (/icims\.com/i.test(url)) await icimsAutomation();
+    /* Route to the platform-specific flow. The URL tests below only recognise a
+       platform served from its own domain; detectATS() also reads the page's own
+       markers, which is what routes a white-labelled employer domain (Deloitte →
+       Avature, JPMorgan → Oracle) to the right driver instead of the generic
+       fallback. Host/route tests win where they match, because they are the more
+       confident evidence; the fingerprint fills in the rest. */
+    const platform = detectATS();
+    if (isWorkday() || platform === 'Workday') await workdayAutomation();
+    else if (/greenhouse\.io|boards\.greenhouse/i.test(url) || platform === 'Greenhouse' || platform === 'Greenhouse EU') await greenhouseAutomation();
+    else if (/lever\.co|jobs\.lever/i.test(url) || platform === 'Lever') await leverAutomation();
+    else if (/icims\.com/i.test(url) || platform === 'iCIMS') await icimsAutomation();
     else if (/linkedin\.com.*\/jobs/i.test(url)) await linkedinEasyApply();
-    else if (/ashbyhq\.com/i.test(url)) await ashbyAutomation();
+    else if (/ashbyhq\.com/i.test(url) || platform === 'Ashby') await ashbyAutomation();
     else if (/bamboohr\.com/i.test(url)) await bamboohrAutomation();
-    else if (isSmartRecruiters()) await smartRecruitersAutomation();
+    else if (isSmartRecruiters() || platform === 'SmartRecruiters') await smartRecruitersAutomation();
+    // Avature — white-labelled onto the employer's domain, so this is routed by
+    // its route names, not by host. Must come before the generic fallbacks.
+    else if (isAvature() || platform === 'Avature') await avatureAutomation();
     // Oracle ships two different candidate products — route each to its own driver
     // instead of sending every oraclecloud URL through the classic-Taleo flow.
-    else if (isOracleCloud()) await oracleCloudAutomation();
-    else if (isTaleo()) await taleoAutomation();
+    else if (isOracleCloud() || platform === 'Oracle Recruiting') await oracleCloudAutomation();
+    else if (isTaleo() || platform === 'Taleo') await taleoAutomation();
     else if (isAdpMyJobs()) await adpMyJobsAutomation();
     else if (/jobvite\.com/i.test(url)) await jobviteAutomation();
     else if (/workable\.com/i.test(url)) await workableAutomation();
@@ -9969,11 +10192,11 @@
     else if (/breezy\.hr|breezyhr\.com/i.test(url)) await breezyhrAutomation();
     else if (/ats\.rippling\.com/i.test(url)) await ripplingAutomation();
     else if (/adp\.com|workforcenow\.adp/i.test(url)) await adpAutomation();
-    else if (/successfactors\.com/i.test(url)) await successFactorsAutomation();
+    else if (/successfactors\.com/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
     else if (/jazz\.co|applytojob\.com/i.test(url)) await jazzhrAutomation();
     else if (/joinhandshake\.com/i.test(url)) await handshakeAutomation();
     else if (/governmentjobs\.com|usajobs\.gov/i.test(url)) await usajobsAutomation();
-    else if (/eightfold\.ai/i.test(url)) await eightfoldAutomation();
+    else if (/eightfold\.ai/i.test(url) || platform === 'Eightfold') await eightfoldAutomation();
     else await tailorFirstFlow();
     // …then a UNIVERSAL completion driver for EVERY ATS: if the application isn't
     // confirmed submitted yet, self-navigate the remaining steps (account walls,
@@ -10334,7 +10557,7 @@
 (function () {
   'use strict';
   // Hosts that ARE an ATS end-to-end — safe to activate anywhere on the site.
-  const ATS_HOSTS = /(^|\.)(jobright\.ai|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|ashbyhq\.com|smartrecruiters\.com|icims\.com|taleo\.net|bamboohr\.com|successfactors\.com|avature\.net|recruitee\.com|workable\.com|personio\.com|rippling\.com|jobvite\.com|jazzhr\.com|applytojob\.com|brassring\.com|ukg\.com|oraclecloud\.com|paylocity\.com|gusto\.com|breezy\.hr|breezyhr\.com|teamtailor\.com|manatal\.com|pinpointhq\.com|eightfold\.ai|phenom\.com|phenompeople\.com|paradox\.ai|hirevue\.com|modernhire\.com|mya\.com|beamery\.com|joinhandshake\.com|governmentjobs\.com|usajobs\.gov|adp\.com|workforcenow\.adp\.com|dover\.com|pinpoint\.dev|polymer\.co|jobscore\.com|recruiterflow\.com|zohorecruit\.com|myjobs\.adp\.com|sapsf\.com|sapsf\.eu|talentbrew\.com|radancy\.com|join\.com|softgarden\.io|softgarden\.de|hrmdirect\.com|csod\.com|cornerstoneondemand\.com|myworkdaysite\.com|smartrecruiters\.com)$/i;
+  const ATS_HOSTS = /(^|\.)(jobright\.ai|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|ashbyhq\.com|smartrecruiters\.com|icims\.com|taleo\.net|bamboohr\.com|successfactors\.com|avature\.net|recruitee\.com|workable\.com|personio\.com|rippling\.com|jobvite\.com|jazzhr\.com|applytojob\.com|brassring\.com|ukg\.com|oraclecloud\.com|paylocity\.com|gusto\.com|breezy\.hr|breezyhr\.com|teamtailor\.com|manatal\.com|pinpointhq\.com|eightfold\.ai|phenom\.com|phenompeople\.com|paradox\.ai|hirevue\.com|modernhire\.com|mya\.com|beamery\.com|joinhandshake\.com|governmentjobs\.com|usajobs\.gov|adp\.com|workforcenow\.adp\.com|dover\.com|pinpoint\.dev|polymer\.co|jobscore\.com|recruiterflow\.com|zohorecruit\.com|myjobs\.adp\.com|apply\.deloitte\.com|sapsf\.com|sapsf\.eu|talentbrew\.com|radancy\.com|join\.com|softgarden\.io|softgarden\.de|hrmdirect\.com|csod\.com|cornerstoneondemand\.com|myworkdaysite\.com|smartrecruiters\.com)$/i;
   // Generic path pattern — only relevant OUTSIDE of mixed-use hosts like
   // LinkedIn / Indeed where /jobs/ is primarily browsing.
   const CAREER_PATH = /(^|\/)(apply|application|applications|careers|career|job-application|submit-application|opportunities|vacancies|openings|employment|hiring|recruit|recruiting|candidate|applicant)(\/|\?|-|_|$)/i;

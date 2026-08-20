@@ -30,22 +30,31 @@ function grabBlock(src, startMarker, endMarker) {
   return src.slice(a, b + endMarker.length);
 }
 const atsTable = grabBlock(enhSrc, '  const ATS = [', '\n  ];');
-const predicates = ['isSmartRecruiters', 'isOracleCloud', 'isTaleo', 'isAdpMyJobs', 'isAdpAny']
-  .map((n) => {
-    const lines = enhSrc.split('\n');
-    const i = lines.findIndex((l) => l.includes('function ' + n + '('));
-    if (i < 0) throw new Error('missing predicate: ' + n);
-    let end = i;
-    while (end < lines.length && !/^\s*\}\s*$/.test(lines[end]) && !lines[end].trimEnd().endsWith('}')) end++;
-    return lines.slice(i, end + 1).join('\n');
-  }).join('\n');
+/* Brace-balanced, so a predicate with a try/catch body comes out whole. The old
+   "stop at the first line ending in }" rule truncated isAvature() mid-function
+   and the harness failed to compile rather than failing an assertion. */
+function grabFn(src, name) {
+  const start = src.search(new RegExp('^  (?:async )?function ' + name + '\\(', 'm'));
+  if (start < 0) throw new Error('missing function: ' + name);
+  let depth = 0, seen = false;
+  for (let i = start; i < src.length; i++) {
+    const c = src[i];
+    if (c === '{') { depth++; seen = true; }
+    else if (c === '}') { depth--; if (seen && depth === 0) return src.slice(start, i + 1); }
+  }
+  throw new Error('unbalanced function: ' + name);
+}
+// The route regex the Avature predicate reads lives beside it.
+const avatureRouteRe = enhSrc.match(/  const AVATURE_ROUTE_RE = [\s\S]*?;\n/)[0];
+const predicates = avatureRouteRe + ['isSmartRecruiters', 'isOracleCloud', 'isTaleo', 'isAdpMyJobs', 'isAdpAny', 'isAvature']
+  .map((n) => grabFn(enhSrc, n)).join('\n');
 
 const ctx = {};
 new Function('exports', 'location', `
   ${atsTable}
   ${predicates}
   function detectATS() { for (const a of ATS) if (a.p.test(location.href)) return a.n; return null; }
-  Object.assign(exports, { ATS, detectATS, isSmartRecruiters, isOracleCloud, isTaleo, isAdpMyJobs, isAdpAny });
+  Object.assign(exports, { ATS, detectATS, isSmartRecruiters, isOracleCloud, isTaleo, isAdpMyJobs, isAdpAny, isAvature });
 `)(ctx, { get href() { return CURRENT.href; }, get hostname() { return CURRENT.hostname; }, get pathname() { return CURRENT.pathname; } });
 
 let CURRENT = {};
@@ -90,6 +99,80 @@ at('https://acme.softgarden.io/job/123456');
 eq('softgarden detected', ctx.detectATS(), 'Softgarden');
 at('https://job-boards.greenhouse.io/acme/jobs/999');
 eq('new greenhouse job-boards host detected', ctx.detectATS(), 'Greenhouse EU');
+
+/* ── 1b. white-labelled ATS ────────────────────────────────────────────────
+   Large employers put the ATS behind their own domain, so a host list only ever
+   covers the companies someone has already hit. Deloitte runs Avature at
+   apply.deloitte.com; the old /avature\.net.*careers/ pattern matched nothing
+   real and the URL fell through to the generic "Career" catch-all — which is
+   why that queue stalled on the /careers/RegisterEdit account wall.
+
+   What does not change with the domain is the platform's ROUTE NAMES. */
+console.log('white-labelled ATS route to the right driver');
+at('https://apply.deloitte.com/en_US/careers/RegisterEdit?jobId=363384');
+eq('the exact Deloitte URL that was struggling → Avature', ctx.detectATS(), 'Avature');
+eq('and the predicate agrees', ctx.isAvature(), true);
+eq('it is not left to the generic career catch-all', ctx.detectATS() === 'Career', false);
+
+for (const [url, want] of [
+  // Avature's routes, on anyone's domain.
+  ['https://apply.deloitte.com/en_US/careers/JobDetail/Senior-Consultant/363384', 'Avature'],
+  ['https://apply.deloitte.com/en_US/careers/ApplicationMethods?jobId=363384', 'Avature'],
+  ['https://apply.deloitte.com/en_US/careers/SubmitApplication?jobId=363384', 'Avature'],
+  ['https://careers.siemens.com/en_GB/careers/JobDetail/Engineer/12345', 'Avature'],
+  ['https://acme.avature.net/careers/JobDetail/Engineer/1', 'Avature'],
+  // JPMorgan and the other big white-labellers.
+  ['https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/job/210536215', 'Oracle Recruiting'],
+  ['https://careers.jpmorgan.com/us/en/job/210536215/software-engineer', 'Phenom'],
+  ['https://careers.acme.com/jobs/12345/software-engineer/job', 'iCIMS'],
+  ['https://jobs.acme.com/careersection/exuni/jobdetail.ftl?job=1', 'Taleo'],
+  ['https://performancemanager.successfactors.eu/sfcareer/jobreqcareer?jobId=1', 'SuccessFactors'],
+  ['https://acme.csod.com/ux/candidate/careersite/1/home/requisition/900', 'Cornerstone'],
+  ['https://sjobs.brassring.com/TGnewUI/Search/Home/Home?partnerid=1&siteid=2', 'Brassring'],
+  ['https://acme.pageuppeople.com/caw/en/job/512345/senior-engineer', 'PageUp'],
+  ['https://acme.dayforcehcm.com/CandidatePortal/en-US/acme/Posting/View/1234', 'Dayforce'],
+  ['https://recruiting.acme.com/JobBoard/abc/JobDetails?jobId=99', 'UltiPro'],
+]) { at(url); eq(`${new URL(url).hostname}${new URL(url).pathname.slice(0, 34)} → ${want}`, ctx.detectATS(), want); }
+
+// The registry must not have become so loose it swallows ordinary pages.
+for (const url of [
+  'https://www.deloitte.com/us/en/about.html',
+  'https://news.acme.com/2026/01/our-new-office',
+  'https://acme.com/blog/how-we-hire',
+]) { at(url); eq(`an ordinary page is not an ATS: ${new URL(url).pathname.slice(0, 30)}`, ctx.detectATS(), null); }
+
+/* When the URL says nothing at all — a bare careers.acme.com — the PAGE still
+   does. These fingerprints are what route an unknown employer domain. */
+console.log('the platform is recognised from the page when the URL is silent');
+const fpBlock = enhSrc.slice(enhSrc.indexOf('  const DOM_FINGERPRINTS = ['), enhSrc.indexOf('\n  function detectATSByDom()'));
+const fpCtx = {};
+new Function('exports', fpBlock + '\nexports.DOM_FINGERPRINTS = DOM_FINGERPRINTS;')(fpCtx);
+const fpFor = (name) => (fpCtx.DOM_FINGERPRINTS.find((f) => f.n === name) || {}).sel || '';
+for (const [platform, marker] of [
+  ['Workday', 'data-automation-id'],
+  ['SmartRecruiters', 'spl-input'],
+  ['Oracle Recruiting', 'oj-input-text'],
+  ['iCIMS', 'icims_content_iframe'],
+  ['Phenom', 'phApp'],
+  ['Greenhouse', 'grnhse_app'],
+  ['Avature', 'mandatory'],
+]) eq(`${platform} is recognised by its own markup (${marker})`, fpFor(platform).includes(marker), true);
+eq('the most specific fingerprint is checked first',
+  fpCtx.DOM_FINGERPRINTS[0].n, 'iCIMS');
+eq('a URL match that is not the generic catch-all still wins over the page',
+  /if \(byUrl && byUrl !== 'Career'\) return byUrl;/.test(enhSrc), true);
+eq('and the generic catch-all can be replaced by a fingerprint',
+  /const byDom = detectATSByDom\(\);/.test(enhSrc), true);
+eq('the dispatcher routes on the resolved platform, not only the URL',
+  /const platform = detectATS\(\);/.test(enhSrc), true);
+eq('Avature has a driver of its own', /async function avatureAutomation\(\)/.test(enhSrc), true);
+eq('and the dispatcher reaches it', /isAvature\(\) \|\| platform === 'Avature'\) await avatureAutomation\(\);/.test(enhSrc), true);
+eq('the Avature account wall is completed before the form is filled',
+  /RegisterEdit\|Register\|Login\/i\.test\(avatureRoute\(\)\)[\s\S]{0,120}?await handleAccountAuth\(\)/.test(enhSrc), true);
+eq('a third-party apply method is never chosen',
+  /const offsite = \/linkedin\|indeed\|google\|facebook\|xing\|seek\\b\|social\/i;/.test(enhSrc), true);
+eq('Avature marks required fields with .mandatory, and that is honoured',
+  /\.required,\.mandatory,\.req,\.is-required,\.asterisk/.test(enhSrc), true);
 
 /* ── 2. native dialog answer policy ───────────────────────────────────────── */
 // The exact regex the MAIN-world hook uses, pulled from the shipped file.
