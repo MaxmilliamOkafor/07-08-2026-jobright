@@ -1236,6 +1236,62 @@ will handle it directly.
 
 ---
 
+## v15.7 — rebased onto Jobright 1.20.0
+
+The build now sits on the official **1.20.0** patch (was 1.19.0). Three of the
+shipped files actually changed:
+
+| File | 1.19.0 | 1.20.0 |
+| --- | --- | --- |
+| `helper-app.41ea2652.js` | 6,582,824 | 6,858,995 |
+| `global.f36301ce.css` | 261,734 | 269,326 |
+| `static/background/index.js` | 555,473 | 594,883 |
+
+`contents.d42e7fcf.js`, `scroll-to-anchor.45fefb1b.js` and `inter.42ee87cb.css`
+are byte-identical, and none of the five files this build adds
+(`ua-enhancement.js`, `ua-orchestrator.js`, `ua-page-hooks.js`, `ua-queue.html`,
+`ua-queue.js`) is touched by the patch — they were designed to be additive for
+exactly this reason.
+
+### What the rebase had to re-apply
+
+**The service-worker hook.** The new `static/background/index.js` replaced ours,
+and ours carried the single appended line that loads the queue engine:
+
+```js
+try { importScripts("/ua-orchestrator.js"); } catch (e) { … }
+```
+
+Without it the CSV queue silently does nothing — the panel opens, jobs sit in the
+list, and no tab ever opens. **The suite caught this**, not a manual review:
+*"service worker does not import ua-orchestrator.js"* failed the moment the file
+was copied in. That assertion exists precisely because this is the one thing a
+patch drop always clobbers.
+
+**The manifest**, rebuilt on the 1.20.0 base rather than hand-edited: our two
+content scripts prepended so `ua-page-hooks.js` (MAIN world, `document_start`)
+and `ua-enhancement.js` run *before* Jobright's own; `sidePanel`, `alarms`,
+`contextMenus` and `notifications` added to permissions; `side_panel` pointed at
+`ua-queue.html`; and the web-accessible-resources list filtered to files that
+actually exist in the drop plus our own — the stock list names assets the unpacked
+build does not ship, and Chrome refuses to load an extension that lists a missing
+resource.
+
+### Checked, not assumed
+
+Every selector this build reaches into Jobright's own sidebar with still exists in
+1.20.0 — `auto-fill-button`, `application-dashboard-tailor-resume`,
+`continue-button`, `continue-button-disabled`,
+`tailor-resume-loading-linear-progress`, `spin-loading`, `jobright-helper-id`,
+`jobright-helper-content-container`, `plasmo-csui`. Two optional ones
+(`external-job-generate-resume-button`, `resume-loading-container`) are absent —
+and were absent in 1.19.0 too, so that is not a regression; both sit behind `||`
+fallbacks.
+
+Suite total: **735 assertions**, all green on 1.20.0.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
