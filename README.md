@@ -1292,6 +1292,107 @@ Suite total: **735 assertions**, all green on 1.20.0.
 
 ---
 
+## v15.8 — the run stopping, the panel vanishing, and "Leave site?"
+
+### One bug, three symptoms
+
+The run halting on its own, the **Automation In Progress** panel disappearing
+mid-run, and a queue reporting `0 applied` while looking busy were all the same
+defect.
+
+A content script has exactly one piece of per-tab scratch space: `window.name`.
+**Chrome clears it every time a tab navigates between different sites**
+(window.name isolation). A CSV run drives *one* tab from `greenhouse.io` to
+`lever.co` to `smartrecruiters.com` — so the runner marker was wiped at the
+**first cross-site job**, and from that moment:
+
+* `processQ()` returned at `if (!isRunnerTab()) return;` — **the queue stopped
+  advancing, permanently**;
+* the master gate answered "toggle OFF", so the automation was **forbidden from
+  acting at all** on that page;
+* `updateCtrl()` took its else branch and removed the panel;
+* the watchdog that would have re-mounted the panel was itself gated on
+  `isRunnerTab()`, so nothing brought it back.
+
+It looked random because it depends on whether consecutive jobs happen to share a
+site. It isn't random — it's the first cross-site hop.
+
+The service worker's view of a tab id is unaffected by navigation, so it now
+answers `UA_WHICH_TAB`, and the tab driving the run is recorded in
+`ua_runner_tab`. `window.name` stays as the cheap synchronous path for same-site
+hops; the tab id is the evidence that outlives them. Both copies of the check
+were fixed — the fail-closed master gate has its own, in its own scope, and that
+one going false is what silenced the automation entirely. It is **still
+fail-closed**: with no evidence either way, the gate stays shut, a different tab
+is still refused, and a stale `ua_runner_tab` cannot reopen it once the run ends.
+
+The panel also now hangs off `<html>` rather than `<body>` (single-page apps
+replace `<body>` wholesale and took the panel with it), carries `!important` on
+display and z-index so a site's CSS cannot hide the only Pause/Skip/Quit controls
+the run has, and may only be hidden by a run that has genuinely **finished** —
+never merely because identity has not been re-confirmed yet.
+
+### "Leave site? Changes you made may not be saved."
+
+A `beforeunload` dialog is not a `confirm()`. The page cannot dismiss it, nothing
+runs while it is up, and it waits for a human to press **Leave** — which is what
+it was doing on Deloitte's `/careers/ProfileEdit` between application steps.
+
+There was already a hook here and it could not work: it registered a
+capture-phase listener that cleared `returnValue`, but a capture listener runs
+**before** the page's own handler, which then sets it again afterwards. And
+clearing `returnValue` does nothing about `preventDefault()`, which arms the
+dialog on its own and cannot be un-set once called.
+
+So the handler is now never able to arm it. Every `beforeunload` listener is
+wrapped, and while automating it receives a **shielded** event whose
+`preventDefault()` does nothing and whose `returnValue` cannot be assigned; the
+wrapper also returns `undefined`, because returning a string arms the dialog too.
+`window.onbeforeunload = fn` bypasses `addEventListener` entirely, so it has its
+own shim. Only `beforeunload` is touched — every other event type passes through
+untouched.
+
+The site's own handler still **runs** (sites do real bookkeeping in there); it
+simply comes out unable to raise a prompt. And the decision is made when the
+event **fires**, not when the listener is registered — the page registers its
+handler at load, long before a job starts, so while you are browsing manually you
+get the warning exactly as the site intended. The shield is also now armed for
+the *whole* run rather than only while a dispatch is in flight: the prompt fires
+during the navigation **between** steps, which is precisely the gap where the
+flag used to be handed back.
+
+### 1000+ jobs
+
+The engine has always supported up to 8 parallel job tabs, but there was no way
+to change it and it defaulted to 3. **Parallel jobs** is now a control in the
+Queue Manager (1–8). The slot filler re-reads it on every pass, so raising it
+takes effect on the next job rather than the next run.
+
+### Verified
+
+A new `beforeunload.test.js` runs the real hook file in a sandbox with a working
+`EventTarget` and asks the only question that matters — *after every listener has
+run, would Chrome raise the dialog?* — across all three ways a site arms it
+(`preventDefault()`, `returnValue = string`, returning a string), via both
+`addEventListener` and `window.onbeforeunload`, automating and not.
+
+Sixteen mutations, sixteen failures, including: the queue driver bailing on a
+wiped marker again, the panel hidden whenever identity is unconfirmed, the
+watchdog gated on the thing it repairs, the panel back on `<body>`, the gate copy
+reverted, the worker no longer answering *which tab*, the old capture-listener
+`beforeunload` approach, `preventDefault` not neutralised, a returned string still
+arming the dialog, and the shield armed while **not** automating.
+
+One of those mutations found a real bug in this change: the new
+`chrome.runtime.sendMessage` probe sat in the same `try` block as the storage
+listener registration, so a context where it threw would have left the gate
+unable to notice the toggle at all. It is isolated in its own `try` now, and the
+gate suite covers a context with no `sendMessage`.
+
+Suite total: **806 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

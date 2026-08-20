@@ -837,5 +837,91 @@ eq('the native select answerer does', /optionIndexForDecision\(texts, decision, 
 eq('the custom dropdown answerer does', /optionIndexForDecision\(texts, decision, lbl \|\| ''\)/.test(src), true);
 eq('and pickChoice does', /optionIndexForDecision\(labels, want, question\)/.test(src), true);
 
+/* ── 25. the run must not end itself on a cross-site job ──────────────────── */
+/* One defect, three symptoms: the run stopping on its own, the "Automation In
+   Progress" panel vanishing mid-run, and a queue that looks busy while reporting
+   0 applied.
+
+   A content script has exactly one piece of per-tab scratch space — window.name —
+   and Chrome CLEARS it whenever a tab navigates between different SITES. A CSV
+   run drives ONE tab from greenhouse.io to lever.co to smartrecruiters.com, so
+   the runner marker was wiped at the first cross-site job. It looked random
+   because it depends on whether consecutive jobs share a site. It isn't. */
+console.log('runner identity survives a cross-site navigation');
+eq('the service worker can answer "which tab am I?"', /msg\.type === 'UA_WHICH_TAB'/.test(orch), true);
+eq('it answers from the sender, which no navigation can forge',
+  /const tabId = sender && sender\.tab && sender\.tab\.id;\n        sendResponse\(\{ tabId/.test(orch), true);
+
+/* Two copies exist on purpose — the fail-closed master gate at the top of the
+   file has its own, in its own scope. BOTH had the bug: the gate's copy going
+   false meant the run was forbidden from acting at all on that page. */
+const runnerCopies = src.match(/function isRunnerTab\(\) \{[\s\S]*?\n  \}/g) || [];
+eq('both copies of the runner check were fixed, not just one', runnerCopies.length, 2);
+for (const [i, copy] of runnerCopies.entries()) {
+  eq(`copy ${i + 1}: window.name is still the fast synchronous path`,
+    /window\.name\.indexOf\(RUNNER_PREFIX\) === 0\) return true;/.test(copy), true);
+  eq(`copy ${i + 1}: but it is no longer the only evidence`,
+    /_runnerTabConfirmed === true|myTab === runnerTabId/.test(copy), true);
+}
+eq('the master gate learns which tab it is', /chrome\.runtime\.sendMessage\(\{ type: 'UA_WHICH_TAB' \}/.test(src), true);
+eq('and which tab is driving the run', /'ua_aa', 'ua_qa', 'ua_runner_tab'/.test(src), true);
+eq('it keeps that in sync while the run moves', /if \(changes\.ua_runner_tab\)/.test(src), true);
+eq('the gate is still fail-closed without evidence',
+  /return myTab != null && runnerTabId != null && myTab === runnerTabId;/.test(src), true);
+
+const confirm = body('confirmRunnerTab');
+eq('the marker is rebuilt by asking the worker for this tab id', /const id = await myTabId\(\);/.test(confirm), true);
+eq('it is compared against the tab that started the run', /const match = id === stored;/.test(confirm), true);
+eq('window.name is restored so same-site hops stay cheap',
+  /if \(match\) \{[\s\S]{0,140}?window\.name = RUNNER_PREFIX/.test(confirm), true);
+eq('a worker that cannot answer never downgrades a confirmed runner',
+  /if \(id == null\) return _runnerTabConfirmed === true;/.test(confirm), true);
+eq('and a finished run clears it', /\(await st\.get\(SK\.QA\)\) !== true\) \{ _runnerTabConfirmed = false/.test(confirm), true);
+eq('starting a run records which tab is driving it',
+  /st\.set\(RUNNER_TAB_KEY, id\)/.test(body('markRunnerTab')), true);
+eq('and finishing one forgets it', /st\.set\(RUNNER_TAB_KEY, null\)/.test(body('unmarkRunnerTab')), true);
+
+eq('the queue driver asks before standing down, instead of ending the run',
+  /if \(!isRunnerTab\(\) && !\(await confirmRunnerTab\(\)\)\) return;/.test(body('processQ')), true);
+eq('the old unconditional bail is gone',
+  /\/\/ Only the dedicated runner tab drives the queue[\s\S]{0,120}?if \(!isRunnerTab\(\)\) return;/.test(src), false);
+
+/* ── 26. the progress panel stays up until the run is actually finished ────── */
+console.log('the Automation In Progress panel cannot vanish mid-run');
+const upd = body('updateCtrl');
+eq('only a finished run may hide the panel', /\} else if \(!qActive\) \{/.test(upd), true);
+eq('an unconfirmed identity does not hide it',
+  /\} else \{ ctrl\.classList\.remove\('show'\); \}/.test(upd), false);
+const obs = body('observe');
+eq('the panel watchdog is not gated on the thing it exists to repair',
+  /if \(!isRunnerTab\(\)\) confirmRunnerTab\(\)\.then/.test(obs), true);
+eq('it re-mounts and repaints every tick while a run is active',
+  /ensureOverlay\(\);\n      updateCtrl\(\);/.test(obs), true);
+const ovl = body('ensureOverlay');
+eq('the panel hangs off <html>, so a single-page app replacing <body> cannot take it',
+  /const host = document\.documentElement \|\| document\.body;/.test(ovl), true);
+eq('page CSS cannot hide it', /#ua-ctrl\.show\{display:block!important\}/.test(src), true);
+eq('nor can page CSS clamp it behind other content',
+  /z-index:2147483647!important/.test(src), true);
+eq('a cross-site boot still mounts the panel once identity is known',
+  /confirmRunnerTab\(\)\.then\(\(ok\) => \{ if \(ok\) ensureOverlay\(\); \}\);/.test(src), true);
+
+/* ── 27. a 1000-job CSV must not run one at a time ─────────────────────────── */
+console.log('throughput is under the user\'s control');
+eq('the engine already supports parallel job tabs', /return Math\.min\(8, Math\.max\(1, isNaN\(n\) \? 3 : n\)\);/.test(orch), true);
+eq('and now reports the value in force, so the panel does not reset it',
+  /concurrency: Math\.min\(8, Math\.max\(1, parseInt\(await get\(K\.CONC\), 10\) \|\| 3\)\)/.test(orch), true);
+const panelHtml = fs.readFileSync(process.argv[2].replace(/ua-enhancement\.js$/, 'ua-queue.html'), 'utf8');
+const panelJs = fs.readFileSync(process.argv[2].replace(/ua-enhancement\.js$/, 'ua-queue.js'), 'utf8');
+eq('the Queue Manager exposes it', /id="optConc"/.test(panelHtml), true);
+eq('bounded to what the engine accepts', /min="1" max="8"/.test(panelHtml), true);
+eq('changing it is saved', /ua_mgr_concurrency: Math\.max\(1, Math\.min\(8, parseInt\(\$\('optConc'\)\.value, 10\) \|\| 3\)\)/.test(panelJs), true);
+eq('and takes effect without a restart, because the slot filler re-reads the key',
+  /const \[cfg, conc, map\] = \[await settings\(\), await concurrency\(\), await reconcileTabs\(\)\];/.test(orch), true);
+eq('the control is wired to the same save path as the rest',
+  /'optSkip', 'optTailor', 'optConc', 'optTimeout', 'optStall', 'optHuman'/.test(panelJs), true);
+eq('and it shows the value actually in force when the panel opens',
+  /if \(typeof s\.concurrency === 'number'\) \$\('optConc'\)\.value = String\(s\.concurrency\);/.test(panelJs), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

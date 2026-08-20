@@ -160,6 +160,10 @@
       stallMs: Math.max(5000, Number(s.stallMs) || DEFAULTS.stallMs),
       humanGraceMs: Math.max(15000, Number(s.humanGraceMs) || DEFAULTS.humanGraceMs),
       interJobDelayMs: Math.max(0, Number(s.interJobDelayMs) ?? DEFAULTS.interJobDelayMs),
+      // Lives in its own key (the slot filler reads it directly on every pass, so
+      // a change takes effect on the next job rather than the next run), but it is
+      // reported here so the panel can show the value actually in force.
+      concurrency: Math.min(8, Math.max(1, parseInt(await get(K.CONC), 10) || 3)),
     };
   }
   async function concurrency() {
@@ -655,6 +659,20 @@
       if (msg.type === 'UA_JOB_RESULT') {
         onResult({ id: msg.id, status: msg.status, error: msg.error, ts: msg.ts || Date.now() })
           .then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
+        return true;
+      }
+
+      /* "Which tab am I?" — the one thing a content script cannot work out for
+         itself, and the thing the in-page runner needs to survive a cross-origin
+         navigation. window.name is the only per-tab scratch space a content
+         script has, and Chrome CLEARS IT whenever a tab navigates between sites
+         (window.name isolation). A CSV run drives ONE tab from greenhouse.io to
+         lever.co to smartrecruiters.com, so the runner marker was wiped at the
+         first cross-site hop. The service worker's view of a tab id is not
+         affected by any of that. */
+      if (msg.type === 'UA_WHICH_TAB') {
+        const tabId = sender && sender.tab && sender.tab.id;
+        sendResponse({ tabId: tabId == null ? null : tabId });
         return true;
       }
 

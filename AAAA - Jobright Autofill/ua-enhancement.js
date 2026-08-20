@@ -42,9 +42,20 @@
   let queueRunning = false;   // ua_qa  — the in-page single-tab runner
 
   const RUNNER_PREFIX = 'UAQRUN::';
+  let runnerTabId = null;     // ua_runner_tab — which tab is driving the run
+  let myTab = null;           // this tab's id, as the service worker sees it
+  /* window.name is the only per-tab scratch space a content script has, and
+     Chrome CLEARS it on every cross-SITE navigation. A CSV run walks ONE tab
+     across greenhouse.io, lever.co, smartrecruiters.com… so the marker was gone
+     from the first cross-site job — and this gate then answered "toggle OFF",
+     which forbade the run from doing anything at all on that page. The tab id
+     does not change, so it is the evidence that survives.
+
+     Still fail-closed: if neither piece of evidence is available, the gate stays
+     shut exactly as before. */
   function isRunnerTab() {
-    try { return typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0; }
-    catch (_) { return false; }
+    try { if (typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0) return true; } catch (_) {}
+    return myTab != null && runnerTabId != null && myTab === runnerTabId;
   }
   // Set by the content script for the lifetime of a Queue-Manager-driven job.
   function managedJobActive() {
@@ -68,16 +79,28 @@
   };
 
   try {
-    chrome.storage.local.get(['ua_aa', 'ua_qa'], (d) => {
+    chrome.storage.local.get(['ua_aa', 'ua_qa', 'ua_runner_tab'], (d) => {
       void chrome.runtime.lastError;
       toggleOn = (d && d.ua_aa) === true;
       queueRunning = (d && d.ua_qa) === true;
+      runnerTabId = (d && typeof d.ua_runner_tab === 'number') ? d.ua_runner_tab : null;
       ready = true;
     });
+    /* Which tab is this? Only the service worker can say, and its answer is not
+       affected by navigation. Isolated in its own try: this is a nice-to-have,
+       and it must never be able to prevent the storage listener below from being
+       registered — without that listener the gate stops noticing the toggle. */
+    try {
+      chrome.runtime.sendMessage({ type: 'UA_WHICH_TAB' }, (r) => {
+        void chrome.runtime.lastError;
+        if (r && typeof r.tabId === 'number') myTab = r.tabId;
+      });
+    } catch (_) {}
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (changes.ua_aa) { toggleOn = changes.ua_aa.newValue === true; ready = true; }
       if (changes.ua_qa) queueRunning = changes.ua_qa.newValue === true;
+      if (changes.ua_runner_tab) runnerTabId = typeof changes.ua_runner_tab.newValue === 'number' ? changes.ua_runner_tab.newValue : null;
     });
   } catch (_) {
     // No storage access at all → stay fail-closed rather than assuming ON.
@@ -6463,9 +6486,73 @@
   // browsing. window.name survives same-tab navigations (even cross-origin), so we
   // tag the tab that started the run and only that tab processes/navigates.
   const RUNNER_PREFIX = 'UAQRUN::';
-  function isRunnerTab() { try { return typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0; } catch (_) { return false; } }
-  function markRunnerTab() { try { if (window.name.indexOf(RUNNER_PREFIX) !== 0) window.name = RUNNER_PREFIX + (window.name || ''); } catch (_) {} }
-  function unmarkRunnerTab() { try { if (typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0) window.name = window.name.slice(RUNNER_PREFIX.length); } catch (_) {} }
+  /* ── WHICH TAB IS DRIVING THE RUN ──────────────────────────────────────────
+     This was the single defect behind three separate symptoms: the run stopping
+     on its own, the "Automation In Progress" panel vanishing mid-run, and a
+     queue that reports 0 applied while looking busy.
+
+     A content script has exactly one piece of per-tab scratch space: window.name.
+     Chrome CLEARS window.name whenever a tab navigates between different sites
+     (window.name isolation). A CSV run drives ONE tab from greenhouse.io to
+     lever.co to smartrecruiters.com — so the runner marker was wiped at the
+     FIRST cross-site job, and from then on:
+
+       • processQ() returned early at `if (!isRunnerTab()) return;` — the queue
+         stopped advancing, permanently;
+       • updateCtrl() took its else branch and removed the panel;
+       • the 600ms watchdog that would have re-mounted the panel was itself
+         gated on isRunnerTab(), so nothing brought it back.
+
+     It looked random because it depends on whether consecutive jobs happen to be
+     on the same site. It is not random: it is the first cross-site hop.
+
+     The service worker's view of a tab id survives every navigation, so ask it.
+     window.name stays as the synchronous fast path for same-site hops; the
+     worker's answer is the authority that outlives them. */
+  let _runnerTabConfirmed = null;                  // null = not asked yet
+  const RUNNER_TAB_KEY = 'ua_runner_tab';
+  function myTabId() {
+    return new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_WHICH_TAB' }, (r) => {
+          void chrome.runtime.lastError;
+          res(r && typeof r.tabId === 'number' ? r.tabId : null);
+        });
+      } catch (_) { res(null); }
+    });
+  }
+  function isRunnerTab() {
+    try { if (typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0) return true; } catch (_) {}
+    return _runnerTabConfirmed === true;
+  }
+  /* Re-establish the marker after a cross-site navigation wiped it. Cheap, and
+     the answer is cached — this runs on load and from the panel watchdog. */
+  async function confirmRunnerTab() {
+    try {
+      if ((await st.get(SK.QA)) !== true) { _runnerTabConfirmed = false; return false; }
+      const stored = await st.get(RUNNER_TAB_KEY);
+      if (stored == null) return _runnerTabConfirmed === true;
+      const id = await myTabId();
+      if (id == null) return _runnerTabConfirmed === true;      // can't tell — don't downgrade
+      const match = id === stored;
+      _runnerTabConfirmed = match;
+      if (match) {
+        try { if (window.name.indexOf(RUNNER_PREFIX) !== 0) window.name = RUNNER_PREFIX + (window.name || ''); } catch (_) {}
+      }
+      return match;
+    } catch (_) { return _runnerTabConfirmed === true; }
+  }
+  function markRunnerTab() {
+    try { if (window.name.indexOf(RUNNER_PREFIX) !== 0) window.name = RUNNER_PREFIX + (window.name || ''); } catch (_) {}
+    _runnerTabConfirmed = true;
+    // Remember WHICH tab, so the marker can be rebuilt after a cross-site hop.
+    myTabId().then((id) => { if (id != null) { try { st.set(RUNNER_TAB_KEY, id); } catch (_) {} } });
+  }
+  function unmarkRunnerTab() {
+    try { if (typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0) window.name = window.name.slice(RUNNER_PREFIX.length); } catch (_) {}
+    _runnerTabConfirmed = false;
+    try { st.set(RUNNER_TAB_KEY, null); } catch (_) {}
+  }
 
   // Has this URL already been applied to in a previous session?
   function alreadyApplied(url) {
@@ -6933,7 +7020,10 @@
   async function processQ() {
     if (!qActive || qPaused || !queue.length) return;
     // Only the dedicated runner tab drives the queue — never hijack other tabs.
-    if (!isRunnerTab()) return;
+    // But a wiped window.name is not evidence that this is someone else's tab:
+    // ask the service worker before standing down, or a cross-site job ends the
+    // run for good.
+    if (!isRunnerTab() && !(await confirmRunnerTab())) return;
     setAutomationFlag(true);
     const c = queue.find(j => j.status === 'applying');
     if (c) {
@@ -7752,8 +7842,11 @@
 /* Anchored to the LEFT edge — Jobright's own sidebar (with the field checklist) lives on
    the RIGHT, so a right-anchored overlay sat right on top of it. Left keeps both readable.
    Still draggable; a saved position overrides this. */
-#ua-ctrl{position:fixed;top:80px;left:20px;right:auto;z-index:2147483647;display:none;font-family:'Inter',system-ui,-apple-system,sans-serif}
-#ua-ctrl.show{display:block}
+/* !important throughout: this panel lives in the host page's DOM, and a site
+   whose CSS says div{display:none!important} or clamps z-index would otherwise
+   hide the only Pause/Skip/Quit controls the run has. */
+#ua-ctrl{position:fixed!important;top:80px;left:20px;right:auto;z-index:2147483647!important;display:none;visibility:visible!important;opacity:1!important;font-family:'Inter',system-ui,-apple-system,sans-serif}
+#ua-ctrl.show{display:block!important}
 #ua-ctrl-card{width:300px;background:#0e0e0f;border:1px solid #232325;border-radius:14px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:#e7e7ea}
 .uc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .uc-title{font-size:14px;font-weight:700;color:#fff;letter-spacing:.1px}
@@ -7963,7 +8056,11 @@
   function ensureOverlay() {
     try {
       if (window.self !== window.top) return null;
-      const host = document.body || document.documentElement;
+      /* documentElement, not body: single-page apps routinely replace the whole
+         of <body>, which took the panel with it. A fixed-position element is
+         happy as a child of <html>, and this also lets the panel mount at
+         document_start before <body> exists. */
+      const host = document.documentElement || document.body;
       if (!host) return null;
       let ctrl = document.getElementById('ua-ctrl');
       if (ctrl && ctrl.isConnected) return ctrl;
@@ -9270,7 +9367,12 @@
         if (qPaused) { pauseBtn.textContent = 'Resume'; pauseBtn.className = 'uc-act resume'; }
         else { pauseBtn.textContent = 'Pause'; pauseBtn.className = 'uc-act pause'; }
       }
-    } else { ctrl.classList.remove('show'); }
+    } else if (!qActive) {
+      /* Only a run that is genuinely OVER may hide the panel. A tab that simply
+         has not re-confirmed it is the runner yet must not — that is what made
+         the panel vanish after the first cross-site job. */
+      ctrl.classList.remove('show');
+    }
   }
 
   // Friendly fallback label when a queued job has no captured company name.
@@ -9314,7 +9416,27 @@
     // Watchdog: keep the control panel alive throughout the run. If anything removes
     // it (page script, re-render), re-mount it within ~600ms so the controls never
     // disappear while automation is in progress.
-    setInterval(() => { if (qActive && isRunnerTab()) { ensureOverlay(); } }, 600);
+    setInterval(() => {
+      if (!qActive) {
+        // Run over: hand the page back. The MAIN-world dialog hooks read this
+        // attribute, so leaving it set would keep suppressing "Leave site?" long
+        // after the automation stopped — the user must get their warnings back.
+        if (!autoApply) setAutomationFlag(false);
+        return;
+      }
+      // Re-establish the runner marker if a cross-site navigation wiped it, then
+      // re-mount the panel. Gating this on isRunnerTab() — the very thing that
+      // breaks — is why the panel never came back on its own.
+      if (!isRunnerTab()) confirmRunnerTab().then((ok) => { if (ok) { ensureOverlay(); updateCtrl(); } });
+      /* Keep the automation flag set for the WHOLE run, not just while a dispatch
+         happens to be in flight. The MAIN-world hooks use it to decide whether to
+         suppress a blocking dialog, and the "Leave site?" prompt fires during the
+         navigation BETWEEN steps — precisely the gap where the flag used to be
+         handed back, so the shield was down exactly when it was needed. */
+      if (isRunnerTab()) setAutomationFlag(true);
+      ensureOverlay();
+      updateCtrl();
+    }, 600);
   }
 
   // ===================== APPLY-BUTTON OPENER (reveal the form on listing pages) =====================
@@ -10278,6 +10400,11 @@
     if (isRunnerTab()) ensureOverlay();
     // Load queue state FIRST so we know whether a bulk run is in progress.
     await load();
+    /* Re-establish the runner marker before anything reads it. A cross-site
+       navigation wipes window.name, and every "am I driving this run?" decision
+       below — mounting the panel, mounting the observers, driving the queue —
+       depends on the answer. */
+    if (qActive && !isRunnerTab()) { await confirmRunnerTab(); if (isRunnerTab()) { ensureOverlay(); updateCtrl(); } }
     // Master gate: don't mount the sidebar UI / observers on heavy non-application
     // pages. BUT never skip when a queue is running — we must mount the controls
     // and drive automation on every imported job URL (listing pages included,
@@ -10415,6 +10542,10 @@
       const el = document.getElementById('ua-ctrl');
       if (++_earlyTries > 25 || (el && el.isConnected)) clearInterval(_early);
     }, 150);
+  } else {
+    /* window.name says nothing — but a cross-site hop wipes it, so this may well
+       be the runner tab mid-run. Ask, and mount the panel the moment we know. */
+    confirmRunnerTab().then((ok) => { if (ok) ensureOverlay(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

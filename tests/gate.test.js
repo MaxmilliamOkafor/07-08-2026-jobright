@@ -25,7 +25,7 @@ const end = src.indexOf('\n})();', start);
 if (end < 0) throw new Error('gate IIFE has no terminator');
 const gateSrc = src.slice(start, end + '\n})();'.length);
 
-function makeEnv({ storage = {}, windowName = '', autoAttr = null, storageThrows = false } = {}) {
+function makeEnv({ storage = {}, windowName = '', autoAttr = null, storageThrows = false, noSendMessage = false, tabId = null } = {}) {
   const listeners = [];
   const docEl = {
     _attrs: autoAttr ? { 'data-ua-auto': autoAttr } : {},
@@ -34,7 +34,12 @@ function makeEnv({ storage = {}, windowName = '', autoAttr = null, storageThrows
     removeAttribute(k) { delete this._attrs[k]; },
   };
   const chrome = {
-    runtime: { lastError: undefined },
+    // The gate asks the worker "which tab am I?" (see ua-enhancement.js). It must
+    // survive a context where that call is unavailable or throws — if it could
+    // break, the storage listener below it would never be registered and the gate
+    // would stop noticing the toggle entirely.
+    runtime: Object.assign({ lastError: undefined },
+      noSendMessage ? {} : { sendMessage: (_m, cb) => setTimeout(() => cb({ tabId }), 0) }),
     storage: {
       local: {
         get(keys, cb) {
@@ -168,6 +173,45 @@ const settle = () => new Promise((r) => setTimeout(r, 5));
   eq('Fully-Automated dispatch hands the flag back', /finally \{\s*\n\s*if \(!ownedElsewhere\) setAutomationFlag\(false\);/.test(src), true);
   void guarded;
 
-  console.log(`\n${pass} passed, ${fail} failed`);
+    // A context where sendMessage is missing entirely must still gate correctly.
+  {
+    const env = makeEnv({ storage: { ua_aa: false }, noSendMessage: true });
+    await settle();
+    eq('a missing sendMessage does not break the gate', env.sandbox.window.__uaAutoAllowed(), false);
+    env.fire({ ua_aa: { newValue: true } });
+    eq('and the toggle still takes effect immediately', env.sandbox.window.__uaAutoAllowed(), true);
+  }
+
+  /* The cross-site case. A CSV run drives ONE tab across many sites, and Chrome
+     clears window.name every time it changes site — so mid-run the runner tab
+     looks like any other tab. The gate used to answer "toggle OFF" and forbid
+     the run from acting at all. The tab id is what survives. */
+  {
+    const env = makeEnv({ storage: { ua_aa: false, ua_qa: true, ua_runner_tab: 42 }, windowName: '', tabId: 42 });
+    await settle();
+    eq('a runner tab whose window.name was wiped is still allowed to work',
+      env.sandbox.window.__uaAutoAllowed(), true);
+    eq('and it says why', env.sandbox.window.__uaAutoReason(), 'queue runner tab');
+  }
+  {
+    const env = makeEnv({ storage: { ua_aa: false, ua_qa: true, ua_runner_tab: 42 }, windowName: '', tabId: 7 });
+    await settle();
+    eq('a DIFFERENT tab is still not allowed to drive the run',
+      env.sandbox.window.__uaAutoAllowed(), false);
+  }
+  {
+    const env = makeEnv({ storage: { ua_aa: false, ua_qa: true, ua_runner_tab: 42 }, windowName: '', tabId: null });
+    await settle();
+    eq('and with no evidence at all the gate stays closed',
+      env.sandbox.window.__uaAutoAllowed(), false);
+  }
+  {
+    const env = makeEnv({ storage: { ua_aa: false, ua_qa: false, ua_runner_tab: 42 }, windowName: '', tabId: 42 });
+    await settle();
+    eq('a stale runner-tab id does not reopen the gate once the run has ended',
+      env.sandbox.window.__uaAutoAllowed(), false);
+  }
+
+console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

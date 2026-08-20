@@ -413,6 +413,9 @@
         humanGraceMs: Math.max(0.5, Math.min(30, parseFloat($('optHuman').value) || 1)) * 60000,
       },
       // The content script reads these two directly for the in-page runner too.
+      // Parallel tabs. The orchestrator reads this key directly when it refills
+      // slots, so a change takes effect on the very next job — no restart.
+      ua_mgr_concurrency: Math.max(1, Math.min(8, parseInt($('optConc').value, 10) || 3)),
       ua_skip_applied: $('optSkip').checked,
       ua_queue_tailor: $('optTailor').checked,
     });
@@ -499,7 +502,7 @@
     render();
   });
   $('conc').addEventListener('change', (e) => set({ [K.CONC]: parseInt(e.target.value, 10) || 3 }));
-  for (const id of ['optSkip', 'optTailor', 'optTimeout', 'optStall', 'optHuman']) $(id).addEventListener('change', saveSettings);
+  for (const id of ['optSkip', 'optTailor', 'optConc', 'optTimeout', 'optStall', 'optHuman']) $(id).addEventListener('change', saveSettings);
 
   $('tbody').addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
@@ -566,6 +569,7 @@
     }
     const s = (await get(K.SETTINGS)) || {};
     $('optSkip').checked = s.skipApplied !== false;
+    if (typeof s.concurrency === 'number') $('optConc').value = String(s.concurrency);
     $('optTailor').checked = s.tailor === true;
     $('optTimeout').value = String(Math.round((s.jobTimeoutMs || 180000) / 60000));
     $('optStall').value = String(Math.round((s.stallMs || 15000) / 1000));
