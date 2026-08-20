@@ -1393,6 +1393,92 @@ Suite total: **806 assertions**, all green.
 
 ---
 
+## v15.9 — account walls: email-first, shadow DOM, and one account per employer
+
+### The wall that asks for an email and nothing else
+
+`myjobs.adp.com/…/auth` — *"Welcome! Let's find your dream job! If we don't
+recognize your info, we'll prompt you to create a profile."* — one email box, a
+**Continue** button, and no password until after you press it. Oracle Recruiting,
+iCIMS and Workday's newer flow all work the same way.
+
+The detector for "is this a sign-in screen?" was a single line:
+
+```js
+function looksLikeAuthPage() { return $$('input[type=password]').some(isVisible); }
+```
+
+Two things wrong with it, and together they stalled every job that hit one:
+
+* **An email-first wall has no password field**, so this returned `false`,
+  `handleAccountAuth()` returned immediately, nothing was filled, and the job sat
+  on the sign-in screen showing *"Email Address required."* under an empty box
+  while the panel reported `0 applied`. That is the ADP screenshot exactly.
+* **`$$` is blind to shadow DOM.** Oracle renders its fields as `oj-*` web
+  components with the real `<input>` inside a shadow root, so even a wall that
+  *did* have a password field was invisible here. This is a large part of why
+  oraclecloud.com struggled.
+
+A wall is now recognised by what it **asks for**: an email or username box (found
+deeply, and unwrapped from its web component), corroborated by auth wording or an
+`/auth`-style path, and only when there is no application form to fill yet. And it
+is **walked in steps** — email → Continue → whatever that reveals — rather than
+assumed to be a single screen, waiting for the page to actually change between
+each.
+
+**Never the social buttons.** *"Or sign in using social media"* sits directly
+under ADP's Continue; clicking LinkedIn, Google, Facebook, Indeed or an SSO tile
+navigates off-site and strands the job on a page the queue can do nothing with.
+Those are excluded explicitly, and the real Continue is not caught by the
+exclusion.
+
+### Workday: created the account, then asked to create it again
+
+Two separate causes, both fixed:
+
+* **It was only recorded if a watcher later happened to see the My Information
+  page.** The run frequently navigates on before that appears, so the account was
+  never written down. It is now recorded the moment there is proof — when Create
+  Account is submitted, when Sign In is submitted, and when the site itself says
+  *"account already exists"* (the strongest evidence there is, stronger than our
+  own bookkeeping). Recording optimistically is safe: the worst case is that Sign
+  In is tried first next time, which is the correct order once an account exists,
+  and a wrong-credentials error flips it straight back to Create Account.
+* **It was filed under the raw hostname.** Workday serves one tenant from
+  `acme.wd1.myworkdayjobs.com`, `acme.wd3.…`, `acme.wd5.…` and
+  `myworkdaysite.com`, so a record written under one host was invisible from the
+  next. Accounts are now keyed per **employer** — the data-centre label and
+  `www.` are stripped, `myworkdaysite.com` is folded in — while two different
+  employers stay firmly separate. Records written under the old raw-host key are
+  still honoured, so nothing you have already created is forgotten.
+
+### Verified
+
+`accountKeyFor` is a pure function and is **run for real**: wd1 and wd5 resolve to
+the same employer, `myworkdaysite.com` folds into `myworkdayjobs.com`, case is
+normalised, a non-Workday host is untouched, and two different employers do not
+collide. The auth-copy and social-button patterns are executed against the real
+ADP wording and five social sign-in labels.
+
+Six mutations, six failures: restoring the password-only wall test, making social
+buttons clickable again, collapsing the wall back to a single step, keeping the
+data-centre label in the account key, not recording the account when Create is
+submitted, and finding the email box with a blind query again.
+
+Suite total: **850 assertions**, all green.
+
+### Honest limit
+
+`myjobs.adp.com` and `*.oraclecloud.com` are not reachable from the environment
+this was built in. The detection logic and the step walk are written against what
+the screenshot shows and against how these products are structured; the parts I
+am confident about are the shape of the fix — deep enumeration, email-first
+recognition, step-by-step progression, never clicking social. If a specific field
+or button on one of those walls still misbehaves, the queue log now records which
+step it was on and what it looked for.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

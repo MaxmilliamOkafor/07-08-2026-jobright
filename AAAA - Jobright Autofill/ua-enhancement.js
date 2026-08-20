@@ -6670,6 +6670,10 @@
       if (toCreate) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: Sign In rejected (no account yet) — switching to Create Account'); realClick(toCreate); return 'working'; }
     }
     if (onCreate && existsErr) {
+      // The site telling us the account exists is the strongest proof there is —
+      // stronger than our own bookkeeping. Record it so the NEXT job at this
+      // employer opens Sign In directly instead of repeating this round trip.
+      await markAccountCreated(location.hostname);
       const toSignIn = inFormLink(/sign ?in|log ?in|already have an account/i);
       if (toSignIn) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: account already exists — switching to Sign In'); realClick(toSignIn); return 'working'; }
     }
@@ -6682,6 +6686,14 @@
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
         clickEl(createBtn);
+        /* Record it NOW, not only if the watcher later happens to see the
+           My Information page. The run frequently navigates on before that
+           selector appears, and the account was then never written down — so the
+           next job at this employer created a second one. Recording optimistically
+           is safe: the worst case is that Sign In is tried first next time, which
+           is the correct order once an account exists, and a wrong-credentials
+           error flips it straight back to Create Account. */
+        await markAccountCreated(location.hostname);
       }
       return 'working';
     }
@@ -6690,6 +6702,7 @@
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: signing in with saved credentials (action ${_wdActions}/${WD_MAX_ACTIONS})`);
         clickEl(signInBtn);
+        await markAccountCreated(location.hostname);   // an account we can sign into exists
       }
       return 'working';
     }
@@ -9631,27 +9644,119 @@
     if (!e) { e = ((await getProfile()).email || '').trim(); if (e) await st.set('ua_app_email', e); }
     return e;
   }
-  // Remember which ATS hosts already have an account so return visits sign in with
-  // the same credentials instead of trying to create a duplicate.
+  /* Remember which employers already have an account, so a return visit signs in
+     instead of trying to create a duplicate.
+
+     Keyed per EMPLOYER, not per hostname. Workday serves one tenant from
+     acme.wd1.myworkdayjobs.com AND acme.wd3.myworkdayjobs.com (and from
+     myworkdaysite.com), so a record filed under one host was invisible from the
+     other — the next job at that employer went straight back to Create Account.
+     That is the "it creates the account, then asks me to create it again". */
+  function accountKeyFor(host) {
+    let h = String(host || location.hostname || '').toLowerCase();
+    h = h.replace(/^www\./, '');
+    h = h.replace(/\.wd\d+\./, '.');                  // acme.wd3.myworkdayjobs.com → acme.myworkdayjobs.com
+    h = h.replace(/\.myworkdaysite\.com$/, '.myworkdayjobs.com');
+    return h;
+  }
   async function markAccountCreated(host) {
-    try { const m = (await st.get('ua_created_accounts')) || {}; m[host] = Date.now(); await st.set('ua_created_accounts', m); } catch (_) {}
+    try {
+      const k = accountKeyFor(host);
+      const m = (await st.get('ua_created_accounts')) || {};
+      if (!m[k]) LOG('Account recorded for ' + k + ' — future jobs here will SIGN IN, not create again');
+      m[k] = Date.now();
+      await st.set('ua_created_accounts', m);
+    } catch (_) {}
   }
   async function accountExistsFor(host) {
-    try { const m = (await st.get('ua_created_accounts')) || {}; return !!m[host]; } catch (_) { return false; }
+    try {
+      const m = (await st.get('ua_created_accounts')) || {};
+      if (m[accountKeyFor(host)]) return true;
+      // Tolerate records written under a raw host before the key was normalised.
+      return !!m[String(host || location.hostname || '').toLowerCase()];
+    } catch (_) { return false; }
   }
-  function looksLikeAuthPage() { return $$('input[type=password]').some(isVisible); }
+  /* ── ATS ACCOUNT WALLS ─────────────────────────────────────────────────────
+     The old test for "is this a sign-in screen?" was a single line:
+
+         return $$('input[type=password]').some(isVisible);
+
+     Two things were wrong with it, and together they stalled every job that hit
+     a wall on ADP or Oracle.
+
+     1. EMAIL-FIRST WALLS HAVE NO PASSWORD FIELD. ADP's myjobs /auth screen asks
+        for an email and nothing else — "Welcome! Let's find your dream job! If we
+        don't recognize your info, we'll prompt you to create a profile." — and
+        only reveals a password (or sends a code) after Continue. Oracle
+        Recruiting, iCIMS and Workday's newer flow all do the same. The test
+        returned false, handleAccountAuth returned immediately, nothing was
+        filled, and the job sat on the sign-in screen until the watchdog killed
+        it. That is the "Email Address required." you can see under an empty box
+        while the panel reports 0 applied.
+
+     2. $$ IS BLIND TO SHADOW DOM. Oracle renders its fields as oj-* web
+        components with the real <input> inside a shadow root, so even a page
+        that DID have a password field was invisible here.
+
+     So: enumerate deeply, recognise a wall by what it asks for rather than by one
+     field type, and walk the steps rather than assuming there is only one. */
+  const SOCIAL_AUTH_RE = /linkedin|google|facebook|apple|microsoft|indeed|xing|github|twitter|sso\b|single sign/i;
+  const AUTH_COPY_RE = /(sign|log)\s?in\b|create (an )?(account|profile)|register|welcome back|let'?s find your dream job|prompt you to create a profile|enter your email|continue with (your )?email|existing candidate|returning (candidate|applicant)|already have an account/i;
+  function safeClass(el) { try { return String(el && el.className || ''); } catch (_) { return ''; } }
+
+  /* The box this wall wants an email or username in — native, or the real input
+     inside a web component. */
+  function authEmailField() {
+    const byAttr = deepAll('input[type=email],input[autocomplete="username"],input[autocomplete="email"],' +
+      'input[data-automation-id="email"],input[name*="email" i],input[id*="email" i],' +
+      'input[name*="username" i],input[id*="username" i],oj-input-text,spl-input', 60)
+      .map((el) => (el.tagName === 'INPUT' ? el : (innerNative(el, 'input') || el)))
+      .filter((el) => el.tagName === 'INPUT' && el.type !== 'password' && isVisible(el) && !el.disabled && !el.readOnly);
+    const named = byAttr.find((el) => /e-?mail|user.?name|user.?id|login/i.test(
+      (el.name || '') + ' ' + (el.id || '') + ' ' + (el.autocomplete || '') + ' ' + (el.type || '')));
+    if (named) return named;
+    // Label-driven: it may be a plain text box whose only clue is its label.
+    const labelled = deepAll('input[type=text],input:not([type]),input[type=email]', 80)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly)
+      .find((el) => /e-?mail|user.?name|user.?id|login/i.test(
+        (getLabel(el) || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' +
+        (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '')));
+    return labelled || byAttr[0] || null;
+  }
+  function authPasswordFields() {
+    return deepAll('input[type=password]', 12).filter((el) => isVisible(el) && !el.disabled);
+  }
+  function looksLikeAuthPage() {
+    if (authPasswordFields().length) return true;
+    const email = authEmailField();
+    if (!email) return false;
+    let copy = '';
+    try { copy = (document.body && document.body.innerText || '').slice(0, 3000); } catch (_) {}
+    const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname);
+    if (!urlSaysAuth && !AUTH_COPY_RE.test(copy)) return false;
+    // An email box on a page that is ALREADY the application is not a wall.
+    return !hasApplicationForm();
+  }
+
   function findAuthSubmit(mode) {
-    const re = mode === 'signin' ? /^(sign ?in|log ?in|continue|submit)$/i
-      : mode === 'create' ? /^(create account|create my account|register|sign ?up|continue|submit|next)$/i
-        : /^(create account|create my account|register|sign ?up|sign ?in|log ?in|continue|submit|next)$/i;
-    const enabled = el => el && isVisible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' && !/disabled/.test(el.className || '');
-    const known = $('[data-automation-id="createAccountSubmitButton"],[data-automation-id="signInSubmitButton"]');
+    const re = mode === 'signin' ? /^(sign ?in|log ?in|continue|next|submit|get started)\b/i
+      : mode === 'create' ? /^(create (an? )?(account|profile)|create my account|register|sign ?up|continue|next|submit|get started)\b/i
+        : /^(create (an? )?(account|profile)|create my account|register|sign ?up|sign ?in|log ?in|continue|next|submit|get started)\b/i;
+    /* Never the social buttons. "Or sign in using social media" sits directly
+       under ADP's Continue, and clicking one navigates to LinkedIn/Google and
+       strands the job on a page the queue can do nothing with. */
+    const isSocial = (el) => SOCIAL_AUTH_RE.test(
+      (el.textContent || '') + ' ' + ((el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '') + ' ' + safeClass(el));
+    const enabled = (el) => el && isVisible(el) && !el.disabled &&
+      el.getAttribute('aria-disabled') !== 'true' && !/disabled/.test(safeClass(el)) && !isSocial(el);
+    const known = deepOne('[data-automation-id="createAccountSubmitButton"],[data-automation-id="signInSubmitButton"]');
     if (enabled(known)) return known;
-    const btns = $$('button,a[role="button"],input[type=submit],input[type=button]').filter(enabled);
-    return btns.find(b => re.test((b.textContent || b.value || '').trim())) ||
-      btns.find(b => /^(submit|continue|next)$/i.test((b.textContent || b.value || '').trim())) || null;
+    const btns = deepAll('button,a[role="button"],[role="button"],input[type=submit],input[type=button],oj-button,spl-button', 250).filter(enabled);
+    const label = (b) => normLabel(b.textContent || b.value || (b.getAttribute && b.getAttribute('aria-label')) || '');
+    return btns.find((b) => re.test(label(b))) ||
+      btns.find((b) => /^(submit|continue|next)\b/i.test(label(b))) || null;
   }
-  // Detect a sign-in/create-account page and complete it with saved credentials.
+
   async function handleAccountAuth__impl() {
     try {
       // Never auto-fill credentials on the user's personal job-board / social logins —
@@ -9664,71 +9769,80 @@
       // Same locked credentials for every ATS account/application.
       const email = await getAppEmail();
       if (!email) return false;
-      // If no password field yet, try to open a "Create account" form.
+      // If nothing looks like a wall yet, try to open a "Create account" form.
       if (!looksLikeAuthPage()) {
-        const createLink = $$('button,a,[role="button"]').filter(isVisible)
-          .find(b => { const t = (b.textContent || '').trim(); return t.length < 30 && /^(create account|create an account|sign ?up|register|new user)/i.test(t); });
+        const createLink = deepAll('button,a,[role="button"]', 200).filter(isVisible)
+          .find((b) => { const t = normLabel(b.textContent); return t.length < 30 && /^(create account|create an account|sign ?up|register|new user)/i.test(t); });
         if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(1500); }
       }
       if (!looksLikeAuthPage()) return false;
-      LOG('Account auth page detected — filling saved credentials');
+
       const pw = await getAppPassword();
-      // Email / username — Workday & most ATS expose specific ids first.
-      let emailField = $('input[data-automation-id="email"]') ||
-        $$('input[type=email],input[autocomplete="username"]').filter(isVisible)[0];
-      if (!emailField) emailField = $$('input[type=text],input:not([type])').filter(isVisible)
-        .find(i => /e-?mail|user.?name|user.?id|login/i.test((getLabel(i) || '') + ' ' + (i.name || '') + ' ' + (i.id || '') + ' ' + (i.autocomplete || '') + ' ' + (i.getAttribute('data-automation-id') || '')));
-      if (emailField && !emailField.value) { emailField.focus({ preventScroll: true }); nativeSet(emailField, email); await sleep(250); }
-      // Password + confirm/verify password (Workday: password + verifyPassword).
-      const fillPw = () => $$('input[type=password]').filter(isVisible).forEach(f => { if (!f.value) { f.focus({ preventScroll: true }); nativeSet(f, pw); } });
-      fillPw();
-      await sleep(250);
-      const pwFields = $$('input[type=password]').filter(isVisible);
-      const isCreate = pwFields.length > 1
-        || pwFields.some(f => /confirm|verify|re-?enter|retype/i.test((getLabel(f) || '') + (f.name || '') + (f.id || '') + (f.getAttribute('data-automation-id') || '')))
-        || /create (an )?account|register|sign ?up/i.test((document.body.innerText || '').toLowerCase().slice(0, 4000));
-      // Tick EVERY unchecked visible checkbox on an auth page — these are the consent /
-      // "Agree to Privacy Notice" boxes that keep the Create Account button disabled.
-      const tickConsents = () => $$('input[type=checkbox]').filter(isVisible).forEach(c => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
-      tickConsents();
-      await sleep(400);
-      // Wait for the submit button to actually ENABLE (Workday disables "Create
-      // Account" until email+password+verify+consent all validate). Re-fill and
-      // re-tick on each pass so it becomes clickable.
-      let submit = null;
-      for (let i = 0; i < 12; i++) {
-        submit = findAuthSubmit(isCreate ? 'create' : 'signin') || findAuthSubmit();
-        if (submit) break;
-        fillPw(); tickConsents();
-        const ef = $('input[data-automation-id="email"]') || emailField;
-        if (ef && !ef.value) { ef.focus({ preventScroll: true }); nativeSet(ef, email); }
-        await sleep(450);
-      }
-      if (submit) {
-        LOG('Account: submitting ' + (isCreate ? 'create-account' : 'sign-in') + ' (same saved credentials)');
+      LOG('Account wall detected — filling saved credentials');
+
+      /* Walk the wall's STEPS. An email-first wall needs at least two passes:
+         email → Continue → password (or "create a profile"). Bounded, and it
+         stops the moment the page stops being a wall. */
+      let submittedOnce = false;
+      for (let step = 1; step <= 4; step++) {
+        if (autoStopped()) break;
+        if (!looksLikeAuthPage()) break;                     // through the wall
+        const before = stepSignature();
+
+        const emailField = authEmailField();
+        if (emailField && !(emailField.value || '').trim()) {
+          emailField.focus({ preventScroll: true });
+          nativeSet(emailField, email);
+          noteProgress('entering the account email');
+          await sleep(300);
+        }
+        const pwFields = authPasswordFields();
+        for (const f of pwFields) { if (!(f.value || '').trim()) { f.focus({ preventScroll: true }); nativeSet(f, pw); } }
+        await sleep(250);
+
+        const isCreate = pwFields.length > 1
+          || pwFields.some((f) => /confirm|verify|re-?enter|retype/i.test((getLabel(f) || '') + (f.name || '') + (f.id || '') + (f.getAttribute('data-automation-id') || '')))
+          || /create (an )?(account|profile)|register|sign ?up/i.test((document.body && document.body.innerText || '').toLowerCase().slice(0, 4000));
+
+        // Consent / "Agree to Privacy Notice" boxes keep the button disabled.
+        const tickConsents = () => deepAll('input[type=checkbox]', 40).filter(isVisible)
+          .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+        tickConsents();
+        await sleep(300);
+
+        // Wait for the button to actually ENABLE — several ATS keep it disabled
+        // until every field validates. Re-fill and re-tick on each pass.
+        let submit = null;
+        for (let i = 0; i < 10; i++) {
+          submit = findAuthSubmit(isCreate ? 'create' : 'signin') || findAuthSubmit();
+          if (submit) break;
+          for (const f of authPasswordFields()) { if (!(f.value || '').trim()) nativeSet(f, pw); }
+          tickConsents();
+          const ef = authEmailField();
+          if (ef && !(ef.value || '').trim()) { ef.focus({ preventScroll: true }); nativeSet(ef, email); }
+          await sleep(400);
+        }
+        if (!submit) { LOG('Account: no usable Continue/Sign-in button — leaving the wall filled for you'); break; }
+
+        LOG(`Account: step ${step} — ${isCreate ? 'create account' : 'sign in'} via "${normLabel(submit.textContent).slice(0, 24)}"`);
         scrollIfNeeded(submit);
         await sleep(200);
         clickEl(submit);
-        markAccountCreated(location.hostname); // reuse these creds (sign in) on return
-        await sleep(3500);
-        // Account already exists → switch to sign-in with the same creds.
-        const bodyTxt = (document.body.innerText || '').toLowerCase();
+        submittedOnce = true;
+        markAccountCreated(location.hostname);   // reuse these creds (sign in) on return
+        await waitForStepChange(before, 12000);
+        await sleep(600);
+
+        // Account already exists → switch to sign-in with the same credentials.
+        const bodyTxt = (document.body && document.body.innerText || '').toLowerCase();
         if (isCreate && /already (exists|in use|registered)|account.*exists|email.*taken|use a different email|already have an account/i.test(bodyTxt)) {
           LOG('Account exists — switching to sign-in');
-          const toggle = $$('button,a,[role="button"]').filter(isVisible).find(b => /^(sign ?in|log ?in|already have)/i.test((b.textContent || '').trim()));
+          const toggle = deepAll('button,a,[role="button"]', 200).filter(isVisible)
+            .find((b) => /^(sign ?in|log ?in|already have)/i.test(normLabel(b.textContent)));
           if (toggle) { realClick(toggle); await sleep(1500); }
-          const ef = $('input[data-automation-id="email"]') || $$('input[type=email],input[type=text]').filter(isVisible)[0];
-          if (ef && !ef.value) nativeSet(ef, email);
-          const pf = $$('input[type=password]').filter(isVisible)[0];
-          if (pf && !pf.value) nativeSet(pf, pw);
-          await sleep(300);
-          const si = findAuthSubmit('signin');
-          if (si) { clickEl(si); await sleep(3500); }
         }
-      } else {
-        LOG('Account: submit button never enabled — leaving filled for manual review');
       }
-      return true;
+      return submittedOnce;
     } catch (e) { LOG('handleAccountAuth error:', e?.message || e); return false; }
   }
   // Stall watchdog stands down while this runs — see withBusy.
