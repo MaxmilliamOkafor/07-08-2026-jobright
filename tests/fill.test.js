@@ -923,5 +923,103 @@ eq('the control is wired to the same save path as the rest',
 eq('and it shows the value actually in force when the panel opens',
   /if \(typeof s\.concurrency === 'number'\) \$\('optConc'\)\.value = String\(s\.concurrency\);/.test(panelJs), true);
 
+/* ── 28. account walls that ask for an email FIRST ────────────────────────── */
+/* ADP's myjobs /auth screen asks for an email and nothing else — "Welcome! Let's
+   find your dream job! If we don't recognize your info, we'll prompt you to
+   create a profile." — and only reveals a password after Continue. Oracle
+   Recruiting, iCIMS and Workday's newer flow do the same.
+
+   The old detector was one line: `$$('input[type=password]').some(isVisible)`.
+   On an email-first wall that is false, so handleAccountAuth returned
+   immediately, nothing was filled, and the job sat on the sign-in screen showing
+   "Email Address required." while the panel reported 0 applied. */
+console.log('email-first account walls are recognised');
+const auth = body('looksLikeAuthPage');
+eq('a wall with no password field is still a wall',
+  /if \(authPasswordFields\(\)\.length\) return true;\n    const email = authEmailField\(\);\n    if \(!email\) return false;/.test(auth), true);
+eq('the old password-only test is gone',
+  /function looksLikeAuthPage\(\) \{ return \$\$\('input\[type=password\]'\)\.some\(isVisible\); \}/.test(src), false);
+eq('it needs corroboration, not just any email box on any page',
+  /if \(!urlSaysAuth && !AUTH_COPY_RE\.test\(copy\)\) return false;/.test(auth), true);
+eq('and an email box on the application itself is not a wall',
+  /return !hasApplicationForm\(\);/.test(auth), true);
+
+const AUTH_COPY = new Function('return ' + src.match(/const AUTH_COPY_RE = (\/[\s\S]*?\/i);/)[1])();
+for (const [copy, want] of [
+  ["Welcome! Let's find your dream job! If we don't recognize your info, we'll prompt you to create a profile.", true],
+  ['Sign in to your account', true],
+  ['Create an account to continue', true],
+  ['Returning candidate? Log in.', true],
+  ['Already have an account?', true],
+  ['Enter your email to get started', true],
+  ['Tell us about your work experience', false],
+  ['Upload your resume to continue', false],
+]) eq(`auth copy: "${copy.slice(0, 44)}…" → ${want}`, AUTH_COPY.test(copy), want);
+
+const emailField = body('authEmailField');
+eq('the email box is found through shadow DOM, which is how Oracle renders it',
+  /deepAll\(/.test(emailField) && !/(?<![\w$])\$\$?\(/.test(emailField), true);
+eq('a web component is unwrapped to its real input', /innerNative\(el, 'input'\)/.test(emailField), true);
+eq('and a password box is never mistaken for the email box', /el\.type !== 'password'/.test(emailField), true);
+eq('a plain text box with only a label still counts',
+  /e-\?mail\|user\.\?name\|user\.\?id\|login/i.test(emailField), true);
+
+const authSubmit = body('findAuthSubmit');
+eq('"Continue" counts as the submit on an email-first wall', /continue\|next\|submit\|get started/.test(authSubmit), true);
+eq('the submit finder is shadow-aware too',
+  /deepAll\(/.test(authSubmit) && !/(?<![\w$])\$\$?\(/.test(authSubmit), true);
+const SOCIAL = new Function('return ' + src.match(/const SOCIAL_AUTH_RE = (\/[\s\S]*?\/i);/)[1])();
+for (const label of ['Sign in with LinkedIn', 'Continue with Google', 'Facebook', 'Sign in with Indeed', 'Use SSO'])
+  eq(`social sign-in is never clicked: "${label}"`, SOCIAL.test(label), true);
+eq('but the real Continue button is not excluded by it', SOCIAL.test('Continue'), false);
+eq('the exclusion is actually applied', /&& !isSocial\(el\)/.test(authSubmit), true);
+
+const authImpl = body('handleAccountAuth');
+eq('the wall is walked in steps — email, then whatever it reveals',
+  /for \(let step = 1; step <= 4; step\+\+\)/.test(authImpl), true);
+eq('each step waits for the page to actually change', /await waitForStepChange\(before, 12000\)/.test(authImpl), true);
+eq('and it stops the moment the wall is behind us', /if \(!looksLikeAuthPage\(\)\) break;/.test(authImpl), true);
+eq('turning the automation off stops it mid-wall', /if \(autoStopped\(\)\) break;/.test(authImpl), true);
+eq('a wall it cannot submit is left filled rather than clicked at random',
+  /no usable Continue\/Sign-in button/.test(authImpl), true);
+eq('personal logins are still off limits',
+  /linkedin\|indeed\|glassdoor\|ziprecruiter\|dice\|monster/.test(authImpl), true);
+
+/* ── 29. one account per employer, not one per hostname ───────────────────── */
+/* Workday creates the account, then the next job at the same employer asks to
+   create it again. Two causes: the account was only recorded if a watcher later
+   happened to see the My Information page, and it was filed under the raw
+   hostname — but Workday serves one tenant from wd1, wd3, wd5 and
+   myworkdaysite.com. */
+console.log('a created account is remembered per employer');
+const keyCtx = {};
+new Function('exports', `
+  const location = { hostname: '' };
+${body('accountKeyFor')}
+  exports.accountKeyFor = accountKeyFor;
+`)(keyCtx);
+const key = keyCtx.accountKeyFor;
+eq('the data centre is not part of the employer', key('acme.wd3.myworkdayjobs.com'), 'acme.myworkdayjobs.com');
+eq('wd1 and wd5 are the same employer', key('acme.wd1.myworkdayjobs.com'), key('acme.wd5.myworkdayjobs.com'));
+eq('and so is myworkdaysite.com', key('acme.wd1.myworkdaysite.com'), key('acme.wd3.myworkdayjobs.com'));
+eq('www is not part of it either', key('www.acme.com'), 'acme.com');
+eq('two different employers stay different',
+  key('acme.wd1.myworkdayjobs.com') === key('other.wd1.myworkdayjobs.com'), false);
+eq('a non-Workday host is untouched', key('myjobs.adp.com'), 'myjobs.adp.com');
+eq('case is normalised', key('ACME.WD3.MyWorkdayJobs.COM'), 'acme.myworkdayjobs.com');
+
+const wd = body('fillWorkdayCreateAccount');
+eq('submitting Create Account records the account there and then',
+  /clickEl\(createBtn\);[\s\S]{0,700}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
+eq('signing in records it too', /clickEl\(signInBtn\);\n        await markAccountCreated\(location\.hostname\);/.test(wd), true);
+eq('and the site saying "already exists" is treated as proof',
+  /if \(onCreate && existsErr\) \{[\s\S]{0,320}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
+eq('a known employer opens Sign In instead of Create Account',
+  /if \(onCreate && known && !wrongCredErr\)/.test(wd), true);
+eq('and a wrong-credentials error still flips back to Create Account',
+  /if \(onSignIn && wrongCredErr\)/.test(wd), true);
+eq('records written under the old raw-host key are still honoured',
+  /Tolerate records written under a raw host/.test(body('accountExistsFor')), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
