@@ -451,7 +451,10 @@
        Each of these is a ROUTE the platform always uses, whatever domain it is
        served from, so they work for companies nobody has hit yet. */
     // careers.acme.com/jobs/12345/software-engineer/job
-    { n: 'iCIMS', p: /icims\.com|\/jobs\/\d+\/[^/]+\/job\b/i },
+    /* iCIMS routes: the posting is /jobs/<id>/<slug>/job and the account wall is
+       /jobs/<id>/login — the one AMD's careers site stops on. Both are matched so
+       the wall reaches the iCIMS driver rather than the generic path. */
+    { n: 'iCIMS', p: /icims\.com|\/jobs\/\d+\/[^/]+\/job\b|\/jobs\/\d+\/(login|candidate|register)\b/i },
     // careers.jpmorgan.com/us/en/job/210536215 — Phenom's fixed locale/job shape
     { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com|\/[a-z]{2}\/[a-z]{2}\/job\/\d{4,}/i },
     { n: 'SuccessFactors', p: /successfactors\.(com|eu)|sapsf\.(com|eu)|\/sfcareer\/|[?&]company=[A-Za-z0-9]+.*career/i },
@@ -516,6 +519,11 @@
     { n: 'Foundit', p: /foundit\.in|iimjobs\.com/i }, { n: 'Seek', p: /seek\.com\.au/i },
     { n: 'Naukri', p: /naukri\.com/i }, { n: 'Reed', p: /reed\.co\.uk/i },
     { n: 'TotalJobs', p: /totaljobs\.com/i }, { n: 'Adzuna', p: /adzuna\.com/i },
+    // The handful the rival extensions knew that this registry did not.
+    { n: 'Amazon Jobs', p: /amazon\.jobs|amazon\.com\/(en\/)?jobs/i }, { n: 'Dice', p: /dice\.com/i },
+    { n: 'Welcome to the Jungle', p: /welcometothejungle\.com/i },
+    { n: 'Polymer', p: /(^|\.)polymer\.co\b|jobs\.polymer\.co/i },
+    { n: 'WorkBright', p: /workbright\.com/i },
     { n: 'Jobsite', p: /jobsite\.co\.uk/i }, { n: 'CVLibrary', p: /cv-library\.co\.uk/i },
     // OptimHire / SpeedyApply supported ATS platforms
     { n: 'Zoho', p: /zohorecruit\.com|recruit\.zoho/i }, { n: 'Freshteam', p: /freshteam\.com/i },
@@ -9852,7 +9860,11 @@
     if (!email) return false;
     let copy = '';
     try { copy = (document.body && document.body.innerText || '').slice(0, 3000); } catch (_) {}
-    const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname);
+    /* iCIMS serves its form inside #icims_content_iframe and opens the account
+       wall at /jobs/<id>/login with width/height query params, so the path test
+       has to cover that shape too. */
+    const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname) ||
+      /\/jobs\/\d+\/(login|register)\b/i.test(location.pathname);
     if (!urlSaysAuth && !AUTH_COPY_RE.test(copy)) return false;
     // An email box on a page that is ALREADY the application is not a wall.
     return !hasApplicationForm();

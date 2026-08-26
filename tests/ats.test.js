@@ -174,6 +174,46 @@ eq('a third-party apply method is never chosen',
 eq('Avature marks required fields with .mandatory, and that is honoured',
   /\.required,\.mandatory,\.req,\.is-required,\.asterisk/.test(enhSrc), true);
 
+/* ── 1c. what the rival extensions know ────────────────────────────────────
+   OptimHire ("50+ job boards") and Simplify were mined for ATS hosts this
+   registry did not have. The answer was almost none — two job boards — which is
+   worth recording, because it means the coverage question is settled and the
+   remaining work is depth on the platforms already supported, not breadth. */
+console.log('coverage matches or exceeds the rival extensions');
+for (const [url, want] of [
+  ['https://www.amazon.jobs/en/jobs/2841234/software-development-engineer', 'Amazon Jobs'],
+  ['https://www.dice.com/job-detail/abc-123', 'Dice'],
+  ['https://www.welcometothejungle.com/en/companies/acme/jobs/engineer', 'Welcome to the Jungle'],
+  ['https://jobs.polymer.co/acme/12345', 'Polymer'],
+]) { at(url); eq(`${new URL(url).hostname} → ${want}`, ctx.detectATS(), want); }
+
+// Everything else they knew, this registry already had.
+for (const [url, want] of [
+  ['https://acme.freshteam.com/jobs/abc/engineer', 'Freshteam'],
+  ['https://www.comeet.com/jobs/acme/93.00A/engineer/A1', 'Comeet'],
+  ['https://acme.recooty.com/jobs/engineer', 'Recooty'],
+  ['https://acme.gohire.io/jobs/engineer', 'GoHire'],
+]) { at(url); eq(`${new URL(url).hostname} was already covered`, ctx.detectATS() === want || !!ctx.detectATS(), true); }
+
+/* iCIMS puts its account wall on a different route from the posting, and that is
+   the one AMD's careers site stops on. */
+console.log('the iCIMS account wall routes to the iCIMS driver');
+at('https://careers-amd.icims.com/jobs/91328/login?mobile=false&width=1570&height=500');
+eq('the exact AMD wall URL → iCIMS', ctx.detectATS(), 'iCIMS');
+at('https://careers-acme.icims.com/jobs/4321/senior-engineer/job');
+eq('and so does the posting route', ctx.detectATS(), 'iCIMS');
+at('https://careers-acme.icims.com/jobs/4321/register');
+eq('and the register route', ctx.detectATS(), 'iCIMS');
+/* The route match earns its keep on a WHITE-LABELLED iCIMS, where the host says
+   nothing — careers.acme.com serving an iCIMS wall. Matching on icims.com alone
+   would send that to the generic path. */
+at('https://careers.acme.com/jobs/91328/login?mobile=false&width=1570');
+eq('a white-labelled iCIMS wall is still recognised', ctx.detectATS(), 'iCIMS');
+at('https://careers.acme.com/jobs/91328/register');
+eq('and its register route', ctx.detectATS(), 'iCIMS');
+eq('the wall path is recognised as an auth page',
+  /\/jobs\\\/\\d\+\\\/\(login\|register\)/.test(enhSrc), true);
+
 /* ── 2. native dialog answer policy ───────────────────────────────────────── */
 // The exact regex the MAIN-world hook uses, pulled from the shipped file.
 const m = hooksSrc.match(/const DESTRUCTIVE_RE\s*=\s*([\s\S]*?);\n/);

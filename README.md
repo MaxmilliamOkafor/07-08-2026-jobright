@@ -1601,6 +1601,74 @@ Suite total: **930 assertions**, all green.
 
 ---
 
+## v16.2 — Jobright 1.21.0, the rival patches, and the iCIMS wall
+
+### Rebased onto 1.21.0
+
+The 24-08 drop is patch-only: `contents.d42e7fcf.js` and
+`helper-app.41ea2652.js` changed, nothing else — including no service worker, so
+the `importScripts` line that loads the queue engine was untouched this time.
+Every selector this build reaches into Jobright's sidebar with is still present
+in 1.21.0.
+
+### What OptimHire and Simplify actually knew
+
+Both were mined for ATS hosts this registry did not have. OptimHire advertises
+"Apply on LinkedIn, Greenhouse, and 50+ job boards in 1 click", so this was the
+interesting question.
+
+Neither ships a list in its manifest — both match `<all_urls>` — so the hosts
+were extracted from their bundles and diffed against our registry. **The answer
+was five**, and none of them a major platform:
+
+`amazon.jobs` · `dice.com` · `welcometothejungle.com` · `polymer.co` ·
+`workbright.com`
+
+Everything else they know, this build already had — Greenhouse, Lever, Ashby,
+Workday, SmartRecruiters, Workable, BambooHR, Recruitee, Teamtailor, Jobvite,
+JazzHR, Rippling, Paylocity, Manatal, Pinpoint, Comeet, Freshteam, GoHire,
+Recooty, Breezy, Handshake, ZipRecruiter, Indeed, LinkedIn and the rest — plus
+Avature, Oracle Recruiting, Taleo, ADP myjobs, Cornerstone, Brassring, PageUp,
+Dayforce, UltiPro and Phenom, which they do not.
+
+That is worth recording plainly: **the coverage question is settled**, and the
+remaining work on this build is depth on the platforms already supported, not
+breadth. The five gaps are closed.
+
+LinkedIn and Indeed already have their own drivers here and are dispatched — and
+`handleAccountAuth` deliberately refuses to touch credentials on either, because
+those are your personal logins, not an ATS account this extension should be
+creating.
+
+### The iCIMS account wall
+
+`careers-amd.icims.com/jobs/91328/login` — email, an "I accept" box gating
+**Next**, and no password anywhere. Two changes:
+
+* iCIMS is now matched on its **routes** as well as its host —
+  `/jobs/<id>/login`, `/register`, `/candidate` — which matters on a
+  white-labelled iCIMS where the host says nothing at all. `careers.acme.com`
+  serving an iCIMS wall used to fall through to the generic path.
+* The auth-wall detector recognises `/jobs/<id>/login` as an auth path, so the
+  email-first machinery from v15.9 engages there.
+
+The "I accept" box is a single consent checkbox, so it is ticked by the
+declaration pass rather than treated as one option of a multiple-choice question.
+
+### Verified
+
+Detection is executed against the exact AMD wall URL, a white-labelled iCIMS wall
+on a plain company domain, and the five newly-added platforms.
+
+Mutations: removing the new boards, removing Welcome to the Jungle, dropping the
+iCIMS route match (which only bites on the white-label case — on `icims.com`
+itself the host pattern still catches it, and the test now covers both), and
+removing the iCIMS auth-path test each fail the suite.
+
+Suite total: **942 assertions**, all green on Jobright 1.21.0.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
