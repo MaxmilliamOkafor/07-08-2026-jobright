@@ -688,6 +688,88 @@
   }
 
   // ===================== SMART VALUE GUESSER =====================
+  /* ── THE MESSAGE TO THE HIRING TEAM ────────────────────────────────────────
+     "I keep seeing this text on a lot of my applications — is it misplaced?"
+
+     It is not misplaced. It is the saved cover-letter text, pasted verbatim into
+     every box whose label reads like a cover letter, a motivation, or a message
+     to the hiring team. Identical wording across dozens of applications is worse
+     than an empty box: it reads as a form letter and it names no employer.
+
+     So the text is TAILORED before it is written — {company} / {title}
+     placeholders are substituted, and when the saved text names no employer at
+     all the company and role read off the page are woven into an opening
+     sentence. And an OPTIONAL message box is now left alone when there is
+     nothing specific to say, rather than filled with boilerplate. A REQUIRED one
+     is still answered, because an empty required field blocks the application. */
+  const COVER_FIELD_RE = /cover.?letter|motivation|message to (the )?(hiring|recruit|team|us)|why (do you )?(want|are you)|additional.?info|anything else you.?d like/i;
+  const ATS_HOST_LABEL_RE = /^(myworkdayjobs|myworkdaysite|smartrecruiters|greenhouse|job-boards|lever|icims|taleo|oraclecloud|adp|workable|ashbyhq|avature|jobvite|jazzhr|bamboohr|successfactors|phenom|eightfold)$/i;
+
+  function pageCompanyName() {
+    // The queue knows it when the CSV carried it.
+    try {
+      const j = queue.find((x) => x.status === 'applying');
+      if (j && j.companyName) return String(j.companyName).trim().slice(0, 60);
+    } catch (_) {}
+    try {
+      const c = extractJDCompany();
+      if (c) return c.replace(/\s*[|–-]?\s*(careers?|jobs?|hiring)\s*$/i, '').trim().slice(0, 60);
+    } catch (_) {}
+    /* Last resort: the employer's own label in the host. On a white-labelled ATS
+       that IS the company — apply.deloitte.com, careers-amd.icims.com. */
+    try {
+      const h = location.hostname.replace(/^(www|apply|jobs|careers|boards|job-boards|recruiting)[.-]/i, '');
+      const label = (h.split('.')[0] || '').replace(/^careers-/i, '');
+      if (label && label.length > 1 && !ATS_HOST_LABEL_RE.test(label)) {
+        return label.charAt(0).toUpperCase() + label.slice(1);
+      }
+    } catch (_) {}
+    return '';
+  }
+  function pageJobTitle() {
+    try {
+      const j = queue.find((x) => x.status === 'applying');
+      if (j && j.title) return String(j.title).trim().slice(0, 90);
+    } catch (_) {}
+    try { return (extractJDTitle() || '').slice(0, 90); } catch (_) { return ''; }
+  }
+
+  function tailorCoverText(text, opts) {
+    let out = String(text == null ? '' : text).trim();
+    if (!out) return '';
+    const company = (opts && opts.company) || '';
+    const title = (opts && opts.title) || '';
+    out = out.replace(/\{\s*(company|employer)\s*\}/gi, company || 'your team')
+      .replace(/\{\s*(title|role|position|job)\s*\}/gi, title || 'this role');
+    if (!company) return out;
+    // Already names the employer? The user's own wording stands.
+    try {
+      const esc = company.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp('\\b' + esc + '\\b', 'i').test(out)) return out;
+    } catch (_) {}
+    const opener = title
+      ? `I am applying for the ${title} role at ${company}. `
+      : `I am writing to apply to ${company}. `;
+    return opener + out;
+  }
+
+  /* "Today's date" as a FREE TEXT box (SmartRecruiters puts one under the
+     signature field). Match whatever format the field advertises rather than
+     guessing — a date in the wrong order is silently wrong, not obviously so. */
+  function todayForField(el) {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const DD = p2(d.getDate()), MM = p2(d.getMonth() + 1), YYYY = String(d.getFullYear());
+    let hint = '';
+    try {
+      hint = ((el && el.placeholder) || '') + ' ' + (getLabel(el) || '') + ' ' + ((el && el.getAttribute('aria-label')) || '');
+    } catch (_) {}
+    if (/yyyy\s*[-/.]\s*mm\s*[-/.]\s*dd/i.test(hint)) return `${YYYY}-${MM}-${DD}`;
+    if (/dd\s*[-/.]\s*mm\s*[-/.]\s*yyyy/i.test(hint)) return `${DD}/${MM}/${YYYY}`;
+    if (/mm\s*[-/.]\s*dd\s*[-/.]\s*yyyy/i.test(hint)) return `${MM}/${DD}/${YYYY}`;
+    return `${MM}/${DD}/${YYYY}`;                       // the ATS default
+  }
+
   function guessValue(label, p) {
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
     // "What state do you reside in?" is a value question; it kept coming back
@@ -745,6 +827,12 @@
     if (/^from$|start.?date|begin.?date/.test(l) && !/salary|pay/.test(l)) return p.work_start_year ? `01/${p.work_start_year}` : `01/${new Date().getFullYear() - 2}`;
     if (/^to$|end.?date/.test(l) && !/salary|pay|email/.test(l)) return p.work_end_year ? `12/${p.work_end_year}` : `12/${new Date().getFullYear()}`;
     if (/salary|compensation|pay|desired.?pay/.test(l)) return p.expected_salary || DEFAULTS.salary;
+    /* An e-signature box wants the applicant's NAME typed in, and the date box
+       beside it wants today. Both are REQUIRED on SmartRecruiters' preliminary
+       questions and neither was recognised, so the step could not be submitted. */
+    if (/signature|sign here|type your (full )?name|e-?sign/.test(l) && !/upload|image|file/.test(l))
+      return `${p.first_name || p.firstName || ''} ${p.last_name || p.lastName || ''}`.trim();
+    if (/today.?s date|date signed|signature date|current date|date of (signature|application)/.test(l)) return '__TODAY__';
     if (/cover.?letter|motivation|additional.?info|message.?to/.test(l)) return p.cover_letter || DEFAULTS.cover;
     if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
     if (/why.*(compan|role|want|interest|position)/.test(l)) return DEFAULTS.why;
@@ -876,8 +964,10 @@
   }
 
   function refineAnswerForControl(val, label, p, el) {
-    const v = String(val == null ? '' : val).trim();
+    let v = String(val == null ? '' : val).trim();
     if (!v) return v;
+    // Resolved here because the format depends on the control, not the question.
+    if (v === '__TODAY__') return todayForField(el);
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
@@ -887,6 +977,20 @@
     if (/^(yes|no|y|n|true|false)$/i.test(v) && !looksLikeYesNoQuestion(q)) {
       if (!isFreeTextControl(el)) return '';
       return (PROSE_Q_RE.test(q) || CONDITIONAL_Q_RE.test(q) || NA_HINT_RE.test(q)) ? 'N/A' : '';
+    }
+    /* The message to the hiring team — see tailorCoverText. Naming the employer
+       is the difference between a letter and a form letter, and an optional box
+       with nothing specific to say is better left empty. */
+    if (COVER_FIELD_RE.test(q) && (isFreeTextControl(el) || (el && el.tagName === 'TEXTAREA'))) {
+      const company = pageCompanyName();
+      if (company) return tailorCoverText(v, { company, title: pageJobTitle() });
+      let required = false;
+      try { required = isFieldRequired(el); } catch (_) {}
+      if (!required) {
+        LOG('Leaving the optional message to the hiring team empty — nothing specific to say about this employer');
+        return '';
+      }
+      return v;
     }
     if (!isFreeTextControl(el)) return v;      // a dropdown/radio wants the option text
 

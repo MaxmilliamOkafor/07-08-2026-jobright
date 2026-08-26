@@ -1479,6 +1479,61 @@ step it was on and what it looked for.
 
 ---
 
+## v16.0 — the same letter on every application
+
+> "I keep seeing this text on a lot of my applications — is it misplaced?"
+
+It was not misplaced, and that is the problem. It is your saved cover-letter
+text, pasted **verbatim** into every box whose label reads like a cover letter, a
+motivation, or a message to the hiring team. Identical wording across dozens of
+applications is worse than an empty box: it reads as a form letter, and it names
+no employer.
+
+Three changes:
+
+* **The text is tailored before it is written.** `{company}` and `{title}`
+  placeholders are substituted, and when the saved text names no employer at all,
+  the company and role read off the page are woven into an opening sentence —
+  *"I am applying for the Principal ML Engineer role at ServiceNow."* Two
+  different employers now produce two different letters. Text that already names
+  the employer is left in your own words, untouched.
+* **An OPTIONAL message box with nothing specific to say is left empty.** Better
+  no letter than the same letter.
+* **A REQUIRED one is still answered**, because an empty required field blocks the
+  application.
+
+The employer is taken from the CSV row when it carried one, then from the page,
+and finally from the host itself — on a white-labelled ATS that *is* the company
+(`apply.deloitte.com`, `careers-amd.icims.com`).
+
+### Signature and date fields
+
+SmartRecruiters' preliminary questions end with **"Name (Signature Field): \*"**
+and **"Today's date \*"** — two required free-text boxes, neither of which was
+recognised, so the step could not be submitted however complete the rest was.
+
+Both are answered now. The signature box gets your name typed in (and an
+*upload*-a-signature field is deliberately not typed into). The date box matches
+whatever format the field advertises — `DD/MM/YYYY`, `MM/DD/YYYY` or ISO — rather
+than guessing, because a date in the wrong order is silently wrong rather than
+obviously wrong.
+
+### Verified
+
+`tailorCoverText` and `todayForField` are pure and are **run for real**: naming
+the employer and role, substituting placeholders, leaving text that already names
+the employer alone, producing different letters for different employers, and all
+four date formats.
+
+Six mutations, six failures: not tailoring the text, filling an optional box with
+boilerplate again, leaving a required box empty, not recognising the signature
+field, ignoring the date-format hint, and letting the internal `__TODAY__` token
+reach the page.
+
+Suite total: **876 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

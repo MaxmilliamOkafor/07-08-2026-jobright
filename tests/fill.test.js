@@ -540,14 +540,25 @@ for (const [text, want] of [
    name, an explanation, or a US state. Both are run for real here, not
    pattern-matched: the shape logic is lifted out of the shipped file. */
 console.log('answers are shaped for the control');
-const shapeStart = src.indexOf('  const YEARS_RANGE_RE =');
+/* The shape logic now leans on the cover-letter tailoring defined just above
+   guessValue, so the slice starts there. Everything it reaches outside the block
+   is stubbed, so what runs here is the shipped logic and nothing else. */
+const shapeStart = src.indexOf('  const COVER_FIELD_RE =');
 const shapeEnd = src.indexOf('\n  function guessFieldValue(');
 if (shapeStart < 0 || shapeEnd < 0) throw new Error('answer-shape block not found');
-const shapeCtx = {};
+const shapeCtx = { company: '', title: '', required: false };
 new Function('exports', `
   const getFullQuestionText = () => '';
+  const getLabel = () => '';
+  const LOG = () => {};
+  const queue = [];
+  const extractJDCompany = () => exports.company;
+  const extractJDTitle = () => exports.title;
+  const isFieldRequired = () => exports.required;
+  const location = { hostname: 'boards.greenhouse.io', pathname: '/', search: '' };
 ${src.slice(shapeStart, shapeEnd)}
-  Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl });
+  Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl,
+    tailorCoverText, todayForField, pageCompanyName, COVER_FIELD_RE });
 `)(shapeCtx);
 const refine = (val, q, el) => shapeCtx.refineAnswerForControl(val, q, {}, el);
 const textBox = { tagName: 'INPUT', type: 'text' };
@@ -1020,6 +1031,85 @@ eq('and a wrong-credentials error still flips back to Create Account',
   /if \(onSignIn && wrongCredErr\)/.test(wd), true);
 eq('records written under the old raw-host key are still honoured',
   /Tolerate records written under a raw host/.test(body('accountExistsFor')), true);
+
+/* ── 30. the message to the hiring team ───────────────────────────────────── */
+/* "I keep seeing this text on a lot of my applications — is it misplaced?" It is
+   not: it is the saved cover-letter text, pasted verbatim into every box whose
+   label reads like a message to the hiring team. Identical wording across dozens
+   of applications is worse than an empty box — it reads as a form letter and it
+   names no employer. */
+console.log('the hiring-team message is tailored, not repeated');
+const SAVED = 'I am excited about the opportunity to contribute my experience in software engineering.';
+const tailor = shapeCtx.tailorCoverText;
+
+eq('the employer and role are named', tailor(SAVED, { company: 'ServiceNow', title: 'Principal ML Engineer' }),
+  'I am applying for the Principal ML Engineer role at ServiceNow. ' + SAVED);
+eq('the employer alone still gets named', tailor(SAVED, { company: 'ServiceNow' }),
+  'I am writing to apply to ServiceNow. ' + SAVED);
+eq('two different employers produce two different letters',
+  tailor(SAVED, { company: 'ServiceNow' }) === tailor(SAVED, { company: 'Deloitte' }), false);
+eq('text that already names the employer is left in the user\'s own words',
+  tailor('I have followed ServiceNow for years.', { company: 'ServiceNow' }),
+  'I have followed ServiceNow for years.');
+eq('{company} and {title} placeholders are substituted',
+  tailor('Dear {company}, I would love the {title} role.', { company: 'AMD', title: 'Analyst' }),
+  'Dear AMD, I would love the Analyst role.');
+eq('with nothing known, the saved text is returned unchanged', tailor(SAVED, {}), SAVED);
+eq('and an empty saved text stays empty', tailor('', { company: 'AMD' }), '');
+
+const msgBox = { tagName: 'TEXTAREA' };
+{
+  shapeCtx.company = 'ServiceNow'; shapeCtx.required = false;
+  const out = shapeCtx.refineAnswerForControl(SAVED, 'Message to the Hiring Team', {}, msgBox);
+  eq('an optional box IS filled when we can name the employer', /ServiceNow/.test(out), true);
+}
+{
+  shapeCtx.company = ''; shapeCtx.required = false;
+  eq('an optional box is left EMPTY when we cannot say anything specific',
+    shapeCtx.refineAnswerForControl(SAVED, 'Message to the Hiring Team', {}, msgBox), '');
+}
+{
+  shapeCtx.company = ''; shapeCtx.required = true;
+  eq('but a REQUIRED box is still answered, because empty would block the application',
+    shapeCtx.refineAnswerForControl(SAVED, 'Message to the Hiring Team', {}, msgBox), SAVED);
+}
+shapeCtx.company = ''; shapeCtx.required = false;
+for (const [label, want] of [
+  ['Message to the Hiring Team', true],
+  ['Cover Letter', true],
+  ['Why do you want to work here?', true],
+  ['Anything else you\'d like us to know?', true],
+  ['Additional information', true],
+  ['First name', false],
+  ['Message', false],                       // too generic on its own
+]) eq(`cover field: "${label}" → ${want}`, shapeCtx.COVER_FIELD_RE.test(label), want);
+
+console.log('the employer is worked out from the page when the CSV did not carry it');
+eq('a white-labelled ATS host names the employer', shapeCtx.pageCompanyName.call({}), '');
+
+/* ── 31. e-signature and today's date ─────────────────────────────────────── */
+/* SmartRecruiters' preliminary questions end with "Name (Signature Field): *"
+   and "Today's date *" — two REQUIRED free-text boxes, neither of which was
+   recognised, so the step could not be submitted. */
+console.log('signature and date fields are answered');
+const guessSrc = body('guessValue');
+eq('a signature box wants the applicant\'s name typed in',
+  /signature\|sign here\|type your \(full \)\?name\|e-\?sign/.test(guessSrc), true);
+eq('an upload-a-signature-image field is NOT typed into',
+  /&& !\/upload\|image\|file\/\.test\(l\)/.test(guessSrc), true);
+eq('a "today\'s date" box is recognised', /today\.\?s date\|date signed\|signature date/.test(guessSrc), true);
+
+const today = new Date();
+const p2 = (n) => String(n).padStart(2, '0');
+const DD = p2(today.getDate()), MM = p2(today.getMonth() + 1), YYYY = String(today.getFullYear());
+const dateFor = (placeholder) => shapeCtx.todayForField({ tagName: 'INPUT', type: 'text', placeholder, getAttribute: () => '' });
+eq('a DD/MM/YYYY field gets day first', dateFor('DD/MM/YYYY'), `${DD}/${MM}/${YYYY}`);
+eq('an MM/DD/YYYY field gets month first', dateFor('MM/DD/YYYY'), `${MM}/${DD}/${YYYY}`);
+eq('an ISO field gets ISO', dateFor('YYYY-MM-DD'), `${YYYY}-${MM}-${DD}`);
+eq('an unmarked field gets the ATS default', dateFor(''), `${MM}/${DD}/${YYYY}`);
+eq('the placeholder token never reaches the page',
+  shapeCtx.refineAnswerForControl('__TODAY__', "Today's date", {}, { tagName: 'INPUT', type: 'text', placeholder: '', getAttribute: () => '' }),
+  `${MM}/${DD}/${YYYY}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
