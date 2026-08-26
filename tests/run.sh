@@ -17,7 +17,7 @@ ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 step "JavaScript syntax"
-for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
+for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
   if node --check "$f" 2>/dev/null; then ok "$(basename "$f")"; else bad "$(basename "$f")"; fi
 done
 
@@ -80,6 +80,7 @@ node tests/submit.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
 step "ATS detection + dialog policy"
 node tests/ats.test.js "$EXT/ua-enhancement.js" "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
 node tests/beforeunload.test.js "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
+node tests/mailbox.test.js "$EXT/ua-mailbox.js" "$EXT/ua-enhancement.js" || fails=$((fails + 1))
 
 step "CSV + URL parsing (content script)"
 node tests/csv-parsers.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))

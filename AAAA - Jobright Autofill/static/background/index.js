@@ -22,3 +22,4 @@ ${r.repeat(l)}`).replace(/(\S+?)[^\S\r\n]+$/gm,"$1  ")}},blockquote:{postprocess
    line is modified, so a future Jobright patch can be dropped in and this single
    line re-appended. See ua-orchestrator.js. */
 try { importScripts("/ua-orchestrator.js"); } catch (e) { console.warn("[UA] orchestrator failed to load", e); }
+try { importScripts("/ua-mailbox.js"); } catch (e) { console.warn("[UA] mailbox failed to load", e); }

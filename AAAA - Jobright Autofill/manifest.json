@@ -35,7 +35,8 @@
     "sidePanel",
     "alarms",
     "contextMenus",
-    "notifications"
+    "notifications",
+    "identity"
   ],
   "content_scripts": [
     {

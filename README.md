@@ -1534,6 +1534,73 @@ Suite total: **876 assertions**, all green.
 
 ---
 
+## v16.1 — clearing email-verification walls on their own
+
+Several ATS put a hard stop in the middle of an application: create an account,
+then go and click a link — or type a code — that has just been emailed to you.
+Workday does it per tenant, iCIMS and Taleo on some configurations, ADP when it
+does not recognise your details. A queue running 500 jobs unattended died at
+every one of them.
+
+Connect a mailbox and the queue clears them itself.
+
+### What it can do — and what it cannot
+
+The limits are in the code, not in a policy document. Each one is what makes this
+safe to leave running while you are away from the machine:
+
+| | |
+| --- | --- |
+| **Read-only** | `gmail.readonly` and nothing else. It cannot send, delete, archive, modify or forward. That is enforced by the scope at Google's end, not just by this code. |
+| **Recent only** | Every query is bounded to the last hour, and each message is then checked against a 15-minute cutoff. A verification mail from yesterday is not the one we are waiting for. |
+| **This employer only** | The query is built from the employer and ATS host of the job in hand. There is no code path that lists the mailbox generally — a caller that names no employer gets `no-hosts` back. |
+| **Links lead back to the job** | A verification link is followed **only** when its host belongs to the ATS or employer already being applied to, and only over HTTPS. Inboxes contain phishing; an unattended agent that opens any link in any recent mail is a liability. This check is the reason the feature is usable unattended at all. |
+| **Nothing is kept** | The token lives in `chrome.storage.session`, so it dies with the browser. Message bodies are never returned to the page or stored — the code or link is extracted and the body is dropped. |
+| **Revocable** | Disconnect drops Chrome's cached token *and* calls Google's revoke endpoint, so the grant does not outlive the click. |
+
+No client secret exists anywhere in the extension. An extension is a public
+OAuth client and cannot keep one, so the flow uses PKCE
+(`code_challenge_method=S256`), with Chrome's own `getAuthToken` tried first
+where it is available.
+
+### How it behaves
+
+When a page says *"verify your email"*, *"check your inbox"* or *"enter the code
+we sent"*, the run pauses on that job — the stall watchdog stands down, so it is
+not mistaken for a stuck job — and polls for the message for up to 90 seconds.
+A **code** is preferred over a link, because typing it keeps us on the page we
+are already on. If no mailbox is connected, the job is **handed to you** with the
+reason recorded, rather than failing silently three minutes later.
+
+### Connecting one
+
+1. Create an OAuth client in Google Cloud Console for the Gmail API, scope
+   `https://www.googleapis.com/auth/gmail.readonly`.
+2. Register the extension's redirect URI (`chrome.identity.getRedirectURL()`
+   prints it — `https://<extension-id>.chromiumapp.org/`).
+3. Paste the client ID into **Mailbox** in the Queue Manager and press
+   **Connect**.
+
+Disconnect is in the same place.
+
+### Verified
+
+The two functions that decide *what gets read* and *what gets clicked* are pure,
+and they run for real: the query is checked to be employer-scoped and
+time-bounded, and `pickLink` is run against a genuine verification link, a
+phishing link in the same message, a lookalike subdomain, an unrelated
+newsletter, plain HTTP on the right host, and a non-verification link on the
+right host.
+
+Seven mutations, seven failures: widening the scope to `gmail.modify`, removing
+the link allow-list, accepting `http:`, dropping the time bound from the query,
+not applying the age cutoff, moving the token to local storage, and skipping the
+revoke on disconnect.
+
+Suite total: **930 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

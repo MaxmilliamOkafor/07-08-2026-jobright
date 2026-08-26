@@ -3751,6 +3751,19 @@
       }, () => void chrome.runtime.lastError);
     } catch (_) {}
   }
+  /* Same channel, different reason: a job blocked on a verification email is a
+     job that needs a person, and the queue has to be told so it can hold off the
+     watchdog and show which one is waiting instead of failing it silently. */
+  function reportNeedsHuman(reason) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'UA_JOB_NEEDS_HUMAN',
+        reason: String(reason || 'manual step'),
+        url: location.href,
+        blocked: true,
+      }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
   async function waitForCaptchaClear(maxMs = 180000) {
     const start = Date.now();
     let announced = false;
@@ -4276,6 +4289,9 @@
       // A visible captcha blocks every next step — pause for the user instead of
       // burning the page budget on retries that can't succeed.
       if (detectCaptcha()) await waitForCaptchaClear();
+      // Same for an email-verification wall: nothing on this page can advance
+      // until the code or link arrives.
+      if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
       LOG(`Multi-page: processing page ${page}`);
 
       // Wait for page content to change
@@ -9861,6 +9877,104 @@
       btns.find((b) => /^(submit|continue|next)\b/i.test(label(b))) || null;
   }
 
+  /* ── EMAIL VERIFICATION WALLS ──────────────────────────────────────────────
+     Several ATS stop mid-application: create an account, then go and click a
+     link — or type a code — that has just been emailed to you. Workday does it
+     per tenant, iCIMS and Taleo on some configurations, ADP when it does not
+     recognise your details. A queue running unattended dies at every one.
+
+     When a mailbox is connected (read-only — see ua-mailbox.js) we can get past
+     these without you. When it is not, we say what is blocking the job and hand
+     it to you rather than sitting there silently. */
+  const VERIFY_WALL_RE = /verify your (email|account|address)|verification (email|code|link)|check your (inbox|email)|we('ve| have)? sent (you )?(an? )?(email|code|link)|confirm your email|enter the code we sent|activation (email|link)|one.?time (code|passcode)/i;
+
+  function detectEmailVerificationWall() {
+    try {
+      const copy = (document.body && document.body.innerText || '').slice(0, 4000);
+      if (!VERIFY_WALL_RE.test(copy)) return false;
+      // A page that still has the application on it is not a verification wall.
+      return !hasApplicationForm() || !!verificationCodeField();
+    } catch (_) { return false; }
+  }
+
+  /* The box a one-time code goes into: short, numeric-ish, and labelled like a
+     code rather than like a password. */
+  function verificationCodeField() {
+    return deepAll('input[type=text],input[type=tel],input[type=number],input:not([type])', 60)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && !(el.value || '').trim())
+      .find((el) => {
+        const hay = (getLabel(el) || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' +
+          (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.autocomplete || '');
+        if (/password/i.test(hay)) return false;
+        return /\b(code|otp|pin|one.?time|verification|passcode|token)\b/i.test(hay);
+      }) || null;
+  }
+
+  /* Ask the service worker for the code or link. The worker's mailbox module is
+     read-only and bounded to recent mail from THIS employer — see the header of
+     ua-mailbox.js for why each of those limits is there. */
+  function askMailboxForVerification(hosts, companies) {
+    return new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies }, (r) => {
+          void chrome.runtime.lastError;
+          res(r || { ok: false, reason: 'no-reply' });
+        });
+      } catch (_) { res({ ok: false, reason: 'no-worker' }); }
+    });
+  }
+
+  async function resolveEmailVerification__impl(maxWaitMs) {
+    if (!detectEmailVerificationWall()) return false;
+    LOG('Email verification wall — checking the connected mailbox');
+    noteProgress('waiting for the verification email');
+
+    const hosts = [];
+    try { hosts.push(location.hostname); } catch (_) {}
+    // The employer's own domain too: the mail often comes from the company, not
+    // from the ATS that rendered the page.
+    const company = pageCompanyName();
+    const deadline = Date.now() + (maxWaitMs || 90000);
+
+    while (Date.now() < deadline) {
+      if (autoStopped()) return false;
+      const r = await askMailboxForVerification(hosts, company ? [company] : []);
+      if (r && r.ok) {
+        // Prefer typing a code: it keeps us on the page we are already on.
+        const box = verificationCodeField();
+        if (r.code && box) {
+          LOG('Entering the verification code from your mailbox');
+          box.focus({ preventScroll: true });
+          nativeSet(box, r.code);
+          noteProgress('entered the verification code');
+          await sleep(400);
+          const go = findAuthSubmit() || findSubmitControl();
+          if (go) { realClick(go); await waitForStepChange(stepSignature(), 12000); }
+          return true;
+        }
+        if (r.link) {
+          /* The worker only ever returns a link whose host belongs to the ATS or
+             employer we are already applying to — it will not hand back a link
+             to somewhere else in the inbox. */
+          LOG('Following the verification link from your mailbox');
+          noteProgress('following the verification link');
+          try { location.assign(r.link); } catch (_) {}
+          return true;
+        }
+      } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
+        LOG('Email verification needed and no mailbox is connected — this job needs you. Connect one under 🔑 in the Queue Manager to clear these automatically.');
+        try { reportNeedsHuman('email verification'); } catch (_) {}
+        return false;
+      }
+      await sleep(4000);   // the mail has not landed yet
+    }
+    LOG('Verification email did not arrive within the wait — handing this job over');
+    try { reportNeedsHuman('verification email did not arrive'); } catch (_) {}
+    return false;
+  }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function resolveEmailVerification(...a) { return withBusy('waiting for the verification email', () => resolveEmailVerification__impl(...a)); }
+
   async function handleAccountAuth__impl() {
     try {
       // Never auto-fill credentials on the user's personal job-board / social logins —
@@ -9946,6 +10060,8 @@
           if (toggle) { realClick(toggle); await sleep(1500); }
         }
       }
+      // Creating an account often lands straight on "check your inbox".
+      if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
       return submittedOnce;
     } catch (e) { LOG('handleAccountAuth error:', e?.message || e); return false; }
   }
