@@ -919,14 +919,14 @@ eq('a cross-site boot still mounts the panel once identity is known',
 
 /* ── 27. a 1000-job CSV must not run one at a time ─────────────────────────── */
 console.log('throughput is under the user\'s control');
-eq('the engine already supports parallel job tabs', /return Math\.min\(8, Math\.max\(1, isNaN\(n\) \? 3 : n\)\);/.test(orch), true);
+eq('the engine supports parallel job tabs', /return Math\.min\(12, Math\.max\(1, isNaN\(n\) \? 3 : n\)\);/.test(orch), true);
 eq('and now reports the value in force, so the panel does not reset it',
-  /concurrency: Math\.min\(8, Math\.max\(1, parseInt\(await get\(K\.CONC\), 10\) \|\| 3\)\)/.test(orch), true);
+  /concurrency: Math\.min\(12, Math\.max\(1, parseInt\(await get\(K\.CONC\), 10\) \|\| 3\)\)/.test(orch), true);
 const panelHtml = fs.readFileSync(process.argv[2].replace(/ua-enhancement\.js$/, 'ua-queue.html'), 'utf8');
 const panelJs = fs.readFileSync(process.argv[2].replace(/ua-enhancement\.js$/, 'ua-queue.js'), 'utf8');
 eq('the Queue Manager exposes it', /id="optConc"/.test(panelHtml), true);
-eq('bounded to what the engine accepts', /min="1" max="8"/.test(panelHtml), true);
-eq('changing it is saved', /ua_mgr_concurrency: Math\.max\(1, Math\.min\(8, parseInt\(\$\('optConc'\)\.value, 10\) \|\| 3\)\)/.test(panelJs), true);
+eq('bounded to what the engine accepts', /min="1" max="12"/.test(panelHtml), true);
+eq('changing it is saved', /ua_mgr_concurrency: Math\.max\(1, Math\.min\(12, parseInt\(\$\('optConc'\)\.value, 10\) \|\| 3\)\)/.test(panelJs), true);
 eq('and takes effect without a restart, because the slot filler re-reads the key',
   /const \[cfg, conc, map\] = \[await settings\(\), await concurrency\(\), await reconcileTabs\(\)\];/.test(orch), true);
 eq('the control is wired to the same save path as the rest',
@@ -1110,6 +1110,81 @@ eq('an unmarked field gets the ATS default', dateFor(''), `${MM}/${DD}/${YYYY}`)
 eq('the placeholder token never reaches the page',
   shapeCtx.refineAnswerForControl('__TODAY__', "Today's date", {}, { tagName: 'INPUT', type: 'text', placeholder: '', getAttribute: () => '' }),
   `${MM}/${DD}/${YYYY}`);
+
+/* ── 32. give up fast on a job that cannot be won ─────────────────────────── */
+/* A 544-job run reported 2 applied, 1 skipped, 13 FAILED. Most of those 13 could
+   never have succeeded — a sign-in wall behind a reCAPTCHA, a posting that has
+   closed — and each burned the CAPTCHA grace (1 min) and then the per-job cap
+   (3 min) before being written off. Thirteen jobs at up to four minutes is the
+   better part of an hour spent on nothing. */
+console.log('unwinnable jobs are skipped in seconds, not minutes');
+const unwin = body('unwinnableReason');
+eq('a sign-in wall behind a CAPTCHA is recognised', /captchaBlocksSignIn\(\)/.test(unwin), true);
+eq('and a closed posting', /CLOSED_POSTING_RE\.test\(copy\)/.test(unwin), true);
+eq('a closed-looking page that still HAS a form is not skipped',
+  /CLOSED_POSTING_RE\.test\(copy\) && !hasApplicationForm\(\)/.test(unwin), true);
+eq('the reason names the CAPTCHA provider, so the log is actionable',
+  /Sign-in is behind a \$\{\(c && c\.provider\) \|\| 'CAPTCHA'\}/.test(unwin), true);
+
+const blocks = body('captchaBlocksSignIn');
+eq('a CAPTCHA on the APPLICATION is not treated as unwinnable — you can solve that one',
+  /looksLikeAuthPage\(\) \|\| authPasswordFields\(\)\.length > 0/.test(blocks), true);
+
+eq('triage runs BEFORE the CAPTCHA wait, not after it',
+  src.indexOf("LOG('Skipping fast: ' + dead)") < src.indexOf('if (detectCaptcha()) await waitForCaptchaClear();\n      // The wait may have ended'), true);
+eq('and again after, in case the wall is still there',
+  /Skipping after the wait: /.test(src), true);
+eq('the outcome is an honest "skipped" with a reason, not a bare "failed"',
+  (src.match(/finalize\('skipped', dead\)/g) || []).length, 2);
+eq('and the fast path actually acts on the verdict rather than discarding it',
+  /if \(dead\) \{ LOG\('Skipping fast: ' \+ dead\); return void await finalize\('skipped', dead\); \}/.test(src), true);
+
+const CLOSED = new Function('return ' + src.match(/const CLOSED_POSTING_RE = (\/[\s\S]*?\/i);/)[1])();
+for (const [copy, want] of [
+  ['This job is no longer accepting applications', true],
+  ['The position has been filled', true],
+  ['This requisition has been closed', true],
+  ['Diese Stelle ist nicht mehr verfügbar', true],     // the German portals in this run
+  ['Cette offre est close', true],
+  ['Ya no está disponible', true],
+  ['Apply for this job', false],
+  ['Tell us about your experience', false],
+]) eq(`closed posting: "${copy.slice(0, 42)}" → ${want}`, CLOSED.test(copy), want);
+
+/* ── 33. the wall in the site's own language ──────────────────────────────── */
+/* BMW's careers portal is German — "Karrierechancen: Anmelden", "Haben Sie schon
+   ein Konto?", "Kennwort", "Erstellen Sie ein Konto" — and every word of it
+   missed an English-only pattern, so a whole European tenant failed job after
+   job even before the CAPTCHA. */
+console.log('account walls are recognised in the site\'s own language');
+const AUTH = new Function('return ' + src.match(/const AUTH_COPY_RE = (\/[\s\S]*?\/i);/)[1])();
+for (const [copy, lang] of [
+  ['Karrierechancen: Anmelden', 'German'],
+  ['Haben Sie schon ein Konto?', 'German'],
+  ['Kennwort', 'German'],
+  ['Erstellen Sie ein Konto', 'German'],
+  ['Se connecter à votre compte', 'French'],
+  ['Créer un compte', 'French'],
+  ['Iniciar sesión', 'Spanish'],
+  ['Crear una cuenta', 'Spanish'],
+  ['Registrati', 'Italian'],
+  ['Inloggen met uw account', 'Dutch'],
+  ['Logga in', 'Swedish'],
+  ['Zaloguj się', 'Polish'],
+]) eq(`${lang}: "${copy}" is an account wall`, AUTH.test(copy), true);
+for (const copy of ['Tell us about your work experience', 'Upload your resume', 'Beschreiben Sie Ihre Erfahrung'])
+  eq(`but "${copy.slice(0, 36)}" is not`, AUTH.test(copy), false);
+
+const authBtn = body('findAuthSubmit');
+eq('the sign-in button is matched in other languages too',
+  /anmelden\|einloggen\|weiter/.test(authBtn), true);
+eq('so is create-account', /konto erstellen\|registrieren/.test(authBtn), true);
+eq('the patterns are built once and reused for both modes',
+  /const re = mode === 'signin' \? new RegExp/.test(authBtn), true);
+eq('"Erstellen Sie ein Konto" is short enough to pass the length guard',
+  'Erstellen Sie ein Konto'.length < 44, true);
+eq('and the create-account link matcher no longer anchors to the start',
+  /\(create \(an \)\?account\|sign \?up\|register\|new user\|konto erstellen\|erstellen sie ein konto/.test(src), true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1669,6 +1669,78 @@ Suite total: **942 assertions**, all green on Jobright 1.21.0.
 
 ---
 
+## v16.3 — 13 failed of 16, and where the time was going
+
+A 544-job run reported **2 applied, 1 skipped, 13 failed**. The screenshot of job
+17 explains almost all of it, and none of the causes were speed.
+
+### The page
+
+BMW Group's careers portal: **"Karrierechancen: Anmelden"** — a sign-in wall, in
+German, behind an **"Ich bin kein Roboter"** reCAPTCHA.
+
+Three separate problems in one screen:
+
+**1. A CAPTCHA on the *sign-in* wall is unwinnable, and we waited it out anyway.**
+A CAPTCHA on the *application* is a human wait — you solve it and the job
+continues. A CAPTCHA on the account wall is different: the sign-in has to
+complete before anything can be filled, so an unattended run is finished there no
+matter how long it sits. Each of those jobs burned the CAPTCHA grace (1 min) and
+then the per-job cap (3 min) before being written off as **failed**. Thirteen
+jobs at up to four minutes is the better part of an hour spent on nothing.
+
+Those are now triaged in **seconds**, before the waits, and recorded as
+**skipped** with the reason — *"Sign-in is behind a reCAPTCHA — an account is
+needed before applying"* — rather than a bare "failed" that tells you nothing.
+A closed posting (*"no longer accepting applications"*, *"nicht mehr
+verfügbar"*, *"cette offre est close"*) is caught the same way, and only when
+there is genuinely no form left on the page.
+
+**2. The whole wall was invisible because it was in German.** *Anmelden*,
+*Kennwort*, *Haben Sie schon ein Konto?*, *Erstellen Sie ein Konto* — every word
+of it missed an English-only pattern, so an entire European tenant failed job
+after job even before the CAPTCHA. The account-wall vocabulary, the sign-in and
+create-account buttons, and the create-account link now cover **German, French,
+Spanish, Italian, Dutch, Swedish, Norwegian and Polish**. The link matcher also
+no longer anchors to the start of the string, because *"Erstellen Sie ein Konto"*
+begins with the verb.
+
+**3. Recognising these is worth more than raw speed.** Thirteen jobs skipped in
+ten seconds each instead of four minutes each is roughly **50 minutes** back on
+a run of this size — more than any change to how fast an individual application
+is filled.
+
+### And the actual throughput
+
+**Parallel jobs** now goes up to **12** (was 8). A 544-job CSV at 3 at a time is
+181 sequential rounds; at 12 it is 46. Different employers do not share a rate
+limit, so running them side by side is the cheapest speed there is. It is capped
+at 12 rather than removed because past that the tabs compete for the same CPU and
+every individual application gets slower, which costs more than the extra
+parallelism buys.
+
+### On the speed setting
+
+Worth saying plainly: the run in the screenshot was at **3x**, which multiplies
+every wait by 0.3. That is the wrong lever for a bulk run. Raise **Parallel
+jobs**, not speed — parallelism costs nothing in accuracy, while 3x gives a
+framework less time to register a value before the next action. If failures
+persist after this build, try 1.5x with Parallel jobs at 8–12.
+
+### Verified
+
+`CLOSED_POSTING_RE` and `AUTH_COPY_RE` are executed against real wording in six
+languages, including the exact strings from that BMW page.
+
+Six mutations, six failures: removing the triage, treating a CAPTCHA anywhere as
+unwinnable (it must be the sign-in wall specifically), skipping a "closed" page
+that still has a form, dropping German from the wall vocabulary, dropping the
+localised sign-in button, and putting the concurrency cap back to 8.
+
+Suite total: **981 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

@@ -6947,6 +6947,43 @@
     return false;
   }
 
+  /* ── TRIAGE: GIVE UP FAST ON A JOB THAT CANNOT BE WON ──────────────────────
+     A 544-job run reported 2 applied, 1 skipped, 13 FAILED. Most of those 13
+     could never have succeeded — a sign-in wall behind a reCAPTCHA, a posting
+     that has closed — and each one burned the CAPTCHA grace (1 min) and then the
+     per-job cap (3 min) before being written off. Thirteen jobs × up to four
+     minutes is the better part of an hour spent on nothing.
+
+     Recognising them in seconds is worth more to a bulk run than any raw speed
+     increase, and it turns a misleading "failed" into an honest "skipped" with a
+     reason you can act on. */
+  const CLOSED_POSTING_RE = /no longer (accepting|available|open|active)|position (has been )?(closed|filled)|this (job|posting|requisition|vacancy) (is|has been) (closed|filled|removed|expired)|applications? (are )?closed|expired|nicht mehr verf[üu]gbar|stelle (ist )?besetzt|offre (est )?(clos|pourvue)|ya no est[áa] disponible|niet meer beschikbaar/i;
+
+  /* A CAPTCHA on the APPLICATION is a human wait — you can solve it and the job
+     continues. A CAPTCHA on the SIGN-IN wall is different: the account step has
+     to be completed before anything can be filled, so an unattended run is
+     finished here regardless of how long it waits. */
+  function captchaBlocksSignIn() {
+    try {
+      if (!detectCaptcha()) return false;
+      return looksLikeAuthPage() || authPasswordFields().length > 0;
+    } catch (_) { return false; }
+  }
+
+  /* A reason string when this job is definitively unwinnable right now, else ''. */
+  function unwinnableReason() {
+    try {
+      let copy = '';
+      try { copy = (document.body && document.body.innerText || '').slice(0, 4000); } catch (_) {}
+      if (CLOSED_POSTING_RE.test(copy) && !hasApplicationForm()) return 'The posting has closed';
+      if (captchaBlocksSignIn()) {
+        const c = detectCaptcha();
+        return `Sign-in is behind a ${(c && c.provider) || 'CAPTCHA'} — an account is needed before applying`;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   async function processManagedJob(c) {
     LOG(`Manager mode: driving "${c.title || c.url}"`);
     // Native confirm/alert would block this tab's JS thread outright, so the
@@ -7039,7 +7076,21 @@
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
       await openApplicationForm();
       await handleAccountAuth();
+      /* Triage before the waits. A sign-in wall behind a CAPTCHA, or a posting
+         that has closed, cannot be completed however long we sit here — skip in
+         seconds with the reason rather than burning the CAPTCHA grace and then
+         the per-job cap on it. */
+      {
+        const dead = unwinnableReason();
+        if (dead) { LOG('Skipping fast: ' + dead); return void await finalize('skipped', dead); }
+      }
       if (detectCaptcha()) await waitForCaptchaClear();
+      // The wait may have ended because a human solved it — or because the wall
+      // is still there. Re-check rather than pressing on into a form we cannot reach.
+      {
+        const dead = unwinnableReason();
+        if (dead) { LOG('Skipping after the wait: ' + dead); return void await finalize('skipped', dead); }
+      }
       // A false "no application form" is the worst outcome in a bulk run: the job is
       // dropped silently and never retried. The old two-shot check fired while the tab
       // was still on the Jobright landing page or mid-redirect to the ATS, so real jobs
@@ -9829,7 +9880,11 @@
      So: enumerate deeply, recognise a wall by what it asks for rather than by one
      field type, and walk the steps rather than assuming there is only one. */
   const SOCIAL_AUTH_RE = /linkedin|google|facebook|apple|microsoft|indeed|xing|github|twitter|sso\b|single sign/i;
-  const AUTH_COPY_RE = /(sign|log)\s?in\b|create (an )?(account|profile)|register|welcome back|let'?s find your dream job|prompt you to create a profile|enter your email|continue with (your )?email|existing candidate|returning (candidate|applicant)|already have an account/i;
+  /* The wall has to be recognised in the site's own language. BMW's careers
+     portal is German — "Karrierechancen: Anmelden", "Haben Sie schon ein Konto?",
+     "Kennwort" — and every word of it missed an English-only pattern, so a whole
+     European tenant failed job after job. */
+  const AUTH_COPY_RE = /(sign|log)\s?in\b|create (an )?(account|profile)|register|welcome back|let'?s find your dream job|prompt you to create a profile|enter your email|continue with (your )?email|existing candidate|returning (candidate|applicant)|already have an account|anmelden|einloggen|registrieren|konto erstellen|erstellen sie ein konto|ein konto erstellen|haben sie schon ein konto|kennwort|passwort|benutzerkonto|se connecter|connexion|cr[ée]er un compte|mot de passe|identifiant|iniciar sesi[óo]n|reg[íi]strate|crear (una )?cuenta|contrase[ñn]a|accedi|registrati|entrar|iniciar sess[ãa]o|palavra-passe|inloggen|aanmelden|account aanmaken|wachtwoord|logga in|skapa konto|l[øo]sen|logg inn|zaloguj|utw[óo]rz konto|has[łl]o/i;
   function safeClass(el) { try { return String(el && el.className || ''); } catch (_) { return ''; } }
 
   /* The box this wall wants an email or username in — native, or the real input
@@ -9871,9 +9926,13 @@
   }
 
   function findAuthSubmit(mode) {
-    const re = mode === 'signin' ? /^(sign ?in|log ?in|continue|next|submit|get started)\b/i
-      : mode === 'create' ? /^(create (an? )?(account|profile)|create my account|register|sign ?up|continue|next|submit|get started)\b/i
-        : /^(create (an? )?(account|profile)|create my account|register|sign ?up|sign ?in|log ?in|continue|next|submit|get started)\b/i;
+    /* Localised too. BMW's button says "Anmelden"; an English-only pattern found
+       nothing to click, so even a correctly filled wall went nowhere. */
+    const SIGNIN = 'sign ?in|log ?in|continue|next|submit|get started|anmelden|einloggen|weiter|absenden|se connecter|connexion|continuer|suivant|valider|iniciar sesi[\u00f3o]n|entrar|continuar|siguiente|accedi|avanti|inloggen|aanmelden|volgende|verder|logga in|forts[\u00e4a]tt|logg inn|zaloguj|dalej';
+    const CREATE = 'create (an? )?(account|profile)|create my account|register|sign ?up|konto erstellen|registrieren|cr[\u00e9e]er (un )?compte|s.inscrire|crear (una )?cuenta|reg[\u00edi]strate|registrati|crea account|account aanmaken|registreren|skapa konto|opprett konto|utw[\u00f3o]rz konto';
+    const re = mode === 'signin' ? new RegExp('^(' + SIGNIN + ')\\b', 'i')
+      : mode === 'create' ? new RegExp('^(' + CREATE + '|continue|next|submit|get started|weiter|continuer|continuar)\\b', 'i')
+        : new RegExp('^(' + CREATE + '|' + SIGNIN + ')\\b', 'i');
     /* Never the social buttons. "Or sign in using social media" sits directly
        under ADP's Continue, and clicking one navigates to LinkedIn/Google and
        strands the job on a page the queue can do nothing with. */
@@ -10002,7 +10061,12 @@
       // If nothing looks like a wall yet, try to open a "Create account" form.
       if (!looksLikeAuthPage()) {
         const createLink = deepAll('button,a,[role="button"]', 200).filter(isVisible)
-          .find((b) => { const t = normLabel(b.textContent); return t.length < 30 && /^(create account|create an account|sign ?up|register|new user)/i.test(t); });
+          .find((b) => {
+            const t = normLabel(b.textContent);
+            // "Erstellen Sie ein Konto" is 24 characters and does not start with
+            // any English word, so both halves of the old test failed on it.
+            return t.length < 44 && /(create (an )?account|sign ?up|register|new user|konto erstellen|erstellen sie ein konto|registrieren|cr[ée]er un compte|s'inscrire|crear una cuenta|reg[íi]strate|registrati|account aanmaken|skapa konto)/i.test(t);
+          });
         if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(1500); }
       }
       if (!looksLikeAuthPage()) return false;

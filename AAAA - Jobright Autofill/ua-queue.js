@@ -415,7 +415,7 @@
       // The content script reads these two directly for the in-page runner too.
       // Parallel tabs. The orchestrator reads this key directly when it refills
       // slots, so a change takes effect on the very next job — no restart.
-      ua_mgr_concurrency: Math.max(1, Math.min(8, parseInt($('optConc').value, 10) || 3)),
+      ua_mgr_concurrency: Math.max(1, Math.min(12, parseInt($('optConc').value, 10) || 3)),
       ua_skip_applied: $('optSkip').checked,
       ua_queue_tailor: $('optTailor').checked,
     });

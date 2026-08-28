@@ -163,12 +163,21 @@
       // Lives in its own key (the slot filler reads it directly on every pass, so
       // a change takes effect on the next job rather than the next run), but it is
       // reported here so the panel can show the value actually in force.
-      concurrency: Math.min(8, Math.max(1, parseInt(await get(K.CONC), 10) || 3)),
+      concurrency: Math.min(12, Math.max(1, parseInt(await get(K.CONC), 10) || 3)),
     };
   }
+  /* Parallel job tabs. A 544-job CSV at 3 at a time is 181 sequential rounds; at
+     12 it is 46. Chrome handles a dozen background tabs comfortably — each job
+     tab is a form, not a video — and the ceiling that actually bites first is
+     usually the site's own rate limiting, which is per-site and therefore
+     unaffected by running DIFFERENT employers side by side.
+
+     Raised to 12 rather than removed: past that, the tabs compete for the same
+     CPU and every individual application gets slower, which costs more than the
+     extra parallelism buys. */
   async function concurrency() {
     const n = parseInt(await get(K.CONC), 10);
-    return Math.min(8, Math.max(1, isNaN(n) ? 3 : n));
+    return Math.min(12, Math.max(1, isNaN(n) ? 3 : n));
   }
 
   /* Only ever navigate to real web pages. A CSV can contain anything, and this
