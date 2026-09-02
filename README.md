@@ -1819,6 +1819,58 @@ Suite total: **1,016 assertions**, all green.
 
 ---
 
+## v16.5 — rebased onto Jobright 1.22.1
+
+Three shipped files changed:
+
+| File | 1.21.0 | 1.22.1 |
+| --- | --- | --- |
+| `contents.d42e7fcf.js` | 16,493 | 40,016 |
+| `helper-app.41ea2652.js` | 6,926,041 | 6,998,628 |
+| `static/background/index.js` | 595,410 | 599,065 |
+
+`scroll-to-anchor.45fefb1b.js`, `global.f36301ce.css` and `inter.42ee87cb.css`
+are byte-identical, and none of the seven files this build adds is touched by
+the patch.
+
+### This drop shipped a service worker, and that matters
+
+Unlike 1.21.0, this patch **replaces `static/background/index.js`** — the file
+that carries the two appended lines loading the queue engine and the mailbox
+module:
+
+```js
+try { importScripts("/ua-orchestrator.js"); } catch (e) { … }
+try { importScripts("/ua-mailbox.js");      } catch (e) { … }
+```
+
+Without them the CSV queue silently does nothing: the panel opens, jobs sit in
+the list, no tab ever opens. **The suite caught it**, as it is designed to —
+*"service worker does not import ua-orchestrator.js"* failed the moment the file
+was copied in, and I re-confirmed the check has teeth by breaking the line again
+afterwards.
+
+### Verified
+
+Every selector this build reaches into Jobright's own sidebar with is still
+present in 1.22.1 — `auto-fill-button`,
+`application-dashboard-tailor-resume`, `continue-button`,
+`continue-button-disabled`, `tailor-resume-loading-linear-progress`,
+`spin-loading`, `jobright-helper-id`, `jobright-helper-content-container`,
+`plasmo-csui`. Two of them appear fewer times than before (`continue-button`
+4 → 3, `jobright-helper-id` 8 → 5) but all are still there, and each is used
+behind an `||` fallback.
+
+Every web-accessible resource named in the rebuilt manifest exists on disk —
+Chrome refuses to load an extension that lists one that does not — and the
+manifest keeps all of this build's customisations: our two content scripts ahead
+of Jobright's own, the `sidePanel` / `alarms` / `contextMenus` / `notifications`
+/ `identity` permissions, and the side panel pointed at `ua-queue.html`.
+
+Suite total: **1,016 assertions**, all green on Jobright 1.22.1.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
