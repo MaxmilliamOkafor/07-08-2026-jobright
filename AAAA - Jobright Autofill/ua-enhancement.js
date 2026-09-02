@@ -456,7 +456,18 @@
        the wall reaches the iCIMS driver rather than the generic path. */
     { n: 'iCIMS', p: /icims\.com|\/jobs\/\d+\/[^/]+\/job\b|\/jobs\/\d+\/(login|candidate|register)\b/i },
     // careers.jpmorgan.com/us/en/job/210536215 — Phenom's fixed locale/job shape
-    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com|\/[a-z]{2}\/[a-z]{2}\/job\/\d{4,}/i },
+    /* Phenom's locale/job route carries an alphanumeric requisition code on most
+       tenants — careers.mastercard.com/us/en/job/MASRUSR280277EXTERNALENUS and
+       careers.snowflake.com/us/en/job/SNCOUS… — so requiring digits missed them.
+       Also matched: their feed parameter, and the /<locale>/jobs/<id>/ variant
+       careers.cognizant.com uses. */
+    /* Host and feed signals only — these are unambiguous wherever they appear.
+       The PATH shape Phenom uses is not: /<locale>/job/<id>/<slug> is identical on
+       amazon.jobs, pageuppeople.com and careers.jpmorgan.com, so only the host can
+       separate those. That rule therefore lives at the BOTTOM of this table, after
+       every host-specific entry, where it catches an unknown employer domain
+       without stealing a known one. */
+    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com|utm_medium=phenom/i },
     { n: 'SuccessFactors', p: /successfactors\.(com|eu)|sapsf\.(com|eu)|\/sfcareer\/|[?&]company=[A-Za-z0-9]+.*career/i },
     { n: 'Cornerstone', p: /csod\.com|cornerstoneondemand\.com|\/ux\/candidate|\/careersite\b/i },
     { n: 'Brassring', p: /brassring\.com|\/TGnewUI\/|\/TGWebHost\//i },
@@ -522,6 +533,39 @@
     // The handful the rival extensions knew that this registry did not.
     { n: 'Amazon Jobs', p: /amazon\.jobs|amazon\.com\/(en\/)?jobs/i }, { n: 'Dice', p: /dice\.com/i },
     { n: 'Welcome to the Jungle', p: /welcometothejungle\.com/i },
+    /* ── Learned from four real 943-job queues ─────────────────────────────
+       Ten per cent of those jobs fell through to the generic path, and most of
+       them were platforms already supported here — just not recognised from the
+       URL shape the employer actually uses. These rules were written against
+       those URLs, host by host. */
+
+    // Greenhouse is embedded on the EMPLOYER's own site far more often than it is
+    // served from greenhouse.io, and it always carries gh_jid. That one parameter
+    // covers careers.toasttab.com, jobs.elastic.co, careers.withwaymo.com,
+    // databricks.com, hubspot.com, hudsonrivertrading.com, gonitro.com and
+    // squarespace.com — eight employers in one queue, all previously generic.
+    { n: 'Greenhouse', p: /[?&]gh_jid=\d+/i },
+    { n: 'Greenhouse', p: /(^|\/\/)grnh\.se\//i },                     // their short link
+
+    /* Teamtailor white-labelled onto the employer's domain. The shape is fixed —
+       /jobs/<numeric id>-<slug> — and it was the single biggest fall-through in
+       the queue (careers.sumsub.com alone was 20 jobs, plus spacelift, phorest
+       and geelyauto). */
+    { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
+
+    // Personio serves from personio.com as well as .de, as /careers/<uuid>.
+    { n: 'Personio', p: /personio\.(com|de)\/(careers|job)/i },
+    // BambooHR's own hosting is <tenant>.bamboohr.com/careers/<id> — no "/jobs".
+    { n: 'BambooHR', p: /bamboohr\.com\/careers\//i },
+    /* Oracle Recruiting also serves /sites/<site>/job/<id> without the /hcmUI/
+       prefix (explore-jobs.ciklum.com). */
+    { n: 'Oracle Recruiting', p: /\/sites\/[a-z0-9_-]+\/job\/\d+/i },
+
+    // Aplitrak is Bullhorn's apply domain; the others are single-tenant ATS that
+    // turned up once each but cost a whole job when unrecognised.
+    { n: 'Bullhorn', p: /aplitrak\.com/i },
+    { n: 'Current Vacancies', p: /current-vacancies\.com/i },
+    { n: 'ContactHR', p: /contacthr\.com/i },
     { n: 'Polymer', p: /(^|\.)polymer\.co\b|jobs\.polymer\.co/i },
     { n: 'WorkBright', p: /workbright\.com/i },
     { n: 'Jobsite', p: /jobsite\.co\.uk/i }, { n: 'CVLibrary', p: /cv-library\.co\.uk/i },
@@ -555,6 +599,11 @@
     { n: 'HackerRank', p: /hackerrank\.com/i }, { n: 'Dover2', p: /dover\.io/i },
     { n: 'Ashby2', p: /ashbyhq\.com.*application/i }, { n: 'Lever2', p: /lever\.co.*apply/i },
     // Generic career page patterns
+    /* Phenom by PATH — deliberately the last real rule. An employer serving
+       /<locale>/job/<id>/<slug> from its own domain is almost always Phenom, but
+       amazon.jobs, pageuppeople.com and the rest use the same shape, so this only
+       gets a say once every host-specific pattern above has declined. */
+    { n: 'Phenom', p: /\/[a-z]{2}(-[a-z]{2})?\/(en\/)?jobs?\/[a-z0-9]{6,}(\/|$)|\/[a-z]{2,8}-[a-z]{2}\/jobs\/\d{4,}\//i },
     { n: 'Career', p: /\/careers?\/?$|\/jobs?\/?$|\/apply\b|\/positions?\/?$|\/openings?\/?$/i }
   ];
 

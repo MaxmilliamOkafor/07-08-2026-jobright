@@ -1871,6 +1871,71 @@ Suite total: **1,016 assertions**, all green on Jobright 1.22.1.
 
 ---
 
+## v16.6 — measured against four real queues
+
+Four exported CSVs — **985 rows, 943 unique jobs, 79 hosts**. Running the shipped
+registry over every one of them turned "imported CSV URLs struggle with a lot of
+ATS" into a number:
+
+**92 of 943 jobs (10%) fell through to the generic path.** That is now **45**,
+with **zero regressions** — every one of the 47 changes is a job that was
+unrecognised and is now routed to a driver.
+
+### What the real URLs showed
+
+Most fall-throughs were platforms this build *already supports*. They were missed
+because employers serve them from their own domain, in a shape the vendor's
+documentation never mentions.
+
+| Rule added | Jobs recovered | Why it was missed |
+| --- | --- | --- |
+| `gh_jid=` anywhere in the query → **Greenhouse** | 9 | Greenhouse is embedded on the employer's own site far more often than it is served from greenhouse.io. One parameter covered Toast, Elastic, Waymo, Databricks, HubSpot, Hudson River Trading, Nitro and Squarespace. |
+| `grnh.se/…` | 1 | Their short link. |
+| `/jobs/<id>-<slug>` → **Teamtailor** | 27 | The single biggest gap. `careers.sumsub.com` alone was 20 jobs, plus Spacelift, Phorest and Geely. |
+| Alphanumeric requisition codes → **Phenom** | 4 | Mastercard's `MASRUSR280277EXTERNALENUS` and Snowflake's `SNCOUS…` are not digits, so a digits-only test saw nothing. |
+| `personio.com/careers/` | 2 | The pattern required `.de`. |
+| `bamboohr.com/careers/` | 1 | The pattern required `/jobs`. |
+| `/sites/<site>/job/<id>` → **Oracle** | 1 | Oracle also serves this without the `/hcmUI/` prefix. |
+| `aplitrak.com`, `current-vacancies.com`, `contacthr.com` | 3 | Single-tenant ATS, one job each — and one job each is what they cost. |
+
+### An ordering lesson worth recording
+
+`/<locale>/job/<id>/<slug>` is used identically by **amazon.jobs**,
+**pageuppeople.com** and **careers.jpmorgan.com**. No pattern can separate them —
+only the host can. Matching that shape near the top of the table stole Amazon and
+PageUp for Phenom, and the suite caught it immediately.
+
+Phenom therefore now has **two** entries: its unambiguous host and feed signals
+near the top, and the ambiguous path shape as the **last rule before the generic
+catch-all**, where it picks up an unknown employer domain without taking a known
+one. First-match-wins is the registry's contract, and rules earn their position
+by how specific they are.
+
+### What is left
+
+The remaining 45 are genuinely bespoke: single-employer portals (Google,
+Booking, TikTok, Wolt, Framer, Y Combinator) and aggregator front pages
+(tecnoempleo, aijobs, topgenaijobs, haystack, talenthop, micro1). Some will still
+be handled at runtime by the **DOM fingerprints** from v15.6, which read the page
+rather than the URL — that cannot be measured from a CSV, only observed on a run.
+One row was `duckduckgo.com`, which is not a job at all.
+
+Also worth knowing: **43% of the queue (406 jobs) is `linkedin.com`**, which has
+its own driver and its own rules about automation.
+
+### Verified
+
+Every rule is asserted against the **real URLs from your CSVs**, verbatim, and 11
+already-working platforms are re-checked so a broad new rule cannot quietly
+swallow one. Three ordinary non-job pages must still be classified as nothing.
+
+Six mutations, six failures — including moving the Phenom path rule back to the
+top, which immediately breaks Amazon and PageUp.
+
+Suite total: **1,051 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
