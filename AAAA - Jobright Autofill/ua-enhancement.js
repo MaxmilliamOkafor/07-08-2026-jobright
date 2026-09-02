@@ -2044,8 +2044,17 @@
     'vaadin-combo-box', 'vaadin-checkbox', 'vaadin-radio-button', 'vaadin-select',
   ].join(',');
 
+  /* getComputedStyle is the expensive half of isVisible, and calling it once per
+     control forces a style recalculation each time — 400 of them per fingerprint,
+     several times a second, was a large part of what made this build heavy. The
+     fingerprint only needs to know whether a control is on screen at all, and a
+     zero-sized box already covers display:none anywhere up the ancestor chain. */
+  function isVisibleFast(el) {
+    try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+    catch (_) { return false; }
+  }
   function questionControls(cap) {
-    try { return deepAll(QUESTION_CONTROL_SEL, cap || 400).filter(isVisible); }
+    try { return deepAll(QUESTION_CONTROL_SEL, cap || 400).filter(isVisibleFast); }
     catch (_) { return []; }
   }
 
@@ -2055,7 +2064,21 @@
      shadow roots and same-origin frames (the old getPageHash used a plain
      document query and was therefore IDENTICAL on every SmartRecruiters and
      Oracle step, which is what let the loop fill the previous step twice). */
+  /* Memoised. waitForStepChange polls this every 300ms and several passes call
+     it two or three times each, so without a cache one step transition meant
+     dozens of full deep walks — each of which forces a layout per control. The
+     TTL is short enough that a genuine step change is still seen on the next
+     poll, and long enough that nested callers collapse into one computation. */
+  let _sigCache = '', _sigAt = 0;
+  const SIG_TTL_MS = 250;
   function stepSignature() {
+    const now = Date.now();
+    if (now - _sigAt < SIG_TTL_MS) return _sigCache;
+    const sig = stepSignature__impl();
+    _sigCache = sig; _sigAt = now;
+    return sig;
+  }
+  function stepSignature__impl() {
     let bits = [];
     try {
       bits = questionControls(400).map((el) => {
@@ -2646,6 +2669,24 @@
     }
     return false;
   }
+  /* Tags that actually host open shadow roots on the ATS this build supports,
+     plus the generic custom-element prefixes. CSS cannot say "any tag with a
+     hyphen", so this is the enumeration — kept broad, and far cheaper than '*'. */
+  const SHADOW_HOST_SEL = [
+    '[data-shadow]', 'plasmo-csui',
+    'spl-input','spl-select','spl-select-option','spl-radio','spl-checkbox','spl-textarea',
+    'spl-button','spl-file-upload','spl-attachment','spl-typography-body','spl-date-input',
+    'oj-input-text','oj-text-area','oj-select-single','oj-select-one','oj-combobox-one',
+    'oj-radioset','oj-checkboxset','oj-input-date','oj-button','oj-radio',
+    'mat-select','mat-checkbox','mat-radio-button','mat-slide-toggle','mat-form-field',
+    'md-outlined-select','md-filled-select','md-checkbox','md-radio','md-outlined-text-field',
+    'sl-select','sl-checkbox','sl-radio','sl-switch','sl-input','sl-button',
+    'ion-select','ion-checkbox','ion-radio','ion-toggle','ion-input',
+    'vaadin-combo-box','vaadin-checkbox','vaadin-radio-button','vaadin-select','vaadin-text-field',
+    // Generic catch-alls for custom elements this list does not name.
+    '[is]', 'x-el', 'ui-input', 'ui-select', 'app-input', 'app-select',
+  ].join(',');
+
   function deepQueryAll(sel, root, limit) {
     const out = [];
     const cap = limit || 400;
@@ -2661,12 +2702,17 @@
           if (out.length >= cap) break;
         }
       } catch (_) {}
-      try {
-        for (const el of node.querySelectorAll('*')) {
-          // Don't even descend into the extension's own shadow trees.
-          if (el.shadowRoot && !isOwnUi(el)) stack.push(el.shadowRoot);
-        }
-      } catch (_) {}
+      // Descend into open shadow roots. Finding the hosts used to mean
+      // node.querySelectorAll('*') — every element in the document — on EVERY
+      // deep query. stepSignature() alone runs one of those, and
+      // waitForStepChange polls it every 300ms, so a big ATS page was being
+      // fully enumerated several times a second in every open job tab. With a
+      // dozen tabs that is enough to bring a machine to its knees.
+      //
+      // Only a custom element (a tag with a hyphen) or one of the handful of
+      // native elements that can carry one is ever a shadow host in practice, so
+      // ask for those by name instead of for everything.
+      try { for (const el of node.querySelectorAll(SHADOW_HOST_SEL)) { if (el.shadowRoot && !isOwnUi(el)) stack.push(el.shadowRoot); } } catch (_) {}
     }
     return out;
   }
@@ -9604,7 +9650,9 @@
     // Safety net: periodic re-inject in case the sidebar mounts without mutations
     // we observed (e.g. inside a shadow root). Cheap — one querySelector per tick.
     // During a run, also keep Jobright's own popup open so you can watch it autofill.
-    setInterval(() => { injectSidebarUI(); if (qActive && isRunnerTab()) forceOpenSidebar(); }, 1500);
+    // Every 1.5s was a re-scan of the page for a sidebar that is already mounted
+    // 99 times out of 100. Half the frequency, same effect.
+    setInterval(() => { injectSidebarUI(); if (qActive && isRunnerTab()) forceOpenSidebar(); }, 3000);
     // Watchdog: keep the control panel alive throughout the run. If anything removes
     // it (page script, re-render), re-mount it within ~600ms so the controls never
     // disappear while automation is in progress.
@@ -9628,7 +9676,7 @@
       if (isRunnerTab()) setAutomationFlag(true);
       ensureOverlay();
       updateCtrl();
-    }, 600);
+    }, 2000);   // twice a second was needless: the panel is re-mounted, not animated
   }
 
   // ===================== APPLY-BUTTON OPENER (reveal the form on listing pages) =====================
