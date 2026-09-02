@@ -1186,5 +1186,74 @@ eq('"Erstellen Sie ein Konto" is short enough to pass the length guard',
 eq('and the create-account link matcher no longer anchors to the start',
   /\(create \(an \)\?account\|sign \?up\|register\|new user\|konto erstellen\|erstellen sie ein konto/.test(src), true);
 
+/* ── 34. the speed selector actually changes the speed ────────────────────── */
+/* 1x / 1.5x / 2x / 3x did nothing on the run people use for bulk. qActive is the
+   IN-PAGE single-tab runner's flag; the Queue Manager drives its jobs in parallel
+   background tabs, which never set it — so the factor was never applied. The
+   speed was being read from storage correctly in every tab; it just never
+   reached the arithmetic. */
+console.log('the speed selector reaches both run modes');
+eq('the sleep gate covers the Queue Manager, not just the in-page runner',
+  /const queueDriving = \(\) => \(qActive && !qPaused\) \|\| _mgrDriving;/.test(src), true);
+eq('and the sleep uses it', /ms \* \(queueDriving\(\) \? qSpeedFactor : 1\)/.test(src), true);
+eq('the old runner-only gate is gone',
+  /ms \* \(qActive && !qPaused \? qSpeedFactor : 1\)/.test(src), false);
+eq('a Queue Manager job marks the tab as driven', /_mgrDriving = true;/.test(src), true);
+eq('and clears it when the job finalises',
+  /clearTimeout\(tId\);\n      _mgrDriving = false;/.test(src), true);
+
+const speedFn = body('speedFactorFor');
+eq('the factors still get faster as the multiplier rises',
+  /\{ 1: 1, 1\.5: 0\.66, 2: 0\.45, 3: 0\.3 \}/.test(speedFn), true);
+eq('the floor no longer clamps away the top speed — 40ms was above 100ms at 3x',
+  /Math\.max\(25, ms \*/.test(src), true);
+
+eq('fixed settle waits are scaled too, not just plain sleeps',
+  /const scaled = \(ms, floor\) =>/.test(src), true);
+eq('the form-settle debounce scales', /const quiet = scaled\(300, 90\);/.test(body('waitForFormStable')), true);
+eq('so does the step-change settle window', /scaled\(700, 220\)/.test(body('waitForStepChange')), true);
+eq('but the overall timeouts do not — those are safety caps, not a pace',
+  /setTimeout\(done, timeout\);/.test(body('waitForFormStable')), true);
+
+// The arithmetic itself, run for real.
+const sp = new Function('return ' + body('speedFactorFor').replace(/^\s*function\s+/, 'function '))();
+for (const [mult, factor] of [[1, 1], [1.5, 0.66], [2, 0.45], [3, 0.3]])
+  eq(`${mult}x → wait factor ${factor}`, sp(mult), factor);
+eq('an unknown multiplier falls back to full speed waits', sp(99), 1);
+const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
+eq('a 3s pause at 3x becomes 900ms', scaledFn(3000, 60, sp(3)), 900);
+eq('a 3s pause at 1x is unchanged', scaledFn(3000, 60, sp(1)), 3000);
+
+/* ── 35. the hot path must stay cheap ─────────────────────────────────────── */
+/* This build got heavy enough to bring a machine down, and the cost was in one
+   path: stepSignature() walks the DOM deeply, waitForStepChange polls it every
+   300ms, and several passes call it two or three times each. Anything expensive
+   in there is multiplied by a dozen open job tabs. */
+console.log('the deep walk stays out of the hot loop');
+const dq = body('deepQueryAll');
+eq('shadow hosts are NOT found by enumerating every element in the document',
+  /querySelectorAll\('\*'\)/.test(dq), false);
+eq('they are found by naming the tags that actually host them',
+  /querySelectorAll\(SHADOW_HOST_SEL\)/.test(dq), true);
+const hostSel = src.match(/const SHADOW_HOST_SEL = \[([\s\S]*?)\]\.join/)[1];
+for (const tag of ['spl-input', 'oj-select-single', 'mat-select', 'sl-select', 'ion-select', 'vaadin-combo-box', 'plasmo-csui'])
+  eq(`${tag} is still reachable through its shadow root`, hostSel.includes(tag), true);
+
+eq('the fingerprint is memoised', /if \(now - _sigAt < SIG_TTL_MS\) return _sigCache;/.test(src), true);
+eq('the cache is short enough to see a real step change on the next poll',
+  /const SIG_TTL_MS = 250;/.test(src), true);
+eq('and shorter than the poll interval it serves',
+  250 < 300, true);
+eq('the fingerprint uses a layout-only visibility test, not getComputedStyle',
+  /\.filter\(isVisibleFast\)/.test(body('questionControls')), true);
+eq('and that test really is bounding-box only',
+  /getComputedStyle/.test(body('isVisibleFast')), false);
+eq('while the general isVisible keeps the full check for correctness',
+  /getComputedStyle/.test(body('isVisible')), true);
+
+eq('the panel watchdog no longer runs twice a second', /\}, 2000\);   \/\/ twice a second was needless/.test(src), true);
+eq('nor the sidebar re-scan every 1.5s',
+  /if \(qActive && isRunnerTab\(\)\) forceOpenSidebar\(\); \}, 3000\);/.test(src), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -2132,7 +2132,7 @@
         if (now === previousSignature) { seen = now; settledAt = 0; continue; }
         if (now !== seen) { seen = now; settledAt = Date.now(); continue; }   // still rendering
         if (!settledAt) settledAt = Date.now();
-        if (Date.now() - settledAt >= 700) { noteProgress('next step rendered'); return true; }
+        if (Date.now() - settledAt >= scaled(700, 220)) { noteProgress('next step rendered'); return true; }
       }
       return stepSignature() !== previousSignature;
     });
@@ -2451,7 +2451,23 @@
   const $ = (sel, root) => (root || document).querySelector(sel);
   // While a queue is running, scale waits by the selected speed (1x..3x) so the
   // chosen speed visibly changes how fast each application is processed.
-  const sleep = ms => new Promise(r => setTimeout(r, Math.max(40, ms * (qActive && !qPaused ? qSpeedFactor : 1))));
+  /* THE SPEED SELECTOR ONLY EVER WORKED IN ONE OF THE TWO RUN MODES.
+
+     qActive is the IN-PAGE single-tab runner's flag (ua_qa). The Queue Manager
+     drives its jobs in parallel background tabs instead, and those tabs never set
+     it — so `qActive && !qPaused` was false throughout, the factor was never
+     applied, and 1x / 1.5x / 2x / 3x did literally nothing on the run people
+     actually use for bulk. The speed WAS being read from storage correctly in
+     every tab; it just was not reaching the arithmetic.
+
+     The floor drops from 40ms to 25ms too: at 3x (factor 0.3) every sleep under
+     133ms was being clamped back up, so the top speed was barely distinguishable
+     from the one below it. */
+  let _mgrDriving = false;                       // a Queue Manager job owns this tab
+  const queueDriving = () => (qActive && !qPaused) || _mgrDriving;
+  const sleep = ms => new Promise(r => setTimeout(r, Math.max(25, ms * (queueDriving() ? qSpeedFactor : 1))));
+  // Scale a fixed delay the same way, for the waits that are not plain sleeps.
+  const scaled = (ms, floor) => Math.max(floor || 60, Math.round(ms * (queueDriving() ? qSpeedFactor : 1)));
   function speedFactorFor(s) { return ({ 1: 1, 1.5: 0.66, 2: 0.45, 3: 0.3 })[s] || 1; }
 
   function isVisible(el) {
@@ -2702,12 +2718,11 @@
           if (out.length >= cap) break;
         }
       } catch (_) {}
-      // Descend into open shadow roots. Finding the hosts used to mean
-      // node.querySelectorAll('*') — every element in the document — on EVERY
-      // deep query. stepSignature() alone runs one of those, and
-      // waitForStepChange polls it every 300ms, so a big ATS page was being
-      // fully enumerated several times a second in every open job tab. With a
-      // dozen tabs that is enough to bring a machine to its knees.
+      // Descend into open shadow roots. Finding the hosts used to mean asking the
+      // node for EVERY element it contains, on every deep query. stepSignature()
+      // runs one of those, and waitForStepChange polls it every 300ms, so a big
+      // ATS page was being fully enumerated several times a second in every open
+      // job tab. With a dozen tabs that is enough to bring a machine to its knees.
       //
       // Only a custom element (a tag with a hyphen) or one of the handful of
       // native elements that can carry one is ever a shadow host in practice, so
@@ -3844,14 +3859,19 @@
   }
   // Resolve once the DOM has been quiet for ~300ms (or after `timeout`) — so we act on a
   // settled page instead of mid-render. Cuts races on multi-step / React forms.
+  /* The quiet-period debounce is what this actually costs on a settled page, and
+     it was a flat 300ms however fast the run was set to go. Scaled now; the
+     overall timeout is left alone, because that is a safety cap rather than a
+     pace. */
   function waitForFormStable(timeout = 3000) {
     return new Promise(resolve => {
       let timer = null;
+      const quiet = scaled(300, 90);
       const done = () => { try { mo.disconnect(); } catch (_) {} resolve(); };
-      const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, 300); });
+      const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, quiet); });
       try { mo.observe(document.body || document.documentElement, { childList: true, subtree: true }); } catch (_) {}
       setTimeout(done, timeout);
-      timer = setTimeout(done, 300);
+      timer = setTimeout(done, quiet);
     });
   }
   // Same-host, segment-by-segment path match; tolerates a final apply→thanks step word so
@@ -7032,6 +7052,7 @@
 
   async function processManagedJob(c) {
     LOG(`Manager mode: driving "${c.title || c.url}"`);
+    _mgrDriving = true;                          // so the speed selector applies here too
     // Native confirm/alert would block this tab's JS thread outright, so the
     // MAIN-world hooks answer them for the lifetime of this job (and only then).
     setAutomationFlag(true);
@@ -7040,6 +7061,7 @@
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
       clearTimeout(tId);
+      _mgrDriving = false;
       setAutomationFlag(false);
       const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
       Object.assign(c, patch);

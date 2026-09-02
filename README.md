@@ -1741,6 +1741,84 @@ Suite total: **981 assertions**, all green.
 
 ---
 
+## v16.4 — the CPU, and a speed selector that never worked
+
+### It was pegging the CPU, and that was my doing
+
+The build got heavy enough to bring a machine down. Almost all of the cost was in
+one path introduced two versions ago.
+
+`stepSignature()` walks the DOM deeply. `waitForStepChange` polls it **every
+300ms** while a step transition is in flight, and several passes call it two or
+three times each on top of that. Two things in there did not belong in a hot
+loop:
+
+* **`deepQueryAll` found shadow hosts by asking each node for every element it
+  contains** — the whole document — on *every* deep query. A large ATS page was
+  being fully enumerated several times a second, in every open job tab. With a
+  dozen tabs that is enough to take a machine down.
+* **`questionControls` filtered with `isVisible`**, whose `getComputedStyle` call
+  forces a style recalculation. Four hundred of those per fingerprint, several
+  times a second.
+
+Fixed three ways:
+
+1. Shadow hosts are found by **naming the tags that actually host them** — a
+   custom element, or one of the handful of native elements that can — instead of
+   asking for everything. CSS cannot express "any tag with a hyphen", so the list
+   is explicit; it still reaches `spl-*`, `oj-*`, `mat-*`, `sl-*`, `ion-*`,
+   `vaadin-*` and `plasmo-csui`.
+2. The fingerprint is **memoised for 250ms**. Nested callers collapse into one
+   computation, and 250ms is comfortably under the 300ms poll, so a genuine step
+   change is still seen on the very next tick.
+3. The fingerprint uses a **bounding-box-only** visibility test. A zero-sized box
+   already covers `display:none` anywhere up the ancestor chain, and that is all
+   a fingerprint needs. The general `isVisible` keeps the full check.
+
+Two timers were also running far faster than they needed to: the panel watchdog
+every 600ms — it re-mounts a panel, it does not animate one — and the sidebar
+re-scan every 1.5s. Now 2s and 3s.
+
+### The speed selector did nothing on the run you actually use
+
+1x / 1.5x / 2x / 3x had no effect in **Queue Manager (parallel tabs)** mode, which
+is the mode for bulk. The gate was:
+
+```js
+ms * (qActive && !qPaused ? qSpeedFactor : 1)
+```
+
+`qActive` is the **in-page single-tab runner's** flag. Queue Manager drives its
+jobs in parallel background tabs, and those tabs never set it — so the factor was
+never applied and the buttons were decorative. The speed *was* being read from
+storage correctly in every tab; it simply never reached the arithmetic.
+
+Two further reasons it under-delivered even where it did apply:
+
+* **The floor was 40ms.** At 3x (factor 0.3) every sleep under 133ms was clamped
+  back up, so the top speed was barely distinguishable from the one below. Now
+  25ms.
+* **The settle waits were flat.** `waitForFormStable`'s quiet-period debounce and
+  `waitForStepChange`'s settle window were fixed at 300ms and 700ms however fast
+  the run was set. Both scale now. The overall *timeouts* deliberately do not —
+  those are safety caps, not a pace.
+
+A 3-second pause at 3x is now 900ms, as it always should have been.
+
+### Verified
+
+The speed arithmetic runs for real: all four multipliers, the unknown-multiplier
+fallback, and the scaling of a 3s pause at 1x and 3x.
+
+Ten mutations, ten failures: the sleep gate back to runner-only, manager tabs
+never marked, the floor back to 40ms, both settle windows unscaled, the shadow
+walk back to enumerating everything, the fingerprint memo removed, and the
+expensive visibility test restored.
+
+Suite total: **1,016 assertions**, all green.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
