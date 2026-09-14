@@ -451,9 +451,23 @@
        Each of these is a ROUTE the platform always uses, whatever domain it is
        served from, so they work for companies nobody has hit yet. */
     // careers.acme.com/jobs/12345/software-engineer/job
-    { n: 'iCIMS', p: /icims\.com|\/jobs\/\d+\/[^/]+\/job\b/i },
+    /* iCIMS routes: the posting is /jobs/<id>/<slug>/job and the account wall is
+       /jobs/<id>/login — the one AMD's careers site stops on. Both are matched so
+       the wall reaches the iCIMS driver rather than the generic path. */
+    { n: 'iCIMS', p: /icims\.com|\/jobs\/\d+\/[^/]+\/job\b|\/jobs\/\d+\/(login|candidate|register)\b/i },
     // careers.jpmorgan.com/us/en/job/210536215 — Phenom's fixed locale/job shape
-    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com|\/[a-z]{2}\/[a-z]{2}\/job\/\d{4,}/i },
+    /* Phenom's locale/job route carries an alphanumeric requisition code on most
+       tenants — careers.mastercard.com/us/en/job/MASRUSR280277EXTERNALENUS and
+       careers.snowflake.com/us/en/job/SNCOUS… — so requiring digits missed them.
+       Also matched: their feed parameter, and the /<locale>/jobs/<id>/ variant
+       careers.cognizant.com uses. */
+    /* Host and feed signals only — these are unambiguous wherever they appear.
+       The PATH shape Phenom uses is not: /<locale>/job/<id>/<slug> is identical on
+       amazon.jobs, pageuppeople.com and careers.jpmorgan.com, so only the host can
+       separate those. That rule therefore lives at the BOTTOM of this table, after
+       every host-specific entry, where it catches an unknown employer domain
+       without stealing a known one. */
+    { n: 'Phenom', p: /phenompeople\.com|\.phenom\.com|utm_medium=phenom/i },
     { n: 'SuccessFactors', p: /successfactors\.(com|eu)|sapsf\.(com|eu)|\/sfcareer\/|[?&]company=[A-Za-z0-9]+.*career/i },
     { n: 'Cornerstone', p: /csod\.com|cornerstoneondemand\.com|\/ux\/candidate|\/careersite\b/i },
     { n: 'Brassring', p: /brassring\.com|\/TGnewUI\/|\/TGWebHost\//i },
@@ -516,6 +530,44 @@
     { n: 'Foundit', p: /foundit\.in|iimjobs\.com/i }, { n: 'Seek', p: /seek\.com\.au/i },
     { n: 'Naukri', p: /naukri\.com/i }, { n: 'Reed', p: /reed\.co\.uk/i },
     { n: 'TotalJobs', p: /totaljobs\.com/i }, { n: 'Adzuna', p: /adzuna\.com/i },
+    // The handful the rival extensions knew that this registry did not.
+    { n: 'Amazon Jobs', p: /amazon\.jobs|amazon\.com\/(en\/)?jobs/i }, { n: 'Dice', p: /dice\.com/i },
+    { n: 'Welcome to the Jungle', p: /welcometothejungle\.com/i },
+    /* ── Learned from four real 943-job queues ─────────────────────────────
+       Ten per cent of those jobs fell through to the generic path, and most of
+       them were platforms already supported here — just not recognised from the
+       URL shape the employer actually uses. These rules were written against
+       those URLs, host by host. */
+
+    // Greenhouse is embedded on the EMPLOYER's own site far more often than it is
+    // served from greenhouse.io, and it always carries gh_jid. That one parameter
+    // covers careers.toasttab.com, jobs.elastic.co, careers.withwaymo.com,
+    // databricks.com, hubspot.com, hudsonrivertrading.com, gonitro.com and
+    // squarespace.com — eight employers in one queue, all previously generic.
+    { n: 'Greenhouse', p: /[?&]gh_jid=\d+/i },
+    { n: 'Greenhouse', p: /(^|\/\/)grnh\.se\//i },                     // their short link
+
+    /* Teamtailor white-labelled onto the employer's domain. The shape is fixed —
+       /jobs/<numeric id>-<slug> — and it was the single biggest fall-through in
+       the queue (careers.sumsub.com alone was 20 jobs, plus spacelift, phorest
+       and geelyauto). */
+    { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
+
+    // Personio serves from personio.com as well as .de, as /careers/<uuid>.
+    { n: 'Personio', p: /personio\.(com|de)\/(careers|job)/i },
+    // BambooHR's own hosting is <tenant>.bamboohr.com/careers/<id> — no "/jobs".
+    { n: 'BambooHR', p: /bamboohr\.com\/careers\//i },
+    /* Oracle Recruiting also serves /sites/<site>/job/<id> without the /hcmUI/
+       prefix (explore-jobs.ciklum.com). */
+    { n: 'Oracle Recruiting', p: /\/sites\/[a-z0-9_-]+\/job\/\d+/i },
+
+    // Aplitrak is Bullhorn's apply domain; the others are single-tenant ATS that
+    // turned up once each but cost a whole job when unrecognised.
+    { n: 'Bullhorn', p: /aplitrak\.com/i },
+    { n: 'Current Vacancies', p: /current-vacancies\.com/i },
+    { n: 'ContactHR', p: /contacthr\.com/i },
+    { n: 'Polymer', p: /(^|\.)polymer\.co\b|jobs\.polymer\.co/i },
+    { n: 'WorkBright', p: /workbright\.com/i },
     { n: 'Jobsite', p: /jobsite\.co\.uk/i }, { n: 'CVLibrary', p: /cv-library\.co\.uk/i },
     // OptimHire / SpeedyApply supported ATS platforms
     { n: 'Zoho', p: /zohorecruit\.com|recruit\.zoho/i }, { n: 'Freshteam', p: /freshteam\.com/i },
@@ -547,6 +599,11 @@
     { n: 'HackerRank', p: /hackerrank\.com/i }, { n: 'Dover2', p: /dover\.io/i },
     { n: 'Ashby2', p: /ashbyhq\.com.*application/i }, { n: 'Lever2', p: /lever\.co.*apply/i },
     // Generic career page patterns
+    /* Phenom by PATH — deliberately the last real rule. An employer serving
+       /<locale>/job/<id>/<slug> from its own domain is almost always Phenom, but
+       amazon.jobs, pageuppeople.com and the rest use the same shape, so this only
+       gets a say once every host-specific pattern above has declined. */
+    { n: 'Phenom', p: /\/[a-z]{2}(-[a-z]{2})?\/(en\/)?jobs?\/[a-z0-9]{6,}(\/|$)|\/[a-z]{2,8}-[a-z]{2}\/jobs\/\d{4,}\//i },
     { n: 'Career', p: /\/careers?\/?$|\/jobs?\/?$|\/apply\b|\/positions?\/?$|\/openings?\/?$/i }
   ];
 
@@ -688,6 +745,88 @@
   }
 
   // ===================== SMART VALUE GUESSER =====================
+  /* ── THE MESSAGE TO THE HIRING TEAM ────────────────────────────────────────
+     "I keep seeing this text on a lot of my applications — is it misplaced?"
+
+     It is not misplaced. It is the saved cover-letter text, pasted verbatim into
+     every box whose label reads like a cover letter, a motivation, or a message
+     to the hiring team. Identical wording across dozens of applications is worse
+     than an empty box: it reads as a form letter and it names no employer.
+
+     So the text is TAILORED before it is written — {company} / {title}
+     placeholders are substituted, and when the saved text names no employer at
+     all the company and role read off the page are woven into an opening
+     sentence. And an OPTIONAL message box is now left alone when there is
+     nothing specific to say, rather than filled with boilerplate. A REQUIRED one
+     is still answered, because an empty required field blocks the application. */
+  const COVER_FIELD_RE = /cover.?letter|motivation|message to (the )?(hiring|recruit|team|us)|why (do you )?(want|are you)|additional.?info|anything else you.?d like/i;
+  const ATS_HOST_LABEL_RE = /^(myworkdayjobs|myworkdaysite|smartrecruiters|greenhouse|job-boards|lever|icims|taleo|oraclecloud|adp|workable|ashbyhq|avature|jobvite|jazzhr|bamboohr|successfactors|phenom|eightfold)$/i;
+
+  function pageCompanyName() {
+    // The queue knows it when the CSV carried it.
+    try {
+      const j = queue.find((x) => x.status === 'applying');
+      if (j && j.companyName) return String(j.companyName).trim().slice(0, 60);
+    } catch (_) {}
+    try {
+      const c = extractJDCompany();
+      if (c) return c.replace(/\s*[|–-]?\s*(careers?|jobs?|hiring)\s*$/i, '').trim().slice(0, 60);
+    } catch (_) {}
+    /* Last resort: the employer's own label in the host. On a white-labelled ATS
+       that IS the company — apply.deloitte.com, careers-amd.icims.com. */
+    try {
+      const h = location.hostname.replace(/^(www|apply|jobs|careers|boards|job-boards|recruiting)[.-]/i, '');
+      const label = (h.split('.')[0] || '').replace(/^careers-/i, '');
+      if (label && label.length > 1 && !ATS_HOST_LABEL_RE.test(label)) {
+        return label.charAt(0).toUpperCase() + label.slice(1);
+      }
+    } catch (_) {}
+    return '';
+  }
+  function pageJobTitle() {
+    try {
+      const j = queue.find((x) => x.status === 'applying');
+      if (j && j.title) return String(j.title).trim().slice(0, 90);
+    } catch (_) {}
+    try { return (extractJDTitle() || '').slice(0, 90); } catch (_) { return ''; }
+  }
+
+  function tailorCoverText(text, opts) {
+    let out = String(text == null ? '' : text).trim();
+    if (!out) return '';
+    const company = (opts && opts.company) || '';
+    const title = (opts && opts.title) || '';
+    out = out.replace(/\{\s*(company|employer)\s*\}/gi, company || 'your team')
+      .replace(/\{\s*(title|role|position|job)\s*\}/gi, title || 'this role');
+    if (!company) return out;
+    // Already names the employer? The user's own wording stands.
+    try {
+      const esc = company.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp('\\b' + esc + '\\b', 'i').test(out)) return out;
+    } catch (_) {}
+    const opener = title
+      ? `I am applying for the ${title} role at ${company}. `
+      : `I am writing to apply to ${company}. `;
+    return opener + out;
+  }
+
+  /* "Today's date" as a FREE TEXT box (SmartRecruiters puts one under the
+     signature field). Match whatever format the field advertises rather than
+     guessing — a date in the wrong order is silently wrong, not obviously so. */
+  function todayForField(el) {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const DD = p2(d.getDate()), MM = p2(d.getMonth() + 1), YYYY = String(d.getFullYear());
+    let hint = '';
+    try {
+      hint = ((el && el.placeholder) || '') + ' ' + (getLabel(el) || '') + ' ' + ((el && el.getAttribute('aria-label')) || '');
+    } catch (_) {}
+    if (/yyyy\s*[-/.]\s*mm\s*[-/.]\s*dd/i.test(hint)) return `${YYYY}-${MM}-${DD}`;
+    if (/dd\s*[-/.]\s*mm\s*[-/.]\s*yyyy/i.test(hint)) return `${DD}/${MM}/${YYYY}`;
+    if (/mm\s*[-/.]\s*dd\s*[-/.]\s*yyyy/i.test(hint)) return `${MM}/${DD}/${YYYY}`;
+    return `${MM}/${DD}/${YYYY}`;                       // the ATS default
+  }
+
   function guessValue(label, p) {
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
     // "What state do you reside in?" is a value question; it kept coming back
@@ -745,6 +884,12 @@
     if (/^from$|start.?date|begin.?date/.test(l) && !/salary|pay/.test(l)) return p.work_start_year ? `01/${p.work_start_year}` : `01/${new Date().getFullYear() - 2}`;
     if (/^to$|end.?date/.test(l) && !/salary|pay|email/.test(l)) return p.work_end_year ? `12/${p.work_end_year}` : `12/${new Date().getFullYear()}`;
     if (/salary|compensation|pay|desired.?pay/.test(l)) return p.expected_salary || DEFAULTS.salary;
+    /* An e-signature box wants the applicant's NAME typed in, and the date box
+       beside it wants today. Both are REQUIRED on SmartRecruiters' preliminary
+       questions and neither was recognised, so the step could not be submitted. */
+    if (/signature|sign here|type your (full )?name|e-?sign/.test(l) && !/upload|image|file/.test(l))
+      return `${p.first_name || p.firstName || ''} ${p.last_name || p.lastName || ''}`.trim();
+    if (/today.?s date|date signed|signature date|current date|date of (signature|application)/.test(l)) return '__TODAY__';
     if (/cover.?letter|motivation|additional.?info|message.?to/.test(l)) return p.cover_letter || DEFAULTS.cover;
     if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
     if (/why.*(compan|role|want|interest|position)/.test(l)) return DEFAULTS.why;
@@ -876,8 +1021,10 @@
   }
 
   function refineAnswerForControl(val, label, p, el) {
-    const v = String(val == null ? '' : val).trim();
+    let v = String(val == null ? '' : val).trim();
     if (!v) return v;
+    // Resolved here because the format depends on the control, not the question.
+    if (v === '__TODAY__') return todayForField(el);
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
@@ -887,6 +1034,20 @@
     if (/^(yes|no|y|n|true|false)$/i.test(v) && !looksLikeYesNoQuestion(q)) {
       if (!isFreeTextControl(el)) return '';
       return (PROSE_Q_RE.test(q) || CONDITIONAL_Q_RE.test(q) || NA_HINT_RE.test(q)) ? 'N/A' : '';
+    }
+    /* The message to the hiring team — see tailorCoverText. Naming the employer
+       is the difference between a letter and a form letter, and an optional box
+       with nothing specific to say is better left empty. */
+    if (COVER_FIELD_RE.test(q) && (isFreeTextControl(el) || (el && el.tagName === 'TEXTAREA'))) {
+      const company = pageCompanyName();
+      if (company) return tailorCoverText(v, { company, title: pageJobTitle() });
+      let required = false;
+      try { required = isFieldRequired(el); } catch (_) {}
+      if (!required) {
+        LOG('Leaving the optional message to the hiring team empty — nothing specific to say about this employer');
+        return '';
+      }
+      return v;
     }
     if (!isFreeTextControl(el)) return v;      // a dropdown/radio wants the option text
 
@@ -1932,8 +2093,17 @@
     'vaadin-combo-box', 'vaadin-checkbox', 'vaadin-radio-button', 'vaadin-select',
   ].join(',');
 
+  /* getComputedStyle is the expensive half of isVisible, and calling it once per
+     control forces a style recalculation each time — 400 of them per fingerprint,
+     several times a second, was a large part of what made this build heavy. The
+     fingerprint only needs to know whether a control is on screen at all, and a
+     zero-sized box already covers display:none anywhere up the ancestor chain. */
+  function isVisibleFast(el) {
+    try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+    catch (_) { return false; }
+  }
   function questionControls(cap) {
-    try { return deepAll(QUESTION_CONTROL_SEL, cap || 400).filter(isVisible); }
+    try { return deepAll(QUESTION_CONTROL_SEL, cap || 400).filter(isVisibleFast); }
     catch (_) { return []; }
   }
 
@@ -1943,7 +2113,21 @@
      shadow roots and same-origin frames (the old getPageHash used a plain
      document query and was therefore IDENTICAL on every SmartRecruiters and
      Oracle step, which is what let the loop fill the previous step twice). */
+  /* Memoised. waitForStepChange polls this every 300ms and several passes call
+     it two or three times each, so without a cache one step transition meant
+     dozens of full deep walks — each of which forces a layout per control. The
+     TTL is short enough that a genuine step change is still seen on the next
+     poll, and long enough that nested callers collapse into one computation. */
+  let _sigCache = '', _sigAt = 0;
+  const SIG_TTL_MS = 250;
   function stepSignature() {
+    const now = Date.now();
+    if (now - _sigAt < SIG_TTL_MS) return _sigCache;
+    const sig = stepSignature__impl();
+    _sigCache = sig; _sigAt = now;
+    return sig;
+  }
+  function stepSignature__impl() {
     let bits = [];
     try {
       bits = questionControls(400).map((el) => {
@@ -1997,7 +2181,7 @@
         if (now === previousSignature) { seen = now; settledAt = 0; continue; }
         if (now !== seen) { seen = now; settledAt = Date.now(); continue; }   // still rendering
         if (!settledAt) settledAt = Date.now();
-        if (Date.now() - settledAt >= 700) { noteProgress('next step rendered'); return true; }
+        if (Date.now() - settledAt >= scaled(700, 220)) { noteProgress('next step rendered'); return true; }
       }
       return stepSignature() !== previousSignature;
     });
@@ -2316,7 +2500,23 @@
   const $ = (sel, root) => (root || document).querySelector(sel);
   // While a queue is running, scale waits by the selected speed (1x..3x) so the
   // chosen speed visibly changes how fast each application is processed.
-  const sleep = ms => new Promise(r => setTimeout(r, Math.max(40, ms * (qActive && !qPaused ? qSpeedFactor : 1))));
+  /* THE SPEED SELECTOR ONLY EVER WORKED IN ONE OF THE TWO RUN MODES.
+
+     qActive is the IN-PAGE single-tab runner's flag (ua_qa). The Queue Manager
+     drives its jobs in parallel background tabs instead, and those tabs never set
+     it — so `qActive && !qPaused` was false throughout, the factor was never
+     applied, and 1x / 1.5x / 2x / 3x did literally nothing on the run people
+     actually use for bulk. The speed WAS being read from storage correctly in
+     every tab; it just was not reaching the arithmetic.
+
+     The floor drops from 40ms to 25ms too: at 3x (factor 0.3) every sleep under
+     133ms was being clamped back up, so the top speed was barely distinguishable
+     from the one below it. */
+  let _mgrDriving = false;                       // a Queue Manager job owns this tab
+  const queueDriving = () => (qActive && !qPaused) || _mgrDriving;
+  const sleep = ms => new Promise(r => setTimeout(r, Math.max(25, ms * (queueDriving() ? qSpeedFactor : 1))));
+  // Scale a fixed delay the same way, for the waits that are not plain sleeps.
+  const scaled = (ms, floor) => Math.max(floor || 60, Math.round(ms * (queueDriving() ? qSpeedFactor : 1)));
   function speedFactorFor(s) { return ({ 1: 1, 1.5: 0.66, 2: 0.45, 3: 0.3 })[s] || 1; }
 
   function isVisible(el) {
@@ -2534,6 +2734,24 @@
     }
     return false;
   }
+  /* Tags that actually host open shadow roots on the ATS this build supports,
+     plus the generic custom-element prefixes. CSS cannot say "any tag with a
+     hyphen", so this is the enumeration — kept broad, and far cheaper than '*'. */
+  const SHADOW_HOST_SEL = [
+    '[data-shadow]', 'plasmo-csui',
+    'spl-input','spl-select','spl-select-option','spl-radio','spl-checkbox','spl-textarea',
+    'spl-button','spl-file-upload','spl-attachment','spl-typography-body','spl-date-input',
+    'oj-input-text','oj-text-area','oj-select-single','oj-select-one','oj-combobox-one',
+    'oj-radioset','oj-checkboxset','oj-input-date','oj-button','oj-radio',
+    'mat-select','mat-checkbox','mat-radio-button','mat-slide-toggle','mat-form-field',
+    'md-outlined-select','md-filled-select','md-checkbox','md-radio','md-outlined-text-field',
+    'sl-select','sl-checkbox','sl-radio','sl-switch','sl-input','sl-button',
+    'ion-select','ion-checkbox','ion-radio','ion-toggle','ion-input',
+    'vaadin-combo-box','vaadin-checkbox','vaadin-radio-button','vaadin-select','vaadin-text-field',
+    // Generic catch-alls for custom elements this list does not name.
+    '[is]', 'x-el', 'ui-input', 'ui-select', 'app-input', 'app-select',
+  ].join(',');
+
   function deepQueryAll(sel, root, limit) {
     const out = [];
     const cap = limit || 400;
@@ -2549,12 +2767,16 @@
           if (out.length >= cap) break;
         }
       } catch (_) {}
-      try {
-        for (const el of node.querySelectorAll('*')) {
-          // Don't even descend into the extension's own shadow trees.
-          if (el.shadowRoot && !isOwnUi(el)) stack.push(el.shadowRoot);
-        }
-      } catch (_) {}
+      // Descend into open shadow roots. Finding the hosts used to mean asking the
+      // node for EVERY element it contains, on every deep query. stepSignature()
+      // runs one of those, and waitForStepChange polls it every 300ms, so a big
+      // ATS page was being fully enumerated several times a second in every open
+      // job tab. With a dozen tabs that is enough to bring a machine to its knees.
+      //
+      // Only a custom element (a tag with a hyphen) or one of the handful of
+      // native elements that can carry one is ever a shadow host in practice, so
+      // ask for those by name instead of for everything.
+      try { for (const el of node.querySelectorAll(SHADOW_HOST_SEL)) { if (el.shadowRoot && !isOwnUi(el)) stack.push(el.shadowRoot); } } catch (_) {}
     }
     return out;
   }
@@ -3647,6 +3869,19 @@
       }, () => void chrome.runtime.lastError);
     } catch (_) {}
   }
+  /* Same channel, different reason: a job blocked on a verification email is a
+     job that needs a person, and the queue has to be told so it can hold off the
+     watchdog and show which one is waiting instead of failing it silently. */
+  function reportNeedsHuman(reason) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'UA_JOB_NEEDS_HUMAN',
+        reason: String(reason || 'manual step'),
+        url: location.href,
+        blocked: true,
+      }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
   async function waitForCaptchaClear(maxMs = 180000) {
     const start = Date.now();
     let announced = false;
@@ -3673,14 +3908,19 @@
   }
   // Resolve once the DOM has been quiet for ~300ms (or after `timeout`) — so we act on a
   // settled page instead of mid-render. Cuts races on multi-step / React forms.
+  /* The quiet-period debounce is what this actually costs on a settled page, and
+     it was a flat 300ms however fast the run was set to go. Scaled now; the
+     overall timeout is left alone, because that is a safety cap rather than a
+     pace. */
   function waitForFormStable(timeout = 3000) {
     return new Promise(resolve => {
       let timer = null;
+      const quiet = scaled(300, 90);
       const done = () => { try { mo.disconnect(); } catch (_) {} resolve(); };
-      const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, 300); });
+      const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, quiet); });
       try { mo.observe(document.body || document.documentElement, { childList: true, subtree: true }); } catch (_) {}
       setTimeout(done, timeout);
-      timer = setTimeout(done, 300);
+      timer = setTimeout(done, quiet);
     });
   }
   // Same-host, segment-by-segment path match; tolerates a final apply→thanks step word so
@@ -4172,6 +4412,9 @@
       // A visible captcha blocks every next step — pause for the user instead of
       // burning the page budget on retries that can't succeed.
       if (detectCaptcha()) await waitForCaptchaClear();
+      // Same for an email-verification wall: nothing on this page can advance
+      // until the code or link arrives.
+      if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
       LOG(`Multi-page: processing page ${page}`);
 
       // Wait for page content to change
@@ -6819,8 +7062,46 @@
     return false;
   }
 
+  /* ── TRIAGE: GIVE UP FAST ON A JOB THAT CANNOT BE WON ──────────────────────
+     A 544-job run reported 2 applied, 1 skipped, 13 FAILED. Most of those 13
+     could never have succeeded — a sign-in wall behind a reCAPTCHA, a posting
+     that has closed — and each one burned the CAPTCHA grace (1 min) and then the
+     per-job cap (3 min) before being written off. Thirteen jobs × up to four
+     minutes is the better part of an hour spent on nothing.
+
+     Recognising them in seconds is worth more to a bulk run than any raw speed
+     increase, and it turns a misleading "failed" into an honest "skipped" with a
+     reason you can act on. */
+  const CLOSED_POSTING_RE = /no longer (accepting|available|open|active)|position (has been )?(closed|filled)|this (job|posting|requisition|vacancy) (is|has been) (closed|filled|removed|expired)|applications? (are )?closed|expired|nicht mehr verf[üu]gbar|stelle (ist )?besetzt|offre (est )?(clos|pourvue)|ya no est[áa] disponible|niet meer beschikbaar/i;
+
+  /* A CAPTCHA on the APPLICATION is a human wait — you can solve it and the job
+     continues. A CAPTCHA on the SIGN-IN wall is different: the account step has
+     to be completed before anything can be filled, so an unattended run is
+     finished here regardless of how long it waits. */
+  function captchaBlocksSignIn() {
+    try {
+      if (!detectCaptcha()) return false;
+      return looksLikeAuthPage() || authPasswordFields().length > 0;
+    } catch (_) { return false; }
+  }
+
+  /* A reason string when this job is definitively unwinnable right now, else ''. */
+  function unwinnableReason() {
+    try {
+      let copy = '';
+      try { copy = (document.body && document.body.innerText || '').slice(0, 4000); } catch (_) {}
+      if (CLOSED_POSTING_RE.test(copy) && !hasApplicationForm()) return 'The posting has closed';
+      if (captchaBlocksSignIn()) {
+        const c = detectCaptcha();
+        return `Sign-in is behind a ${(c && c.provider) || 'CAPTCHA'} — an account is needed before applying`;
+      }
+    } catch (_) {}
+    return '';
+  }
+
   async function processManagedJob(c) {
     LOG(`Manager mode: driving "${c.title || c.url}"`);
+    _mgrDriving = true;                          // so the speed selector applies here too
     // Native confirm/alert would block this tab's JS thread outright, so the
     // MAIN-world hooks answer them for the lifetime of this job (and only then).
     setAutomationFlag(true);
@@ -6829,6 +7110,7 @@
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
       clearTimeout(tId);
+      _mgrDriving = false;
       setAutomationFlag(false);
       const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
       Object.assign(c, patch);
@@ -6911,7 +7193,21 @@
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
       await openApplicationForm();
       await handleAccountAuth();
+      /* Triage before the waits. A sign-in wall behind a CAPTCHA, or a posting
+         that has closed, cannot be completed however long we sit here — skip in
+         seconds with the reason rather than burning the CAPTCHA grace and then
+         the per-job cap on it. */
+      {
+        const dead = unwinnableReason();
+        if (dead) { LOG('Skipping fast: ' + dead); return void await finalize('skipped', dead); }
+      }
       if (detectCaptcha()) await waitForCaptchaClear();
+      // The wait may have ended because a human solved it — or because the wall
+      // is still there. Re-check rather than pressing on into a form we cannot reach.
+      {
+        const dead = unwinnableReason();
+        if (dead) { LOG('Skipping after the wait: ' + dead); return void await finalize('skipped', dead); }
+      }
       // A false "no application form" is the worst outcome in a bulk run: the job is
       // dropped silently and never retried. The old two-shot check fired while the tab
       // was still on the Jobright landing page or mid-redirect to the ATS, so real jobs
@@ -9425,7 +9721,9 @@
     // Safety net: periodic re-inject in case the sidebar mounts without mutations
     // we observed (e.g. inside a shadow root). Cheap — one querySelector per tick.
     // During a run, also keep Jobright's own popup open so you can watch it autofill.
-    setInterval(() => { injectSidebarUI(); if (qActive && isRunnerTab()) forceOpenSidebar(); }, 1500);
+    // Every 1.5s was a re-scan of the page for a sidebar that is already mounted
+    // 99 times out of 100. Half the frequency, same effect.
+    setInterval(() => { injectSidebarUI(); if (qActive && isRunnerTab()) forceOpenSidebar(); }, 3000);
     // Watchdog: keep the control panel alive throughout the run. If anything removes
     // it (page script, re-render), re-mount it within ~600ms so the controls never
     // disappear while automation is in progress.
@@ -9449,7 +9747,7 @@
       if (isRunnerTab()) setAutomationFlag(true);
       ensureOverlay();
       updateCtrl();
-    }, 600);
+    }, 2000);   // twice a second was needless: the panel is re-mounted, not animated
   }
 
   // ===================== APPLY-BUTTON OPENER (reveal the form on listing pages) =====================
@@ -9701,7 +9999,11 @@
      So: enumerate deeply, recognise a wall by what it asks for rather than by one
      field type, and walk the steps rather than assuming there is only one. */
   const SOCIAL_AUTH_RE = /linkedin|google|facebook|apple|microsoft|indeed|xing|github|twitter|sso\b|single sign/i;
-  const AUTH_COPY_RE = /(sign|log)\s?in\b|create (an )?(account|profile)|register|welcome back|let'?s find your dream job|prompt you to create a profile|enter your email|continue with (your )?email|existing candidate|returning (candidate|applicant)|already have an account/i;
+  /* The wall has to be recognised in the site's own language. BMW's careers
+     portal is German — "Karrierechancen: Anmelden", "Haben Sie schon ein Konto?",
+     "Kennwort" — and every word of it missed an English-only pattern, so a whole
+     European tenant failed job after job. */
+  const AUTH_COPY_RE = /(sign|log)\s?in\b|create (an )?(account|profile)|register|welcome back|let'?s find your dream job|prompt you to create a profile|enter your email|continue with (your )?email|existing candidate|returning (candidate|applicant)|already have an account|anmelden|einloggen|registrieren|konto erstellen|erstellen sie ein konto|ein konto erstellen|haben sie schon ein konto|kennwort|passwort|benutzerkonto|se connecter|connexion|cr[ée]er un compte|mot de passe|identifiant|iniciar sesi[óo]n|reg[íi]strate|crear (una )?cuenta|contrase[ñn]a|accedi|registrati|entrar|iniciar sess[ãa]o|palavra-passe|inloggen|aanmelden|account aanmaken|wachtwoord|logga in|skapa konto|l[øo]sen|logg inn|zaloguj|utw[óo]rz konto|has[łl]o/i;
   function safeClass(el) { try { return String(el && el.className || ''); } catch (_) { return ''; } }
 
   /* The box this wall wants an email or username in — native, or the real input
@@ -9732,16 +10034,24 @@
     if (!email) return false;
     let copy = '';
     try { copy = (document.body && document.body.innerText || '').slice(0, 3000); } catch (_) {}
-    const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname);
+    /* iCIMS serves its form inside #icims_content_iframe and opens the account
+       wall at /jobs/<id>/login with width/height query params, so the path test
+       has to cover that shape too. */
+    const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname) ||
+      /\/jobs\/\d+\/(login|register)\b/i.test(location.pathname);
     if (!urlSaysAuth && !AUTH_COPY_RE.test(copy)) return false;
     // An email box on a page that is ALREADY the application is not a wall.
     return !hasApplicationForm();
   }
 
   function findAuthSubmit(mode) {
-    const re = mode === 'signin' ? /^(sign ?in|log ?in|continue|next|submit|get started)\b/i
-      : mode === 'create' ? /^(create (an? )?(account|profile)|create my account|register|sign ?up|continue|next|submit|get started)\b/i
-        : /^(create (an? )?(account|profile)|create my account|register|sign ?up|sign ?in|log ?in|continue|next|submit|get started)\b/i;
+    /* Localised too. BMW's button says "Anmelden"; an English-only pattern found
+       nothing to click, so even a correctly filled wall went nowhere. */
+    const SIGNIN = 'sign ?in|log ?in|continue|next|submit|get started|anmelden|einloggen|weiter|absenden|se connecter|connexion|continuer|suivant|valider|iniciar sesi[\u00f3o]n|entrar|continuar|siguiente|accedi|avanti|inloggen|aanmelden|volgende|verder|logga in|forts[\u00e4a]tt|logg inn|zaloguj|dalej';
+    const CREATE = 'create (an? )?(account|profile)|create my account|register|sign ?up|konto erstellen|registrieren|cr[\u00e9e]er (un )?compte|s.inscrire|crear (una )?cuenta|reg[\u00edi]strate|registrati|crea account|account aanmaken|registreren|skapa konto|opprett konto|utw[\u00f3o]rz konto';
+    const re = mode === 'signin' ? new RegExp('^(' + SIGNIN + ')\\b', 'i')
+      : mode === 'create' ? new RegExp('^(' + CREATE + '|continue|next|submit|get started|weiter|continuer|continuar)\\b', 'i')
+        : new RegExp('^(' + CREATE + '|' + SIGNIN + ')\\b', 'i');
     /* Never the social buttons. "Or sign in using social media" sits directly
        under ADP's Continue, and clicking one navigates to LinkedIn/Google and
        strands the job on a page the queue can do nothing with. */
@@ -9756,6 +10066,104 @@
     return btns.find((b) => re.test(label(b))) ||
       btns.find((b) => /^(submit|continue|next)\b/i.test(label(b))) || null;
   }
+
+  /* ── EMAIL VERIFICATION WALLS ──────────────────────────────────────────────
+     Several ATS stop mid-application: create an account, then go and click a
+     link — or type a code — that has just been emailed to you. Workday does it
+     per tenant, iCIMS and Taleo on some configurations, ADP when it does not
+     recognise your details. A queue running unattended dies at every one.
+
+     When a mailbox is connected (read-only — see ua-mailbox.js) we can get past
+     these without you. When it is not, we say what is blocking the job and hand
+     it to you rather than sitting there silently. */
+  const VERIFY_WALL_RE = /verify your (email|account|address)|verification (email|code|link)|check your (inbox|email)|we('ve| have)? sent (you )?(an? )?(email|code|link)|confirm your email|enter the code we sent|activation (email|link)|one.?time (code|passcode)/i;
+
+  function detectEmailVerificationWall() {
+    try {
+      const copy = (document.body && document.body.innerText || '').slice(0, 4000);
+      if (!VERIFY_WALL_RE.test(copy)) return false;
+      // A page that still has the application on it is not a verification wall.
+      return !hasApplicationForm() || !!verificationCodeField();
+    } catch (_) { return false; }
+  }
+
+  /* The box a one-time code goes into: short, numeric-ish, and labelled like a
+     code rather than like a password. */
+  function verificationCodeField() {
+    return deepAll('input[type=text],input[type=tel],input[type=number],input:not([type])', 60)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && !(el.value || '').trim())
+      .find((el) => {
+        const hay = (getLabel(el) || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' +
+          (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.autocomplete || '');
+        if (/password/i.test(hay)) return false;
+        return /\b(code|otp|pin|one.?time|verification|passcode|token)\b/i.test(hay);
+      }) || null;
+  }
+
+  /* Ask the service worker for the code or link. The worker's mailbox module is
+     read-only and bounded to recent mail from THIS employer — see the header of
+     ua-mailbox.js for why each of those limits is there. */
+  function askMailboxForVerification(hosts, companies) {
+    return new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies }, (r) => {
+          void chrome.runtime.lastError;
+          res(r || { ok: false, reason: 'no-reply' });
+        });
+      } catch (_) { res({ ok: false, reason: 'no-worker' }); }
+    });
+  }
+
+  async function resolveEmailVerification__impl(maxWaitMs) {
+    if (!detectEmailVerificationWall()) return false;
+    LOG('Email verification wall — checking the connected mailbox');
+    noteProgress('waiting for the verification email');
+
+    const hosts = [];
+    try { hosts.push(location.hostname); } catch (_) {}
+    // The employer's own domain too: the mail often comes from the company, not
+    // from the ATS that rendered the page.
+    const company = pageCompanyName();
+    const deadline = Date.now() + (maxWaitMs || 90000);
+
+    while (Date.now() < deadline) {
+      if (autoStopped()) return false;
+      const r = await askMailboxForVerification(hosts, company ? [company] : []);
+      if (r && r.ok) {
+        // Prefer typing a code: it keeps us on the page we are already on.
+        const box = verificationCodeField();
+        if (r.code && box) {
+          LOG('Entering the verification code from your mailbox');
+          box.focus({ preventScroll: true });
+          nativeSet(box, r.code);
+          noteProgress('entered the verification code');
+          await sleep(400);
+          const go = findAuthSubmit() || findSubmitControl();
+          if (go) { realClick(go); await waitForStepChange(stepSignature(), 12000); }
+          return true;
+        }
+        if (r.link) {
+          /* The worker only ever returns a link whose host belongs to the ATS or
+             employer we are already applying to — it will not hand back a link
+             to somewhere else in the inbox. */
+          LOG('Following the verification link from your mailbox');
+          noteProgress('following the verification link');
+          try { location.assign(r.link); } catch (_) {}
+          return true;
+        }
+      } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
+        LOG('Email verification needed and no mailbox is connected — this job needs you. Connect one under 🔑 in the Queue Manager to clear these automatically.');
+        try { reportNeedsHuman('email verification'); } catch (_) {}
+        return false;
+      }
+      await sleep(4000);   // the mail has not landed yet
+    }
+    LOG('Verification email did not arrive within the wait — handing this job over');
+    try { reportNeedsHuman('verification email did not arrive'); } catch (_) {}
+    return false;
+  }
+  // Stall watchdog stands down while this runs — see withBusy.
+  async function resolveEmailVerification(...a) { return withBusy('waiting for the verification email', () => resolveEmailVerification__impl(...a)); }
 
   async function handleAccountAuth__impl() {
     try {
@@ -9772,7 +10180,12 @@
       // If nothing looks like a wall yet, try to open a "Create account" form.
       if (!looksLikeAuthPage()) {
         const createLink = deepAll('button,a,[role="button"]', 200).filter(isVisible)
-          .find((b) => { const t = normLabel(b.textContent); return t.length < 30 && /^(create account|create an account|sign ?up|register|new user)/i.test(t); });
+          .find((b) => {
+            const t = normLabel(b.textContent);
+            // "Erstellen Sie ein Konto" is 24 characters and does not start with
+            // any English word, so both halves of the old test failed on it.
+            return t.length < 44 && /(create (an )?account|sign ?up|register|new user|konto erstellen|erstellen sie ein konto|registrieren|cr[ée]er un compte|s'inscrire|crear una cuenta|reg[íi]strate|registrati|account aanmaken|skapa konto)/i.test(t);
+          });
         if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(1500); }
       }
       if (!looksLikeAuthPage()) return false;
@@ -9842,6 +10255,8 @@
           if (toggle) { realClick(toggle); await sleep(1500); }
         }
       }
+      // Creating an account often lands straight on "check your inbox".
+      if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
       return submittedOnce;
     } catch (e) { LOG('handleAccountAuth error:', e?.message || e); return false; }
   }

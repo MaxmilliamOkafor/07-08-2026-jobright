@@ -540,14 +540,25 @@ for (const [text, want] of [
    name, an explanation, or a US state. Both are run for real here, not
    pattern-matched: the shape logic is lifted out of the shipped file. */
 console.log('answers are shaped for the control');
-const shapeStart = src.indexOf('  const YEARS_RANGE_RE =');
+/* The shape logic now leans on the cover-letter tailoring defined just above
+   guessValue, so the slice starts there. Everything it reaches outside the block
+   is stubbed, so what runs here is the shipped logic and nothing else. */
+const shapeStart = src.indexOf('  const COVER_FIELD_RE =');
 const shapeEnd = src.indexOf('\n  function guessFieldValue(');
 if (shapeStart < 0 || shapeEnd < 0) throw new Error('answer-shape block not found');
-const shapeCtx = {};
+const shapeCtx = { company: '', title: '', required: false };
 new Function('exports', `
   const getFullQuestionText = () => '';
+  const getLabel = () => '';
+  const LOG = () => {};
+  const queue = [];
+  const extractJDCompany = () => exports.company;
+  const extractJDTitle = () => exports.title;
+  const isFieldRequired = () => exports.required;
+  const location = { hostname: 'boards.greenhouse.io', pathname: '/', search: '' };
 ${src.slice(shapeStart, shapeEnd)}
-  Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl });
+  Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl,
+    tailorCoverText, todayForField, pageCompanyName, COVER_FIELD_RE });
 `)(shapeCtx);
 const refine = (val, q, el) => shapeCtx.refineAnswerForControl(val, q, {}, el);
 const textBox = { tagName: 'INPUT', type: 'text' };
@@ -908,14 +919,14 @@ eq('a cross-site boot still mounts the panel once identity is known',
 
 /* ── 27. a 1000-job CSV must not run one at a time ─────────────────────────── */
 console.log('throughput is under the user\'s control');
-eq('the engine already supports parallel job tabs', /return Math\.min\(8, Math\.max\(1, isNaN\(n\) \? 3 : n\)\);/.test(orch), true);
+eq('the engine supports parallel job tabs', /return Math\.min\(12, Math\.max\(1, isNaN\(n\) \? 3 : n\)\);/.test(orch), true);
 eq('and now reports the value in force, so the panel does not reset it',
-  /concurrency: Math\.min\(8, Math\.max\(1, parseInt\(await get\(K\.CONC\), 10\) \|\| 3\)\)/.test(orch), true);
+  /concurrency: Math\.min\(12, Math\.max\(1, parseInt\(await get\(K\.CONC\), 10\) \|\| 3\)\)/.test(orch), true);
 const panelHtml = fs.readFileSync(process.argv[2].replace(/ua-enhancement\.js$/, 'ua-queue.html'), 'utf8');
 const panelJs = fs.readFileSync(process.argv[2].replace(/ua-enhancement\.js$/, 'ua-queue.js'), 'utf8');
 eq('the Queue Manager exposes it', /id="optConc"/.test(panelHtml), true);
-eq('bounded to what the engine accepts', /min="1" max="8"/.test(panelHtml), true);
-eq('changing it is saved', /ua_mgr_concurrency: Math\.max\(1, Math\.min\(8, parseInt\(\$\('optConc'\)\.value, 10\) \|\| 3\)\)/.test(panelJs), true);
+eq('bounded to what the engine accepts', /min="1" max="12"/.test(panelHtml), true);
+eq('changing it is saved', /ua_mgr_concurrency: Math\.max\(1, Math\.min\(12, parseInt\(\$\('optConc'\)\.value, 10\) \|\| 3\)\)/.test(panelJs), true);
 eq('and takes effect without a restart, because the slot filler re-reads the key',
   /const \[cfg, conc, map\] = \[await settings\(\), await concurrency\(\), await reconcileTabs\(\)\];/.test(orch), true);
 eq('the control is wired to the same save path as the rest',
@@ -1020,6 +1031,229 @@ eq('and a wrong-credentials error still flips back to Create Account',
   /if \(onSignIn && wrongCredErr\)/.test(wd), true);
 eq('records written under the old raw-host key are still honoured',
   /Tolerate records written under a raw host/.test(body('accountExistsFor')), true);
+
+/* ── 30. the message to the hiring team ───────────────────────────────────── */
+/* "I keep seeing this text on a lot of my applications — is it misplaced?" It is
+   not: it is the saved cover-letter text, pasted verbatim into every box whose
+   label reads like a message to the hiring team. Identical wording across dozens
+   of applications is worse than an empty box — it reads as a form letter and it
+   names no employer. */
+console.log('the hiring-team message is tailored, not repeated');
+const SAVED = 'I am excited about the opportunity to contribute my experience in software engineering.';
+const tailor = shapeCtx.tailorCoverText;
+
+eq('the employer and role are named', tailor(SAVED, { company: 'ServiceNow', title: 'Principal ML Engineer' }),
+  'I am applying for the Principal ML Engineer role at ServiceNow. ' + SAVED);
+eq('the employer alone still gets named', tailor(SAVED, { company: 'ServiceNow' }),
+  'I am writing to apply to ServiceNow. ' + SAVED);
+eq('two different employers produce two different letters',
+  tailor(SAVED, { company: 'ServiceNow' }) === tailor(SAVED, { company: 'Deloitte' }), false);
+eq('text that already names the employer is left in the user\'s own words',
+  tailor('I have followed ServiceNow for years.', { company: 'ServiceNow' }),
+  'I have followed ServiceNow for years.');
+eq('{company} and {title} placeholders are substituted',
+  tailor('Dear {company}, I would love the {title} role.', { company: 'AMD', title: 'Analyst' }),
+  'Dear AMD, I would love the Analyst role.');
+eq('with nothing known, the saved text is returned unchanged', tailor(SAVED, {}), SAVED);
+eq('and an empty saved text stays empty', tailor('', { company: 'AMD' }), '');
+
+const msgBox = { tagName: 'TEXTAREA' };
+{
+  shapeCtx.company = 'ServiceNow'; shapeCtx.required = false;
+  const out = shapeCtx.refineAnswerForControl(SAVED, 'Message to the Hiring Team', {}, msgBox);
+  eq('an optional box IS filled when we can name the employer', /ServiceNow/.test(out), true);
+}
+{
+  shapeCtx.company = ''; shapeCtx.required = false;
+  eq('an optional box is left EMPTY when we cannot say anything specific',
+    shapeCtx.refineAnswerForControl(SAVED, 'Message to the Hiring Team', {}, msgBox), '');
+}
+{
+  shapeCtx.company = ''; shapeCtx.required = true;
+  eq('but a REQUIRED box is still answered, because empty would block the application',
+    shapeCtx.refineAnswerForControl(SAVED, 'Message to the Hiring Team', {}, msgBox), SAVED);
+}
+shapeCtx.company = ''; shapeCtx.required = false;
+for (const [label, want] of [
+  ['Message to the Hiring Team', true],
+  ['Cover Letter', true],
+  ['Why do you want to work here?', true],
+  ['Anything else you\'d like us to know?', true],
+  ['Additional information', true],
+  ['First name', false],
+  ['Message', false],                       // too generic on its own
+]) eq(`cover field: "${label}" → ${want}`, shapeCtx.COVER_FIELD_RE.test(label), want);
+
+console.log('the employer is worked out from the page when the CSV did not carry it');
+eq('a white-labelled ATS host names the employer', shapeCtx.pageCompanyName.call({}), '');
+
+/* ── 31. e-signature and today's date ─────────────────────────────────────── */
+/* SmartRecruiters' preliminary questions end with "Name (Signature Field): *"
+   and "Today's date *" — two REQUIRED free-text boxes, neither of which was
+   recognised, so the step could not be submitted. */
+console.log('signature and date fields are answered');
+const guessSrc = body('guessValue');
+eq('a signature box wants the applicant\'s name typed in',
+  /signature\|sign here\|type your \(full \)\?name\|e-\?sign/.test(guessSrc), true);
+eq('an upload-a-signature-image field is NOT typed into',
+  /&& !\/upload\|image\|file\/\.test\(l\)/.test(guessSrc), true);
+eq('a "today\'s date" box is recognised', /today\.\?s date\|date signed\|signature date/.test(guessSrc), true);
+
+const today = new Date();
+const p2 = (n) => String(n).padStart(2, '0');
+const DD = p2(today.getDate()), MM = p2(today.getMonth() + 1), YYYY = String(today.getFullYear());
+const dateFor = (placeholder) => shapeCtx.todayForField({ tagName: 'INPUT', type: 'text', placeholder, getAttribute: () => '' });
+eq('a DD/MM/YYYY field gets day first', dateFor('DD/MM/YYYY'), `${DD}/${MM}/${YYYY}`);
+eq('an MM/DD/YYYY field gets month first', dateFor('MM/DD/YYYY'), `${MM}/${DD}/${YYYY}`);
+eq('an ISO field gets ISO', dateFor('YYYY-MM-DD'), `${YYYY}-${MM}-${DD}`);
+eq('an unmarked field gets the ATS default', dateFor(''), `${MM}/${DD}/${YYYY}`);
+eq('the placeholder token never reaches the page',
+  shapeCtx.refineAnswerForControl('__TODAY__', "Today's date", {}, { tagName: 'INPUT', type: 'text', placeholder: '', getAttribute: () => '' }),
+  `${MM}/${DD}/${YYYY}`);
+
+/* ── 32. give up fast on a job that cannot be won ─────────────────────────── */
+/* A 544-job run reported 2 applied, 1 skipped, 13 FAILED. Most of those 13 could
+   never have succeeded — a sign-in wall behind a reCAPTCHA, a posting that has
+   closed — and each burned the CAPTCHA grace (1 min) and then the per-job cap
+   (3 min) before being written off. Thirteen jobs at up to four minutes is the
+   better part of an hour spent on nothing. */
+console.log('unwinnable jobs are skipped in seconds, not minutes');
+const unwin = body('unwinnableReason');
+eq('a sign-in wall behind a CAPTCHA is recognised', /captchaBlocksSignIn\(\)/.test(unwin), true);
+eq('and a closed posting', /CLOSED_POSTING_RE\.test\(copy\)/.test(unwin), true);
+eq('a closed-looking page that still HAS a form is not skipped',
+  /CLOSED_POSTING_RE\.test\(copy\) && !hasApplicationForm\(\)/.test(unwin), true);
+eq('the reason names the CAPTCHA provider, so the log is actionable',
+  /Sign-in is behind a \$\{\(c && c\.provider\) \|\| 'CAPTCHA'\}/.test(unwin), true);
+
+const blocks = body('captchaBlocksSignIn');
+eq('a CAPTCHA on the APPLICATION is not treated as unwinnable — you can solve that one',
+  /looksLikeAuthPage\(\) \|\| authPasswordFields\(\)\.length > 0/.test(blocks), true);
+
+eq('triage runs BEFORE the CAPTCHA wait, not after it',
+  src.indexOf("LOG('Skipping fast: ' + dead)") < src.indexOf('if (detectCaptcha()) await waitForCaptchaClear();\n      // The wait may have ended'), true);
+eq('and again after, in case the wall is still there',
+  /Skipping after the wait: /.test(src), true);
+eq('the outcome is an honest "skipped" with a reason, not a bare "failed"',
+  (src.match(/finalize\('skipped', dead\)/g) || []).length, 2);
+eq('and the fast path actually acts on the verdict rather than discarding it',
+  /if \(dead\) \{ LOG\('Skipping fast: ' \+ dead\); return void await finalize\('skipped', dead\); \}/.test(src), true);
+
+const CLOSED = new Function('return ' + src.match(/const CLOSED_POSTING_RE = (\/[\s\S]*?\/i);/)[1])();
+for (const [copy, want] of [
+  ['This job is no longer accepting applications', true],
+  ['The position has been filled', true],
+  ['This requisition has been closed', true],
+  ['Diese Stelle ist nicht mehr verfügbar', true],     // the German portals in this run
+  ['Cette offre est close', true],
+  ['Ya no está disponible', true],
+  ['Apply for this job', false],
+  ['Tell us about your experience', false],
+]) eq(`closed posting: "${copy.slice(0, 42)}" → ${want}`, CLOSED.test(copy), want);
+
+/* ── 33. the wall in the site's own language ──────────────────────────────── */
+/* BMW's careers portal is German — "Karrierechancen: Anmelden", "Haben Sie schon
+   ein Konto?", "Kennwort", "Erstellen Sie ein Konto" — and every word of it
+   missed an English-only pattern, so a whole European tenant failed job after
+   job even before the CAPTCHA. */
+console.log('account walls are recognised in the site\'s own language');
+const AUTH = new Function('return ' + src.match(/const AUTH_COPY_RE = (\/[\s\S]*?\/i);/)[1])();
+for (const [copy, lang] of [
+  ['Karrierechancen: Anmelden', 'German'],
+  ['Haben Sie schon ein Konto?', 'German'],
+  ['Kennwort', 'German'],
+  ['Erstellen Sie ein Konto', 'German'],
+  ['Se connecter à votre compte', 'French'],
+  ['Créer un compte', 'French'],
+  ['Iniciar sesión', 'Spanish'],
+  ['Crear una cuenta', 'Spanish'],
+  ['Registrati', 'Italian'],
+  ['Inloggen met uw account', 'Dutch'],
+  ['Logga in', 'Swedish'],
+  ['Zaloguj się', 'Polish'],
+]) eq(`${lang}: "${copy}" is an account wall`, AUTH.test(copy), true);
+for (const copy of ['Tell us about your work experience', 'Upload your resume', 'Beschreiben Sie Ihre Erfahrung'])
+  eq(`but "${copy.slice(0, 36)}" is not`, AUTH.test(copy), false);
+
+const authBtn = body('findAuthSubmit');
+eq('the sign-in button is matched in other languages too',
+  /anmelden\|einloggen\|weiter/.test(authBtn), true);
+eq('so is create-account', /konto erstellen\|registrieren/.test(authBtn), true);
+eq('the patterns are built once and reused for both modes',
+  /const re = mode === 'signin' \? new RegExp/.test(authBtn), true);
+eq('"Erstellen Sie ein Konto" is short enough to pass the length guard',
+  'Erstellen Sie ein Konto'.length < 44, true);
+eq('and the create-account link matcher no longer anchors to the start',
+  /\(create \(an \)\?account\|sign \?up\|register\|new user\|konto erstellen\|erstellen sie ein konto/.test(src), true);
+
+/* ── 34. the speed selector actually changes the speed ────────────────────── */
+/* 1x / 1.5x / 2x / 3x did nothing on the run people use for bulk. qActive is the
+   IN-PAGE single-tab runner's flag; the Queue Manager drives its jobs in parallel
+   background tabs, which never set it — so the factor was never applied. The
+   speed was being read from storage correctly in every tab; it just never
+   reached the arithmetic. */
+console.log('the speed selector reaches both run modes');
+eq('the sleep gate covers the Queue Manager, not just the in-page runner',
+  /const queueDriving = \(\) => \(qActive && !qPaused\) \|\| _mgrDriving;/.test(src), true);
+eq('and the sleep uses it', /ms \* \(queueDriving\(\) \? qSpeedFactor : 1\)/.test(src), true);
+eq('the old runner-only gate is gone',
+  /ms \* \(qActive && !qPaused \? qSpeedFactor : 1\)/.test(src), false);
+eq('a Queue Manager job marks the tab as driven', /_mgrDriving = true;/.test(src), true);
+eq('and clears it when the job finalises',
+  /clearTimeout\(tId\);\n      _mgrDriving = false;/.test(src), true);
+
+const speedFn = body('speedFactorFor');
+eq('the factors still get faster as the multiplier rises',
+  /\{ 1: 1, 1\.5: 0\.66, 2: 0\.45, 3: 0\.3 \}/.test(speedFn), true);
+eq('the floor no longer clamps away the top speed — 40ms was above 100ms at 3x',
+  /Math\.max\(25, ms \*/.test(src), true);
+
+eq('fixed settle waits are scaled too, not just plain sleeps',
+  /const scaled = \(ms, floor\) =>/.test(src), true);
+eq('the form-settle debounce scales', /const quiet = scaled\(300, 90\);/.test(body('waitForFormStable')), true);
+eq('so does the step-change settle window', /scaled\(700, 220\)/.test(body('waitForStepChange')), true);
+eq('but the overall timeouts do not — those are safety caps, not a pace',
+  /setTimeout\(done, timeout\);/.test(body('waitForFormStable')), true);
+
+// The arithmetic itself, run for real.
+const sp = new Function('return ' + body('speedFactorFor').replace(/^\s*function\s+/, 'function '))();
+for (const [mult, factor] of [[1, 1], [1.5, 0.66], [2, 0.45], [3, 0.3]])
+  eq(`${mult}x → wait factor ${factor}`, sp(mult), factor);
+eq('an unknown multiplier falls back to full speed waits', sp(99), 1);
+const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
+eq('a 3s pause at 3x becomes 900ms', scaledFn(3000, 60, sp(3)), 900);
+eq('a 3s pause at 1x is unchanged', scaledFn(3000, 60, sp(1)), 3000);
+
+/* ── 35. the hot path must stay cheap ─────────────────────────────────────── */
+/* This build got heavy enough to bring a machine down, and the cost was in one
+   path: stepSignature() walks the DOM deeply, waitForStepChange polls it every
+   300ms, and several passes call it two or three times each. Anything expensive
+   in there is multiplied by a dozen open job tabs. */
+console.log('the deep walk stays out of the hot loop');
+const dq = body('deepQueryAll');
+eq('shadow hosts are NOT found by enumerating every element in the document',
+  /querySelectorAll\('\*'\)/.test(dq), false);
+eq('they are found by naming the tags that actually host them',
+  /querySelectorAll\(SHADOW_HOST_SEL\)/.test(dq), true);
+const hostSel = src.match(/const SHADOW_HOST_SEL = \[([\s\S]*?)\]\.join/)[1];
+for (const tag of ['spl-input', 'oj-select-single', 'mat-select', 'sl-select', 'ion-select', 'vaadin-combo-box', 'plasmo-csui'])
+  eq(`${tag} is still reachable through its shadow root`, hostSel.includes(tag), true);
+
+eq('the fingerprint is memoised', /if \(now - _sigAt < SIG_TTL_MS\) return _sigCache;/.test(src), true);
+eq('the cache is short enough to see a real step change on the next poll',
+  /const SIG_TTL_MS = 250;/.test(src), true);
+eq('and shorter than the poll interval it serves',
+  250 < 300, true);
+eq('the fingerprint uses a layout-only visibility test, not getComputedStyle',
+  /\.filter\(isVisibleFast\)/.test(body('questionControls')), true);
+eq('and that test really is bounding-box only',
+  /getComputedStyle/.test(body('isVisibleFast')), false);
+eq('while the general isVisible keeps the full check for correctness',
+  /getComputedStyle/.test(body('isVisible')), true);
+
+eq('the panel watchdog no longer runs twice a second', /\}, 2000\);   \/\/ twice a second was needless/.test(src), true);
+eq('nor the sidebar re-scan every 1.5s',
+  /if \(qActive && isRunnerTab\(\)\) forceOpenSidebar\(\); \}, 3000\);/.test(src), true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

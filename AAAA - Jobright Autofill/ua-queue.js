@@ -415,7 +415,7 @@
       // The content script reads these two directly for the in-page runner too.
       // Parallel tabs. The orchestrator reads this key directly when it refills
       // slots, so a change takes effect on the very next job — no restart.
-      ua_mgr_concurrency: Math.max(1, Math.min(8, parseInt($('optConc').value, 10) || 3)),
+      ua_mgr_concurrency: Math.max(1, Math.min(12, parseInt($('optConc').value, 10) || 3)),
       ua_skip_applied: $('optSkip').checked,
       ua_queue_tailor: $('optTailor').checked,
     });
@@ -503,6 +503,7 @@
   });
   $('conc').addEventListener('change', (e) => set({ [K.CONC]: parseInt(e.target.value, 10) || 3 }));
   for (const id of ['optSkip', 'optTailor', 'optConc', 'optTimeout', 'optStall', 'optHuman']) $(id).addEventListener('change', saveSettings);
+  wireMailbox();
 
   $('tbody').addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
@@ -582,3 +583,48 @@
     if (state.active === true) cmd('kick');   // service worker may have just woken up
   })();
 })();
+
+/* ── Mailbox (read-only) ───────────────────────────────────────────────────
+   Several ATS put a hard stop mid-application: create an account, then click a
+   link or type a code that has just been emailed. Connecting a mailbox lets the
+   queue clear those unattended.
+
+   What it can do is bounded in ua-mailbox.js, not here: read-only scope, only
+   mail from the last few minutes, only from the employer being applied to, and a
+   link is only ever followed when it points back at that same employer. */
+function mailSend(msg) {
+  return new Promise((res) => {
+    try { chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || {}); }); }
+    catch (_) { res({}); }
+  });
+}
+async function refreshMailbox() {
+  const s = await mailSend({ type: 'UA_MAIL_STATUS' });
+  const state = $('mailState'), connect = $('mailConnect'), disconnect = $('mailDisconnect'), id = $('mailClientId');
+  if (!state) return;
+  if (s.enabled && s.address) {
+    state.textContent = 'Mailbox: ' + s.address + ' (read-only)';
+    if (connect) connect.style.display = 'none';
+    if (disconnect) disconnect.style.display = '';
+    if (id) id.style.display = 'none';
+  } else {
+    state.textContent = 'Mailbox: not connected';
+    if (connect) connect.style.display = '';
+    if (disconnect) disconnect.style.display = 'none';
+    if (id) { id.style.display = ''; if (s.hasClientId && !id.value) id.placeholder = 'client ID saved'; }
+  }
+}
+function wireMailbox() {
+  const connect = $('mailConnect'), disconnect = $('mailDisconnect'), id = $('mailClientId'), state = $('mailState');
+  if (connect) connect.addEventListener('click', async () => {
+    state.textContent = 'Mailbox: opening Google sign-in…';
+    const r = await mailSend({ type: 'UA_MAIL_CONNECT', clientId: id ? id.value.trim() : '' });
+    if (!r.ok) state.textContent = 'Mailbox: sign-in failed (' + (r.reason || 'unknown') + ')';
+    await refreshMailbox();
+  });
+  if (disconnect) disconnect.addEventListener('click', async () => {
+    await mailSend({ type: 'UA_MAIL_DISCONNECT' });
+    await refreshMailbox();
+  });
+  refreshMailbox();
+}

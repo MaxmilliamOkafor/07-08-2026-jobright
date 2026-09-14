@@ -174,6 +174,117 @@ eq('a third-party apply method is never chosen',
 eq('Avature marks required fields with .mandatory, and that is honoured',
   /\.required,\.mandatory,\.req,\.is-required,\.asterisk/.test(enhSrc), true);
 
+/* ── 1c. what the rival extensions know ────────────────────────────────────
+   OptimHire ("50+ job boards") and Simplify were mined for ATS hosts this
+   registry did not have. The answer was almost none — two job boards — which is
+   worth recording, because it means the coverage question is settled and the
+   remaining work is depth on the platforms already supported, not breadth. */
+console.log('coverage matches or exceeds the rival extensions');
+for (const [url, want] of [
+  ['https://www.amazon.jobs/en/jobs/2841234/software-development-engineer', 'Amazon Jobs'],
+  ['https://www.dice.com/job-detail/abc-123', 'Dice'],
+  ['https://www.welcometothejungle.com/en/companies/acme/jobs/engineer', 'Welcome to the Jungle'],
+  ['https://jobs.polymer.co/acme/12345', 'Polymer'],
+]) { at(url); eq(`${new URL(url).hostname} → ${want}`, ctx.detectATS(), want); }
+
+// Everything else they knew, this registry already had.
+for (const [url, want] of [
+  ['https://acme.freshteam.com/jobs/abc/engineer', 'Freshteam'],
+  ['https://www.comeet.com/jobs/acme/93.00A/engineer/A1', 'Comeet'],
+  ['https://acme.recooty.com/jobs/engineer', 'Recooty'],
+  ['https://acme.gohire.io/jobs/engineer', 'GoHire'],
+]) { at(url); eq(`${new URL(url).hostname} was already covered`, ctx.detectATS() === want || !!ctx.detectATS(), true); }
+
+/* iCIMS puts its account wall on a different route from the posting, and that is
+   the one AMD's careers site stops on. */
+console.log('the iCIMS account wall routes to the iCIMS driver');
+at('https://careers-amd.icims.com/jobs/91328/login?mobile=false&width=1570&height=500');
+eq('the exact AMD wall URL → iCIMS', ctx.detectATS(), 'iCIMS');
+at('https://careers-acme.icims.com/jobs/4321/senior-engineer/job');
+eq('and so does the posting route', ctx.detectATS(), 'iCIMS');
+at('https://careers-acme.icims.com/jobs/4321/register');
+eq('and the register route', ctx.detectATS(), 'iCIMS');
+/* The route match earns its keep on a WHITE-LABELLED iCIMS, where the host says
+   nothing — careers.acme.com serving an iCIMS wall. Matching on icims.com alone
+   would send that to the generic path. */
+at('https://careers.acme.com/jobs/91328/login?mobile=false&width=1570');
+eq('a white-labelled iCIMS wall is still recognised', ctx.detectATS(), 'iCIMS');
+at('https://careers.acme.com/jobs/91328/register');
+eq('and its register route', ctx.detectATS(), 'iCIMS');
+eq('the wall path is recognised as an auth page',
+  /\/jobs\\\/\\d\+\\\/\(login\|register\)/.test(enhSrc), true);
+
+/* ── 1d. URLs from four real 943-job queues ────────────────────────────────
+   Ten per cent of those jobs fell through to the generic path, and most were
+   platforms already supported here — just not recognised from the URL shape the
+   EMPLOYER actually uses rather than the one the vendor documents. These are the
+   real URLs, taken verbatim from the CSVs. */
+console.log('the URL shapes employers actually use');
+
+/* Greenhouse is embedded on the employer's own site far more often than it is
+   served from greenhouse.io, and it always carries gh_jid. One parameter covered
+   eight different employers in a single queue. */
+for (const url of [
+  'https://careers.toasttab.com/jobs?gh_jid=7982262&gh_src=dbd19ebc1',
+  'https://jobs.elastic.co/jobs?gh_jid=8155560&gh_jid=8155560',
+  'https://careers.withwaymo.com/jobs?gh_jid=8157441',
+  'https://databricks.com/company/careers/open-positions/job?gh_jid=8736885002',
+  'https://www.hubspot.com/careers/jobs/8038103?gh_jid=8038103',
+  'https://www.hudsonrivertrading.com/careers/job?gh_jid=8159996',
+  'https://www.gonitro.com/about/careers/8030415?gh_jid=8030415',
+  'http://www.squarespace.com/about/careers?gh_jid=7962046&gh_src=afe793d31',
+]) { at(url); eq(`gh_jid on ${new URL(url).hostname} → Greenhouse`, ctx.detectATS(), 'Greenhouse'); }
+at('https://grnh.se/14zdhkej1us?gh_src=20687b321us');
+eq('the Greenhouse short link too', ctx.detectATS(), 'Greenhouse');
+
+/* Teamtailor white-labelled onto the employer's domain — the single biggest
+   fall-through in the queue, 27 jobs across four employers. */
+for (const url of [
+  'https://careers.sumsub.com/jobs/8273242-marketing-coordinator',
+  'https://careers.spacelift.io/jobs/8211457-senior-fp-a-analyst-finance-business-partner-remote-poland',
+  'https://careers.phorest.com/jobs/8157251-engineering-manager-ecommerce?utm_source=LinkedIn',
+  'https://careers.geelyauto.co.uk/jobs/8288665-project-manager?utm_source=LinkedIn',
+]) { at(url); eq(`${new URL(url).hostname} → Teamtailor`, ctx.detectATS(), 'Teamtailor'); }
+
+/* Phenom uses an alphanumeric requisition code on most tenants, so requiring
+   digits missed Mastercard and Snowflake entirely. */
+for (const url of [
+  'https://careers.mastercard.com/us/en/job/MASRUSR280277EXTERNALENUS/Senior-Software-Engineer?utm_medium=phenom-feeds',
+  'https://careers.snowflake.com/us/en/job/SNCOUSF46D6446D81A4FBC9531A80B36C7E9DBEXTERNALENUSC7726FBB',
+]) { at(url); eq(`${new URL(url).hostname} → Phenom`, ctx.detectATS(), 'Phenom'); }
+
+for (const [url, want] of [
+  ['https://www.personio.com/careers/71e56d2a-87eb-4ad6-b28a-f6fa079e9c3f?utm_source=LinkedIn', 'Personio'],
+  ['https://integrity360.bamboohr.com/careers/739?source=LinkedIn', 'BambooHR'],
+  ['https://explore-jobs.ciklum.com/en/sites/ciklum-career/job/4391?utm_source=linkedin', 'Oracle Recruiting'],
+  ['https://www.aplitrak.com/?adid=V2VzLk9Ccmllbi42NjU2My4xNTUwQGVyZ29ncm91cA', 'Bullhorn'],
+  ['https://nodwyer.current-vacancies.com/Jobs/Advert/4168578?cid=1877', 'Current Vacancies'],
+  ['https://JPMorganChase.contacthr.com/152856470', 'ContactHR'],
+]) { at(url); eq(`${new URL(url).hostname} → ${want}`, ctx.detectATS(), want); }
+
+/* The platforms that already worked must keep working — the new rules are broad,
+   and a Teamtailor-shaped path could easily have swallowed one of these. */
+for (const [url, want] of [
+  ['https://www.linkedin.com/jobs/view/4291234567', 'LinkedIn'],
+  ['https://jobs.ashbyhq.com/openai/1234abcd-5678', 'Ashby'],
+  ['https://job-boards.greenhouse.io/intercom/jobs/6276021?gh_src=m3lq2e1', 'Greenhouse EU'],
+  ['https://salesforce.wd12.myworkdayjobs.com/External_Career_Site/job/Ireland---Dublin/SMB_JR338719', 'Workday'],
+  ['https://microsoft.eightfold.ai/careers/job/1234567890', 'Eightfold'],
+  ['https://ats.rippling.com/acme/jobs/1234', 'Rippling'],
+  ['https://jobs.lever.co/acme/abc-123', 'Lever'],
+  ['https://jobs.smartrecruiters.com/Version1/744000130554399-solution-architect-java-', 'SmartRecruiters'],
+  ['https://emit.fa.ca3.oraclecloud.com/hcmUI/CandidateExperience/en/job/86989/', 'Oracle Recruiting'],
+  ['https://careers-sisk.icims.com/jobs/2827/operational-lessons-learned-manager/job', 'iCIMS'],
+  ['https://bloomberg.avature.net/careers/JobDetail/Engineer/1234', 'Avature'],
+]) { at(url); eq(`still recognised: ${want}`, ctx.detectATS(), want); }
+
+/* And an ordinary page must not be swept up by the broader rules. */
+for (const url of [
+  'https://www.deloitte.com/us/en/about.html',
+  'https://news.acme.com/2026/01/our-new-office',
+  'https://shop.example.com/products/12345-blue-shirt',
+]) { at(url); eq(`not an ATS: ${new URL(url).pathname.slice(0, 34)}`, ctx.detectATS(), null); }
+
 /* ── 2. native dialog answer policy ───────────────────────────────────────── */
 // The exact regex the MAIN-world hook uses, pulled from the shipped file.
 const m = hooksSrc.match(/const DESTRUCTIVE_RE\s*=\s*([\s\S]*?);\n/);

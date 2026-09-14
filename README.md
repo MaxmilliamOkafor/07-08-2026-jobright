@@ -1479,6 +1479,505 @@ step it was on and what it looked for.
 
 ---
 
+## v16.0 — the same letter on every application
+
+> "I keep seeing this text on a lot of my applications — is it misplaced?"
+
+It was not misplaced, and that is the problem. It is your saved cover-letter
+text, pasted **verbatim** into every box whose label reads like a cover letter, a
+motivation, or a message to the hiring team. Identical wording across dozens of
+applications is worse than an empty box: it reads as a form letter, and it names
+no employer.
+
+Three changes:
+
+* **The text is tailored before it is written.** `{company}` and `{title}`
+  placeholders are substituted, and when the saved text names no employer at all,
+  the company and role read off the page are woven into an opening sentence —
+  *"I am applying for the Principal ML Engineer role at ServiceNow."* Two
+  different employers now produce two different letters. Text that already names
+  the employer is left in your own words, untouched.
+* **An OPTIONAL message box with nothing specific to say is left empty.** Better
+  no letter than the same letter.
+* **A REQUIRED one is still answered**, because an empty required field blocks the
+  application.
+
+The employer is taken from the CSV row when it carried one, then from the page,
+and finally from the host itself — on a white-labelled ATS that *is* the company
+(`apply.deloitte.com`, `careers-amd.icims.com`).
+
+### Signature and date fields
+
+SmartRecruiters' preliminary questions end with **"Name (Signature Field): \*"**
+and **"Today's date \*"** — two required free-text boxes, neither of which was
+recognised, so the step could not be submitted however complete the rest was.
+
+Both are answered now. The signature box gets your name typed in (and an
+*upload*-a-signature field is deliberately not typed into). The date box matches
+whatever format the field advertises — `DD/MM/YYYY`, `MM/DD/YYYY` or ISO — rather
+than guessing, because a date in the wrong order is silently wrong rather than
+obviously wrong.
+
+### Verified
+
+`tailorCoverText` and `todayForField` are pure and are **run for real**: naming
+the employer and role, substituting placeholders, leaving text that already names
+the employer alone, producing different letters for different employers, and all
+four date formats.
+
+Six mutations, six failures: not tailoring the text, filling an optional box with
+boilerplate again, leaving a required box empty, not recognising the signature
+field, ignoring the date-format hint, and letting the internal `__TODAY__` token
+reach the page.
+
+Suite total: **876 assertions**, all green.
+
+---
+
+## v16.1 — clearing email-verification walls on their own
+
+Several ATS put a hard stop in the middle of an application: create an account,
+then go and click a link — or type a code — that has just been emailed to you.
+Workday does it per tenant, iCIMS and Taleo on some configurations, ADP when it
+does not recognise your details. A queue running 500 jobs unattended died at
+every one of them.
+
+Connect a mailbox and the queue clears them itself.
+
+### What it can do — and what it cannot
+
+The limits are in the code, not in a policy document. Each one is what makes this
+safe to leave running while you are away from the machine:
+
+| | |
+| --- | --- |
+| **Read-only** | `gmail.readonly` and nothing else. It cannot send, delete, archive, modify or forward. That is enforced by the scope at Google's end, not just by this code. |
+| **Recent only** | Every query is bounded to the last hour, and each message is then checked against a 15-minute cutoff. A verification mail from yesterday is not the one we are waiting for. |
+| **This employer only** | The query is built from the employer and ATS host of the job in hand. There is no code path that lists the mailbox generally — a caller that names no employer gets `no-hosts` back. |
+| **Links lead back to the job** | A verification link is followed **only** when its host belongs to the ATS or employer already being applied to, and only over HTTPS. Inboxes contain phishing; an unattended agent that opens any link in any recent mail is a liability. This check is the reason the feature is usable unattended at all. |
+| **Nothing is kept** | The token lives in `chrome.storage.session`, so it dies with the browser. Message bodies are never returned to the page or stored — the code or link is extracted and the body is dropped. |
+| **Revocable** | Disconnect drops Chrome's cached token *and* calls Google's revoke endpoint, so the grant does not outlive the click. |
+
+No client secret exists anywhere in the extension. An extension is a public
+OAuth client and cannot keep one, so the flow uses PKCE
+(`code_challenge_method=S256`), with Chrome's own `getAuthToken` tried first
+where it is available.
+
+### How it behaves
+
+When a page says *"verify your email"*, *"check your inbox"* or *"enter the code
+we sent"*, the run pauses on that job — the stall watchdog stands down, so it is
+not mistaken for a stuck job — and polls for the message for up to 90 seconds.
+A **code** is preferred over a link, because typing it keeps us on the page we
+are already on. If no mailbox is connected, the job is **handed to you** with the
+reason recorded, rather than failing silently three minutes later.
+
+### Connecting one
+
+1. Create an OAuth client in Google Cloud Console for the Gmail API, scope
+   `https://www.googleapis.com/auth/gmail.readonly`.
+2. Register the extension's redirect URI (`chrome.identity.getRedirectURL()`
+   prints it — `https://<extension-id>.chromiumapp.org/`).
+3. Paste the client ID into **Mailbox** in the Queue Manager and press
+   **Connect**.
+
+Disconnect is in the same place.
+
+### Verified
+
+The two functions that decide *what gets read* and *what gets clicked* are pure,
+and they run for real: the query is checked to be employer-scoped and
+time-bounded, and `pickLink` is run against a genuine verification link, a
+phishing link in the same message, a lookalike subdomain, an unrelated
+newsletter, plain HTTP on the right host, and a non-verification link on the
+right host.
+
+Seven mutations, seven failures: widening the scope to `gmail.modify`, removing
+the link allow-list, accepting `http:`, dropping the time bound from the query,
+not applying the age cutoff, moving the token to local storage, and skipping the
+revoke on disconnect.
+
+Suite total: **930 assertions**, all green.
+
+---
+
+## v16.2 — Jobright 1.21.0, the rival patches, and the iCIMS wall
+
+### Rebased onto 1.21.0
+
+The 24-08 drop is patch-only: `contents.d42e7fcf.js` and
+`helper-app.41ea2652.js` changed, nothing else — including no service worker, so
+the `importScripts` line that loads the queue engine was untouched this time.
+Every selector this build reaches into Jobright's sidebar with is still present
+in 1.21.0.
+
+### What OptimHire and Simplify actually knew
+
+Both were mined for ATS hosts this registry did not have. OptimHire advertises
+"Apply on LinkedIn, Greenhouse, and 50+ job boards in 1 click", so this was the
+interesting question.
+
+Neither ships a list in its manifest — both match `<all_urls>` — so the hosts
+were extracted from their bundles and diffed against our registry. **The answer
+was five**, and none of them a major platform:
+
+`amazon.jobs` · `dice.com` · `welcometothejungle.com` · `polymer.co` ·
+`workbright.com`
+
+Everything else they know, this build already had — Greenhouse, Lever, Ashby,
+Workday, SmartRecruiters, Workable, BambooHR, Recruitee, Teamtailor, Jobvite,
+JazzHR, Rippling, Paylocity, Manatal, Pinpoint, Comeet, Freshteam, GoHire,
+Recooty, Breezy, Handshake, ZipRecruiter, Indeed, LinkedIn and the rest — plus
+Avature, Oracle Recruiting, Taleo, ADP myjobs, Cornerstone, Brassring, PageUp,
+Dayforce, UltiPro and Phenom, which they do not.
+
+That is worth recording plainly: **the coverage question is settled**, and the
+remaining work on this build is depth on the platforms already supported, not
+breadth. The five gaps are closed.
+
+LinkedIn and Indeed already have their own drivers here and are dispatched — and
+`handleAccountAuth` deliberately refuses to touch credentials on either, because
+those are your personal logins, not an ATS account this extension should be
+creating.
+
+### The iCIMS account wall
+
+`careers-amd.icims.com/jobs/91328/login` — email, an "I accept" box gating
+**Next**, and no password anywhere. Two changes:
+
+* iCIMS is now matched on its **routes** as well as its host —
+  `/jobs/<id>/login`, `/register`, `/candidate` — which matters on a
+  white-labelled iCIMS where the host says nothing at all. `careers.acme.com`
+  serving an iCIMS wall used to fall through to the generic path.
+* The auth-wall detector recognises `/jobs/<id>/login` as an auth path, so the
+  email-first machinery from v15.9 engages there.
+
+The "I accept" box is a single consent checkbox, so it is ticked by the
+declaration pass rather than treated as one option of a multiple-choice question.
+
+### Verified
+
+Detection is executed against the exact AMD wall URL, a white-labelled iCIMS wall
+on a plain company domain, and the five newly-added platforms.
+
+Mutations: removing the new boards, removing Welcome to the Jungle, dropping the
+iCIMS route match (which only bites on the white-label case — on `icims.com`
+itself the host pattern still catches it, and the test now covers both), and
+removing the iCIMS auth-path test each fail the suite.
+
+Suite total: **942 assertions**, all green on Jobright 1.21.0.
+
+---
+
+## v16.3 — 13 failed of 16, and where the time was going
+
+A 544-job run reported **2 applied, 1 skipped, 13 failed**. The screenshot of job
+17 explains almost all of it, and none of the causes were speed.
+
+### The page
+
+BMW Group's careers portal: **"Karrierechancen: Anmelden"** — a sign-in wall, in
+German, behind an **"Ich bin kein Roboter"** reCAPTCHA.
+
+Three separate problems in one screen:
+
+**1. A CAPTCHA on the *sign-in* wall is unwinnable, and we waited it out anyway.**
+A CAPTCHA on the *application* is a human wait — you solve it and the job
+continues. A CAPTCHA on the account wall is different: the sign-in has to
+complete before anything can be filled, so an unattended run is finished there no
+matter how long it sits. Each of those jobs burned the CAPTCHA grace (1 min) and
+then the per-job cap (3 min) before being written off as **failed**. Thirteen
+jobs at up to four minutes is the better part of an hour spent on nothing.
+
+Those are now triaged in **seconds**, before the waits, and recorded as
+**skipped** with the reason — *"Sign-in is behind a reCAPTCHA — an account is
+needed before applying"* — rather than a bare "failed" that tells you nothing.
+A closed posting (*"no longer accepting applications"*, *"nicht mehr
+verfügbar"*, *"cette offre est close"*) is caught the same way, and only when
+there is genuinely no form left on the page.
+
+**2. The whole wall was invisible because it was in German.** *Anmelden*,
+*Kennwort*, *Haben Sie schon ein Konto?*, *Erstellen Sie ein Konto* — every word
+of it missed an English-only pattern, so an entire European tenant failed job
+after job even before the CAPTCHA. The account-wall vocabulary, the sign-in and
+create-account buttons, and the create-account link now cover **German, French,
+Spanish, Italian, Dutch, Swedish, Norwegian and Polish**. The link matcher also
+no longer anchors to the start of the string, because *"Erstellen Sie ein Konto"*
+begins with the verb.
+
+**3. Recognising these is worth more than raw speed.** Thirteen jobs skipped in
+ten seconds each instead of four minutes each is roughly **50 minutes** back on
+a run of this size — more than any change to how fast an individual application
+is filled.
+
+### And the actual throughput
+
+**Parallel jobs** now goes up to **12** (was 8). A 544-job CSV at 3 at a time is
+181 sequential rounds; at 12 it is 46. Different employers do not share a rate
+limit, so running them side by side is the cheapest speed there is. It is capped
+at 12 rather than removed because past that the tabs compete for the same CPU and
+every individual application gets slower, which costs more than the extra
+parallelism buys.
+
+### On the speed setting
+
+Worth saying plainly: the run in the screenshot was at **3x**, which multiplies
+every wait by 0.3. That is the wrong lever for a bulk run. Raise **Parallel
+jobs**, not speed — parallelism costs nothing in accuracy, while 3x gives a
+framework less time to register a value before the next action. If failures
+persist after this build, try 1.5x with Parallel jobs at 8–12.
+
+### Verified
+
+`CLOSED_POSTING_RE` and `AUTH_COPY_RE` are executed against real wording in six
+languages, including the exact strings from that BMW page.
+
+Six mutations, six failures: removing the triage, treating a CAPTCHA anywhere as
+unwinnable (it must be the sign-in wall specifically), skipping a "closed" page
+that still has a form, dropping German from the wall vocabulary, dropping the
+localised sign-in button, and putting the concurrency cap back to 8.
+
+Suite total: **981 assertions**, all green.
+
+---
+
+## v16.4 — the CPU, and a speed selector that never worked
+
+### It was pegging the CPU, and that was my doing
+
+The build got heavy enough to bring a machine down. Almost all of the cost was in
+one path introduced two versions ago.
+
+`stepSignature()` walks the DOM deeply. `waitForStepChange` polls it **every
+300ms** while a step transition is in flight, and several passes call it two or
+three times each on top of that. Two things in there did not belong in a hot
+loop:
+
+* **`deepQueryAll` found shadow hosts by asking each node for every element it
+  contains** — the whole document — on *every* deep query. A large ATS page was
+  being fully enumerated several times a second, in every open job tab. With a
+  dozen tabs that is enough to take a machine down.
+* **`questionControls` filtered with `isVisible`**, whose `getComputedStyle` call
+  forces a style recalculation. Four hundred of those per fingerprint, several
+  times a second.
+
+Fixed three ways:
+
+1. Shadow hosts are found by **naming the tags that actually host them** — a
+   custom element, or one of the handful of native elements that can — instead of
+   asking for everything. CSS cannot express "any tag with a hyphen", so the list
+   is explicit; it still reaches `spl-*`, `oj-*`, `mat-*`, `sl-*`, `ion-*`,
+   `vaadin-*` and `plasmo-csui`.
+2. The fingerprint is **memoised for 250ms**. Nested callers collapse into one
+   computation, and 250ms is comfortably under the 300ms poll, so a genuine step
+   change is still seen on the very next tick.
+3. The fingerprint uses a **bounding-box-only** visibility test. A zero-sized box
+   already covers `display:none` anywhere up the ancestor chain, and that is all
+   a fingerprint needs. The general `isVisible` keeps the full check.
+
+Two timers were also running far faster than they needed to: the panel watchdog
+every 600ms — it re-mounts a panel, it does not animate one — and the sidebar
+re-scan every 1.5s. Now 2s and 3s.
+
+### The speed selector did nothing on the run you actually use
+
+1x / 1.5x / 2x / 3x had no effect in **Queue Manager (parallel tabs)** mode, which
+is the mode for bulk. The gate was:
+
+```js
+ms * (qActive && !qPaused ? qSpeedFactor : 1)
+```
+
+`qActive` is the **in-page single-tab runner's** flag. Queue Manager drives its
+jobs in parallel background tabs, and those tabs never set it — so the factor was
+never applied and the buttons were decorative. The speed *was* being read from
+storage correctly in every tab; it simply never reached the arithmetic.
+
+Two further reasons it under-delivered even where it did apply:
+
+* **The floor was 40ms.** At 3x (factor 0.3) every sleep under 133ms was clamped
+  back up, so the top speed was barely distinguishable from the one below. Now
+  25ms.
+* **The settle waits were flat.** `waitForFormStable`'s quiet-period debounce and
+  `waitForStepChange`'s settle window were fixed at 300ms and 700ms however fast
+  the run was set. Both scale now. The overall *timeouts* deliberately do not —
+  those are safety caps, not a pace.
+
+A 3-second pause at 3x is now 900ms, as it always should have been.
+
+### Verified
+
+The speed arithmetic runs for real: all four multipliers, the unknown-multiplier
+fallback, and the scaling of a 3s pause at 1x and 3x.
+
+Ten mutations, ten failures: the sleep gate back to runner-only, manager tabs
+never marked, the floor back to 40ms, both settle windows unscaled, the shadow
+walk back to enumerating everything, the fingerprint memo removed, and the
+expensive visibility test restored.
+
+Suite total: **1,016 assertions**, all green.
+
+---
+
+## v16.5 — rebased onto Jobright 1.22.1
+
+Three shipped files changed:
+
+| File | 1.21.0 | 1.22.1 |
+| --- | --- | --- |
+| `contents.d42e7fcf.js` | 16,493 | 40,016 |
+| `helper-app.41ea2652.js` | 6,926,041 | 6,998,628 |
+| `static/background/index.js` | 595,410 | 599,065 |
+
+`scroll-to-anchor.45fefb1b.js`, `global.f36301ce.css` and `inter.42ee87cb.css`
+are byte-identical, and none of the seven files this build adds is touched by
+the patch.
+
+### This drop shipped a service worker, and that matters
+
+Unlike 1.21.0, this patch **replaces `static/background/index.js`** — the file
+that carries the two appended lines loading the queue engine and the mailbox
+module:
+
+```js
+try { importScripts("/ua-orchestrator.js"); } catch (e) { … }
+try { importScripts("/ua-mailbox.js");      } catch (e) { … }
+```
+
+Without them the CSV queue silently does nothing: the panel opens, jobs sit in
+the list, no tab ever opens. **The suite caught it**, as it is designed to —
+*"service worker does not import ua-orchestrator.js"* failed the moment the file
+was copied in, and I re-confirmed the check has teeth by breaking the line again
+afterwards.
+
+### Verified
+
+Every selector this build reaches into Jobright's own sidebar with is still
+present in 1.22.1 — `auto-fill-button`,
+`application-dashboard-tailor-resume`, `continue-button`,
+`continue-button-disabled`, `tailor-resume-loading-linear-progress`,
+`spin-loading`, `jobright-helper-id`, `jobright-helper-content-container`,
+`plasmo-csui`. Two of them appear fewer times than before (`continue-button`
+4 → 3, `jobright-helper-id` 8 → 5) but all are still there, and each is used
+behind an `||` fallback.
+
+Every web-accessible resource named in the rebuilt manifest exists on disk —
+Chrome refuses to load an extension that lists one that does not — and the
+manifest keeps all of this build's customisations: our two content scripts ahead
+of Jobright's own, the `sidePanel` / `alarms` / `contextMenus` / `notifications`
+/ `identity` permissions, and the side panel pointed at `ua-queue.html`.
+
+Suite total: **1,016 assertions**, all green on Jobright 1.22.1.
+
+---
+
+## v16.6 — measured against four real queues
+
+Four exported CSVs — **985 rows, 943 unique jobs, 79 hosts**. Running the shipped
+registry over every one of them turned "imported CSV URLs struggle with a lot of
+ATS" into a number:
+
+**92 of 943 jobs (10%) fell through to the generic path.** That is now **45**,
+with **zero regressions** — every one of the 47 changes is a job that was
+unrecognised and is now routed to a driver.
+
+### What the real URLs showed
+
+Most fall-throughs were platforms this build *already supports*. They were missed
+because employers serve them from their own domain, in a shape the vendor's
+documentation never mentions.
+
+| Rule added | Jobs recovered | Why it was missed |
+| --- | --- | --- |
+| `gh_jid=` anywhere in the query → **Greenhouse** | 9 | Greenhouse is embedded on the employer's own site far more often than it is served from greenhouse.io. One parameter covered Toast, Elastic, Waymo, Databricks, HubSpot, Hudson River Trading, Nitro and Squarespace. |
+| `grnh.se/…` | 1 | Their short link. |
+| `/jobs/<id>-<slug>` → **Teamtailor** | 27 | The single biggest gap. `careers.sumsub.com` alone was 20 jobs, plus Spacelift, Phorest and Geely. |
+| Alphanumeric requisition codes → **Phenom** | 4 | Mastercard's `MASRUSR280277EXTERNALENUS` and Snowflake's `SNCOUS…` are not digits, so a digits-only test saw nothing. |
+| `personio.com/careers/` | 2 | The pattern required `.de`. |
+| `bamboohr.com/careers/` | 1 | The pattern required `/jobs`. |
+| `/sites/<site>/job/<id>` → **Oracle** | 1 | Oracle also serves this without the `/hcmUI/` prefix. |
+| `aplitrak.com`, `current-vacancies.com`, `contacthr.com` | 3 | Single-tenant ATS, one job each — and one job each is what they cost. |
+
+### An ordering lesson worth recording
+
+`/<locale>/job/<id>/<slug>` is used identically by **amazon.jobs**,
+**pageuppeople.com** and **careers.jpmorgan.com**. No pattern can separate them —
+only the host can. Matching that shape near the top of the table stole Amazon and
+PageUp for Phenom, and the suite caught it immediately.
+
+Phenom therefore now has **two** entries: its unambiguous host and feed signals
+near the top, and the ambiguous path shape as the **last rule before the generic
+catch-all**, where it picks up an unknown employer domain without taking a known
+one. First-match-wins is the registry's contract, and rules earn their position
+by how specific they are.
+
+### What is left
+
+The remaining 45 are genuinely bespoke: single-employer portals (Google,
+Booking, TikTok, Wolt, Framer, Y Combinator) and aggregator front pages
+(tecnoempleo, aijobs, topgenaijobs, haystack, talenthop, micro1). Some will still
+be handled at runtime by the **DOM fingerprints** from v15.6, which read the page
+rather than the URL — that cannot be measured from a CSV, only observed on a run.
+One row was `duckduckgo.com`, which is not a job at all.
+
+Also worth knowing: **43% of the queue (406 jobs) is `linkedin.com`**, which has
+its own driver and its own rules about automation.
+
+### Verified
+
+Every rule is asserted against the **real URLs from your CSVs**, verbatim, and 11
+already-working platforms are re-checked so a broad new rule cannot quietly
+swallow one. Three ordinary non-job pages must still be classified as nothing.
+
+Six mutations, six failures — including moving the Phenom path rule back to the
+top, which immediately breaks Amazon and PageUp.
+
+Suite total: **1,051 assertions**, all green.
+
+---
+
+## v16.7 — rebased onto Jobright 1.23.0
+
+Four shipped files changed:
+
+| File | 1.22.1 | 1.23.0 |
+| --- | --- | --- |
+| `contents.d42e7fcf.js` | 40,016 | 51,112 |
+| `helper-app.41ea2652.js` | 6,998,628 | 7,154,639 |
+| `global.f36301ce.css` | 269,326 | 274,146 |
+| `static/background/index.js` | 599,065 | 617,987 |
+
+`scroll-to-anchor.45fefb1b.js` and `inter.42ee87cb.css` are byte-identical, and
+none of the seven files this build adds is touched by the patch.
+
+### The service worker again
+
+Like 1.22.1, this drop ships its own `static/background/index.js`, which replaces
+the file carrying the two lines that load the queue engine and the mailbox
+module. Re-appended, and the suite's check confirmed it before and after.
+
+That is now three patches in a row where the same two lines were the only thing
+standing between a working queue and a panel that opens onto nothing. The check
+that guards them has paid for itself several times over.
+
+### Verified
+
+Every selector this build reaches into Jobright's own sidebar with is still
+present in 1.23.0 — unchanged counts from 1.22.1 across the board. Every
+web-accessible resource named in the manifest exists on disk. The manifest keeps
+our two content scripts ahead of Jobright's own, the `sidePanel` / `alarms` /
+`contextMenus` / `notifications` / `identity` permissions, and the side panel
+pointed at `ua-queue.html`.
+
+Suite total: **1,051 assertions**, all green on Jobright 1.23.0.
+
+Note that `contents.d42e7fcf.js` has now grown from 16KB to 51KB across three
+patches — Jobright is changing its own content script substantially. Nothing in
+the suite flags a conflict with our layer, but that is where to look first if
+their sidebar starts behaving differently.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
