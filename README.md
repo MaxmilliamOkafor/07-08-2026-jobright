@@ -1936,6 +1936,48 @@ Suite total: **1,051 assertions**, all green.
 
 ---
 
+## v16.7 — rebased onto Jobright 1.23.0
+
+Four shipped files changed:
+
+| File | 1.22.1 | 1.23.0 |
+| --- | --- | --- |
+| `contents.d42e7fcf.js` | 40,016 | 51,112 |
+| `helper-app.41ea2652.js` | 6,998,628 | 7,154,639 |
+| `global.f36301ce.css` | 269,326 | 274,146 |
+| `static/background/index.js` | 599,065 | 617,987 |
+
+`scroll-to-anchor.45fefb1b.js` and `inter.42ee87cb.css` are byte-identical, and
+none of the seven files this build adds is touched by the patch.
+
+### The service worker again
+
+Like 1.22.1, this drop ships its own `static/background/index.js`, which replaces
+the file carrying the two lines that load the queue engine and the mailbox
+module. Re-appended, and the suite's check confirmed it before and after.
+
+That is now three patches in a row where the same two lines were the only thing
+standing between a working queue and a panel that opens onto nothing. The check
+that guards them has paid for itself several times over.
+
+### Verified
+
+Every selector this build reaches into Jobright's own sidebar with is still
+present in 1.23.0 — unchanged counts from 1.22.1 across the board. Every
+web-accessible resource named in the manifest exists on disk. The manifest keeps
+our two content scripts ahead of Jobright's own, the `sidePanel` / `alarms` /
+`contextMenus` / `notifications` / `identity` permissions, and the side panel
+pointed at `ua-queue.html`.
+
+Suite total: **1,051 assertions**, all green on Jobright 1.23.0.
+
+Note that `contents.d42e7fcf.js` has now grown from 16KB to 51KB across three
+patches — Jobright is changing its own content script substantially. Nothing in
+the suite flags a conflict with our layer, but that is where to look first if
+their sidebar starts behaving differently.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the
