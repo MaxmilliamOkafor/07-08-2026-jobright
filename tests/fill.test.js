@@ -547,6 +547,8 @@ const shapeStart = src.indexOf('  const COVER_FIELD_RE =');
 const shapeEnd = src.indexOf('\n  function guessFieldValue(');
 if (shapeStart < 0 || shapeEnd < 0) throw new Error('answer-shape block not found');
 const shapeCtx = { company: '', title: '', required: false };
+const shippedYears = (src.match(/\n\s*years:\s*'(\d+)'/) || [])[1];
+if (!shippedYears) throw new Error('DEFAULTS.years not found');
 new Function('exports', `
   const getFullQuestionText = () => '';
   const getLabel = () => '';
@@ -556,6 +558,9 @@ new Function('exports', `
   const extractJDTitle = () => exports.title;
   const isFieldRequired = () => exports.required;
   const location = { hostname: 'boards.greenhouse.io', pathname: '/', search: '' };
+  // The REAL shipped default, read out of the file — so changing it in the
+  // extension changes what these assertions are checking against.
+  const DEFAULTS = { years: ${JSON.stringify(shippedYears)} };
 ${src.slice(shapeStart, shapeEnd)}
   Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl,
     tailorCoverText, todayForField, pageCompanyName, COVER_FIELD_RE });
@@ -579,9 +584,26 @@ eq('the same range is left alone for a dropdown, where it is a real option',
   refine('5-8', 'How many years of SaMD/Digital health experience do you have?', dropdown), '5-8');
 eq('a number box gets the number out of a wordy answer',
   refine('about 8 years', 'Years of experience', numberBox), '8');
-eq('and is left empty rather than given prose it cannot parse',
-  refine('about eight', 'Years of experience', numberBox), '');
 eq('a salary box is untouched', refine('45000', 'What are your base salary expectations for this role?', numberBox), '45000');
+
+/* Zero years is a knockout, and one reached a live Comeet application:
+   "How many years of hands-on experience do you have with Linux system
+   administration and troubleshooting?" was submitted as 0. Every route to an
+   unusable number now lands on the real figure instead. */
+const LINUX_Q = 'How many years of hands-on experience do you have with Linux system administration and troubleshooting?';
+for (const [val, why] of [
+  ['0', 'a saved zero'],
+  ['00', 'a padded zero'],
+  ['0 years', 'zero with a unit'],
+  ['', 'nothing resolved at all'],
+  ['about eight', 'prose a number box cannot parse'],
+]) eq(`${why} never reaches a years box`, refine(val, LINUX_Q, numberBox), shippedYears);
+eq('and the same holds in a free-text years box', refine('0', LINUX_Q, textBox), shippedYears);
+eq(`the figure it falls back to is the shipped default (${shippedYears})`, shippedYears, '7');
+eq('a real answer of zero to something that is NOT a years question is kept',
+  refine('0', 'How many dependents do you have?', numberBox), '0');
+eq("the candidate's own profile figure beats the default",
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '11' }, numberBox), '11');
 
 // A Yes/No where a value belongs.
 eq('"Yes" is not the name of an employee',
@@ -1361,6 +1383,173 @@ eq('4 in a batch → 300ms each (1.2s total)', per(4, 800), 300);
 eq('12 in a batch → 100ms each (1.2s total)', per(12, 800), 100);
 eq('the total ramp is bounded however large the batch', per(12, 800) * 12 <= 1300, true);
 eq('and never drops below a floor that would burst a single site', per(40, 800), 60);
+
+/* ── 39. a fuzzy match must not answer a knockout question ────────────────── */
+/* The saved-response bank is matched on 40% keyword overlap, and it answers
+   BEFORE any of the knockout reasoning runs. That is how a stray "No" landed on
+   "Do you have hands-on experience with Linux patch and package management?" —
+   an automatic rejection, decided by an unrelated saved entry that happened to
+   share some nouns. The guard runs for real here. */
+console.log('a saved Yes/No cannot lose a knockout');
+const koCtx = {};
+/* Every top-level regex constant, lifted verbatim. Listing them by hand meant
+   the harness broke each time the logic under test reached for one more. */
+const reLines = (src.match(/^  const [A-Z][A-Z0-9_]*_RE = \/.*\/[a-z]*;$/gm) || []).join('\n  ');
+if (!/ELIGIBILITY_WORD_RE/.test(reLines)) throw new Error('regex constants not found');
+new Function('exports', `
+  const LOG = () => {};
+  ${body('safeKnockoutAnswer')}
+  ${body('determineYesNo')}
+  ${body('workAuthorisationAnswer')}
+  ${body('workAuthOptionIndex')}
+  ${reLines}
+  exports.safe = safeKnockoutAnswer;
+  exports.decide = determineYesNo;
+`)(koCtx);
+const safe = (saved, q) => koCtx.safe(saved, q.toLowerCase());
+
+// The exact question off the user's Comeet screenshot.
+for (const q of [
+  'do you have hands-on experience with linux patch and package management?',
+  'do you have experience with backup and recovery operations in linux environments?',
+  'do you have hands-on experience with bash and/or python scripting and automation?',
+]) {
+  eq(`"${q.slice(0, 46)}…" is answered yes`, koCtx.decide(q), 'yes');
+  eq('and a saved "No" is refused', safe('No', q), '');
+  eq('while a saved "Yes" agrees and is kept', safe('Yes', q), 'Yes');
+}
+
+// The one that cost a real application: the recruiter was told the candidate
+// could not work in Belgium.
+eq('a saved "No" cannot answer a right-to-work question',
+  safe('No', 'Are you legally authorized to work in this country?'), '');
+
+// The guard is narrow on purpose — it must not touch anything else.
+eq('a saved "No" to a sponsorship question is the RIGHT answer and survives',
+  safe('No', 'Will you now or in the future require visa sponsorship?'), 'No');
+eq('a saved "No" to a question that is not a knockout is left alone',
+  safe('No', 'Did you hear about us from a current employee?'), 'No');
+eq('a written answer is never second-guessed',
+  safe('2 weeks', 'What is your notice period?'), '2 weeks');
+eq('a salary is never second-guessed', safe('85000', 'Desired salary'), '85000');
+eq('nothing saved stays nothing saved', safe('', 'Do you have hands-on experience with Go?'), '');
+
+eq('the radio path goes through the guard',
+  /const savedAnswer = savedAnswerFor\(questionText\);/.test(src), true);
+eq('and so does the fuzzy half of the text path',
+  /safeKnockoutAnswer\(findSavedResponseMatch\(questionText\), questionText\)/.test(src), true);
+/* An answer the user typed against THIS question is not a fuzzy match, and
+   their word is final — the guard must not touch it. */
+eq('an exact learned answer is left to stand',
+  /\|\| getLearnedAnswer\(label, el, true\) \|\| guessValue\(label, p\) \|\|/.test(src), true);
+
+/* ── 40. nothing may pause a run waiting for a human ──────────────────────── */
+/* "Leave site? Changes you made may not be saved." froze a 685-job run on
+   Oracle Cloud. Two things had to be true and neither was: the shield must
+   still be up when the dialog fires, and if it ever gets through anyway the
+   worker must take the tab away rather than let the queue sit. */
+console.log('a native dialog cannot stop the run');
+const hooks = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-page-hooks.js'), 'utf8');
+eq('the shield outlasts the job it was raised for',
+  /const until = Number\(root\.getAttribute\('data-ua-grace'\) \|\| 0\);/.test(hooks), true);
+eq('and it is a window, not a permanent hand-back',
+  /return until > 0 && Date\.now\(\) < until;/.test(hooks), true);
+eq('clearing the flag starts that window rather than taking effect at once',
+  /el\.setAttribute\('data-ua-grace', String\(Date\.now\(\) \+ AUTO_FLAG_GRACE_MS\)\);/.test(src), true);
+eq('turning it back on cancels the window',
+  /el\.setAttribute\('data-ua-auto', '1'\);\n        el\.removeAttribute\('data-ua-grace'\);/.test(src), true);
+eq('the window only has to outlast a navigation, so it is short',
+  /const AUTO_FLAG_GRACE_MS = 20000;/.test(src), true);
+// The page still gets its dialogs back — the whole point of the window ending.
+const shieldUp = (auto, grace, now) => auto === '1' || (Number(grace || 0) > 0 && now < Number(grace || 0));
+eq('during a job: shielded', shieldUp('1', 0, 1000), true);
+eq('just after a job, mid-navigation: still shielded', shieldUp(null, 21000, 5000), true);
+eq('once the window passes: the site gets its warning back', shieldUp(null, 21000, 22000), false);
+eq('a page the automation never touched is never shielded', shieldUp(null, null, 5000), false);
+
+eq('the worker pings the runner tab it cannot otherwise see into',
+  /chrome\.tabs\.sendMessage\(tabId, \{ type: 'UA_RUNNER_PING' \}/.test(orch), true);
+eq('a frozen tab answers nothing, so the timeout is the answer',
+  /setTimeout\(\(\) => finish\(false\), 4000\);/.test(orch), true);
+eq('the content script can always answer it — synchronously, with no work',
+  /if \(msg && msg\.type === 'UA_RUNNER_PING'\) \{\n      try \{ sendResponse\(\{ alive: true \}\);/.test(src), true);
+eq('silence is only acted on after it has gone on long enough',
+  /if \(Date\.now\(\) - since < RUNNER_FROZEN_MS\) return;/.test(orch), true);
+eq('and that window is three missed pings, not one',
+  /const RUNNER_FROZEN_MS = 45 \* 1000;/.test(orch), true);
+/* remove() is the one navigation a beforeunload handler cannot veto. reload and
+   update both re-raise the prompt we are stuck behind, so they are not options. */
+eq('the stuck tab is closed, not reloaded',
+  /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
+eq('and the run carries on in a fresh tab on the same job',
+  /chrome\.tabs\.create\(\{ url, active: true \}/.test(orch), true);
+eq('which is handed the runner marker so it resumes rather than idles',
+  /if \(t && typeof t\.id === 'number'\) set\(\{ ua_runner_tab: t\.id \}\);/.test(orch), true);
+eq('with nothing left to resume it does not churn tabs',
+  /if \(!current \|\| !current\.url\) \{ await set\(\{ \[RUNNER_SILENT_KEY\]: 0 \}\); return; \}/.test(orch), true);
+eq('a runner tab that no longer exists is not given the silence window at all',
+  /if \(!gone\) \{\n      const since = \(await get\(RUNNER_SILENT_KEY\)\) \|\| 0;/.test(orch), true);
+eq('and closing it says so rather than being reported as silence',
+  /gone\n      \? 'Runner tab was closed — reopening so the run continues'/.test(orch), true);
+eq('the watch survives a service-worker restart',
+  /if \(\(await get\(K\.OLD_RUNNER\)\) === true\) armRunnerWatch\(\);/.test(orch), true);
+eq('a manager job tab held by the same dialog is not given the full nav grace',
+  /!\(_tabStatus\[j\.id\] === 'complete' && silent\)\) continue;/.test(orch), true);
+
+
+/* ── 41. Oracle's required dropdowns must actually take a value ───────────── */
+/* A Recruiting Cloud application came back with "This info is required." under
+   Ethnicity, Gender and the disability question, on a form the pass believed it
+   had answered. Two causes: the option was matched on a bare substring, and the
+   pick was committed by a synthetic click a JET component ignores. */
+console.log('custom dropdowns commit for real');
+const combo = body('commitCustomDropdown');
+eq('whole-word matching, not substring',
+  combo.includes("new RegExp('\\\\b' + w.replace"), true);
+eq('filler words cannot decide a match', /const STOP = \/\^\(the\|and\|for\|you/.test(combo), true);
+eq('the option sharing the most words wins, not the first one touched',
+  /if \(n > best\) \{ best = n; if \(n\) pick = o; \}/.test(combo), true);
+/* The bug this replaced: "I do not have a disability" picked whichever option
+   contained the letters n-o-t. Run the two matchers against the real option
+   list off the screenshot. */
+{
+  const OPTS = ['Affects your mobility', 'Affects your muscles, joints, bones',
+    'Is because of Covid/Long Covid', 'Not applicable', 'Prefer not to answer'];
+  const WANT = 'i do not have a disability';
+  const oldWords = WANT.split(/\s+/).filter((w) => w.length > 2);
+  const oldPick = OPTS.find((o) => oldWords.some((w) => o.toLowerCase().includes(w)));
+  eq('the old matcher answered a disability question with "Not applicable"', oldPick, 'Not applicable');
+  const STOP = /^(the|and|for|you|your|have|has|with|that|this|are|not|any|all|its|from|out|our|their|does|did|was|were|will|would|can|able)$/;
+  const words = WANT.split(/[^a-z0-9]+/i).filter((w) => w.length > 2 && !STOP.test(w));
+  eq('"not" and "have" no longer get a vote', words.join(','), 'disability');
+  let best = -1, pick = null;
+  for (const o of OPTS) {
+    const n = words.filter((w) => new RegExp('\\b' + w + '\\b').test(o.toLowerCase())).length;
+    if (n > best) { best = n; if (n) pick = o; }
+  }
+  eq('and with nothing genuinely matching it declines rather than guessing', pick, null);
+}
+eq('a demographic question with no match still declines rather than inventing',
+  /pick = real\.find\(o => \/prefer not\|decline\|do not wish\|not to say\/i\.test\(comboText\(o\)\)\);/.test(combo), true);
+
+eq('a click that did not take is followed by the keyboard',
+  /if \(!comboHasValue\(combo\)\) \{ await commitByKeyboard\(combo, pick\); \}/.test(combo), true);
+const kb = body('commitByKeyboard');
+eq('which walks the list by the row the component itself is tracking',
+  /aria-activedescendant/.test(kb), true);
+eq('and commits with Enter, the way the component expects',
+  /key\('Enter', 'Enter'\);/.test(kb), true);
+eq('the walk is bounded — an unnavigable list is not a loop',
+  /for \(let i = 0; i < 40 && active\(\) !== wantId; i\+\+\)/.test(kb), true);
+eq('and it gives up rather than pressing Enter on the wrong row',
+  /if \(active\(\) !== wantId\) return false;/.test(kb), true);
+eq('its key events cross the shadow boundary like every other one',
+  /composed: true/.test(kb), true);
+
+const disc = body('fillCustomDropdowns__impl');
+for (const tag of ['oj-select-single', 'oj-c-select-single', 'oj-select-one', 'oj-combobox-one'])
+  eq(`${tag} is discovered`, disc.includes(tag), true);
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

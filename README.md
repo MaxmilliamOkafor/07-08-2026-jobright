@@ -2062,6 +2062,105 @@ Suite total: **1,069 assertions**, all green on Jobright 1.23.0.
 
 ---
 
+## v16.9 — every SmartRecruiters job, and a dialog that stopped a 685-job run
+
+Four separate reports, one run: every `jobs.smartrecruiters.com` job failing, a
+"Leave site?" prompt freezing the queue on Oracle Cloud, `0` typed into a
+years-of-experience box, and knockout questions answered against the candidate.
+
+### Every SmartRecruiters job failed, and it was v16.4's fault
+
+v16.4 cut CPU cost by replacing the shadow-host search in `deepQueryAll` with a
+fixed list of tag names. The list held **leaf** components — `spl-input`,
+`spl-select`. SmartRecruiters nests those inside its own **wrapper** custom
+elements, so the wrapper was never recognised as a shadow host, never descended
+into, and every field beneath it was invisible. Zero fields means no form, which
+the runner reports as a failed job — for the entire ATS.
+
+Wrapper names are private to each ATS, so a list can never be right here.
+`shadowHostsIn` enumerates completely again and pays for it with a 400ms
+`WeakMap` cache keyed on the root, which keeps the hot path (`stepSignature`,
+polled every 300ms in every open tab) cheap without hiding anything.
+
+The assertion that should have caught this was itself the problem: it checked
+that the allow-list was *being used* — the mechanism, not the property — so it
+stayed green while the extension found nothing. It now asserts that a field
+inside an **unknown** wrapper's shadow root is reachable, built as a real DOM.
+
+### "Leave site?" could stop everything, and nothing would restart it
+
+The shield in `ua-page-hooks.js` is armed by `data-ua-auto`, which is set for the
+lifetime of a job. But `beforeunload` fires during the navigation **away** from a
+page — after the job ends, after the flag is handed back. The shield was down at
+exactly the moment it was needed, and Oracle Cloud's HCM pages froze a 685-job
+run behind a prompt no script could answer.
+
+Clearing the flag now opens a 20-second grace window (`data-ua-grace`) instead of
+taking effect at once. That outlasts a navigation; after it, the site gets its
+own warnings back, which it must.
+
+A shield is a race, so there is now a backstop that does not have to win one. The
+Queue Manager supervises its job tabs because it opened them; the single-tab
+runner drives the whole queue from inside one page, so when that page stops
+running JavaScript there is by definition nothing left in it to notice. The
+worker now pings it, and a tab that cannot answer for 45 seconds is **closed and
+replaced** — `tabs.remove()` is the one navigation a `beforeunload` handler
+cannot veto, where reload and update both re-raise the prompt. A tab that no
+longer exists skips the wait entirely: closing the runner tab used to end a
+600-job run in silence, with the queue still active and the marker pointing at a
+dead tab id.
+
+A manager job tab held by the same dialog no longer gets the full 45s navigation
+grace either — a tab that is `complete` **and** silent is not loading anything.
+
+### `0` years of experience
+
+"How many years of hands-on experience do you have with Linux system
+administration and troubleshooting?" was submitted as **0** — a number that fails
+every minimum-years screen there is. Nothing legitimately resolves to zero there,
+so an empty answer, a value that parsed down to nothing, and a saved `0` all fall
+back to the real figure. The default is now **7** rather than 5, and the
+candidate's own profile figure beats both.
+
+### A fuzzy match could lose a knockout
+
+Saved answers are matched on 40% keyword overlap and were consulted *before* any
+of the knockout reasoning ran. That is how a stray "No" reached "Do you have
+hands-on experience with Linux patch and package management?" — an automatic
+rejection decided by an unrelated saved entry that happened to share some nouns.
+It is the same failure mode as the recruiter who was told the candidate could not
+work in Belgium.
+
+A saved **Yes/No** that contradicts the reasoning is now dropped on knockout
+questions, and only there. A saved salary, notice period or written answer is
+untouched; so is an answer the user typed against that exact question, because
+their word is final.
+
+### Oracle's required dropdowns stayed empty
+
+A Recruiting Cloud application came back with "This info is required." under
+Ethnicity, Gender and the disability question, on a form the pass believed it had
+answered. Two causes, both fixed:
+
+- **Substring matching.** "I do not have a disability" picked whichever option
+  contained the letters `n-o-t` — "Not applicable". Matching is whole-word now,
+  filler words get no vote, and the option sharing the most words wins.
+- **A click JET ignores.** Oracle's selects track the highlighted row in
+  `aria-activedescendant` and commit on Enter, so a synthetic click on the row
+  left the field looking untouched. A commit that does not take is now followed
+  by the keyboard — bounded, and it gives up rather than pressing Enter on the
+  wrong row. Discovery also covers all three generations Oracle ships side by
+  side (`oj-select-single`, `oj-c-select-single`, `oj-select-one`,
+  `oj-combobox-one`).
+
+Mutations checked: restoring the tag-name allow-list, removing the grace window,
+removing the zero-years fallback, and letting a contradicting saved answer
+through. All four fail the suite.
+
+Suite total: **1,131 assertions**, all green on Jobright 1.23.0.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

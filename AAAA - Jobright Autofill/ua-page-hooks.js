@@ -43,8 +43,18 @@
   window.__uaPageHooksInstalled = true;
 
   const root = document.documentElement;
+  /* `data-ua-auto` is set for the lifetime of a job. `data-ua-grace` carries the
+     timestamp the shield may come down at, and exists because the dialog that
+     matters most — "Leave site?" — fires during the navigation AWAY from the
+     page, after the job is over. Honouring the grace window keeps the shield up
+     across that navigation; see setAutomationFlag in ua-enhancement.js. */
   const automating = () => {
-    try { return root && root.getAttribute('data-ua-auto') === '1'; } catch (_) { return false; }
+    try {
+      if (!root) return false;
+      if (root.getAttribute('data-ua-auto') === '1') return true;
+      const until = Number(root.getAttribute('data-ua-grace') || 0);
+      return until > 0 && Date.now() < until;
+    } catch (_) { return false; }
   };
 
   // "Remove X?", "Delete this attachment?", "Discard your changes?" — anything

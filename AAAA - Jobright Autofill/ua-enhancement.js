@@ -725,7 +725,10 @@
     authorized: 'Yes', sponsorship: 'No', relocation: 'Yes', remote: 'Yes',
     veteran: 'I am not a protected veteran', disability: 'I do not have a disability',
     gender: 'Prefer not to say', ethnicity: 'Prefer not to say', race: 'Prefer not to say',
-    years: '5', salary: '80000', notice: '2 weeks', availability: 'Immediately',
+    // Seven, not five: this is the number typed into "how many years of X?" on
+    // every ATS that asks, and a screening filter looking for a minimum never
+    // prefers the smaller answer.
+    years: '7', salary: '80000', notice: '2 weeks', availability: 'Immediately',
     country: 'Ireland', phoneCountryCode: '+353', countryCode: 'IE',
     cover: 'I am excited to apply for this role. My background and skills make me an excellent candidate and I look forward to contributing to your team.',
     why: 'I admire the company culture and the opportunity to make a meaningful impact.',
@@ -1020,14 +1023,28 @@
       /\byes\b\s*(\/|,|or)\s*\bno\b/.test(t);
   }
 
+  // The candidate's own figure if they gave one, otherwise the default — never
+  // zero and never blank, which are the two answers a years box must not carry.
+  function yearsAnswer(p) {
+    const real = String((p && (p.years_experience || p.yearsExperience)) || DEFAULTS.years).trim();
+    const n = parseInt(real, 10);
+    return n > 0 ? String(n) : DEFAULTS.years;
+  }
+
   function refineAnswerForControl(val, label, p, el) {
     let v = String(val == null ? '' : val).trim();
-    if (!v) return v;
     // Resolved here because the format depends on the control, not the question.
     if (v === '__TODAY__') return todayForField(el);
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
+    if (!v) {
+      /* Nothing resolved. Leaving it blank is normally right — inventing answers
+         is how a form ends up full of nonsense. "How many years…" is the
+         exception: it is nearly always required, and blank fails the submit as
+         surely as 0 fails the screen. */
+      return (YEARS_Q_RE.test(q) && isFreeTextControl(el)) ? yearsAnswer(p) : v;
+    }
 
     // A Yes/No answer to a question that asks for a value is always wrong. On a
     // dropdown, dropping it lets the option matcher choose a real option instead.
@@ -1061,8 +1078,15 @@
       if (o) return String(parseInt(o[1], 10));
       if (isNumberBox && !/^-?\d+(\.\d+)?$/.test(v)) {
         const first = v.match(/\d+/);
-        return first ? first[0] : '';
+        v = first ? first[0] : '';
       }
+      /* Zero is a knockout. "How many years of hands-on experience do you have
+         with Linux system administration?" answered 0 fails every minimum-years
+         screen there is, and it was reaching the box — a 0 landed on a live
+         Comeet application. Nothing legitimately resolves to zero here: a
+         genuinely empty answer, a value that parsed down to nothing, and a
+         saved "0" are all the same mistake, so fall back to the real figure. */
+      if (YEARS_Q_RE.test(q) && (!v || /^-?0+(\.0+)?$/.test(v))) return yearsAnswer(p);
     }
     return v;
   }
@@ -1072,8 +1096,13 @@
     // question before — their answer must beat any generic guess) → built-in guesses →
     // fuzzy learned match as the last resort (kept last to avoid contamination).
     const questionText = el ? getFullQuestionText(el) : label;
-    const fromSaved = findSavedResponseMatch(questionText);
-    const raw = fromSaved || getLearnedAnswer(label, el, true) || guessValue(label, p) || getLearnedAnswer(label, el) || '';
+    /* Both of the FUZZY lookups are filtered — the saved-response bank and the
+       fuzzy pass over learned answers. The exact learned answer between them is
+       not: the user answered that precise question themselves, and their word is
+       final even on a knockout. See safeKnockoutAnswer. */
+    const fromSaved = safeKnockoutAnswer(findSavedResponseMatch(questionText), questionText);
+    const raw = fromSaved || getLearnedAnswer(label, el, true) || guessValue(label, p) ||
+      safeKnockoutAnswer(getLearnedAnswer(label, el), questionText) || '';
     // Last step: make the answer fit the control it is going into.
     return refineAnswerForControl(raw, label, p, el);
   }
@@ -1431,6 +1460,42 @@
     return true;
   }
 
+  /* Questions where the wrong answer is not a wrong answer but a rejection.
+     Deliberately broad: it only ever decides whether a FUZZY match gets to
+     overrule the reasoning below, so including a question that is not really a
+     knockout costs nothing. */
+  const KNOCKOUT_Q_RE = /\b(hands.?on|experience|experienced|proficien\w*|familiar|comfortable|willing|able to|capable|authoriz\w*|eligib\w*|right to work|legally|relocat\w*|commute|available|start date|do you have|have you (used|worked|built|managed))\b/i;
+
+  /* A saved or learned answer normally beats every heuristic — they are the
+     user's own words, given to this very question. But the matcher that finds
+     them is fuzzy by design (40% keyword overlap), so a long question reaches an
+     unrelated saved entry just by sharing nouns.
+
+     On most questions a bad match is untidy. On a knockout it is fatal: a stray
+     "No" against "Do you have hands-on experience with Linux patch and package
+     management?" is an automatic rejection, and a recruiter has already written
+     in about an application that claimed the candidate could not work in
+     Belgium. So a saved Yes/No that contradicts the reasoning is dropped on
+     exactly those questions, and only those. Anything that is not a bare Yes/No
+     — a salary, a notice period, a written answer — is still returned as saved. */
+  function safeKnockoutAnswer(saved, questionText) {
+    if (!saved) return saved;
+    const s = String(saved).trim().toLowerCase();
+    if (!/^(yes|no|y|n|true|false)$/.test(s)) return saved;
+    if (!KNOCKOUT_Q_RE.test(questionText)) return saved;
+    let want = '';
+    try { want = determineYesNo(String(questionText).toLowerCase()); } catch (_) {}
+    if (want !== 'yes' && want !== 'no') return saved;
+    const says = /^(yes|y|true)$/.test(s) ? 'yes' : 'no';
+    if (says === want) return saved;
+    LOG(`Ignoring a saved "${s}" on a knockout question — it contradicts the safe answer (${want})`);
+    return '';
+  }
+  function savedAnswerFor(questionText) {
+    return safeKnockoutAnswer(
+      findSavedResponseMatch(questionText) || getLearnedAnswer(questionText), questionText);
+  }
+
   function answerKnockoutRadioGroup(radios, parent, p) {
     // Read the question from the whole group container, shadow text included —
     // a web-component group's textContent is empty in the light DOM.
@@ -1443,7 +1508,7 @@
 
     // 1. Check saved responses first, then answers learned from the user's own manual
     // corrections — a previously-given human answer always beats the heuristics below.
-    const savedAnswer = findSavedResponseMatch(questionText) || getLearnedAnswer(questionText);
+    const savedAnswer = savedAnswerFor(questionText);
     if (savedAnswer) {
       const sNorm = savedAnswer.toLowerCase().trim();
       const optText = r => choiceLabel(r);
@@ -3046,8 +3111,22 @@
         || real.find(o => norm(comboText(o)).includes(want))
         || real.find(o => want.includes(norm(comboText(o))) && norm(comboText(o)).length > 2);
       if (!pick) {
-        const words = want.split(/\s+/).filter(w => w.length > 2);
-        if (words.length) pick = real.find(o => words.some(w => norm(comboText(o)).includes(w)));
+        /* Word overlap, as a last resort before the category fallbacks. Bounded
+           to WHOLE words and with the filler words dropped: an unbounded
+           substring test matched "not" inside "Not applicable" and "another",
+           so "I do not have a disability" picked whichever option happened to
+           contain those three letters. */
+        const STOP = /^(the|and|for|you|your|have|has|with|that|this|are|not|any|all|its|from|out|our|their|does|did|was|were|will|would|can|able)$/;
+        const words = want.split(/[^a-z0-9]+/i).filter(w => w.length > 2 && !STOP.test(w));
+        if (words.length) {
+          const hit = (o, w) => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(norm(comboText(o)));
+          // Prefer the option that shares the MOST words, not merely one.
+          let best = -1;
+          for (const o of real) {
+            const n = words.filter(w => hit(o, w)).length;
+            if (n > best) { best = n; if (n) pick = o; }
+          }
+        }
       }
     }
     // Demographic questions: never invent a specific answer — decline instead.
@@ -3065,6 +3144,48 @@
     triggerMouse(inner);
     await sleep(350);
     if (!comboHasValue(combo)) { triggerMouse(pick); await sleep(300); }   // some need the row itself
+    if (!comboHasValue(combo)) { await commitByKeyboard(combo, pick); }
+    return comboHasValue(combo);
+  }
+
+  /* The keyboard is how these components were built to be driven, and on some it
+     is the ONLY thing that works: Oracle's JET selects track the highlighted row
+     in aria-activedescendant and commit on Enter, so a synthetic click on the
+     row can leave the field looking untouched — which is how a page full of
+     "This info is required." survived a pass that thought it had answered
+     everything. Applies to any ARIA combobox, not just Oracle's. */
+  async function commitByKeyboard(combo, pick) {
+    const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input,[role="combobox"]')) ||
+      combo.querySelector?.('input,[role="combobox"]') || combo;
+    const wantId = (pick && pick.id) || '';
+    const active = () => {
+      try {
+        return inner.getAttribute?.('aria-activedescendant') ||
+          combo.getAttribute?.('aria-activedescendant') || '';
+      } catch (_) { return ''; }
+    };
+    const key = (k, code) => {
+      for (const type of ['keydown', 'keyup']) {
+        try {
+          inner.dispatchEvent(new KeyboardEvent(type, {
+            key: k, code, keyCode: code === 'Enter' ? 13 : 40,
+            bubbles: true, composed: true, cancelable: true,
+          }));
+        } catch (_) {}
+      }
+    };
+    try { inner.focus?.({ preventScroll: true }); } catch (_) {}
+    // Walk the list to the row we chose. Bounded — a list we cannot navigate
+    // must not become a loop.
+    if (wantId) {
+      for (let i = 0; i < 40 && active() !== wantId; i++) {
+        key('ArrowDown', 'ArrowDown');
+        await sleep(40);
+      }
+      if (active() !== wantId) return false;
+    }
+    key('Enter', 'Enter');
+    await sleep(300);
     return comboHasValue(combo);
   }
 
@@ -3072,7 +3193,11 @@
   async function fillCustomDropdowns__impl(profile) {
     const combos = deepAll(
       '[role="combobox"],[ariarole="combobox"],[aria-haspopup="listbox"],' +
-      '[class*="select__control" i],[class*="Select-control" i],.MuiSelect-root,.ant-select,spl-select,oj-select-single'
+      '[class*="select__control" i],[class*="Select-control" i],.MuiSelect-root,.ant-select,spl-select,' +
+      // Oracle ships three generations of the same control side by side, and a
+      // Recruiting Cloud page mixes them. Naming only oj-select-single left the
+      // rest of a form's required dropdowns empty.
+      'oj-select-single,oj-c-select-single,oj-select-one,oj-combobox-one,oj-c-combobox-one'
     ).filter(isVisible);
     let filled = 0;
     for (const combo of combos.slice(0, 40)) {
@@ -7375,6 +7500,14 @@
     return true;
   }
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    /* "Is this tab still running JavaScript?" A page held by a native dialog
+       cannot answer, and that silence is what the worker's runner watchdog acts
+       on — so this must stay trivial and synchronous. Anything that could block
+       would make a healthy tab look frozen. */
+    if (msg && msg.type === 'UA_RUNNER_PING') {
+      try { sendResponse({ alive: true }); } catch (_) {}
+      return false;
+    }
     if (msg && msg.type === 'UA_ASSIGN_JOB' && msg.job) {
       if (window.self === window.top && !isRunnerTab()) runManagedAssignment(msg.job, msg.settings);
       // Respond synchronously — returning true without ever calling sendResponse
@@ -10375,14 +10508,31 @@
     return acted;
   }
 
-  // Tell the MAIN-world hooks whether the automation currently owns this tab.
-  // While this is off, native dialogs behave exactly as the site intended.
+  /* Tell the MAIN-world hooks whether the automation currently owns this tab.
+     While this is off, native dialogs behave exactly as the site intended.
+
+     Turning it OFF starts a grace window instead of taking effect at once, and
+     that is the whole point of this function. "Leave site? Changes you made may
+     not be saved." fires DURING the navigation away from a page — which happens
+     after the job has finished, i.e. after the flag would already have been
+     handed back. The shield was therefore down at precisely the moment it was
+     needed, and Oracle Cloud's HCM pages froze an entire 685-job run behind a
+     dialog that nothing on the page could answer.
+
+     The window only has to outlast a navigation, so it is short. Once it
+     expires the page gets its own dialogs back, as it must. */
+  const AUTO_FLAG_GRACE_MS = 20000;
   function setAutomationFlag(on) {
     try {
       const el = document.documentElement;
       if (!el) return;
-      if (on) el.setAttribute('data-ua-auto', '1');
-      else el.removeAttribute('data-ua-auto');
+      if (on) {
+        el.setAttribute('data-ua-auto', '1');
+        el.removeAttribute('data-ua-grace');
+      } else {
+        el.removeAttribute('data-ua-auto');
+        el.setAttribute('data-ua-grace', String(Date.now() + AUTO_FLAG_GRACE_MS));
+      }
     } catch (_) {}
   }
   // Surface anything the page tried to ask us, so a swallowed dialog shows up in

@@ -133,6 +133,9 @@
 
   /* Drop map entries whose tab no longer exists (browser restart, crash, user
      closed everything). Returns the live map. */
+  // jobId → the tab's last seen loading state. Only ever read as a hint.
+  const _tabStatus = Object.create(null);
+
   async function reconcileTabs() {
     const m = await tabMap();
     const ids = Object.keys(m);
@@ -141,7 +144,12 @@
     await Promise.all(ids.map((jobId) => new Promise((res) => {
       try {
         chrome.tabs.get(m[jobId], (tab) => {
-          if (!chrome.runtime.lastError && tab) live[jobId] = m[jobId];
+          if (!chrome.runtime.lastError && tab) {
+            live[jobId] = m[jobId];
+            // Kept so the watchdog can tell a tab that is genuinely mid-navigation
+            // from one that is stuck on the old document — see below.
+            _tabStatus[jobId] = tab.status || '';
+          }
           res();
         });
       } catch (_) { res(); }
@@ -501,9 +509,16 @@
         // wait out the full per-job cap for a job that cannot report at all.
         // Still coming back from a navigation (reload / redirect / next page):
         // give it room to boot rather than treating silence as death.
-        if (j.navAt && Date.now() - j.navAt < NAV_GRACE_MS) continue;
         const lastBeat = j.beatAt || j.startedAt || 0;
-        if (lastBeat && Date.now() - lastBeat > HEARTBEAT_DEAD_MS && Date.now() - (j.startedAt || 0) > HEARTBEAT_DEAD_MS) {
+        const silent = lastBeat && Date.now() - lastBeat > HEARTBEAT_DEAD_MS;
+        /* …but only while the navigation is plausibly still happening. A tab held
+           by a "Leave site? Changes you made may not be saved." prompt never
+           leaves the old document: it sits at status 'complete', silent, with
+           navAt set, and used to be handed the full 45s grace on every single
+           job. A tab that is settled AND silent is not loading anything. */
+        if (j.navAt && Date.now() - j.navAt < NAV_GRACE_MS &&
+            !(_tabStatus[j.id] === 'complete' && silent)) continue;
+        if (silent && Date.now() - (j.startedAt || 0) > HEARTBEAT_DEAD_MS) {
           j.status = 'timeout';
           const silentFor = Math.round((Date.now() - lastBeat) / 1000);
           j.error = j.beatAt
@@ -550,9 +565,111 @@
     await fillSlots();
   }
 
+  /* ───────────────────── the single-tab runner's lifeline ─────────────────────
+     The Queue Manager's jobs are supervised from here because each one has a tab
+     of its own that this worker opened. The older single-tab runner had nothing:
+     it drives the whole queue from inside ONE page, so when that page stops
+     running JavaScript there is, by definition, nothing left in it to notice.
+
+     A native dialog does exactly that. Oracle Cloud's HCM pages raised "Leave
+     site?" between steps and the run simply stopped — 685 jobs sitting behind a
+     prompt, waiting for a human to click Leave. The page hooks shield that
+     dialog now, but a shield is a race and this is the backstop that does not
+     have to win one: the worker pings the runner tab, and a tab that cannot
+     answer for long enough is replaced.
+
+     Replaced, not reloaded. chrome.tabs.remove() is the one navigation a
+     beforeunload handler cannot veto; reload and update both re-raise the very
+     prompt we are stuck behind. The queue lives in chrome.storage, so a fresh
+     tab on the same job resumes the run where it stopped. */
+  const RUNNER_WATCH = 'ua_runner_watch';
+  const RUNNER_SILENT_KEY = 'ua_runner_silent_since';
+  // Three missed pings. Long enough that a slow ATS page mid-load is never
+  // mistaken for a frozen one, short enough that you are not left staring at it.
+  const RUNNER_FROZEN_MS = 45 * 1000;
+
+  function pingTab(tabId) {
+    return new Promise((res) => {
+      let done = false;
+      const finish = (ok) => { if (!done) { done = true; res(ok); } };
+      // A frozen tab never calls back at all, so the timeout IS the answer.
+      setTimeout(() => finish(false), 4000);
+      try {
+        chrome.tabs.sendMessage(tabId, { type: 'UA_RUNNER_PING' }, (r) => {
+          void chrome.runtime.lastError;
+          finish(!!(r && r.alive));
+        });
+      } catch (_) { finish(false); }
+    });
+  }
+
+  async function runnerWatchdog() {
+    // Only the legacy in-page runner needs this; manager jobs have their own.
+    if ((await get(K.OLD_RUNNER)) !== true || (await get(K.ACTIVE)) === true) {
+      await set({ [RUNNER_SILENT_KEY]: 0 });
+      try { chrome.alarms.clear(RUNNER_WATCH); } catch (_) {}
+      return;
+    }
+    const tabId = await get('ua_runner_tab');
+    if (typeof tabId !== 'number') { await set({ [RUNNER_SILENT_KEY]: 0 }); return; }
+
+    if (await pingTab(tabId)) { await set({ [RUNNER_SILENT_KEY]: 0 }); return; }
+
+    /* A tab that no longer EXISTS needs no benefit of the doubt. Closing the
+       runner tab — by hand, or through a crash — used to end a 600-job run
+       silently: the queue stayed active, the marker still pointed at a dead tab
+       id, and nothing anywhere opened another one. */
+    const gone = await new Promise((res) => {
+      try { chrome.tabs.get(tabId, (t) => res(!!chrome.runtime.lastError || !t)); }
+      catch (_) { res(true); }
+    });
+    if (!gone) {
+      const since = (await get(RUNNER_SILENT_KEY)) || 0;
+      if (!since) { await set({ [RUNNER_SILENT_KEY]: Date.now() }); return; }
+      if (Date.now() - since < RUNNER_FROZEN_MS) return;
+    }
+
+    // Unreachable long enough to be stuck rather than busy. Take the tab away
+    // from whatever is holding it and put the run back on its feet.
+    const q = (await get(K.Q)) || [];
+    const current = q.find((j) => j.status === 'applying') || q.find((j) => j.status === 'pending');
+    // Nothing left to resume: replacing the tab would only produce another tab
+    // with no content script in it, which would look frozen in turn.
+    if (!current || !current.url) { await set({ [RUNNER_SILENT_KEY]: 0 }); return; }
+    await set({ [RUNNER_SILENT_KEY]: 0 });
+    await set({ ua_runner_tab: null });
+    await log(gone
+      ? 'Runner tab was closed — reopening so the run continues'
+      : 'Runner tab stopped responding — replacing it so the run continues', 'err');
+    try { chrome.tabs.remove(tabId, () => void chrome.runtime.lastError); } catch (_) {}
+    const url = current.url;
+    try {
+      chrome.tabs.create({ url, active: true }, (t) => {
+        void chrome.runtime.lastError;
+        if (t && typeof t.id === 'number') set({ ua_runner_tab: t.id });
+      });
+    } catch (_) {}
+  }
+
+  function armRunnerWatch() {
+    try { chrome.alarms.create(RUNNER_WATCH, { periodInMinutes: 0.5 }); } catch (_) {}
+  }
+  // The run is started from a page, not from here, so watch the flag it sets.
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[K.OLD_RUNNER]) return;
+      if (changes[K.OLD_RUNNER].newValue === true) armRunnerWatch();
+      else { try { chrome.alarms.clear(RUNNER_WATCH); } catch (_) {} }
+    });
+  } catch (_) {}
+
   /* ─────────────────────────── chrome wiring ─────────────────────────── */
   try {
-    chrome.alarms.onAlarm.addListener((a) => { if (a && a.name === ALARM) watchdog(); });
+    chrome.alarms.onAlarm.addListener((a) => {
+      if (!a) return;
+      if (a.name === ALARM) watchdog();
+      else if (a.name === RUNNER_WATCH) runnerWatchdog();
+    });
   } catch (_) {}
 
   // Re-assign on every completed navigation so the content script on the FINAL
@@ -782,6 +899,8 @@
   async function boot() {
     try {
       installMenus();
+      // A single-tab run survives a worker restart, so pick its watch back up.
+      if ((await get(K.OLD_RUNNER)) === true) armRunnerWatch();
       if ((await get(K.ACTIVE)) === true) {
         armWatchdog();
         await reconcileTabs();
