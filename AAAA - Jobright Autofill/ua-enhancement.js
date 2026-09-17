@@ -1464,7 +1464,17 @@
      Deliberately broad: it only ever decides whether a FUZZY match gets to
      overrule the reasoning below, so including a question that is not really a
      knockout costs nothing. */
-  const KNOCKOUT_Q_RE = /\b(hands.?on|experience|experienced|proficien\w*|familiar|comfortable|willing|able to|capable|authoriz\w*|eligib\w*|right to work|legally|relocat\w*|commute|available|start date|do you have|have you (used|worked|built|managed))\b/i;
+  /* Sponsorship and visas are in here for a reason of their own. On a Greenhouse
+     form these two sat next to each other:
+
+       "Will you require visa sponsorship within the next 18 months to work in
+        the United Kingdom?"
+       "Do you currently have the right to work in the United Kingdom?"
+
+     They share almost every word, so the 40%-overlap matcher handed the second
+     question's saved "Yes" to the first — telling the employer the candidate
+     needs sponsorship when they do not. */
+  const KNOCKOUT_Q_RE = /\b(hands.?on|experience|experienced|proficien\w*|familiar|comfortable|willing|able to|capable|authoriz\w*|eligib\w*|right to work|legally|relocat\w*|commute|available|start date|sponsor\w*|visas?|work[\s-]?permit|do you have|have you (used|worked|built|managed))\b/i;
 
   /* A saved or learned answer normally beats every heuristic — they are the
      user's own words, given to this very question. But the matcher that finds
@@ -3106,7 +3116,30 @@
     const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a)\b/i.test(t);
     const real = opts.filter(o => !isPlaceholder(comboText(o)));
     let pick = null;
-    if (want) {
+
+    /* A years dropdown is a RANGE list, and the plain matchers cannot read one:
+       looking for "7" among "Less than 1 year", "1-2 years", "3-5 years",
+       "5-10 years" finds nothing, and the required-field fallback then took
+       real[0] — the FIRST option, which on an ordered list is always the worst
+       one. That is how a Greenhouse application went out saying "Less than 1
+       year" of professional experience. Score the ranges instead, exactly as the
+       radio path already does. */
+    const qFull = String(getFullQuestionText(combo) || getLabel(combo) || '');
+    const isYearsQ = YEARS_Q_RE.test(qFull);
+    if (isYearsQ) {
+      const yrs = parseInt(String(want).match(/\d+/)?.[0], 10) || parseInt(DEFAULTS.years, 10);
+      let best = 0;
+      for (const o of real) {
+        const s = scoreExperienceRange(comboText(o), yrs);
+        if (s > best) { best = s; pick = o; }
+      }
+      /* Nothing scored — the options are worded in some way the scorer does not
+         read. On a list ordered low to high the SAFE end is the top, never the
+         bottom, so take the last option rather than the first. */
+      if (!pick && real.length) pick = real[real.length - 1];
+    }
+
+    if (!pick && want) {
       pick = real.find(o => norm(comboText(o)) === want)
         || real.find(o => norm(comboText(o)).includes(want))
         || real.find(o => want.includes(norm(comboText(o))) && norm(comboText(o)).length > 2);

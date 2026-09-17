@@ -2165,7 +2165,25 @@ once. **⚠ Copy failures** in the Queue Manager puts the lot on the clipboard,
 grouped by reason and ordered by how many jobs each one cost, because fifteen
 failures are usually three causes and the counts say which to fix first.
 
-Suite total: **1,136 assertions**, all green on Jobright 1.23.0.
+### A years dropdown that picked the worst option, and a sponsorship Yes
+
+One Greenhouse form submitted both:
+
+- **"How many years of professional experience…?" → "Less than 1 year".** A years
+  dropdown is a list of ranges, and none of the matchers can read one: looking
+  for `7` among "Less than 1 year", "1-2 years", "3-5 years", "5-10 years" finds
+  nothing, so the required-field fallback took `real[0]` — the first option,
+  which on an ordered list is always the worst. The committer now scores the
+  ranges the way the radio path already did, and a list it cannot score falls to
+  the **top** rather than the bottom.
+- **"Will you require visa sponsorship within the next 18 months to work in the
+  United Kingdom?" → "Yes".** The right-to-work question sat directly beneath it
+  and shares nearly every word, so the 40%-overlap matcher handed that
+  question's saved "Yes" across — telling the employer the candidate needs
+  sponsorship when they do not. Sponsorship, visas and work permits are knockout
+  questions now, so a contradicting saved answer is dropped there too.
+
+Suite total: **1,155 assertions**, all green on Jobright 1.23.0.
 
 ---
 

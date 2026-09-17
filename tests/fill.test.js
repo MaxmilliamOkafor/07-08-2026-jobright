@@ -1551,5 +1551,69 @@ for (const tag of ['oj-select-single', 'oj-c-select-single', 'oj-select-one', 'o
   eq(`${tag} is discovered`, disc.includes(tag), true);
 
 
+/* ── 42. the two answers that went out wrong on one Greenhouse form ───────── */
+/* job-boards.greenhouse.io/materiom/jobs/5225191007 submitted:
+     "How many years of professional experience…?"  → "Less than 1 year"
+     "Will you require visa sponsorship…?"          → "Yes"
+   Both are knockouts, and both were self-inflicted. */
+console.log('a years dropdown and a sponsorship question, off one real form');
+
+/* The exact option list a Greenhouse years dropdown offers. The scorer is run
+   for real — this is not a check that some code exists. */
+{
+  const score = new Function('return ' + body('scoreExperienceRange').replace(/^\s*function\s+/, 'function '))();
+  const OPTS = ['Less than 1 year', '1-2 years', '3-5 years', '5-10 years', '10+ years'];
+  const bestFor = (yrs) => {
+    let best = 0, pick = null;
+    for (const o of OPTS) { const v = score(o, yrs); if (v > best) { best = v; pick = o; } }
+    return pick || OPTS[OPTS.length - 1];
+  };
+  eq('7 years picks the band that contains it', bestFor(7), '5-10 years');
+  eq('12 years reaches the open-ended top band', bestFor(12), '10+ years');
+  eq('3 years picks its own band, not a higher one', bestFor(3), '3-5 years');
+  eq('the worst option is never what 7 years scores to', bestFor(7) === 'Less than 1 year', false);
+  // The old behaviour, for the record: nothing matched "7", so required fell to real[0].
+  eq('and real[0] — what used to be picked — is the worst answer on the list',
+    OPTS[0], 'Less than 1 year');
+  // An unscoreable list must fail upward, not downward.
+  const odd = ['Entry level', 'Mid level', 'Senior'];
+  let best = 0, pick = null;
+  for (const o of odd) { const v = score(o, 7); if (v > best) { best = v; pick = o; } }
+  eq('a list the scorer cannot read falls to the TOP, not the bottom',
+    pick || odd[odd.length - 1], 'Senior');
+}
+const cd = body('commitCustomDropdown');
+eq('the dropdown committer scores ranges before anything else',
+  /const s = scoreExperienceRange\(comboText\(o\), yrs\);/.test(cd), true);
+eq('it recognises a years question from the full question, not just the label',
+  /const qFull = String\(getFullQuestionText\(combo\) \|\| getLabel\(combo\) \|\| ''\);/.test(cd), true);
+eq('and an unscoreable years list takes the last option, never the first',
+  /if \(!pick && real\.length\) pick = real\[real\.length - 1\];/.test(cd), true);
+eq('the generic matchers only get a say once the range pass has had one',
+  /if \(!pick && want\) \{/.test(cd), true);
+
+/* The sponsorship answer. These two questions sat next to each other on the
+   form and share nearly every word, so the 40%-overlap matcher handed the
+   second one's "Yes" to the first. */
+const SPONSOR_Q = 'Will you require visa sponsorship within the next 18 months to work in the United Kingdom?';
+const RTW_Q = 'Do you currently have the right to work in the United Kingdom?';
+eq('the sponsorship question is reasoned to No', koCtx.decide(SPONSOR_Q.toLowerCase()), 'no');
+eq('the right-to-work question next to it is reasoned to Yes', koCtx.decide(RTW_Q.toLowerCase()), 'yes');
+eq('a "Yes" bleeding across from the neighbour is refused', safe('Yes', SPONSOR_Q), '');
+eq('while the neighbour keeps its own Yes', safe('Yes', RTW_Q), 'Yes');
+eq('and a saved "No" — the right answer — still stands', safe('No', SPONSOR_Q), 'No');
+// Why it got through before: the question names none of the old knockout words.
+{
+  const OLD = /\b(hands.?on|experience|experienced|proficien\w*|familiar|comfortable|willing|able to|capable|authoriz\w*|eligib\w*|right to work|legally|relocat\w*|commute|available|start date|do you have|have you (used|worked|built|managed))\b/i;
+  eq('the old guard did not consider a sponsorship question a knockout',
+    OLD.test(SPONSOR_Q), false);
+}
+for (const q of [
+  'Do you now or will you in the future require sponsorship for employment visa status?',
+  'Will you require a work permit to be employed in Ireland?',
+  'Do you require visa sponsorship?',
+]) eq(`"${q.slice(0, 44)}…" is guarded`, safe('Yes', q), '');
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
