@@ -2157,7 +2157,15 @@ Mutations checked: restoring the tag-name allow-list, removing the grace window,
 removing the zero-years fallback, and letting a contradicting saved answer
 through. All four fail the suite.
 
-Suite total: **1,131 assertions**, all green on Jobright 1.23.0.
+### "15 failed" with no way to see why
+
+Every failure already carried a reason — `No application form found`, `Sign-in
+required`, `Tab went silent for 20s` — and there was nowhere to read them all at
+once. **⚠ Copy failures** in the Queue Manager puts the lot on the clipboard,
+grouped by reason and ordered by how many jobs each one cost, because fifteen
+failures are usually three causes and the counts say which to fix first.
+
+Suite total: **1,136 assertions**, all green on Jobright 1.23.0.
 
 ---
 

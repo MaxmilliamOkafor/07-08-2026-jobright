@@ -183,6 +183,51 @@
     log(`${sourceName ? sourceName + ': ' : 'Import: '}${parts.join(', ')}`, additions.length ? 'ok' : 'err');
   }
 
+  /* Every failure with its reason, grouped and counted, as plain text.
+     A run that reports "15 failed" and nothing else cannot be acted on — the
+     reasons are all recorded per job, they were just never anywhere you could
+     get at them in one go. Grouped because fifteen failures are usually three
+     causes, and the counts are what say which one to fix first. */
+  function copyFailures() {
+    const bad = queue.filter((j) => j.status === 'failed' || j.status === 'timeout' || j.status === 'skipped');
+    if (!bad.length) { log('No failures to copy', 'ok'); return; }
+    const byReason = new Map();
+    for (const j of bad) {
+      const key = `${j.status}: ${j.error || 'no reason recorded'}`;
+      if (!byReason.has(key)) byReason.set(key, []);
+      byReason.get(key).push(j.url);
+    }
+    const groups = [...byReason.entries()].sort((a, b) => b[1].length - a[1].length);
+    const done = queue.filter((j) => j.status === 'done').length;
+    const out = [
+      `Jobright queue — ${queue.length} jobs, ${done} applied, ${bad.length} not`,
+      '',
+    ];
+    for (const [reason, urls] of groups) {
+      out.push(`${urls.length}x  ${reason}`);
+      for (const u of urls.slice(0, 8)) out.push(`      ${u}`);
+      if (urls.length > 8) out.push(`      …and ${urls.length - 8} more`);
+      out.push('');
+    }
+    const text = out.join('\n');
+    const ok = () => log(`Copied ${bad.length} failure${bad.length === 1 ? '' : 's'} in ${groups.length} group${groups.length === 1 ? '' : 's'}`, 'ok');
+    try {
+      navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok));
+    } catch (_) { fallbackCopy(text, ok); }
+  }
+  // Clipboard access can be refused in a side panel; a textarea always works.
+  function fallbackCopy(text, ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      ok();
+    } catch (_) { log('Could not copy — use ⬇ Export instead', 'err'); }
+  }
+
   function exportCsv() {
     const cols = ['url', 'title', 'companyName', 'jobBoard', 'status', 'error', 'addedAt', 'startedAt', 'completedAt', 'duration'];
     const esc = (v) => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
@@ -468,6 +513,7 @@
   });
 
   $('btnExport').addEventListener('click', exportCsv);
+  $('btnCopyFails').addEventListener('click', copyFailures);
   $('btnRetry').addEventListener('click', async () => {
     let n = 0;
     await mutateQ((q) => {

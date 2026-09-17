@@ -109,5 +109,62 @@ console.log('importText row handling');
   eq('headerless multi-column', r.added.map((a) => a.url), ['https://a.com/1', 'https://a.com/2']);
 }
 
+/* ── the failure report ──────────────────────────────────────────────────────
+   A run that says "15 failed" and nothing else cannot be acted on. Every
+   failure already carried a reason; there was just nowhere to get at them all
+   at once. Run the real grouping. */
+console.log('failures can be read off in one go');
+{
+  const fcode = extract(src, ['copyFailures']);
+  const calls = { copied: '', logged: [] };
+  const fctx = {};
+  new Function('exports', `
+    const log = (m, c) => exports.logged.push([m, c]);
+    const fallbackCopy = (t, ok) => { exports.copied = t; ok(); };
+    // A side panel can be refused clipboard access, so the fallback is the
+    // path that has to work — exercise that one.
+    const navigator = { clipboard: { writeText: () => { throw new Error('denied'); } } };
+    let queue = exports.queue;
+    ${fcode}
+    exports.run = (q) => { queue = q; exports.queue = q; copyFailures(); };
+  `)(calls);
+
+  calls.run([
+    { url: 'https://a.com/1', status: 'done' },
+    { url: 'https://a.com/2', status: 'failed', error: 'No application form found' },
+    { url: 'https://a.com/3', status: 'failed', error: 'No application form found' },
+    { url: 'https://a.com/4', status: 'failed', error: 'No application form found' },
+    { url: 'https://a.com/5', status: 'timeout', error: 'Tab went silent for 20s' },
+    { url: 'https://a.com/6', status: 'skipped' },
+  ]);
+  const text = calls.copied;
+  eq('the headline says what actually happened',
+    text.split('\n')[0], 'Jobright queue — 6 jobs, 1 applied, 5 not');
+  eq('the commonest cause is listed first',
+    /\n3x {2}failed: No application form found\n/.test(text), true);
+  eq('and its URLs come with it', /\n {6}https:\/\/a\.com\/2\n/.test(text), true);
+  eq('a one-off cause is still reported', /1x {2}timeout: Tab went silent for 20s/.test(text), true);
+  eq('a job that failed without a reason says so rather than going missing',
+    /1x {2}skipped: no reason recorded/.test(text), true);
+  eq('a job that succeeded is not in the report', /a\.com\/1/.test(text), false);
+  eq('and the log says how much was copied',
+    calls.logged[0][0], 'Copied 5 failures in 3 groups');
+  eq('the clipboard is tried first when it is available',
+    /navigator\.clipboard\.writeText\(text\)\.then\(ok, \(\) => fallbackCopy\(text, ok\)\);/.test(src), true);
+
+  calls.logged.length = 0; calls.copied = '';
+  calls.run([{ url: 'https://a.com/1', status: 'done' }]);
+  eq('nothing to report copies nothing', calls.copied, '');
+  eq('and says so', calls.logged[0][0], 'No failures to copy');
+
+  // Long groups are truncated, or one bad ATS buries the rest.
+  calls.logged.length = 0;
+  calls.run(Array.from({ length: 12 }, (_, i) => (
+    { url: 'https://b.com/' + i, status: 'failed', error: 'Sign-in required' })));
+  eq('a long group is capped', /…and 4 more/.test(calls.copied), true);
+  eq('but its true size is still stated', /12x {2}failed: Sign-in required/.test(calls.copied), true);
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
