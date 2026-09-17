@@ -1255,5 +1255,58 @@ eq('the panel watchdog no longer runs twice a second', /\}, 2000\);   \/\/ twice
 eq('nor the sidebar re-scan every 1.5s',
   /if \(qActive && isRunnerTab\(\)\) forceOpenSidebar\(\); \}, 3000\);/.test(src), true);
 
+/* ── 36. one pass, then one cheap retry ───────────────────────────────────── */
+/* "A lot of refiring of the autofill" was four layers of repetition stacked on
+   each other: an attempt loop of 2, wrapping a withRetry of 2, wrapping a
+   dispatch that runs BOTH the per-ATS driver and the universal multi-page
+   driver — and then a retry pass that re-entered the multi-page driver again.
+   Worst case, six full drives of the same form. */
+console.log('a job is driven once, not six times');
+const mj = body('processManagedJob');
+eq('the dispatch gets no retries of its own — the attempt loop is the retry',
+  /withRetry\(async \(\) => \{ await dispatchATSAutomation\(\); \}, 'Manager job automation', 0\)/.test(mj), true);
+eq('the driver runs on the first attempt only', /if \(attempt === 0\) \{/.test(mj), true);
+eq('the second attempt tops up and re-submits instead of re-driving',
+  /Second pass: completing anything still outstanding and re-submitting/.test(mj), true);
+eq('and it does NOT re-enter the multi-page driver',
+  /await multiPageLoop\(\);/.test(mj), false);
+eq('the attempt loop is still bounded at two', /attempt < 2 && !success && !finalized/.test(mj), true);
+eq('a form stuck on a validation complaint stops the verify clock early',
+  /if \(check >= 2 && pageHasValidationError\(\)\) \{ validationStuck = true; break; \}/.test(mj), true);
+eq('but a first-pass validation error still earns one more attempt',
+  /if \(validationStuck && attempt > 0\) break;/.test(mj), true);
+
+/* ── 37. "skipped" must not hide a real failure ───────────────────────────── */
+/* A URL that is not an application and a job whose Apply button led nowhere were
+   both reported as "skipped". The first is right and needs no action; the second
+   is a job that was applicable and we failed at — buried in the column people
+   ignore. */
+console.log('a job we could not open is a failure, not a skip');
+eq('the two outcomes are told apart by whether an Apply control exists',
+  /const openable = hasApplyButton\(\) \|\| !!findApplyManually\(\);\n        if \(openable\) \{/.test(mj), true);
+eq('Apply present but no form → failed, with the reason',
+  /finalize\('failed', 'Could not open the application form \(Apply was present but led nowhere\)'\)/.test(mj), true);
+eq('nothing applicable at all → skipped, and says why',
+  /finalize\('skipped', 'Not an application page — no form, no Apply button, no known ATS'\)/.test(mj), true);
+eq('the old catch-all skip message is gone',
+  /finalize\('skipped', 'No application form found'\)/.test(mj), false);
+
+/* ── 38. opening a batch of tabs must not be the bottleneck ───────────────── */
+/* The slot filler is serial, so a flat 800ms per tab cost ten seconds of every
+   refill at a concurrency of 12 — pure dead time in a bulk run. */
+console.log('tab opening scales with the batch');
+const fill = orch.slice(orch.indexOf('async function fillSlots'), orch.indexOf('async function fillSlots') + 4000);
+eq('the pause shrinks as the batch grows',
+  /if \(cfg\.interJobDelayMs && toOpen\.length > 1\) \{\n          const per = Math\.max\(60, Math\.min\(cfg\.interJobDelayMs, Math\.round\(1200 \/ toOpen\.length\)\)\);/.test(fill), true);
+eq('a single job still gets the full configured pause',
+  /\} else if \(cfg\.interJobDelayMs\) \{/.test(fill), true);
+// The arithmetic, run for real.
+const per = (n, cfgMs) => n > 1 ? Math.max(60, Math.min(cfgMs, Math.round(1200 / n))) : cfgMs;
+eq('1 job at a time keeps the 800ms pause', per(1, 800), 800);
+eq('4 in a batch → 300ms each (1.2s total)', per(4, 800), 300);
+eq('12 in a batch → 100ms each (1.2s total)', per(12, 800), 100);
+eq('the total ramp is bounded however large the batch', per(12, 800) * 12 <= 1300, true);
+eq('and never drops below a floor that would burst a single site', per(40, 800), 60);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
