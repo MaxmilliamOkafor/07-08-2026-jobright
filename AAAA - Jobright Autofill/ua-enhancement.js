@@ -2737,20 +2737,40 @@
   /* Tags that actually host open shadow roots on the ATS this build supports,
      plus the generic custom-element prefixes. CSS cannot say "any tag with a
      hyphen", so this is the enumeration — kept broad, and far cheaper than '*'. */
-  const SHADOW_HOST_SEL = [
-    '[data-shadow]', 'plasmo-csui',
-    'spl-input','spl-select','spl-select-option','spl-radio','spl-checkbox','spl-textarea',
-    'spl-button','spl-file-upload','spl-attachment','spl-typography-body','spl-date-input',
-    'oj-input-text','oj-text-area','oj-select-single','oj-select-one','oj-combobox-one',
-    'oj-radioset','oj-checkboxset','oj-input-date','oj-button','oj-radio',
-    'mat-select','mat-checkbox','mat-radio-button','mat-slide-toggle','mat-form-field',
-    'md-outlined-select','md-filled-select','md-checkbox','md-radio','md-outlined-text-field',
-    'sl-select','sl-checkbox','sl-radio','sl-switch','sl-input','sl-button',
-    'ion-select','ion-checkbox','ion-radio','ion-toggle','ion-input',
-    'vaadin-combo-box','vaadin-checkbox','vaadin-radio-button','vaadin-select','vaadin-text-field',
-    // Generic catch-alls for custom elements this list does not name.
-    '[is]', 'x-el', 'ui-input', 'ui-select', 'app-input', 'app-select',
-  ].join(',');
+/* FINDING SHADOW HOSTS — and the regression that taught me how not to.
+
+     v16.4 replaced "ask the node for every element" with an allow-list of tag
+     names, to stop a full enumeration running several times a second. The
+     performance reasoning was right. The implementation was wrong, and it broke
+     SmartRecruiters completely.
+
+     The list named LEAF components — spl-input, spl-select, spl-checkbox. But
+     those sit INSIDE wrapper custom elements, and a wrapper that is not on the
+     list is never descended into, so every field beneath it is invisible. Zero
+     fields found, every job failed. An allow-list cannot work here: it would
+     have to know every custom element every ATS will ever ship, including the
+     ones on the 45 bespoke employer portals in these queues.
+
+     So the enumeration is complete again, and the cost is paid for by a cache
+     instead. A shadow host cannot appear without a DOM mutation, so the list is
+     rebuilt on a short TTL rather than on every query — which, together with the
+     250ms fingerprint memo, keeps the hot loop cheap while making it correct. */
+  const _hostCache = new WeakMap();      // root → { hosts, at }
+  const HOST_CACHE_TTL = 400;
+  function shadowHostsIn(node) {
+    const now = Date.now();
+    const hit = _hostCache.get(node);
+    if (hit && now - hit.at < HOST_CACHE_TTL) return hit.hosts;
+    const hosts = [];
+    try {
+      for (const el of node.querySelectorAll('*')) {
+        // Only an element with an OPEN shadow root can hide anything from us.
+        if (el.shadowRoot && !isOwnUi(el)) hosts.push(el);
+      }
+    } catch (_) {}
+    try { _hostCache.set(node, { hosts, at: now }); } catch (_) {}
+    return hosts;
+  }
 
   function deepQueryAll(sel, root, limit) {
     const out = [];
@@ -2767,16 +2787,12 @@
           if (out.length >= cap) break;
         }
       } catch (_) {}
-      // Descend into open shadow roots. Finding the hosts used to mean asking the
-      // node for EVERY element it contains, on every deep query. stepSignature()
-      // runs one of those, and waitForStepChange polls it every 300ms, so a big
-      // ATS page was being fully enumerated several times a second in every open
-      // job tab. With a dozen tabs that is enough to bring a machine to its knees.
-      //
-      // Only a custom element (a tag with a hyphen) or one of the handful of
-      // native elements that can carry one is ever a shadow host in practice, so
-      // ask for those by name instead of for everything.
-      try { for (const el of node.querySelectorAll(SHADOW_HOST_SEL)) { if (el.shadowRoot && !isOwnUi(el)) stack.push(el.shadowRoot); } } catch (_) {}
+      // Descend into every open shadow root, whatever the host is called. A
+      // named list of host tags was tried here and it was wrong: the names that
+      // matter are the WRAPPERS, which are private to each ATS and unknowable.
+      // The cost of enumerating is paid by a short cache instead — see
+      // shadowHostsIn.
+      try { for (const el of shadowHostsIn(node)) stack.push(el.shadowRoot); } catch (_) {}
     }
     return out;
   }

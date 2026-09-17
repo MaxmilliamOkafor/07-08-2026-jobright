@@ -1230,14 +1230,68 @@ eq('a 3s pause at 1x is unchanged', scaledFn(3000, 60, sp(1)), 3000);
    300ms, and several passes call it two or three times each. Anything expensive
    in there is multiplied by a dozen open job tabs. */
 console.log('the deep walk stays out of the hot loop');
+/* This is where an allow-list of tag names lived for three versions, and it
+   broke SmartRecruiters completely: the list named LEAF components (spl-input,
+   spl-select) but those sit inside WRAPPER custom elements, and a wrapper not on
+   the list was never descended into — so every field beneath it was invisible.
+
+   The assertion that used to sit here checked that the allow-list was being
+   used. It asserted the MECHANISM, so it passed happily while the extension
+   found zero fields on every SmartRecruiters job. What follows asserts the
+   PROPERTY instead: any shadow host is reachable, whatever it is called. */
 const dq = body('deepQueryAll');
-eq('shadow hosts are NOT found by enumerating every element in the document',
-  /querySelectorAll\('\*'\)/.test(dq), false);
-eq('they are found by naming the tags that actually host them',
-  /querySelectorAll\(SHADOW_HOST_SEL\)/.test(dq), true);
-const hostSel = src.match(/const SHADOW_HOST_SEL = \[([\s\S]*?)\]\.join/)[1];
-for (const tag of ['spl-input', 'oj-select-single', 'mat-select', 'sl-select', 'ion-select', 'vaadin-combo-box', 'plasmo-csui'])
-  eq(`${tag} is still reachable through its shadow root`, hostSel.includes(tag), true);
+eq('the descent goes through the cached host finder', /shadowHostsIn\(node\)/.test(dq), true);
+const finder = body('shadowHostsIn');
+eq('which enumerates completely rather than guessing tag names',
+  /node\.querySelectorAll\('\*'\)/.test(finder), true);
+eq('and keeps our own UI out of it', /!isOwnUi\(el\)/.test(finder), true);
+eq('the cost is paid by a cache, not by an incomplete list',
+  /if \(hit && now - hit\.at < HOST_CACHE_TTL\) return hit\.hosts;/.test(finder), true);
+eq('the cache is short-lived, so a newly mounted field is picked up quickly',
+  /const HOST_CACHE_TTL = 400;/.test(src), true);
+eq('no allow-list of tag names survives', /SHADOW_HOST_SEL/.test(src), false);
+
+/* The test that would have caught it. A wrapper custom element nobody has heard
+   of, with the real field inside ITS shadow root — exactly SmartRecruiters'
+   shape, and exactly what a named list cannot cover. */
+{
+  const ctx = {};
+  new Function('exports', `
+    const isOwnUi = () => false;
+    const _hostCache = new WeakMap();
+    const HOST_CACHE_TTL = 400;
+    ${body('shadowHostsIn')}
+    ${body('deepQueryAll')}
+    exports.deepQueryAll = deepQueryAll;
+  `)(ctx);
+
+  // A minimal DOM: nodes with querySelectorAll, an optional shadowRoot, and a tag.
+  const mk = (tag, kids = [], shadow = null) => {
+    const el = { tagName: tag.toUpperCase(), children: kids, shadowRoot: shadow };
+    el.querySelectorAll = (sel) => {
+      const out = [];
+      const walk = (n) => {
+        for (const c of n.children || []) {
+          const tags = sel.split(',').map((t) => t.trim().toLowerCase());
+          if (sel === '*' || tags.includes((c.tagName || '').toLowerCase())) out.push(c);
+          walk(c);                       // light DOM only — shadow is crossed by the caller
+        }
+      };
+      walk(el);
+      return out;
+    };
+    return el;
+  };
+  const field = mk('spl-input');
+  // The wrapper is a custom element with a name no allow-list would contain.
+  const innerRoot = mk('#shadow-root', [field]);
+  const wrapper = mk('sr-question-block', [], innerRoot);
+  const doc = mk('#document', [wrapper]);
+
+  const found = ctx.deepQueryAll('spl-input', doc, 50);
+  eq('a field inside an UNKNOWN wrapper\'s shadow root is still found', found.length, 1);
+  eq('and it is the right element', found[0] === field, true);
+}
 
 eq('the fingerprint is memoised', /if \(now - _sigAt < SIG_TTL_MS\) return _sigCache;/.test(src), true);
 eq('the cache is short enough to see a real step change on the next poll',
