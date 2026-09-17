@@ -1615,5 +1615,118 @@ for (const q of [
 ]) eq(`"${q.slice(0, 44)}…" is guarded`, safe('Yes', q), '');
 
 
+/* ── 43. the run must say WHY, not just how many ──────────────────────────── */
+/* Four screenshots of a failing run arrived carrying nothing but a count: "37
+   failed". The reasons were recorded on every job the whole time; they were
+   only readable in a side panel that is not what is on screen during a run. */
+console.log('the panel says why jobs are failing');
+{
+  const grpCtx = {};
+  new Function('exports', `
+    let queue = [];
+    ${body('failureGroups')}
+    ${body('topFailureReason')}
+    ${body('failureReportText')}
+    exports.load = (q) => { queue = q; };
+    exports.top = topFailureReason;
+    exports.report = failureReportText;
+  `)(grpCtx);
+
+  grpCtx.load([
+    { url: 'https://a/1', status: 'done' },
+    { url: 'https://a/2', status: 'done' },
+    { url: 'https://a/3', status: 'failed', error: 'No application form found' },
+    { url: 'https://a/4', status: 'failed', error: 'No application form found' },
+    { url: 'https://a/5', status: 'failed', error: 'No application form found' },
+    { url: 'https://a/6', status: 'timeout', error: 'Tab went silent for 20s' },
+    { url: 'https://a/7', status: 'skipped', error: 'Skipped by user' },
+    { url: 'https://a/8', status: 'skipped', error: 'Already applied / posting closed' },
+  ]);
+  const top = grpCtx.top();
+  eq('the reason that cost the most jobs is the one surfaced',
+    top.reason, 'failed: No application form found');
+  eq('with its count', top.n, 3);
+  eq('and the total it is a share of', top.total, 5);
+  eq('a job you skipped yourself is not a failure', grpCtx.report().includes('a/7'), false);
+  eq('but a job skipped for a reason of its own is', grpCtx.report().includes('a/8'), true);
+
+  const rep = grpCtx.report();
+  eq('the report opens with what happened',
+    rep.split('\n')[0], 'Jobright queue — 8 jobs, 2 applied, 5 not');
+  eq('the biggest group is first', rep.indexOf('3x') < rep.indexOf('1x'), true);
+  eq('and every failing URL is in it', /https:\/\/a\/3/.test(rep), true);
+
+  grpCtx.load([{ url: 'https://a/1', status: 'done' }]);
+  eq('a clean run shows no failure line at all', grpCtx.top(), null);
+}
+eq('the line is hidden until there is something to say',
+  /<div class="uc-why" id="uc-why" style="display:none"/.test(src), true);
+eq('and it is rendered on every panel update',
+  /whyEl\.textContent = `Most failures: \$\{top\.reason\} \(\$\{top\.n\}\)`;/.test(src), true);
+eq('clicking it copies the whole report',
+  /const text = failureReportText\(\);/.test(src), true);
+eq('with a fallback for when the clipboard is refused',
+  /ok = document\.execCommand\('copy'\);/.test(src), true);
+
+
+/* ── 44. two SmartRecruiters details, checked against a rival's build ─────── */
+/* OptimHire 2.8.9 reads an spl-radio's option text from its `label` ATTRIBUTE
+   and refuses to type into `c-spl-dropdown-search__input`. Both turned out to
+   be bugs here, and both are silent ones — the form looks filled. */
+console.log('SmartRecruiters web components, read correctly');
+{
+  const clCtx = {};
+  new Function('exports', `
+    // getLabel climbs to the group on a web-component radio — that IS the bug.
+    const getLabel = () => 'Do you have the right to work in Ireland?';
+    ${body('choiceLabel')}
+    exports.choiceLabel = choiceLabel;
+  `)(clCtx);
+  const mkRadio = (attrs) => ({
+    tagName: 'SPL-RADIO',
+    getAttribute: (k) => (k in attrs ? attrs[k] : null),
+    shadowRoot: null, value: '', nextElementSibling: null,
+    closest: () => null, textContent: '',
+  });
+  eq('an spl-radio answers with its own label, not the group question',
+    clCtx.choiceLabel(mkRadio({ label: 'Yes' })), 'yes');
+  eq('and its sibling with its own',
+    clCtx.choiceLabel(mkRadio({ label: 'No' })), 'no');
+  // The bug: both options previously came back as the question, so Yes and No
+  // were indistinguishable and the matcher took whichever it saw first.
+  eq('the two options are now distinguishable at all',
+    clCtx.choiceLabel(mkRadio({ label: 'Yes' })) !== clCtx.choiceLabel(mkRadio({ label: 'No' })), true);
+  eq('aria-label serves when there is no label attribute',
+    clCtx.choiceLabel(mkRadio({ 'aria-label': 'Prefer not to say' })), 'prefer not to say');
+  // A NATIVE radio must be unaffected — its label really does live outside it.
+  const native = { tagName: 'INPUT', type: 'radio', getAttribute: () => null,
+    shadowRoot: null, value: '', nextElementSibling: null, closest: () => null, textContent: '' };
+  eq('a native radio still uses the computed label',
+    clCtx.choiceLabel(native), 'do you have the right to work in ireland?');
+}
+{
+  const tsCtx = {};
+  new Function('exports', `
+    ${body('isTransientSearchBox')}
+    exports.f = isTransientSearchBox;
+  `)(tsCtx);
+  const inp = (className, extra) => ({
+    tagName: 'INPUT', className,
+    getAttribute: (k) => (extra && k in extra ? extra[k] : null),
+  });
+  eq("a dropdown's own search box is not a field",
+    tsCtx.f(inp('c-spl-dropdown-search__input')), true);
+  eq('nor is a combobox filter under any other ATS name',
+    tsCtx.f(inp('react-select__search-input')), true);
+  eq('nor one the page declares as a listbox filter',
+    tsCtx.f(inp('', { role: 'searchbox', 'aria-controls': 'lb1' })), true);
+  eq('an ordinary text field is still filled', tsCtx.f(inp('form-control')), false);
+  eq('and a field that merely mentions research is not caught',
+    tsCtx.f(inp('researcher-name-input')), false);
+}
+eq('and the guard sits on the one path every write goes through',
+  /function writeAllowed\(el, val\) \{\n    if \(isTransientSearchBox\(el\)\) return false;/.test(src), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

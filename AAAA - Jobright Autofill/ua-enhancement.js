@@ -1888,7 +1888,17 @@
   function choiceLabel(r) {
     let out = '';
     try {
-      out = getLabel(r) || '';
+      /* A custom element carries its own option text in an attribute —
+         SmartRecruiters writes <spl-radio label="Yes">. Ask it FIRST. getLabel()
+         climbs for a label, and on a web-component radio there is nothing local
+         to find, so it kept climbing to the GROUP and returned the question
+         text: every option in the group came back with the same string, and the
+         matcher then picked whichever one it happened to see first. */
+      const tag = (r.tagName || '').toLowerCase();
+      if (tag.includes('-') && r.getAttribute) {
+        out = (r.getAttribute('label') || r.getAttribute('aria-label') || '').trim();
+      }
+      if (!out) out = getLabel(r) || '';
       if (!out) out = (r.getAttribute && (r.getAttribute('aria-label') || r.getAttribute('label'))) || '';
       if (!out && r.shadowRoot) out = (r.shadowRoot.textContent || '').trim();
       if (!out) out = (r.value || '');
@@ -3825,7 +3835,26 @@
      that is what "infinite autofill" looks like from the outside. Three attempts
      at the same value, then we leave it and say so once. */
   const _writeLedger = new WeakMap();
+  /* The search box INSIDE an open dropdown is not a field. It looks like one to
+     every enumerator — a visible, empty text input with the dropdown's label
+     above it — so the filler typed the answer into it, the list filtered to
+     nothing, and the actual field stayed empty. SmartRecruiters' is the one that
+     showed it up; the pattern is the same wherever a combobox filters as you
+     type, so this matches on the role rather than on any one ATS's class name. */
+  function isTransientSearchBox(el) {
+    try {
+      if (!el || (el.tagName || '').toUpperCase() !== 'INPUT') return false;
+      const cls = String(el.className || '') + ' ' + String(el.getAttribute('data-input') || '');
+      if (/dropdown.?search|select.?search|combobox.?search|search.?input/i.test(cls)) return true;
+      // An input the page itself declares as a listbox's filter.
+      const role = (el.getAttribute('role') || '').toLowerCase();
+      if (role === 'searchbox' && el.getAttribute('aria-controls')) return true;
+      return false;
+    } catch (_) { return false; }
+  }
+
   function writeAllowed(el, val) {
+    if (isTransientSearchBox(el)) return false;
     try {
       const rec = _writeLedger.get(el);
       if (!rec || rec.val !== val) { _writeLedger.set(el, { val, tries: 1 }); return true; }
@@ -8394,6 +8423,9 @@
 .uc-stats{display:flex;gap:10px;margin-top:9px;font-size:11px;color:#9aa0a6}
 .uc-stat b{font-variant-numeric:tabular-nums;font-weight:800}
 .uc-stat.ok b{color:#34d399}.uc-stat.sk b{color:#9aa0a6}.uc-stat.fa b{color:#f87171}
+.uc-why{margin-top:7px;font-size:11px;line-height:1.35;color:#f0a35e;cursor:pointer;word-break:break-word}
+.uc-why:hover{text-decoration:underline}
+.uc-why.copied{color:#34d399}
 .uc-speed{display:flex;align-items:center;gap:6px;margin-top:14px}
 .uc-speed-l{font-size:12px;font-weight:600;color:#bfbfc4;margin-right:2px}
 .uc-sp{min-width:38px;height:28px;padding:0 9px;border-radius:14px;border:1px solid #34343a;background:transparent;color:#bfbfc4;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
@@ -8609,6 +8641,7 @@
         <div class="uc-bar"><div class="uc-bar-fill" id="uc-bar"></div></div>
         <div class="uc-proc" id="uc-proc">Processing…</div>
         <div class="uc-stats" id="uc-stats"><span class="uc-stat ok"><b id="uc-ok">0</b> applied</span><span class="uc-stat sk"><b id="uc-sk">0</b> skipped</span><span class="uc-stat fa"><b id="uc-fa">0</b> failed</span></div>
+        <div class="uc-why" id="uc-why" style="display:none" title="Click to copy every failure and its reason"></div>
         <div class="uc-speed">
           <span class="uc-speed-l">Speed:</span>
           <button class="uc-sp active" data-sp="1">1x</button>
@@ -8634,6 +8667,30 @@
       ctrl.querySelector('#uc-skip').addEventListener('click', skipJob);
       ctrl.querySelector('#uc-quit').addEventListener('click', stopQ);
       ctrl.querySelectorAll('.uc-sp').forEach(btn => btn.addEventListener('click', () => setQueueSpeed(parseFloat(btn.dataset.sp) || 1)));
+      /* One click turns the run's failures into something you can paste to
+         someone who can fix them. Without this the reasons exist but stay
+         locked inside the extension's storage. */
+      const whyBtn = ctrl.querySelector('#uc-why');
+      if (whyBtn) whyBtn.addEventListener('click', async () => {
+        const text = failureReportText();
+        let ok = false;
+        try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {}
+        if (!ok) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+            document.body.appendChild(ta);
+            ta.select();
+            ok = document.execCommand('copy');
+            ta.remove();
+          } catch (_) {}
+        }
+        const was = whyBtn.textContent;
+        whyBtn.textContent = ok ? 'Copied — paste it wherever you need it' : 'Could not copy — use the Queue Manager\u2019s Export';
+        whyBtn.classList.toggle('copied', ok);
+        setTimeout(() => { whyBtn.textContent = was; whyBtn.classList.remove('copied'); }, 2500);
+      });
       // If we already know a run is active in this runner tab, show immediately.
       if (isRunnerTab()) ctrl.classList.add('show');
       updateCtrl();
@@ -9890,6 +9947,19 @@
       if (okEl) okEl.textContent = queue.filter(j => j.status === 'done').length;
       if (skEl) skEl.textContent = queue.filter(j => j.status === 'skipped').length;
       if (faEl) faEl.textContent = queue.filter(j => ['failed', 'timeout'].includes(j.status)).length;
+      /* "37 failed" is not a fact anyone can act on — not you watching the run,
+         and not whoever you show it to. Every failure already recorded a reason;
+         they were only ever readable in the side panel, which is not the thing
+         on screen during a run. Put the commonest one here, where it is. */
+      const whyEl = document.getElementById('uc-why');
+      if (whyEl) {
+        const top = topFailureReason();
+        if (top) {
+          whyEl.textContent = `Most failures: ${top.reason} (${top.n})`;
+          whyEl.title = `Click to copy all ${top.total} failures with their reasons`;
+          whyEl.style.display = '';
+        } else whyEl.style.display = 'none';
+      }
       const proc = document.getElementById('uc-proc');
       if (proc) {
         if (qPaused) { proc.textContent = 'Paused'; proc.classList.add('paused'); }
@@ -9907,6 +9977,38 @@
          the panel vanish after the first cross-site job. */
       ctrl.classList.remove('show');
     }
+  }
+
+  /* The reason that cost the most jobs, and how many. Failures cluster: thirty
+     of them are usually three causes, and knowing which one is biggest is the
+     difference between fixing the run and guessing at it. */
+  function failureGroups() {
+    const bad = queue.filter(j => ['failed', 'timeout'].includes(j.status) ||
+      (j.status === 'skipped' && j.error && !/^Skipped by user$/i.test(j.error)));
+    const by = new Map();
+    for (const j of bad) {
+      const key = `${j.status}: ${j.error || 'no reason recorded'}`;
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(j.url);
+    }
+    return { bad, groups: [...by.entries()].sort((a, b) => b[1].length - a[1].length) };
+  }
+  function topFailureReason() {
+    const { bad, groups } = failureGroups();
+    if (!groups.length) return null;
+    return { reason: groups[0][0], n: groups[0][1].length, total: bad.length };
+  }
+  function failureReportText() {
+    const { bad, groups } = failureGroups();
+    const done = queue.filter(j => j.status === 'done').length;
+    const out = [`Jobright queue — ${queue.length} jobs, ${done} applied, ${bad.length} not`, ''];
+    for (const [reason, urls] of groups) {
+      out.push(`${urls.length}x  ${reason}`);
+      for (const u of urls.slice(0, 8)) out.push(`      ${u}`);
+      if (urls.length > 8) out.push(`      …and ${urls.length - 8} more`);
+      out.push('');
+    }
+    return out.join('\n');
   }
 
   // Friendly fallback label when a queued job has no captured company name.

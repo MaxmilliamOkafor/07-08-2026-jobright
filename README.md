@@ -2183,7 +2183,29 @@ One Greenhouse form submitted both:
   sponsorship when they do not. Sponsorship, visas and work permits are knockout
   questions now, so a contradicting saved answer is dropped there too.
 
-Suite total: **1,155 assertions**, all green on Jobright 1.23.0.
+### The run now says WHY, not just how many
+
+Four screenshots of a failing run arrived carrying nothing but a count — "37
+failed". Every failure had recorded a reason the whole time; they were only
+readable in the Queue Manager, which is not what is on screen during a run. The
+run panel now carries a line — **Most failures: … (n)** — and clicking it copies
+the full grouped report.
+
+### Two SmartRecruiters details, from OptimHire 2.8.9
+
+Both were silent bugs here — the form looks filled either way.
+
+- **`<spl-radio label="Yes">`.** Option text lives in the `label` **attribute**.
+  `getLabel()` finds nothing local on a web-component radio and climbs to the
+  group, so every option in a group came back as the question text — Yes and No
+  were indistinguishable and the matcher took whichever it saw first. A custom
+  element is now asked for its own label before anything climbs.
+- **The search box inside an open dropdown is not a field.** It looks like one to
+  every enumerator — visible, empty, with the dropdown's label above it — so the
+  answer was typed into it, the list filtered to nothing, and the real field
+  stayed empty. Matched on the role rather than on any one ATS's class name.
+
+Suite total: **1,166 assertions**, all green on Jobright 1.23.0.
 
 ---
 
