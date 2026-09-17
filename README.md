@@ -1978,6 +1978,90 @@ their sidebar starts behaving differently.
 
 ---
 
+## v16.8 — the refiring, the silent skips, and the batch ramp
+
+### Why the autofill kept re-firing
+
+Four layers of repetition were stacked on top of each other, and each was
+reasonable on its own:
+
+```
+attempt loop  (×2)
+  └ withRetry (×3 on a throw)
+      └ dispatchATSAutomation
+          ├ the per-ATS driver      (its own step loop)
+          └ multiPageLoop           (up to 18 pages, two fills each)
+  └ retry pass → fill again, and multiPageLoop AGAIN
+```
+
+Worst case that is **six full drives of the same form**. The per-step fill budget
+added in v15.3 capped how much damage each drive could do, but it could not stop
+the structure — which is why the refiring was still visible.
+
+Now the driver runs **once**. `withRetry` gets no retries of its own (the attempt
+loop already *is* the retry), and the second attempt is deliberately cheap: top up
+whatever is still empty, fix validation, press the button again. No driver, no
+page walk. If the first pass could not find the form, running identical code a
+second time will not find it either — it will just cost another minute.
+
+The verify loop also stops early now when the form is sitting on an unfixed
+complaint, instead of waiting out twelve seconds that cannot change anything.
+
+### "Skipped" was hiding real failures
+
+Two very different outcomes were reported identically:
+
+* a URL that is **not an application** — no form, no Apply button, no known ATS.
+  Skipping is right and there is nothing to act on.
+* a job where **Apply was right there and led nowhere**. That job was applicable
+  and we failed at it.
+
+Both said *"No application form found"* and both landed in the column people
+ignore. They are now told apart, and the second is reported as a **failure with
+its reason** — which is very likely a chunk of what looked like "a lot of roles
+getting skipped".
+
+### Opening a batch of tabs was itself the bottleneck
+
+The slot filler is serial, so a flat 800ms between tab opens cost **ten seconds
+of every refill at a concurrency of 12** — pure dead time. The point of the pause
+is not to burst-open against one site, so it now shrinks as the batch grows: 4
+tabs get 300ms each, 12 get 100ms each, and the total ramp never exceeds ~1.2s.
+
+### What LazyApply actually does better
+
+Its waits are **100ms, 300ms and 500ms**. Ours are routinely 2–3 seconds.
+
+That gap is not cleverness, it is architecture: LazyApply ships a separate bundle
+per site — `linkedin.bundle.js`, `indeed.bundle.js`, `glassdoor.bundle.js`, a
+dozen more — and site-specific code can wait for *the exact thing it expects*
+rather than sleeping long enough to be safe on anything. This build takes the
+opposite bet: one generic engine that has to work on an ATS nobody has seen yet,
+including the 45 bespoke employer portals in your own queues that no per-site
+bundle would ever cover.
+
+The right thing to borrow is not shorter sleeps — it is **more condition-based
+waits**, which is what `waitForStepChange` and `waitForFormStable` already are.
+Every flat sleep that sits behind one of those is now redundant fat, and that is
+where the next round of speed should come from.
+
+I have deliberately **not** made 2x/3x more aggressive. The wait factors stay at
+`{1: 1, 1.5: 0.66, 2: 0.45, 3: 0.3}` because you are already seeing failures, and
+a shorter wait is the first thing that turns a slow-but-working step into a
+failed one. Raise **Parallel jobs** instead — that buys throughput without
+touching the odds on any individual application.
+
+### Verified
+
+Five mutations, five failures: giving `withRetry` its retries back, re-running
+the driver on every attempt, re-entering the multi-page driver in the retry,
+silently skipping an unopenable job again, and flattening the tab-open pause.
+The batch-ramp arithmetic runs for real at 1, 4, 12 and 40 tabs.
+
+Suite total: **1,069 assertions**, all green on Jobright 1.23.0.
+
+---
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

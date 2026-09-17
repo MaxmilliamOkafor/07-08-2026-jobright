@@ -281,7 +281,17 @@
             if (j) { j.status = 'failed'; j.error = 'Could not open tab'; j.completedAt = Date.now(); }
           });
         }
-        if (cfg.interJobDelayMs) await new Promise((r) => setTimeout(r, cfg.interJobDelayMs));
+        /* Breathing room between tab opens, but this loop is SERIAL: at a
+           concurrency of 12 a flat 800ms each meant ten seconds of the run spent
+           doing nothing but waiting to open tabs, every time the slots refilled.
+           The point of the pause is not to burst-open against one site, so it
+           shrinks as the batch grows and never costs more than ~1.2s in total. */
+        if (cfg.interJobDelayMs && toOpen.length > 1) {
+          const per = Math.max(60, Math.min(cfg.interJobDelayMs, Math.round(1200 / toOpen.length)));
+          await new Promise((r) => setTimeout(r, per));
+        } else if (cfg.interJobDelayMs) {
+          await new Promise((r) => setTimeout(r, cfg.interJobDelayMs));
+        }
       }
 
       await maybeFinish();

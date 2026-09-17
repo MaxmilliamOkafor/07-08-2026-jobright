@@ -7215,35 +7215,78 @@
       // page navigates — the content script on the next page picks the job back up.
       if (!(await probeApplyTarget(5, 4000))) {
         if (finalized) return;
-        return void await finalize('skipped', 'No application form found');
+        /* Two very different outcomes were being reported identically, and
+           "skipped" hid the one that matters.
+
+           If there is no form, no Apply button and no recognised ATS, the URL is
+           simply not an application — skipping it is right and there is nothing
+           to act on. But if an Apply button IS sitting there and we could not get
+           through it, the job was applicable and we failed at it. Calling that
+           "skipped" buries a real failure in the column people ignore. */
+        const openable = hasApplyButton() || !!findApplyManually();
+        if (openable) {
+          LOG('An Apply control is present but the form never opened — reporting this as a failure, not a skip');
+          return void await finalize('failed', 'Could not open the application form (Apply was present but led nowhere)');
+        }
+        return void await finalize('skipped', 'Not an application page — no form, no Apply button, no known ATS');
       }
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       clearSubmitAttempt();   // this job has not submitted anything yet
+
+      /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
+         This used to stack four layers of repetition on top of each other, and
+         that is what "a lot of refiring of the autofill" looks like from the
+         outside:
+
+           attempt loop (×2)
+             └ withRetry(…, 2)        → up to 3 more dispatches if one threw
+                 └ dispatchATSAutomation
+                     ├ the per-ATS driver  (its own step loop)
+                     └ multiPageLoop       (up to 18 pages, 2 fills each)
+             └ retry pass               → fill again, and multiPageLoop AGAIN
+
+         Worst case that is six full drives of the same form. The per-step fill
+         budget capped the damage but could not stop the structure.
+
+         Now: the driver runs ONCE. withRetry gets no retries of its own,
+         because the attempt loop below already is the retry, and the retry pass
+         does not re-enter multiPageLoop — the driver it follows has already
+         walked every page there was. */
       let success = false, validationStuck = false;
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
-        await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation');
+        if (attempt === 0) {
+          await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation', 0);
+        } else {
+          /* Second and final attempt: top up whatever is still empty and press
+             the button again. No driver, no page walk — if the first pass could
+             not find the form, running the identical code a second time will not
+             find it either, it will just cost another minute. */
+          LOG('Second pass: completing anything still outstanding and re-submitting');
+          try {
+            await openApplicationForm();
+            await waitForFormStable(2500);
+            await fallbackFill();
+            await guaranteeRequiredFields();
+            await handleValidationErrors();
+            await autoSubmitOrNext();
+          } catch (e) { LOG('Second pass error:', e?.message || e); }
+        }
         await withBusy('verifying submission', async () => {
           for (let check = 0; check < 6 && !finalized; check++) {
-            await sleep(2000);
+            await sleep(1500);
             if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
             if (confirmSubmitted()) { success = true; break; }
             if (pageHasFailure()) break;
+            // A form still sitting there with an unfixed complaint will not become
+            // submitted by waiting — stop the clock and let the retry act on it.
+            if (check >= 2 && pageHasValidationError()) { validationStuck = true; break; }
           }
         });
         if (success || finalized) break;
-        try {
-          await openApplicationForm(); await waitForFormStable(2500); await fallbackFill(); await guaranteeRequiredFields();
-          const r = await autoSubmitOrNext();
-          if (r === 'next_page') { await sleep(2500); await multiPageLoop(); }
-        } catch (e) { LOG('Manager retry pass error:', e?.message || e); }
-        await withBusy('verifying submission', async () => {
-          for (let check = 0; check < 5 && !finalized; check++) {
-            await sleep(2000);
-            if (confirmSubmitted()) { success = true; break; }
-            if (check >= 3 && pageHasValidationError()) { validationStuck = true; break; }
-          }
-        });
-        if (validationStuck) break;
+        // A validation error on the FIRST pass is worth one more attempt; on the
+        // second it is the answer.
+        if (validationStuck && attempt > 0) break;
+        validationStuck = false;
       }
       if (finalized) return;
       if (success) await finalize('done', null);
