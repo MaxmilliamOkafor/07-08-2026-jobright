@@ -288,6 +288,25 @@
   // LOG just writes to console with a [UA] tag; the console.* hook in _dbgInstall()
   // captures it into the buffer (so there's no double-logging here).
   const LOG = (...a) => { try { console.log('[UA]', ...a); } catch (_) {} };
+
+  /* Report something to the durable recorder in the service worker. Everything
+     a run learns goes through here: outcomes, the stages leading to them, the
+     questions we could not answer, and anything that threw.
+     Fire-and-forget by design — a diagnostic that can delay or break the thing
+     it is diagnosing is worse than no diagnostic. It never records a field's
+     VALUE; see the header of ua-diagnostics.js. */
+  function DIAG(code, reason, extra) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'UA_DIAG',
+        ev: Object.assign({
+          code,
+          reason: reason == null ? '' : String(reason),
+          ats: (typeof detectATS === 'function' && detectATS()) || 'unknown',
+        }, extra || {}),
+      }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
   // Expose manual hooks so you can drive the debugger from the console too.
   try { window.__uaDebug = { show: () => { _dbgInstall(); _dbgOn = true; _dbgRender(); }, hide: () => { _dbgOn = false; _dbgRender(); }, dump: () => _dbgBuf.join('\n'), export: () => _dbgExport(), clear: () => { _dbgBuf.length = 0; _dbgRender(); } }; } catch (_) {}
   // IMPORTANT: the deep instrumentation (wrapping console/fetch/XHR + a document-wide
@@ -297,7 +316,24 @@
   // then we only keep the cheap [UA] log buffer + error listeners.
 
   // ===================== GLOBAL ERROR HANDLER (prevent extension freeze on unhandled rejections) =====================
+  /* Anything that throws while a job is being driven. Gated on the automation
+     flag so browsing an unrelated site never files a report — most pages throw
+     something, and a recorder full of other people's bugs hides ours. */
+  const _diagAutomating = () => {
+    try { return document.documentElement.getAttribute('data-ua-auto') === '1'; } catch (_) { return false; }
+  };
+  try {
+    window.addEventListener('error', (e) => {
+      if (!_diagAutomating()) return;
+      const where = e && e.filename ? String(e.filename).split('/').pop() : '';
+      DIAG('page.error', (e && e.message) || 'script error', { detail: { at: where, line: e && e.lineno } });
+    }, true);
+  } catch (_) {}
+
   window.addEventListener('unhandledrejection', (event) => {
+    if (_diagAutomating()) {
+      try { DIAG('page.reject', event.reason?.message || String(event.reason || '')); } catch (_) {}
+    }
     const msg = event.reason?.message || String(event.reason || '');
     _dbgPush('REJECT', [msg]);
     // Suppress known non-critical extension errors that cause freeze loops
@@ -648,7 +684,29 @@
     qSkipApplied = (await st.get('ua_skip_applied')) !== false; // default ON
     try { _submitMark = (await st.get(SUBMIT_MARK_KEY)) || null; } catch (_) { _submitMark = null; }
   }
-  async function saveQ() { await st.set(SK.Q, queue); }
+  /* Every job that has reached a final state gets reported to the recorder
+     exactly once. This sits on saveQ rather than on each of the eight places
+     that set a terminal status, because those are scattered across the retry
+     paths and a diagnostic that covers seven of eight exits is the kind that
+     makes you trust a wrong number. New exits are covered automatically. */
+  const _diagReported = new Set();
+  const TERMINAL = ['done', 'failed', 'timeout', 'skipped'];
+  function reportTerminalJobs() {
+    try {
+      for (const j of queue) {
+        if (!j || !TERMINAL.includes(j.status)) continue;
+        const id = j.id || j.url;
+        if (!id || _diagReported.has(id)) continue;
+        _diagReported.add(id);
+        DIAG('job.' + j.status, j.error || '', {
+          ats: j.jobBoard || (typeof detectATS === 'function' && detectATS()) || 'unknown',
+          url: j.url,
+          detail: j.duration ? { ms: j.duration } : undefined,
+        });
+      }
+    } catch (_) {}
+  }
+  async function saveQ() { reportTerminalJobs(); await st.set(SK.Q, queue); }
   async function saveStats() { await st.set('ua_q_stats', qStats); }
 
   // ===================== ANSWER LEARNING SYSTEM =====================
@@ -3914,9 +3972,21 @@
   let _lastProgressAt = Date.now();
   let _lastProgressWhat = 'started';
   let _stallLimitMs = 15000;        // no progress for this long → give up on the job
+  /* Every stage a job passes through already reports itself here, to keep the
+     stall watchdog quiet. That makes it the natural place to record the trail
+     too — so a failure comes with the story of how far it got, not just the
+     point it stopped at.
+
+     Deduplicated: a long form calls this once per FIELD, and a recorder that
+     stored every one of those would be a thousand identical rows per job and
+     nothing else. */
+  let _lastDiagStage = '';
   function noteProgress(what) {
     _lastProgressAt = Date.now();
-    if (what) _lastProgressWhat = what;
+    if (what) {
+      if (what !== _lastDiagStage) { _lastDiagStage = what; DIAG('stage', what); }
+      _lastProgressWhat = what;
+    }
   }
   /* The stall clock must not run while we are actually DOING something. Filling a
      long form, waiting for Jobright's own autofill to finish, uploading a CV or
@@ -4425,12 +4495,16 @@
   function fillReport() {
     const required = deepAll('input:not([type=hidden]),textarea,select')
       .filter(el => isVisible(el) && isFieldRequired(el));
+    /* getMissingRequired returns LABELS, not elements. This read them as
+       elements — getLabel(aString) finds nothing and a string has no .name or
+       .id — so every entry collapsed to "(unlabelled)" and the one line that was
+       supposed to name the blocking question named nothing. */
     const missing = getMissingRequired();
     const missingLabels = [];
     const seen = new Set();
-    for (const el of missing.slice(0, 20)) {
-      const l = (getLabel(el) || el.name || el.id || '(unlabelled)').replace(/\s+/g, ' ').trim().slice(0, 60);
-      if (l && !seen.has(l)) { seen.add(l); missingLabels.push(l); }
+    for (const raw of missing.slice(0, 20)) {
+      const l = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, 80) || '(unlabelled)';
+      if (!seen.has(l)) { seen.add(l); missingLabels.push(l); }
     }
     const total = required.length;
     const done = Math.max(0, total - missing.length);
@@ -4441,6 +4515,13 @@
       const r = fillReport();
       LOG(`${where}: ${r.done}/${r.total} required fields filled (${r.pct}%)` +
         (r.missingLabels.length ? ' — still missing: ' + r.missingLabels.join(' | ') : ''));
+      DIAG('stage.fill', where, { detail: { done: r.done, total: r.total, pct: r.pct } });
+      /* One event per unanswered question, carrying the employer's own wording.
+         This is the most useful thing the recorder collects: it turns "the form
+         would not submit" into a list of the exact questions the filler has no
+         answer for, counted across every ATS. The LABEL only — never what was
+         or would have been typed into it. */
+      for (const label of r.missingLabels) DIAG('field.unanswered', label);
       return r;
     } catch (_) { return null; }
   }
@@ -7315,6 +7396,9 @@
       clearTimeout(tId);
       _mgrDriving = false;
       setAutomationFlag(false);
+      // Every outcome is recorded, not only the bad ones — a failure count means
+      // nothing without the number of jobs the same ATS got through.
+      DIAG('job.' + status, error || '', { detail: { ms: Date.now() - (c.startedAt || Date.now()) } });
       const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
       Object.assign(c, patch);
       // Fresh read-modify-write on ua_q: parallel job tabs each hold their own copy of

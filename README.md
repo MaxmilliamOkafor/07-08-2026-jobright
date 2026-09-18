@@ -2205,7 +2205,51 @@ Both were silent bugs here — the form looks filled either way.
   answer was typed into it, the list filtered to nothing, and the real field
   stayed empty. Matched on the role rather than on any one ATS's class name.
 
-Suite total: **1,166 assertions**, all green on Jobright 1.23.0.
+### The run recorder
+
+Four screenshots of a failing run arrived carrying nothing but a count. The
+reasons existed on every job the whole time; they were scattered across job
+objects and a per-tab console buffer that dies with the page, so the only
+question that matters after a bulk run — *which* ATS is failing, *how*, and
+*how often* — had no answer.
+
+`ua-diagnostics.js` runs in the service worker and is written to by every tab.
+It survives navigations, tab closes and worker restarts. **🩺 Diagnostics** in
+the Queue Manager copies and downloads the whole thing.
+
+It records **every outcome, not just failures** — "12 failed" means nothing
+without the number that got through — and reports five sections:
+
+1. **Outcomes by ATS**, with a success rate. A skip is excluded from the
+   denominator; it was never attempted.
+2. **Boards with trouble** — the employer's *full* hostname, because
+   `careers-amd.icims.com` and `careers-xyz.icims.com` are different walls, and
+   a platform that averages fine can still have a board that never works.
+3. **What went wrong**, counted, worst platform first.
+4. **Required questions left unanswered** — the exact wording of every question
+   the filler had no answer for. The most actionable section in the file.
+5. **Recent events** — the stage-by-stage trail through one job.
+
+Two layers keep it a fixed size: an aggregate that grows with the number of
+*distinct problems*, never with the size of a run (2,000 identical failures are
+one row), and a capped ring of recent events. Writes are serialised, because a
+dozen job tabs incrementing a shared counter lose increments otherwise — and a
+recorder that quietly undercounts is worse than none.
+
+**It never records a field's value.** Question labels yes, answers never: a
+report that carries what you typed is a copy of your personal data going
+wherever the report goes.
+
+Instrumentation sits on `saveQ`, the one function all eight terminal-status
+paths funnel through, rather than on each of them — covering seven of eight is
+how you end up trusting a wrong number.
+
+While wiring it up: `fillReport()` read `getMissingRequired()`'s return as
+elements, but it returns label **strings**, so every entry collapsed to
+`(unlabelled)` — the one line meant to name the blocking question had been
+naming nothing.
+
+Suite total: **1,214 assertions**, all green on Jobright 1.23.0.
 
 ---
 

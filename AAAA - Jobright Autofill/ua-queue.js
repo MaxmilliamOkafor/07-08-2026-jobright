@@ -188,6 +188,32 @@
      reasons are all recorded per job, they were just never anywhere you could
      get at them in one go. Grouped because fifteen failures are usually three
      causes, and the counts are what say which one to fix first. */
+  /* The whole recorder, as one block of text. "Copy failures" covers the run
+     you just did; this covers everything the extension has ever seen — which
+     ATS are working, which are not, and the exact questions it could not
+     answer. Downloaded as well as copied, because a long report is past what
+     most places will take on a paste. */
+  function extractDiagnostics() {
+    chrome.runtime.sendMessage({ type: 'UA_DIAG_REPORT' }, (r) => {
+      void chrome.runtime.lastError;
+      const text = (r && r.text) || 'Diagnostics unavailable — the service worker did not answer.';
+      const done = () => log('Diagnostics copied and downloaded', 'ok');
+      try {
+        navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+      } catch (_) { fallbackCopy(text, done); }
+      try {
+        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `jobright-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      } catch (_) {}
+    });
+  }
+
   function copyFailures() {
     const bad = queue.filter((j) => j.status === 'failed' || j.status === 'timeout' || j.status === 'skipped');
     if (!bad.length) { log('No failures to copy', 'ok'); return; }
@@ -514,6 +540,7 @@
 
   $('btnExport').addEventListener('click', exportCsv);
   $('btnCopyFails').addEventListener('click', copyFailures);
+  $('btnDiag').addEventListener('click', extractDiagnostics);
   $('btnRetry').addEventListener('click', async () => {
     let n = 0;
     await mutateQ((q) => {

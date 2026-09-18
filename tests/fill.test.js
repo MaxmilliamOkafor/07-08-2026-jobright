@@ -1728,5 +1728,58 @@ eq('and the guard sits on the one path every write goes through',
   /function writeAllowed\(el, val\) \{\n    if \(isTransientSearchBox\(el\)\) return false;/.test(src), true);
 
 
+/* ── 45. the recorder is actually wired to the things it claims to see ────── */
+/* ua-diagnostics.js is tested on its own. What matters here is that the content
+   script FEEDS it — a recorder nothing reports to is worse than none, because
+   its silence reads as "no problems". */
+console.log('every outcome reaches the recorder');
+eq('the report helper exists and never throws at the caller',
+  /function DIAG\(code, reason, extra\) \{\n    try \{/.test(src), true);
+eq('it is fire-and-forget — a diagnostic must not delay what it measures',
+  /\}, \(\) => void chrome\.runtime\.lastError\);/.test(body('DIAG')), true);
+eq('and it tags every event with the ATS', /ats: \(typeof detectATS === 'function' && detectATS\(\)\) \|\| 'unknown',/.test(body('DIAG')), true);
+
+/* The single-tab runner sets a terminal status in eight different places across
+   its retry paths. Reporting from each of them is how you end up covering seven
+   and trusting a wrong number, so it reports from the one function they all
+   funnel through. */
+eq('terminal outcomes are reported from the shared save, not from each exit',
+  /async function saveQ\(\) \{ reportTerminalJobs\(\); await st\.set\(SK\.Q, queue\); \}/.test(src), true);
+const rtj = body('reportTerminalJobs');
+eq('every terminal status counts, successes included',
+  /const TERMINAL = \['done', 'failed', 'timeout', 'skipped'\];/.test(src), true);
+eq('each job is reported once, however many times the queue is saved',
+  /if \(!id \|\| _diagReported\.has\(id\)\) continue;/.test(rtj), true);
+eq('and the reason travels with it', /DIAG\('job\.' \+ j\.status, j\.error \|\| '', \{/.test(rtj), true);
+eq('the manager path reports its own outcomes too',
+  /DIAG\('job\.' \+ status, error \|\| '', \{ detail: \{ ms:/.test(src), true);
+
+/* The most useful thing it collects. */
+eq('every unanswered required question is reported, by its label',
+  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label\);/.test(src), true);
+eq('with the fill progress alongside it',
+  /DIAG\('stage\.fill', where, \{ detail: \{ done: r\.done, total: r\.total, pct: r\.pct \} \}\);/.test(src), true);
+
+/* Stages, so a failure comes with the story of how far it got. */
+const np = body('noteProgress');
+eq('each stage is recorded as the job passes through it',
+  /if \(what !== _lastDiagStage\) \{ _lastDiagStage = what; DIAG\('stage', what\); \}/.test(np), true);
+eq('but a long form calling it per field does not become a thousand rows',
+  /_lastDiagStage/.test(np), true);
+
+/* Errors, but only ours. */
+eq('a page error during a job is recorded', /DIAG\('page\.error'/.test(src), true);
+eq('and a rejected promise', /DIAG\('page\.reject'/.test(src), true);
+eq('neither fires while you are just browsing',
+  /const _diagAutomating = \(\) => \{/.test(src) && /if \(!_diagAutomating\(\)\) return;/.test(src), true);
+
+/* The bug that made the one line naming a blocking question name nothing. */
+const fr = body('fillReport');
+eq('getMissingRequired returns LABELS, and fillReport now treats them as such',
+  /const l = String\(raw == null \? '' : raw\)/.test(fr), true);
+eq('the old element-shaped read is gone',
+  /getLabel\(el\) \|\| el\.name \|\| el\.id \|\| '\(unlabelled\)'/.test(fr), false);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

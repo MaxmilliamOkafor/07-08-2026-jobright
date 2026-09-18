@@ -19,8 +19,8 @@
   },
   "version": "1.23.0",
   "author": "Jobright.ai",
-  "name": "Jobright Autofill – Instant Job Applications, Job Match, AI Tailor Resume",
-  "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes — Trusted by 500K+ job seekers",
+  "name": "Jobright Autofill \u2013 Instant Job Applications, Job Match, AI Tailor Resume",
+  "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes \u2014 Trusted by 500K+ job seekers",
   "background": {
     "service_worker": "static/background/index.js"
   },
@@ -116,7 +116,8 @@
         "ua-enhancement.js",
         "ua-queue.html",
         "ua-queue.js",
-        "ua-page-hooks.js"
+        "ua-page-hooks.js",
+        "ua-diagnostics.js"
       ]
     }
   ],
