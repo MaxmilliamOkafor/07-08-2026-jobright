@@ -2249,7 +2249,48 @@ elements, but it returns label **strings**, so every entry collapsed to
 `(unlabelled)` — the one line meant to name the blocking question had been
 naming nothing.
 
-Suite total: **1,214 assertions**, all green on Jobright 1.23.0.
+### A driver that could never have run
+
+A second, older `smartRecruitersAutomation` was sitting in this file. JavaScript
+lets a later `function f(){}` silently replace an earlier one in the same scope
+— no error, no warning — so one of the two never ran, and an edit made to the
+wrong copy would have done nothing with no way to tell why.
+
+It happened to be the dead one that was stale, so it cost nothing this time. Had
+the order been reversed, every SmartRecruiters job would have run the naive
+driver and no amount of reading the shadow-aware code would have explained it.
+Deleted, and `tests/references.test.js` now fails on any such pair — scope-aware,
+since the same helper name in two separate IIFEs is fine and deliberate.
+
+### "Cover Letter is required."
+
+Greenhouse reported this in red on a form the pass believed it had finished. A
+required cover letter is not a text box — it is an upload widget with Attach /
+Google Drive / **Enter manually** beside it, so nothing that fills textareas
+touched it and nothing that attaches the CV recognised it either.
+
+Two ways to satisfy one, in order of how much the employer will like the result:
+open the **Enter manually** box and write a letter addressed to them, or failing
+that synthesise a `.txt` and attach it — every one of these widgets lists txt
+among its accepted types. Only ever when it is **required**; an optional cover
+letter is still left alone, because a generic one nobody asked for is worse than
+none.
+
+### Dropdowns that are not comboboxes
+
+Comeet renders a Bootstrap dropdown — `a.dropdown-toggle` over
+`ul.dropdown-menu > li > a` — with no ARIA roles at all. Neither the discovery
+selector nor the option reader matched one, so every Comeet dropdown sat on its
+placeholder. Both now cover it.
+
+And some "dropdowns" are only a costume: a nice-select-style wrapper over a real
+`<select>`. Driving the costume means synthesising clicks on rows that merely
+mirror the control; the `<select>` is set directly instead, matched on option
+**text** (the answer is "5-10 years", not whatever value the page uses) and
+confirmed against the control afterwards — `setSelectValue` reports success
+unconditionally, so trusting it would claim a select it never set.
+
+Suite total: **1,236 assertions**, all green on Jobright 1.23.0.
 
 ---
 

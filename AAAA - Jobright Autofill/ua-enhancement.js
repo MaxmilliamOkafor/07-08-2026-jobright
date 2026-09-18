@@ -3009,6 +3009,100 @@
     return out.filter(Boolean);
   }
 
+  /* ── A REQUIRED COVER LETTER ───────────────────────────────────────────────
+     Greenhouse reported "Cover Letter is required." in red on a form the pass
+     believed it had finished. A required cover letter is not a text box — it is
+     an upload widget, with "Attach", "Google Drive" and "Enter manually" beside
+     it, so nothing that fills <textarea>s ever touched it and nothing that
+     attaches the CV recognised it either. The job then failed at the submit with
+     everything else correct.
+
+     Two ways to satisfy it, in order of how much the employer will like the
+     result:
+
+       1. "Enter manually" reveals a real textarea. That is the intended path and
+          gives a letter addressed to this employer.
+       2. Otherwise synthesise a .txt and attach it. Every one of these widgets
+          lists txt among its accepted types — Greenhouse's says "pdf, doc, docx,
+          txt, rtf" — and a plain-text letter beats a blocked application.
+
+     Only ever for a REQUIRED one. An optional cover letter is deliberately left
+     alone: a generic letter nobody asked for is worse than none. */
+  const COVER_UPLOAD_RE = /cover.?letter|motivation.?letter|covering.?letter|anschreiben|lettre de motivation/i;
+  const MANUAL_ENTRY_RE = /enter manually|type manually|write manually|paste|type it|enter text|write your own|compose/i;
+
+  // The block on the page that IS the cover-letter question.
+  function coverLetterBlock() {
+    const hosts = deepAll('input[type="file"],[class*="upload" i],[class*="dropzone" i],[class*="attach" i],fieldset,[class*="field" i]', 120);
+    for (const el of hosts) {
+      let scope = el;
+      for (let up = 0; up < 4 && scope; up++) {
+        const t = (scope.innerText || scope.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t && t.length < 600 && COVER_UPLOAD_RE.test(t)) return scope;
+        scope = scope.parentElement;
+      }
+    }
+    return null;
+  }
+
+  async function satisfyCoverLetter(p) {
+    const block = coverLetterBlock();
+    if (!block || !isVisible(block)) return false;
+    const text = (block.innerText || block.textContent || '').replace(/\s+/g, ' ').trim();
+
+    /* Required either because the page says so, or because it has already told
+       us so in red. The validation message is the more reliable of the two —
+       it is the ATS's own verdict, after a submit attempt. */
+    const complained = /cover.?letter\s+is\s+required|required/i.test(text);
+    let required = complained;
+    try { if (!required) required = deepQueryAll('input,textarea', block, 20).some(isFieldRequired); } catch (_) {}
+    if (!required) return false;
+
+    // Already satisfied — a filled textarea or an attached file.
+    try {
+      if (deepQueryAll('textarea', block, 10).some((t) => (t.value || '').trim().length > 40)) return false;
+      if (deepQueryAll('input[type="file"]', block, 10).some((f) => f.files && f.files.length)) return false;
+    } catch (_) {}
+
+    const letter = tailorCoverText(p.cover_letter || DEFAULTS.cover,
+      { company: pageCompanyName(), title: pageJobTitle() });
+
+    // 1. The manual-entry path, which is what a person would use.
+    const manual = deepQueryAll('button,a,[role="button"]', block, 40).filter(isVisible)
+      .find((b) => MANUAL_ENTRY_RE.test((b.textContent || b.getAttribute('aria-label') || '')));
+    if (manual) {
+      LOG('Cover letter is required — opening the manual entry box');
+      realClick(manual);
+      await sleep(700);
+      const box = deepQueryAll('textarea', block, 10).filter(isVisible)[0] ||
+        deepAll('textarea', 20).filter((t) => isVisible(t) && !(t.value || '').trim())[0];
+      if (box) {
+        box.focus({ preventScroll: true });
+        nativeSet(box, letter);
+        DIAG('cover.manual', 'Required cover letter written into the manual box');
+        return true;
+      }
+    }
+
+    // 2. A plain-text file, which every one of these widgets accepts.
+    const input = deepQueryAll('input[type="file"]', block, 10)[0];
+    if (input) {
+      try {
+        const file = new File([letter], 'cover-letter.txt', { type: 'text/plain' });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        fireAll(input, ['input', 'change']);
+        LOG('Cover letter is required — attached one as a .txt');
+        DIAG('cover.attached', 'Required cover letter attached as text/plain');
+        return true;
+      } catch (e) { LOG('Could not attach the cover letter:', e?.message || e); }
+    }
+
+    DIAG('cover.blocked', 'A required cover letter could not be satisfied');
+    return false;
+  }
+
   /* A real drag-and-drop, not just a `drop`. Uploaders that gate on dragenter /
      dragover (to set dropEffect) ignore a lone drop event. */
   function dropFileOn(target, file) {
@@ -3144,7 +3238,11 @@
   }
   function visibleOptions(scope) {
     const sel = '[role="option"],spl-select-option,oj-option,li[data-value],li[role="option"],' +
-      '[class*="option" i]:not([class*="options" i]),[class*="menu-item" i],[class*="MenuItem" i]';
+      '[class*="option" i]:not([class*="options" i]),[class*="menu-item" i],[class*="MenuItem" i],' +
+      // A Bootstrap menu — what Comeet renders — has no roles at all: the rows
+      // are plain <li><a>. Nothing above matches one, so its options were
+      // invisible and every Comeet dropdown stayed on its placeholder.
+      '.dropdown-menu li,.dropdown-menu a,ul[class*="dropdown" i] > li,ul[class*="menu" i] > li > a';
     return (scope ? deepQueryAll(sel, scope, 300) : deepAll(sel, 300))
       .filter(isVisible)
       .filter(o => { const t = comboText(o); return t && t.length < 120; });
@@ -3154,6 +3252,33 @@
   async function commitCustomDropdown(combo, wanted, required) {
     if (!combo || comboHasValue(combo)) return false;
     const want = String(wanted == null ? '' : wanted).replace(/\s+/g, ' ').trim().toLowerCase();
+
+    /* Some of these are only a costume. A "nice-select"-style wrapper hides a
+       perfectly ordinary <select> behind a styled div, and driving the costume
+       means synthesising clicks on rows that only mirror the real control.
+       Setting the <select> itself is both more reliable and less work. */
+    try {
+      const native = (combo.querySelector && combo.querySelector('select')) ||
+        (combo.parentElement && combo.parentElement.querySelector('select'));
+      if (want && native && native.options && native.options.length > 1) {
+        /* Matched on the option's TEXT, because `wanted` is display text —
+           "5-10 years", not whatever value the page happens to use for it.
+           setSelectValue reports success unconditionally, so the result is
+           confirmed against the control rather than taken on trust. */
+        const norm = (t) => String(t == null ? '' : t).replace(/\s+/g, ' ').trim().toLowerCase();
+        const opts = Array.from(native.options).filter((o) => norm(o.text) && o.value !== '');
+        const hit = opts.find((o) => norm(o.text) === want) ||
+          opts.find((o) => norm(o.value) === want) ||
+          opts.find((o) => norm(o.text).includes(want) && want.length > 2);
+        if (hit) {
+          setSelectValue(native, hit.value);
+          if (native.value === hit.value) {
+            LOG(`Dropdown was a wrapper around a real <select> — set that instead ("${hit.text.trim().slice(0, 40)}")`);
+            return true;
+          }
+        }
+      }
+    } catch (_) {}
 
     // Open it. Web components need the full pointer sequence; some open only on
     // keyboard, so fall back to ArrowDown.
@@ -3298,7 +3423,9 @@
       // Oracle ships three generations of the same control side by side, and a
       // Recruiting Cloud page mixes them. Naming only oj-select-single left the
       // rest of a form's required dropdowns empty.
-      'oj-select-single,oj-c-select-single,oj-select-one,oj-combobox-one,oj-c-combobox-one'
+      'oj-select-single,oj-c-select-single,oj-select-one,oj-combobox-one,oj-c-combobox-one,' +
+      // Bootstrap's dropdown, still the most common thing on a small ATS.
+      '[data-toggle="dropdown"],[data-bs-toggle="dropdown"],a.dropdown-toggle,button.dropdown-toggle'
     ).filter(isVisible);
     let filled = 0;
     for (const combo of combos.slice(0, 40)) {
@@ -3751,6 +3878,10 @@
       const cvState = await attachResume();
       if (cvState === 'attached') filled++;
     } catch (e) { LOG('CV attach pass error:', e?.message || e); }
+
+    // A REQUIRED cover letter is its own upload widget, not a text box, and it
+    // blocks the submit exactly like a missing CV does. See satisfyCoverLetter.
+    try { if (await satisfyCoverLetter(p)) filled++; } catch (e) { LOG('Cover letter pass error:', e?.message || e); }
 
     // Custom dropdowns (react-select / MUI / Ant / spl-select / oj-select). Native
     // <select> is handled above; these are what most modern ATS actually render,
@@ -5884,100 +6015,11 @@
     LOG('Lever automation complete');
   }
 
-  // ===================== SMARTRECRUITERS AUTOMATION =====================
-  async function smartRecruitersAutomation() {
-    LOG('SmartRecruiters automation starting...');
-    const p = await getProfile();
-    await loadAnswerBank();
-
-    // Click Apply if on job detail page
-    const applyBtn = $('button[data-test="apply-button"],a[data-test="apply-button"],.st-apply-button,button.js-apply-button,.apply-btn,a[href*="/apply"]');
-    if (applyBtn && isVisible(applyBtn) && !/\/apply/i.test(location.pathname)) {
-      LOG('Clicking SmartRecruiters Apply button');
-      realClick(applyBtn);
-      await sleep(3000);
-    }
-
-    // Wait for form
-    const form = await waitFor('form,.application-form,.apply-form,.application-step,[class*="application"]', 10000);
-    if (!form) { LOG('No SmartRecruiters form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
-
-    // SmartRecruiters multi-step flow
-    const MAX_STEPS = 8;
-    for (let step = 1; step <= MAX_STEPS; step++) {
-      if (checkSuccess()) { LOG('SmartRecruiters: success detected'); break; }
-      LOG(`SmartRecruiters: step ${step}`);
-
-      // Fill basic fields
-      const srFields = {
-        '#firstName,input[name="firstName"],input[data-test="firstName"]': p.first_name || p.firstName || '',
-        '#lastName,input[name="lastName"],input[data-test="lastName"]': p.last_name || p.lastName || '',
-        '#email,input[name="email"],input[data-test="email"]': p.email || '',
-        '#phone,input[name="phone"],input[data-test="phoneNumber"]': p.phone || '',
-        'input[name="location"],input[data-test="location"],#location': p.city ? [p.city, p.state || p.region || '', p.country || DEFAULTS.country].filter(Boolean).join(', ') : '',
-        'input[name="currentCompany"],input[data-test="currentCompany"]': p.current_company || p.company || '',
-        'input[name="currentTitle"],input[data-test="currentTitle"]': p.current_title || p.title || '',
-      };
-      for (const [sels, val] of Object.entries(srFields)) {
-        if (!val) continue;
-        for (const sel of sels.split(',')) {
-          const el = $(sel.trim());
-          if (el && !el.value?.trim()) { el.focus({ preventScroll: true }); nativeSet(el, val); await sleep(80); break; }
-        }
-      }
-
-      // Handle location autocomplete (SmartRecruiters uses Google Places-style)
-      const locInput = $('input[name="location"],input[data-test="location"],#location');
-      if (locInput && locInput.value) {
-        await sleep(800);
-        const autoComplete = $('[class*="autocomplete"] li,[class*="suggestion"] li,[role="option"],.pac-item,.location-suggestion');
-        if (autoComplete && isVisible(autoComplete)) { realClick(autoComplete); await sleep(300); }
-      }
-
-      // Fill remaining fields with fallback
-      await fallbackFill();
-      await sleep(500);
-
-      // Handle SmartRecruiters consent checkboxes
-      $$('input[type="checkbox"]').filter(el => {
-        const lbl = getLabel(el);
-        return isVisible(el) && !el.checked && /consent|agree|privacy|gdpr|terms|data.?process/i.test(lbl || '');
-      }).forEach(cb => realClick(cb));
-
-      // Handle file upload
-      await tryResumeUpload();
-
-      // Trigger Jobright autofill
-      await triggerAutofillQuick();
-      await sleep(1000);
-      await fallbackFill();
-      await handleValidationErrors();
-
-      // Next / Submit
-      const nextBtn = $('button[data-test="footer-next"],button[data-test="next-btn"],.next-step-button,button[type="submit"]');
-      const submitBtn = $('button[data-test="footer-submit"],button[data-test="submit-btn"],.submit-application-button');
-      if (submitBtn && isVisible(submitBtn)) {
-        LOG('SmartRecruiters: clicking Submit');
-        await sleep(500);
-        realClick(submitBtn);
-        await sleep(3000);
-        break;
-      }
-      if (nextBtn && isVisible(nextBtn)) {
-        LOG('SmartRecruiters: clicking Next');
-        realClick(nextBtn);
-        await sleep(2500);
-        continue;
-      }
-      // Text-based fallback
-      const txtBtn = $$('button').filter(isVisible).find(b => /^(next|continue|submit|apply)\b/i.test((b.textContent || '').trim()));
-      if (txtBtn) { realClick(txtBtn); await sleep(2500); continue; }
-      break;
-    }
-    learnFromFilledFields();
-    LOG('SmartRecruiters automation complete');
-  }
+  /* The SmartRecruiters driver lives further down, with the other
+     shadow-DOM-aware ones. A second, older copy used to sit here: JavaScript
+     lets a later function declaration in the same scope silently replace an
+     earlier one, so this one never ran and an edit made to it would have done
+     nothing at all. tests/references.test.js now fails on any such pair. */
 
   // ===================== TALEO / ORACLE AUTOMATION =====================
   async function taleoAutomation() {

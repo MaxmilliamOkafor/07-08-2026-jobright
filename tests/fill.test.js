@@ -1781,5 +1781,92 @@ eq('the old element-shaped read is gone',
   /getLabel\(el\) \|\| el\.name \|\| el\.id \|\| '\(unlabelled\)'/.test(fr), false);
 
 
+/* ── 46. a required cover letter is an upload, not a text box ─────────────── */
+/* Greenhouse reported "Cover Letter is required." in red on a form the pass
+   believed it had finished: the widget has Attach / Google Drive / Enter
+   manually beside it, so nothing that fills textareas touched it and nothing
+   that attaches the CV recognised it. */
+console.log('a required cover letter no longer blocks the submit');
+const coverFn = body('satisfyCoverLetter');
+eq('an OPTIONAL cover letter is still left alone — a generic one is worse than none',
+  /if \(!required\) return false;/.test(coverFn), true);
+eq("the ATS's own red message counts as required",
+  /cover\.\?letter\\s\+is\\s\+required\|required/.test(coverFn), true);
+eq('one already written is not overwritten',
+  /\(t\.value \|\| ''\)\.trim\(\)\.length > 40/.test(coverFn), true);
+eq('nor is one already attached',
+  /f\.files && f\.files\.length/.test(coverFn), true);
+eq('the manual box is preferred — it is the path a person would use',
+  coverFn.indexOf('MANUAL_ENTRY_RE') < coverFn.indexOf('new File('), true);
+eq('and the letter is addressed to this employer, not generic',
+  /tailorCoverText\(p\.cover_letter \|\| DEFAULTS\.cover,/.test(coverFn), true);
+eq('otherwise a plain-text file, which these widgets all accept',
+  /new File\(\[letter\], 'cover-letter\.txt', \{ type: 'text\/plain' \}\)/.test(coverFn), true);
+eq('and the outcome is recorded either way', /DIAG\('cover\.blocked'/.test(coverFn), true);
+eq('the pass runs as part of the fill, right after the CV',
+  /try \{ if \(await satisfyCoverLetter\(p\)\) filled\+\+; \}/.test(src), true);
+
+/* ── 47. dropdowns that are not comboboxes ────────────────────────────────── */
+/* Comeet renders a Bootstrap dropdown: <div class="dropdown"><a
+   class="dropdown-toggle"> over <ul class="dropdown-menu"><li><a>. It carries no
+   ARIA roles at all, so neither the discovery selector nor the option reader
+   matched one, and every Comeet dropdown sat on its placeholder. */
+console.log('Bootstrap dropdowns and costumed selects');
+const disc2 = body('fillCustomDropdowns__impl');
+for (const sel of ['[data-toggle="dropdown"]', '[data-bs-toggle="dropdown"]', 'a.dropdown-toggle'])
+  eq(`${sel} is discovered`, disc2.includes(sel), true);
+const vo = body('visibleOptions');
+eq('a Bootstrap menu\'s rows are readable as options', vo.includes('.dropdown-menu li'), true);
+eq('including the anchors inside them', vo.includes('.dropdown-menu a'), true);
+
+/* A "nice-select" wrapper is only a costume over a real <select>. */
+const cd2 = body('commitCustomDropdown');
+eq('a wrapper hiding a real select is driven through the select',
+  /combo\.parentElement\.querySelector\('select'\)/.test(cd2), true);
+eq('matched on the option TEXT, because that is what the answer is',
+  /opts\.find\(\(o\) => norm\(o\.text\) === want\)/.test(cd2), true);
+/* setSelectValue returns true unconditionally, so trusting it would report
+   success on a select it never set. */
+eq('and confirmed against the control rather than taken on trust',
+  /if \(native\.value === hit\.value\) \{/.test(cd2), true);
+eq('a wrapper with no matching option falls through to the click path',
+  cd2.indexOf('const hit = opts.find') < cd2.indexOf('triggerMouse(combo);'), true);
+
+/* ── 48. the redeclaration guard ──────────────────────────────────────────── */
+/* A second, older smartRecruitersAutomation was sitting in this file. A later
+   function declaration silently replaces an earlier one in the same scope, so
+   one of the two never ran — and an edit made to the wrong copy would have done
+   nothing, with no error to explain it. */
+console.log('no driver is shadowed by a second copy of itself');
+{
+  const lines = src.split('\n');
+  const scopes = [];
+  lines.forEach((l, i) => {
+    if (/^\(\s*(async\s+)?function\s*\(/.test(l)) scopes.push({ start: i, end: -1 });
+    if (/^\}\)\(\);?\s*$/.test(l)) {
+      for (let k = scopes.length - 1; k >= 0; k--) if (scopes[k].end < 0) { scopes[k].end = i; break; }
+    }
+  });
+  const dupes = [];
+  for (const sc of scopes) {
+    const seen = new Map();
+    for (let i = sc.start; i <= (sc.end < 0 ? lines.length - 1 : sc.end); i++) {
+      const m = lines[i].match(/^  (?:async )?function ([A-Za-z_$][\w$]*)\s*\(/);
+      if (!m) continue;
+      if (seen.has(m[1])) dupes.push(m[1]);
+      else seen.set(m[1], i + 1);
+    }
+  }
+  eq('nothing is declared twice in one scope', dupes, []);
+  // The same name in two SEPARATE IIFEs is fine and deliberate — those are
+  // different scopes and neither can see the other.
+  eq('and there really are several scopes to distinguish', scopes.length > 5, true);
+}
+eq('the dead SmartRecruiters driver is gone, the shadow-aware one remains',
+  (src.match(/async function smartRecruitersAutomation\(/g) || []).length, 1);
+eq('and it is the shadow-aware one',
+  /SmartRecruiters automation starting \(shadow-aware\)/.test(src), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

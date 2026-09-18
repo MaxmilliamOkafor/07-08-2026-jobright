@@ -71,7 +71,7 @@ NODE
 [ $? -eq 0 ] || fails=$((fails + 1))
 
 step "Undeclared-function references"
-node tests/references.test.js "$EXT/ua-enhancement.js" "$EXT/ua-queue.js" "$EXT/ua-orchestrator.js" "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
+node tests/references.test.js "$EXT/ua-enhancement.js" "$EXT/ua-queue.js" "$EXT/ua-orchestrator.js" "$EXT/ua-page-hooks.js" "$EXT/ua-diagnostics.js" || fails=$((fails + 1))
 
 step "Automation gate (Fully Automated toggle)"
 node tests/gate.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))

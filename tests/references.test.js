@@ -175,4 +175,49 @@ for (const file of process.argv.slice(2)) {
   }
 }
 
+/* ── redeclaration in the same scope ──────────────────────────────────────────
+   JavaScript lets a later `function f(){}` silently replace an earlier one in
+   the same scope. No error, no warning — the first is simply gone, and any edit
+   made to it does nothing at all.
+
+   A second, older smartRecruitersAutomation was sitting in this file doing
+   exactly that. It happened to be the dead one rather than the live one, so it
+   cost nothing this time; had the order been reversed, every SmartRecruiters
+   job would have run the naive driver and no amount of reading the shadow-aware
+   code would have explained why.
+
+   The file is a series of top-level IIFEs, and each is its own scope — the same
+   helper name appearing in two different IIFEs is fine and deliberate. Only a
+   pair inside ONE of them is a bug. */
+console.log('no function is silently replaced by a later one');
+for (const file of process.argv.slice(2)) {
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const scopes = [];
+  lines.forEach((l, i) => {
+    if (/^\(\s*(async\s+)?function\s*\(/.test(l)) scopes.push({ start: i, end: -1 });
+    if (/^\}\)\(\);?\s*$/.test(l)) {
+      for (let k = scopes.length - 1; k >= 0; k--) if (scopes[k].end < 0) { scopes[k].end = i; break; }
+    }
+  });
+  const dupes = [];
+  for (const sc of scopes) {
+    const seen = new Map();
+    const last = sc.end < 0 ? lines.length - 1 : sc.end;
+    for (let i = sc.start; i <= last; i++) {
+      const m = lines[i].match(/^  (?:async )?function ([A-Za-z_$][\w$]*)\s*\(/);
+      if (!m) continue;
+      if (seen.has(m[1])) dupes.push(`${m[1]} at line ${i + 1} replaces the one at line ${seen.get(m[1])}`);
+      else seen.set(m[1], i + 1);
+    }
+  }
+  const label = file.split('/').pop();
+  if (dupes.length) {
+    console.log(`  FAIL ${label}: ${dupes.length} function(s) redeclared in the same scope`);
+    for (const d of dupes.slice(0, 15)) console.log(`       ${label}: ${d}`);
+    fail++;
+  } else {
+    console.log(`  ok   ${label}: no function is redeclared within a single scope`);
+  }
+}
+
 process.exit(fail ? 1 : 0);
