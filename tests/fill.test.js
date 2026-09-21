@@ -2181,5 +2181,49 @@ eq('the gap between jobs still follows the selector',
   /const QUEUE_DELAYS = \{ 1: 1500, 1\.5: 1000, 2: 600, 3: 300 \};/.test(src), true);
 
 
+/* ── 56. moving to the next job cannot be vetoed by the page ──────────────── */
+/* "Leave site? Changes you made may not be saved." kept appearing after every
+   application, needing a click before the run would continue. The MAIN-world
+   shield disarms beforeunload handlers, but that is a race by construction: it
+   wraps only listeners registered after it installs, and anything that
+   re-patches addEventListener afterwards undoes it. That race was being lost. */
+console.log('the next job opens without asking the page');
+const gnj = body('goToNextJob');
+eq('the runner asks the worker to move it, rather than setting location',
+  /chrome\.runtime\.sendMessage\(\{ type: 'UA_NAV_NEXT', url \}/.test(gnj), true);
+eq('and the queue calls that instead of assigning location.href',
+  /setTimeout\(\(\) => \{ goToNextJob\(n\.url\); \}, delay\);/.test(src), true);
+eq('no bare location.href hop is left in the queue runner',
+  /setTimeout\(\(\) => \{ location\.href = n\.url; \}, delay\)/.test(src), false);
+/* A worker that is asleep, or a page outside the extension, must not strand the
+   run — the old road is still there when the reply does not come. */
+eq('a silent worker falls back rather than stranding the run',
+  /const t = setTimeout\(fallback, 1500\);/.test(gnj), true);
+eq('and the fallback runs at most once', /if \(!done\) \{ done = true;/.test(gnj), true);
+
+eq('the worker closes the old tab, which beforeunload cannot veto',
+  /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
+eq('the next job opens in a fresh tab',
+  /chrome\.tabs\.create\(\{ url, active: true, index:/.test(orch), true);
+/* The marker has to move BEFORE the old tab goes, or a watchdog tick in between
+   sees an active run with no runner tab and starts rescuing it. */
+{
+  const nav = orch.slice(orch.indexOf("msg.type === 'UA_NAV_NEXT'"), orch.indexOf("msg.type === 'UA_INJECT_FRAMES'"));
+  eq('the runner marker moves to the new tab before the old one closes',
+    nav.indexOf('ua_runner_tab: t.id') < nav.indexOf('chrome.tabs.remove(tabId'), true);
+  eq('and only an http(s) url is ever opened', nav.includes("test(url)") && nav.includes('https?:'), true);
+  eq('a tab we cannot identify is refused outright', /tabId == null/.test(nav), true);
+}
+
+/* Belt and braces: the shield now notices when it has been replaced. */
+const hooks2 = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-page-hooks.js'), 'utf8');
+eq('the hook marks itself so it can tell if it is still installed',
+  /mine\.__uaHook = true;/.test(hooks2), true);
+eq('and puts itself back when something else has taken over',
+  /if \(!EventTarget\.prototype\.addEventListener\.__uaHook \|\|/.test(hooks2), true);
+eq('checked cheaply, on an interval, not on every call',
+  /\}, 2000\);/.test(hooks2), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

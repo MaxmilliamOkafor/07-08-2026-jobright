@@ -756,6 +756,39 @@
     } catch (_) {}
   }
   async function saveQ() { reportTerminalJobs(); await st.set(SK.Q, queue); }
+
+  /* Move to the next job in a way the page cannot interrupt.
+
+     `location.href = next` is a navigation the page gets a vote on: any site
+     with a beforeunload handler answers it with "Leave site? Changes you made
+     may not be saved." and the run stops until a human clicks Leave — after
+     every single application.
+
+     The MAIN-world shield disarms those handlers, and it should be enough. But
+     it is a race by construction: it can only wrap listeners registered after
+     it installs, and anything that re-patches addEventListener afterwards — the
+     page, a framework, another extension — quietly undoes it. Having lost that
+     race in the field, the navigation itself is now done somewhere the page has
+     no say: the worker closes this tab and opens the next job in a fresh one.
+     chrome.tabs.remove() is not something beforeunload can veto.
+
+     If the worker does not answer — it can be asleep, or this can be running
+     outside the extension — fall back to the old way rather than stranding the
+     run. */
+  function goToNextJob(url) {
+    let done = false;
+    const fallback = () => { if (!done) { done = true; try { location.href = url; } catch (_) {} } };
+    // The reply is the signal; if it does not come, take the old road.
+    const t = setTimeout(fallback, 1500);
+    try {
+      chrome.runtime.sendMessage({ type: 'UA_NAV_NEXT', url }, (r) => {
+        void chrome.runtime.lastError;
+        if (r && r.ok) { done = true; clearTimeout(t); return; }   // the tab is about to close
+        clearTimeout(t);
+        fallback();
+      });
+    } catch (_) { clearTimeout(t); fallback(); }
+  }
   async function saveStats() { await st.set('ua_q_stats', qStats); }
 
   // ===================== ANSWER LEARNING SYSTEM =====================
@@ -8175,7 +8208,7 @@
         // Inter-job delay scales with speed (no hidden 3s floor unless the user
         // explicitly enabled rate limiting).
         const delay = Math.max(_rateLimitDelay || 0, QUEUE_DELAYS[qSpeed] || 1500);
-        setTimeout(() => { location.href = n.url; }, delay);
+        setTimeout(() => { goToNextJob(n.url); }, delay);
       });
     } else {
       qActive = false;

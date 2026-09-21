@@ -812,6 +812,37 @@
          with no way to see into an embedded form, so Workable embeds, iCIMS,
          SuccessFactors, Taleo and BrassRing were invisible to it and every one
          of them was written off as "not an application page". */
+      /* Go to the next job WITHOUT giving the page a chance to object.
+
+         The single-tab runner used to do `location.href = next`, and a page with
+         a beforeunload handler answers that with "Leave site? Changes you made
+         may not be saved." — a modal that stops the run dead until a human
+         clicks Leave, after every single application.
+
+         The MAIN-world shield neutralises those handlers, but it is a race: it
+         only wraps listeners registered after it installs, and anything that
+         re-patches addEventListener afterwards undoes it. Closing the tab is not
+         a race. chrome.tabs.remove() is the one navigation a beforeunload
+         handler has no say in, so the old tab is closed and the next job opens
+         in a fresh one. The queue lives in storage, so nothing is lost. */
+      if (msg.type === 'UA_NAV_NEXT') {
+        const tabId = sender && sender.tab && sender.tab.id;
+        const url = String((msg && msg.url) || '');
+        if (tabId == null || !/^https?:\/\//i.test(url)) {
+          try { sendResponse({ ok: false }); } catch (_) {}
+          return false;
+        }
+        chrome.tabs.create({ url, active: true, index: (sender.tab.index != null ? sender.tab.index + 1 : undefined) }, (t) => {
+          void chrome.runtime.lastError;
+          // The new tab is the runner now; hand the marker over before the old
+          // one goes, so no tick in between sees a run with no tab.
+          if (t && typeof t.id === 'number') set({ ua_runner_tab: t.id });
+          try { chrome.tabs.remove(tabId, () => void chrome.runtime.lastError); } catch (_) {}
+        });
+        try { sendResponse({ ok: true }); } catch (_) {}
+        return false;
+      }
+
       if (msg.type === 'UA_INJECT_FRAMES') {
         const tabId = sender && sender.tab && sender.tab.id;
         if (tabId != null) injectAllFrames(tabId);

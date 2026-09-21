@@ -2493,7 +2493,28 @@ fields that appear *because* the first pass answered something — so when the
 first pass fills nothing there is nothing to reveal, and it was pure cost, twice
 a page, eighteen pages deep.
 
-Suite total: **1,391 assertions**, all green on Jobright 1.23.0.
+### "Leave site?" after every application — stopped properly this time
+
+The MAIN-world shield disarms `beforeunload` handlers, and it should have been
+enough. It is a **race** by construction: it can only wrap listeners registered
+after it installs, and anything that reassigns
+`EventTarget.prototype.addEventListener` afterwards — the page, a framework,
+another extension — silently replaces the hook. That race was being lost in the
+field, and the prompt came back after every single application.
+
+So the navigation between jobs no longer depends on winning it. The runner used
+to do `location.href = next`, which is a navigation the page gets a vote on. It
+now asks the worker, which **closes this tab and opens the next job in a fresh
+one** — `chrome.tabs.remove()` is the one navigation `beforeunload` cannot veto.
+The queue lives in storage, so nothing is lost, and the runner marker moves to
+the new tab before the old one goes so no watchdog tick sees a run without a tab.
+If the worker does not answer within 1.5s the old road is still there, so an
+asleep worker cannot strand a run.
+
+The shield is still there for navigations a page starts on its own mid-
+application, and it now notices when it has been replaced and puts itself back.
+
+Suite total: **1,404 assertions**, all green on Jobright 1.23.0.
 
 ---
 

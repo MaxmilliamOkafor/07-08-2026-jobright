@@ -226,18 +226,48 @@
     return w;
   }
 
-  EventTarget.prototype.addEventListener = function (type, listener, options) {
-    if (type === 'beforeunload' && typeof listener === 'function') {
-      return origAdd.call(this, type, wrapBeforeUnload(listener), options);
-    }
-    return origAdd.apply(this, arguments);
-  };
-  EventTarget.prototype.removeEventListener = function (type, listener, options) {
-    if (type === 'beforeunload' && typeof listener === 'function' && wrapped.has(listener)) {
-      return origRemove.call(this, type, wrapped.get(listener), options);
-    }
-    return origRemove.apply(this, arguments);
-  };
+  function installAddListenerHook() {
+    const mine = function (type, listener, options) {
+      if (type === 'beforeunload' && typeof listener === 'function') {
+        return origAdd.call(this, type, wrapBeforeUnload(listener), options);
+      }
+      return origAdd.apply(this, arguments);
+    };
+    mine.__uaHook = true;
+    EventTarget.prototype.addEventListener = mine;
+
+    const mineOff = function (type, listener, options) {
+      if (type === 'beforeunload' && typeof listener === 'function' && wrapped.has(listener)) {
+        return origRemove.call(this, type, wrapped.get(listener), options);
+      }
+      return origRemove.apply(this, arguments);
+    };
+    mineOff.__uaHook = true;
+    EventTarget.prototype.removeEventListener = mineOff;
+  }
+  installAddListenerHook();
+
+  /* Patching a prototype is a race, and this one was being lost in the field —
+     "Leave site?" kept appearing after an application despite the wrapper. A
+     page, a framework or another extension that assigns
+     EventTarget.prototype.addEventListener AFTER us silently replaces the hook,
+     and every listener registered from then on is unwrapped.
+
+     So the hook checks it is still the one installed, and puts itself back if
+     not. Cheap — one identity comparison — and it closes the window that a
+     late patcher opens. The navigation between jobs no longer depends on this
+     at all (the worker closes the tab instead), but a page can navigate itself
+     mid-application and this is what covers that. */
+  try {
+    setInterval(() => {
+      try {
+        if (!EventTarget.prototype.addEventListener.__uaHook ||
+            !EventTarget.prototype.removeEventListener.__uaHook) {
+          installAddListenerHook();
+        }
+      } catch (_) {}
+    }, 2000);
+  } catch (_) {}
 
   /* The other way a page arms it: `window.onbeforeunload = fn`. Assigning the
      property bypasses addEventListener entirely, so it needs its own shim. */
