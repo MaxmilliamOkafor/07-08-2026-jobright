@@ -2066,5 +2066,48 @@ eq('and the rejection hook only records while one is',
   /if \(_diagAutomating\(\)\) \{\n      try \{\n        const stack =/.test(src), true);
 
 
+/* ── 54. an invisible CAPTCHA must not park the run ───────────────────────── */
+/* A 43-job run stopped dead on a Klaviyo Greenhouse embed with every field
+   still empty, showing our own banner: "reCAPTCHA detected — please solve it.
+   Automation is paused." There was nothing to solve. Greenhouse embeds carry an
+   INVISIBLE reCAPTCHA that never asks the applicant anything, and the detector
+   only looked at the element's own computed style — which is not how these are
+   hidden. */
+console.log('only a CAPTCHA a human could solve stops the run');
+const dc = body('detectCaptcha');
+eq('an off-screen challenge does not count',
+  /if \(r\.bottom < 0 \|\| r\.right < 0 \|\| r\.top > vh \|\| r\.left > vw\) continue;/.test(dc), true);
+eq('visibility is checked all the way up, not just on the iframe',
+  /for \(let node = el, up = 0; node && up < 8; node = node\.parentElement, up\+\+\)/.test(dc), true);
+eq('an ancestor with opacity 0 hides it', /Number\(cs\.opacity\) === 0/.test(dc), true);
+eq('and the branding badge is not a challenge', /grecaptcha-badge/.test(dc), true);
+eq('but a real challenge iframe still is', /!\/challenge\|expires\/\.test\(title\)/.test(dc), true);
+eq('the size floor that caught v3 token frames is still there',
+  /if \(r\.width < 60 \|\| r\.height < 50\) continue;/.test(dc), true);
+
+// Run the three gates for real, on the shapes that matter.
+{
+  const vw = 1900, vh = 900;
+  const onScreen = (r) => !(r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw);
+  eq('a challenge in the middle of the page counts',
+    onScreen({ top: 300, bottom: 600, left: 700, right: 1000 }), true);
+  eq('one parked at -10000px does not',
+    onScreen({ top: -10000, bottom: -9700, left: -10000, right: -9700 }), false);
+  eq('nor one below a very long form',
+    onScreen({ top: 4000, bottom: 4300, left: 100, right: 400 }), false);
+  eq('one straddling the bottom edge still counts',
+    onScreen({ top: 820, bottom: 1100, left: 100, right: 400 }), true);
+
+  const badge = (title) => /privacy|terms|recaptcha$/.test(title) && !/challenge|expires/.test(title);
+  eq('"reCAPTCHA" alone is the badge', badge('recaptcha'), true);
+  eq('so is the privacy/terms frame', badge('recaptcha privacy and terms'), true);
+  eq('but the challenge frame is not',
+    badge('recaptcha challenge expires in two minutes'), false);
+}
+/* The banner is ours, so it has to say the same thing the detector decided. */
+eq('the banner the run shows is this extension\'s own',
+  /detected — please solve it\. Automation is paused and resumes automatically once solved\./.test(src), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

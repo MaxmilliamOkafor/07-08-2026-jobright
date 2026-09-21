@@ -2431,7 +2431,34 @@ and cannot be acted on. Both hooks now carry the stack frame that raised the
 fault. They still only fire while a job is being driven — a recorder full of
 other sites' bugs hides ours.
 
-Suite total: **1,353 assertions**, all green on Jobright 1.23.0.
+### An invisible CAPTCHA parking the whole run
+
+A 43-job run stopped dead on a Klaviyo Greenhouse embed with every field still
+empty, showing this extension's own banner: *"reCAPTCHA detected — please solve
+it. Automation is paused."* There was nothing to solve.
+
+Greenhouse embeds — and most ATS — carry an **invisible** reCAPTCHA that never
+asks the applicant anything. `detectCaptcha` checked the element's own computed
+style and a minimum size, and that is not how these are hidden: the iframe is a
+normal size, is not itself `display:none`, and is parked far outside the viewport
+or inside a wrapper with `opacity: 0`.
+
+Three questions are asked now, and none of them was before: is it **on screen**,
+is it visible **all the way up** its ancestor chain, and is it the challenge
+rather than the branding badge. The size floor that catches v3 token frames
+stays.
+
+The diagnostics trail is what identified this: last event
+`[Greenhouse EU] opening the application`, then 86 seconds of nothing.
+
+### The problem list was drowning in breadcrumbs
+
+*"ADP WorkforceNow — 261 problems"*, of which 259 were the stage trail —
+`answering dropdowns`, `filling fields`, `attaching the CV` — burying the two
+entries worth reading. Stages are breadcrumbs, not problems; they stay in RECENT
+EVENTS where they belong.
+
+Suite total: **1,367 assertions**, all green on Jobright 1.23.0.
 
 ---
 

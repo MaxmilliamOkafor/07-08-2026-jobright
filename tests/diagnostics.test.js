@@ -128,6 +128,36 @@ function next1b() {
       /job-boards\.greenhouse\.io\s+\[Greenhouse\]\s+—/.test(text), false);
     eq('the board view is separate from the platform view',
       text.indexOf('OUTCOMES BY ATS') < text.indexOf('BOARDS WITH TROUBLE'), true);
+    next1c();
+  })();
+}
+
+/* ── a breadcrumb is not a problem ────────────────────────────────────────── */
+function next1c() {
+  const { api } = makeWorker();
+  (async () => {
+    /* A real report read "ADP WorkforceNow — 261 problems", of which 259 were
+       the stage trail: answering dropdowns, filling fields, attaching the CV.
+       The two entries worth reading were buried under them. */
+    for (const st of ['answering dropdowns', 'filling fields', 'attaching the CV']) {
+      for (let i = 0; i < 40; i++) await api.record({ ats: 'ADP', code: 'stage', reason: st, url: 'https://adp/1' });
+    }
+    await api.record({ ats: 'ADP', code: 'stage.fill', reason: 'Before submit', url: 'https://adp/1' });
+    await api.record({ ats: 'ADP', code: 'job.failed', reason: 'Verification code never arrived', url: 'https://adp/1' });
+    await api.record({ ats: 'ADP', code: 'field.unanswered', reason: 'Enter the Verification Code', url: 'https://adp/1' });
+    const text = await api.report();
+    const wrong = text.slice(text.indexOf('WHAT WENT WRONG'), text.indexOf('REQUIRED QUESTIONS'));
+    eq('the stage trail is kept out of the problem list', /stage/.test(wrong), false);
+    eq('and so the count reflects real problems', /ADP\s+—\s+2 problems/.test(wrong), true);
+    eq('the failure is still there', /Verification code never arrived/.test(wrong), true);
+    eq('and so is the unanswered question', /Enter the Verification Code/.test(wrong), true);
+    /* The trail is not thrown away — it belongs in the event log, which is a
+       capped window on the most RECENT events, so the latest stage is there and
+       the oldest has rolled off. */
+    const recent = text.slice(text.indexOf('RECENT EVENTS'));
+    eq('the trail is still recorded, in RECENT EVENTS', /attaching the CV/.test(recent), true);
+    eq('and the oldest of it has rolled out of that window',
+      /answering dropdowns/.test(recent), false);
     next2();
   })();
 }

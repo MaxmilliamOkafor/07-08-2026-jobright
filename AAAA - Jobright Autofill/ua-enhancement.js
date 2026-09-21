@@ -4327,14 +4327,49 @@
         ['iframe[src*="awswaf"],[id*="awswaf-captcha"]', 'AWS WAF'],
         ['[data-testid="challenge"],[class*="press-and-hold" i]', 'Press-and-hold challenge'],
       ];
+      /* A CAPTCHA only counts if a human could actually solve it right now.
+
+         This checked the element's OWN computed style and nothing else, and that
+         is not how these are hidden. Greenhouse — and most ATS — embed an
+         INVISIBLE reCAPTCHA that never asks the applicant anything: its iframe
+         is a normal size and is not itself display:none, it is parked off-screen
+         or inside a wrapper with opacity 0. So the run announced a CAPTCHA on a
+         perfectly ordinary form and parked, waiting for a human to solve
+         something that was never shown. That is the "randomly just stopped": a
+         Klaviyo Greenhouse embed with every field still empty.
+
+         Three things have to be true, and none of them was being asked. */
+      const vw = window.innerWidth || document.documentElement.clientWidth;
+      const vh = window.innerHeight || document.documentElement.clientHeight;
       for (const [sel, provider] of PROVIDERS) {
         // deepAll: a challenge rendered inside the application's own iframe, or in a
         // shadow root, was previously undetectable from the top document.
         for (const el of deepAll(sel, 40)) {
           const r = el.getBoundingClientRect();
           if (r.width < 60 || r.height < 50) continue; // v3 badge / hidden token frames
-          const cs = getComputedStyle(el);
-          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
+
+          // 1. On screen. An invisible reCAPTCHA is parked far outside the
+          //    viewport, which no style property reports as hidden.
+          if (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw) continue;
+
+          // 2. Visible all the way up. A wrapper with opacity:0 or
+          //    visibility:hidden hides the iframe without touching the iframe.
+          let hidden = false;
+          for (let node = el, up = 0; node && up < 8; node = node.parentElement, up++) {
+            const cs = getComputedStyle(node);
+            if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) { hidden = true; break; }
+          }
+          if (hidden) continue;
+
+          // 3. Not the badge. reCAPTCHA v3 and the invisible v2 both leave a
+          //    branding widget on the page that asks nothing of anyone.
+          try {
+            const title = (el.getAttribute('title') || '').toLowerCase();
+            if (/privacy|terms|recaptcha$/.test(title) && !/challenge|expires/.test(title)) continue;
+            if (el.className && /grecaptcha-badge/.test(String(el.className))) continue;
+            if (el.closest && el.closest('.grecaptcha-badge')) continue;
+          } catch (_) {}
+
           return { provider, el };
         }
       }
