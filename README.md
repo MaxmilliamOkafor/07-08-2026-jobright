@@ -2411,7 +2411,27 @@ filling in **by hand** in one of these tabs will no longer warn you before you
 navigate away. `confirm`, `alert` and `prompt` are *not* unconditional — those
 still behave normally while you browse.
 
-Suite total: **1,342 assertions**, all green on Jobright 1.23.0.
+### Three things the recorder found out about itself
+
+The first real export, 1,482 recorded outcomes, and its most useful section was
+**empty**. Unanswered questions were only ever captured from `logFillReport`,
+which runs when a submit is attempted — so a job that failed *before* reaching
+submit, which is most of them, contributed nothing at all. They are captured at
+the moment of failure now, in both the manager and single-tab paths, while the
+page is still there to be read. A job that succeeded is not asked what it failed
+to answer.
+
+`page.reject: A listener indicated an asynchronous response by returning true,
+but the message channel closed before a response was received` — our own bug. A
+handler called `sendResponse` and *then* returned `true`, telling Chrome to hold
+the port open for a reply that had already been sent.
+
+`page.error: script error` with nothing else is what a cross-origin script gives
+and cannot be acted on. Both hooks now carry the stack frame that raised the
+fault. They still only fire while a job is being driven — a recorder full of
+other sites' bugs hides ours.
+
+Suite total: **1,353 assertions**, all green on Jobright 1.23.0.
 
 ---
 

@@ -349,13 +349,24 @@
     window.addEventListener('error', (e) => {
       if (!_diagAutomating()) return;
       const where = e && e.filename ? String(e.filename).split('/').pop() : '';
-      DIAG('page.error', (e && e.message) || 'script error', { detail: { at: where, line: e && e.lineno } });
+      /* A bare "script error" is what a cross-origin script gives and there is
+         nothing to be done with it. The top frame of the stack is what actually
+         locates the fault, so take it when the browser provides one. */
+      let at = '';
+      try { at = ((e && e.error && e.error.stack) || '').split('\n')[1] || ''; } catch (_) {}
+      DIAG('page.error', (e && e.message) || 'script error', {
+        detail: { at: where, line: e && e.lineno, frame: at.trim().slice(0, 160) },
+      });
     }, true);
   } catch (_) {}
 
   window.addEventListener('unhandledrejection', (event) => {
     if (_diagAutomating()) {
-      try { DIAG('page.reject', event.reason?.message || String(event.reason || '')); } catch (_) {}
+      try {
+        const stack = (event.reason && event.reason.stack) || '';
+        DIAG('page.reject', event.reason?.message || String(event.reason || ''),
+          { detail: { frame: String(stack).split('\n')[1] || '' } });
+      } catch (_) {}
     }
     const msg = event.reason?.message || String(event.reason || '');
     _dbgPush('REJECT', [msg]);
@@ -394,7 +405,12 @@
         LOG('No Plasmo CSUI containers found to toggle');
       }
       sendResponse({ ok: true });
-      return true; // keep message channel open for async
+      /* false, not true. The reply has already been sent; returning true tells
+         Chrome to hold the port open for one that will never come, and the
+         sender sees "the message channel closed before a response was
+         received" — which is the rejection that kept turning up in the
+         diagnostics. */
+      return false;
     }
   });
 
@@ -4725,6 +4741,24 @@
     const done = Math.max(0, total - missing.length);
     return { total, done, missing: missing.length, missingLabels, pct: total ? Math.round(done / total * 100) : 100 };
   }
+  /* The questions that were still unanswered when a job gave up.
+
+     These were only ever recorded from logFillReport, which runs at the point a
+     submit is attempted — so a job that failed BEFORE reaching submit, which is
+     most of them, contributed nothing. The most useful section of the
+     diagnostics came out empty across 1,482 recorded outcomes.
+
+     Called at the moment of failure instead, where the answer is always
+     available and always relevant. */
+  function reportUnansweredQuestions(why) {
+    try {
+      const r = fillReport();
+      if (!r || !r.missingLabels || !r.missingLabels.length) return;
+      DIAG('stage.fill', why || 'at failure', { detail: { done: r.done, total: r.total, pct: r.pct } });
+      for (const label of r.missingLabels) DIAG('field.unanswered', label);
+    } catch (_) {}
+  }
+
   function logFillReport(where) {
     try {
       const r = fillReport();
@@ -7633,6 +7667,8 @@
       // Every outcome is recorded, not only the bad ones — a failure count means
       // nothing without the number of jobs the same ATS got through.
       DIAG('job.' + status, error || '', { detail: { ms: Date.now() - (c.startedAt || Date.now()) } });
+      // …and for the ones that did not work, what was still unanswered.
+      if (status === 'failed' || status === 'timeout') reportUnansweredQuestions('when the job failed');
       const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
       Object.assign(c, patch);
       // Fresh read-modify-write on ua_q: parallel job tabs each hold their own copy of
@@ -8043,6 +8079,8 @@
             c.error = submitFailureReason(validationStuck);
             qStats.failed++;
             LOG('Queue job: submission NOT confirmed' + (validationStuck ? ' (validation stuck)' : '') + ' — marked failed');
+            // While still on the page: which questions were left unanswered.
+            reportUnansweredQuestions('when the job failed');
             await recordApplication(c.url, c.title, 'failed', c.jobBoard, c.duration);
           }
           qStats.totalTime += c.duration;

@@ -2025,5 +2025,46 @@ eq('still instant and "nearest" — never smooth, never centred',
 }
 
 
+/* ── 53. three things the first real diagnostics export exposed ───────────── */
+console.log('what the recorder found out about the recorder');
+
+/* (a) The most useful section came out EMPTY across 1,482 recorded outcomes.
+   Unanswered questions were only ever captured from logFillReport, which runs
+   when a submit is attempted — so a job that failed before reaching submit,
+   which is most of them, contributed nothing. */
+const ruq = body('reportUnansweredQuestions');
+eq('unanswered questions are captured at the moment a job fails',
+  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label\);/.test(ruq), true);
+eq('and nothing is emitted when there is nothing to say',
+  /if \(!r \|\| !r\.missingLabels \|\| !r\.missingLabels\.length\) return;/.test(ruq), true);
+eq('the manager path captures on failure and timeout',
+  /if \(status === 'failed' \|\| status === 'timeout'\) reportUnansweredQuestions\('when the job failed'\);/.test(src), true);
+eq('and so does the single-tab path, while still on the page',
+  /LOG\('Queue job: submission NOT confirmed'[^\n]*\n            \/\/ While still on the page[^\n]*\n            reportUnansweredQuestions\('when the job failed'\);/.test(src), true);
+/* A success needs no explanation, and capturing one would bury the failures. */
+eq('a job that worked is not asked what it failed to answer',
+  /if \(status === 'failed' \|\| status === 'timeout'\)/.test(src), true);
+
+/* (b) "A listener indicated an asynchronous response by returning true, but the
+   message channel closed before a response was received" — our own bug. The
+   handler replied and THEN claimed it would reply later. */
+eq('a handler that has already replied does not also claim async',
+  /sendResponse\(\{ ok: true \}\);\n      \/\* false, not true\./.test(src), true);
+eq('it returns false', /return false;\n    \}\n  \}\);/.test(src), true);
+
+/* (c) "script error" with nothing else is unactionable — it is what a
+   cross-origin script gives. The stack frame is what locates the fault. */
+eq('a page error carries the frame that raised it',
+  src.includes("at = ((e && e.error && e.error.stack) || '').split('") && /frame: at\.trim\(\)\.slice\(0, 160\)/.test(src), true);
+eq('and so does a rejected promise',
+  /const stack = \(event\.reason && event\.reason\.stack\) \|\| '';/.test(src), true);
+/* Neither may fire while you are merely browsing: most pages throw something,
+   and a recorder full of other people's bugs hides ours. */
+eq('the page-error hook stands down when no job is being driven',
+  /window\.addEventListener\('error', \(e\) => \{\n      if \(!_diagAutomating\(\)\) return;/.test(src), true);
+eq('and the rejection hook only records while one is',
+  /if \(_diagAutomating\(\)\) \{\n      try \{\n        const stack =/.test(src), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
