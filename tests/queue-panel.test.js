@@ -166,5 +166,36 @@ console.log('failures can be read off in one go');
 }
 
 
+/* ── the diagnostics viewer ──────────────────────────────────────────────────
+   Copying and downloading silently — which is what the button did — leaves you
+   with no idea whether it worked or what is in it. Reading the report IS the
+   point: the fix list is in the text, not in the file name. */
+console.log('the diagnostics report can be read, not just exported');
+{
+  const html = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-queue.html'), 'utf8');
+  eq('there is a button for it', /id="btnDiag"/.test(html), true);
+  eq('and a dialog to show it in', /<dialog id="diagDlg">/.test(html), true);
+  eq('the text is shown, not just handed to a download',
+    /<textarea id="diagBox" readonly/.test(html), true);
+  eq('it is read-only — this is a record, not a form', /id="diagBox" readonly/.test(html), true);
+  for (const [id, what] of [['diagCopy', 'copy'], ['diagDownload', 'download'], ['diagClear', 'reset'], ['diagClose', 'close']])
+    eq(`there is a ${what} control`, html.includes(`id="${id}"`), true);
+  eq('monospace, so the outcome table lines up',
+    /#diagDlg textarea\{[^}]*ui-monospace/.test(html), true);
+  eq('and the no-values promise is stated where it is read',
+    /No field values are ever recorded/.test(html), true);
+
+  eq('the dialog opens before the report arrives, so it never looks like nothing happened',
+    /box\.value = 'Reading…';\n    try \{ \$\('diagDlg'\)\.showModal\(\);/.test(src), true);
+  eq('a worker that does not answer says so, and says what to do',
+    /Reload the extension at chrome:\/\/extensions and run a batch/.test(src), true);
+  eq('the download takes what is on screen, so it matches what was read',
+    /const text = \$\('diagBox'\)\.value \|\| '';/.test(src), true);
+  eq('the file is timestamped', /jobright-diagnostics-\$\{new Date\(\)\.toISOString\(\)/.test(src), true);
+  eq('resetting goes through the worker, which owns the record',
+    /chrome\.runtime\.sendMessage\(\{ type: 'UA_DIAG_CLEAR' \}/.test(src), true);
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

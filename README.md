@@ -2370,6 +2370,24 @@ Suite total: **1,287 assertions**, all green on Jobright 1.23.0.
 
 ---
 
+## Reading the diagnostics
+
+**Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
+report in it — read it there, **Copy all** to paste it somewhere, or **Download
+.txt** for a timestamped file. **Reset record** starts the count over, which is
+worth doing before a fresh test run: a record spanning several builds mixes
+bugs that are fixed with ones that are not and the counts stop meaning anything.
+
+To open the panel: right-click any page → **Jobright Queue Manager (side
+panel)**, or the **🗂 Queue Manager** button in Jobright's own sidebar.
+
+During a run the in-page panel also carries a one-line summary — *Most failures:
+… (n)* — and clicking that line copies the same grouped list for the current
+queue.
+
+The report is plain text, five sections, worst first. Nothing in it is a field
+value; question labels only.
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

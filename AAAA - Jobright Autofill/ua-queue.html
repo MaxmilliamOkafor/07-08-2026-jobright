@@ -71,6 +71,9 @@
   dialog textarea{width:100%;min-height:150px;resize:vertical}
   .dlg-bar{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
   .row-count{font-size:10px;color:#64748b;padding:0 14px 8px}
+  #diagDlg{max-width:min(920px,96vw)}
+  #diagDlg textarea{min-height:min(60vh,520px);font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;overflow-wrap:normal;overflow-x:auto}
+  .dlg-note{font-size:11px;color:#94a3b8;margin:0 0 9px;line-height:1.45}
 </style>
 </head>
 <body>
@@ -160,6 +163,21 @@
     <div class="dlg-bar">
       <button id="pasteCancel">Cancel</button>
       <button class="b-accent" id="pasteAdd">Add to queue</button>
+    </div>
+  </dialog>
+
+  <dialog id="diagDlg">
+    <h2>🩺 Diagnostics — every ATS this extension has seen</h2>
+    <p class="dlg-note">Outcomes and success rate per ATS, the employer boards with
+      trouble, what went wrong and how often, and every required question the
+      filler had no answer for. No field values are ever recorded — questions
+      only.</p>
+    <textarea id="diagBox" readonly spellcheck="false"></textarea>
+    <div class="dlg-bar">
+      <button id="diagClear" title="Start the record over — use this before a fresh test run">Reset record</button>
+      <button id="diagDownload">⬇ Download .txt</button>
+      <button class="b-accent" id="diagCopy">Copy all</button>
+      <button id="diagClose">Close</button>
     </div>
   </dialog>
 

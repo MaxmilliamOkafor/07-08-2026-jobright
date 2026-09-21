@@ -193,25 +193,37 @@
      ATS are working, which are not, and the exact questions it could not
      answer. Downloaded as well as copied, because a long report is past what
      most places will take on a paste. */
+  /* Show the report before doing anything with it. Copying and downloading
+     silently — which is what this did — leaves you with no idea whether it
+     worked or what is in it, and reading it is the point: the fix list is in
+     there, not in the file name. */
   function extractDiagnostics() {
+    const box = $('diagBox');
+    box.value = 'Reading…';
+    try { $('diagDlg').showModal(); } catch (_) { $('diagDlg').setAttribute('open', ''); }
     chrome.runtime.sendMessage({ type: 'UA_DIAG_REPORT' }, (r) => {
       void chrome.runtime.lastError;
-      const text = (r && r.text) || 'Diagnostics unavailable — the service worker did not answer.';
-      const done = () => log('Diagnostics copied and downloaded', 'ok');
-      try {
-        navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
-      } catch (_) { fallbackCopy(text, done); }
-      try {
-        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `jobright-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-      } catch (_) {}
+      box.value = (r && r.text) ||
+        'Diagnostics unavailable — the service worker did not answer.\n\n' +
+        'Reload the extension at chrome://extensions and run a batch, then try again.';
+      box.scrollTop = 0;
     });
+  }
+
+  function downloadDiagnostics() {
+    const text = $('diagBox').value || '';
+    if (!text.trim()) return;
+    try {
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `jobright-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      log('Diagnostics downloaded', 'ok');
+    } catch (_) { log('Could not download — select the text and copy it instead', 'err'); }
   }
 
   function copyFailures() {
@@ -541,6 +553,23 @@
   $('btnExport').addEventListener('click', exportCsv);
   $('btnCopyFails').addEventListener('click', copyFailures);
   $('btnDiag').addEventListener('click', extractDiagnostics);
+  $('diagDownload').addEventListener('click', downloadDiagnostics);
+  $('diagClose').addEventListener('click', () => { try { $('diagDlg').close(); } catch (_) { $('diagDlg').removeAttribute('open'); } });
+  $('diagCopy').addEventListener('click', () => {
+    const text = $('diagBox').value || '';
+    const ok = () => log('Diagnostics copied', 'ok');
+    try { navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok)); }
+    catch (_) { fallbackCopy(text, ok); }
+  });
+  /* Clearing is offered because a record spanning several builds mixes bugs that
+     are fixed with ones that are not, and the counts stop meaning anything. */
+  $('diagClear').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'UA_DIAG_CLEAR' }, () => {
+      void chrome.runtime.lastError;
+      $('diagBox').value = 'Record cleared. Run a batch, then open this again.';
+      log('Diagnostics record cleared', 'ok');
+    });
+  });
   $('btnRetry').addEventListener('click', async () => {
     let n = 0;
     await mutateQ((q) => {
