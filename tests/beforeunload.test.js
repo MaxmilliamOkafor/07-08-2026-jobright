@@ -31,8 +31,13 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
 function makeEnv({ automating }) {
   const listeners = new Map();
   class Ev {
-    constructor(type) { this.type = type; this.defaultPrevented = false; this.returnValue = ''; }
+    constructor(type) { this.type = type; this.defaultPrevented = false; this.returnValue = ''; this.stopped = false; }
     preventDefault() { this.defaultPrevented = true; }
+    /* The browser really does stop every later listener on the same target.
+       Without modelling that, the capture interceptor would look like it does
+       nothing here while working perfectly in Chrome. */
+    stopImmediatePropagation() { this.stopped = true; }
+    stopPropagation() {}
   }
   const EventTarget = function () {};
   EventTarget.prototype.addEventListener = function (type, fn) {
@@ -59,6 +64,9 @@ function makeEnv({ automating }) {
   win.window = win;
   const ctx = vm.createContext(win);
   vm.runInContext(src, ctx);
+  // Whatever the hooks registered for themselves at load. Anything beyond this
+  // count belongs to the page.
+  const ownListeners = (listeners.get('beforeunload') || []).length;
 
   /* Fire beforeunload exactly as the browser would, and report whether the
      prompt would appear. */
@@ -68,10 +76,11 @@ function makeEnv({ automating }) {
     for (const fn of (listeners.get('beforeunload') || []).slice()) {
       const r = fn.call(win, e);
       if (typeof r === 'string' && r) returned = r;
+      if (e.stopped) break;   // exactly what stopImmediatePropagation does
     }
     return e.defaultPrevented || (e.returnValue !== '' && e.returnValue != null) || !!returned;
   };
-  return { win, fire, listeners };
+  return { win, fire, listeners, ownListeners };
 }
 
 /* The three ways a site arms the dialog — Deloitte's ProfileEdit form uses the
@@ -82,6 +91,13 @@ const ARMERS = {
   'return a string': () => 'Changes you made may not be saved.',
   'all three at once': (e) => { e.preventDefault(); e.returnValue = 'x'; return 'x'; },
 };
+
+/* Everything registered on beforeunload minus the hooks' own capture-phase
+   interceptor, which is installed at load and is never the site's. */
+function pageListeners(env) {
+  const all = env.listeners.get('beforeunload') || [];
+  return Math.max(0, all.length - env.ownListeners);
+}
 
 console.log('while automating, no "Leave site?" prompt can be raised');
 for (const [how, handler] of Object.entries(ARMERS)) {
@@ -136,14 +152,38 @@ eq('confirm still stands down when the automation is not driving',
   /if \(automating\(\)\) \{\n      \/\/ Answering "no" to a destructive prompt/.test(src), true);
 eq('and so does alert', /if \(!automating\(\)\) return orig\.alert\.apply\(window, arguments\);/.test(src), true);
 
-console.log('the page keeps working');
+/* ── what the interceptor costs, stated rather than hidden ──────────────────
+   The capture-phase interceptor calls stopImmediatePropagation, so the page's
+   own beforeunload handler does not run at all. That is a deliberate trade and
+   it is not free: sites do real work in there — saving a draft, flushing
+   analytics, releasing a lock — and none of it happens now.
+
+   It was chosen over the wrapper-only approach because the wrapper is a race
+   (it covers only listeners registered after it installs, and anything that
+   re-patches addEventListener undoes it) and that race was being lost in the
+   field: the prompt returned after every application. A bulk run that stops
+   dead for a human click every time is worse than an ATS losing a draft it
+   would have re-created from the server anyway. */
+console.log('the page is stopped from asking, which costs it its handler');
 {
-  let ran = 0, sawEvent = null;
+  let ran = 0;
   const env = makeEnv({ automating: () => true });
-  env.win.addEventListener('beforeunload', (e) => { ran++; sawEvent = e; e.preventDefault(); });
-  env.fire();
-  eq('the site\'s own handler still runs (sites do real bookkeeping there)', ran, 1);
-  eq('it is handed an event, not undefined', sawEvent !== null && typeof sawEvent === 'object', true);
+  env.win.addEventListener('beforeunload', (e) => { ran++; e.preventDefault(); });
+  eq('no prompt is raised', env.fire(), false);
+  eq('and the page\'s handler did not run at all — the cost of that', ran, 0);
+}
+{
+  /* The wrapper is still there underneath, and still does its job: a handler
+     that DOES get to run is handed a shielded event rather than a broken one. */
+  let sawEvent = null;
+  const env = makeEnv({ automating: () => true });
+  env.win.addEventListener('beforeunload', (e) => { sawEvent = e; e.preventDefault(); });
+  // Reach past the interceptor to the wrapped listener, as a page would if the
+  // interceptor were ever absent.
+  const all = env.listeners.get('beforeunload') || [];
+  all[all.length - 1].call(env.win, { preventDefault() {}, returnValue: '' });
+  eq('a handler that runs is handed an event, not undefined',
+    sawEvent !== null && typeof sawEvent === 'object', true);
   eq('preventDefault is available to call, it just does nothing',
     typeof sawEvent.preventDefault, 'function');
   eq('and reading returnValue does not throw', sawEvent.returnValue, '');
@@ -154,7 +194,10 @@ console.log('the page keeps working');
   env.win.addEventListener('beforeunload', h);
   env.win.removeEventListener('beforeunload', h);
   eq('removeEventListener still removes the wrapped listener', env.fire(), false);
-  eq('and nothing is left registered', (env.listeners.get('beforeunload') || []).length, 0);
+  /* The hooks register one beforeunload listener of their own — the capture
+     interceptor that stops the page's handlers running at all. It is not the
+     site's and must not be counted as one left behind. */
+  eq('and nothing of the page\'s is left registered', pageListeners(env), 0);
 }
 {
   const env = makeEnv({ automating: () => true });
@@ -162,7 +205,7 @@ console.log('the page keeps working');
   env.win.onbeforeunload = h;
   eq('the onbeforeunload property reads back what was assigned', env.win.onbeforeunload, h);
   env.win.onbeforeunload = null;
-  eq('and assigning null unregisters it', (env.listeners.get('beforeunload') || []).length, 0);
+  eq('and assigning null unregisters it', pageListeners(env), 0);
 }
 {
   // Only beforeunload is touched — every other listener must pass through

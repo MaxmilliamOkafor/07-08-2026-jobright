@@ -187,6 +187,36 @@
   const origAdd = EventTarget.prototype.addEventListener;
   const origRemove = EventTarget.prototype.removeEventListener;
 
+  /* ── The interceptor that does not race ────────────────────────────────────
+     Wrapping addEventListener can only ever cover listeners registered AFTER
+     the wrapper installs, and anything that reassigns the prototype method
+     afterwards undoes it. That race was being lost: the prompt came back.
+
+     This is registered FIRST, at document_start, before any page script exists,
+     and it uses stopImmediatePropagation. For an event targeted at `window`,
+     capture-phase listeners on window run before bubble-phase ones, and
+     stopImmediatePropagation halts every listener that would have run after —
+     so the page's handlers never execute at all, whenever they were registered
+     and however the prototype has been patched since.
+
+     An earlier attempt here used a capture listener to CLEAR returnValue, and
+     that genuinely cannot work: the page's handler runs afterwards and sets it
+     again, and preventDefault() arms the dialog on its own regardless. Stopping
+     the handlers from running is a different mechanism, and it does work.
+
+     The wrapper below stays as well. Sites do real bookkeeping in beforeunload
+     — saving a draft, flushing analytics — and on the rare page where that
+     matters more than the prompt, the wrapper is what still lets the handler
+     run with its teeth pulled. */
+  try {
+    origAdd.call(window, 'beforeunload', function (e) {
+      if (!beforeUnloadSilenced()) return;
+      try { e.stopImmediatePropagation(); } catch (_) {}
+      try { e.returnValue = undefined; } catch (_) {}
+      report('beforeunload', 'Leave site? suppressed before the page could ask', true);
+    }, true);
+  } catch (_) {}
+
   function shieldEvent(e) {
     try {
       return new Proxy(e, {

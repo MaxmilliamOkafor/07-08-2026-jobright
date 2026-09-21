@@ -2514,7 +2514,48 @@ asleep worker cannot strand a run.
 The shield is still there for navigations a page starts on its own mid-
 application, and it now notices when it has been replaced and puts itself back.
 
-Suite total: **1,404 assertions**, all green on Jobright 1.23.0.
+### The interceptor that does not race
+
+Wrapping `addEventListener` was never going to hold, and tightening it three
+times did not change that. It is registered-after-me only, and any later
+reassignment of the prototype method undoes it.
+
+There is now a capture-phase listener registered at `document_start`, before any
+page script exists, that calls **`stopImmediatePropagation()`**. For an event
+targeted at `window`, capture listeners run before bubble ones, and that call
+halts every listener that would have run afterwards — so the page's handlers
+never execute, whenever they were registered and however the prototype has been
+patched since.
+
+An earlier attempt used a capture listener to *clear `returnValue`*, which
+genuinely cannot work: the page's handler runs afterwards and sets it again, and
+`preventDefault()` arms the dialog by itself regardless. Stopping the handlers
+from running is a different mechanism.
+
+**The cost, stated plainly:** the page's `beforeunload` handler no longer runs at
+all, so whatever it did — saving a draft, flushing analytics, releasing a lock —
+does not happen. A test asserts this rather than hiding it. It was chosen because
+a run that stops dead for a human click after every application is worse than an
+ATS losing a draft it would rebuild from the server.
+
+The tab swap between jobs now opens the replacement at the **outgoing tab's own
+index**, so the strip no longer jumps.
+
+### Is it faster?
+
+Per page iteration, sleep only:
+
+| | 1x | 1.5x | 2x | 3x |
+|---|---|---|---|---|
+| before | 6800ms | 6800ms | 6800ms | 6800ms |
+| after | 6800ms | 4488ms | 3060ms | **2050ms** |
+| after, when the first fill pass found nothing | 5800ms | 3828ms | 2610ms | **1750ms** |
+
+A three-page job spent **20.4s asleep at every speed setting**; at 3x it is now
+**6.2s**. The selector did nothing here before, so everything in the 1.5x/2x/3x
+columns is new.
+
+Suite total: **1,419 assertions**, all green on Jobright 1.23.0.
 
 ---
 

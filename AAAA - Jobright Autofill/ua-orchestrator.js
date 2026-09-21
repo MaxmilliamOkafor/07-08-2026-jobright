@@ -832,7 +832,11 @@
           try { sendResponse({ ok: false }); } catch (_) {}
           return false;
         }
-        chrome.tabs.create({ url, active: true, index: (sender.tab.index != null ? sender.tab.index + 1 : undefined) }, (t) => {
+        /* Same slot, not the next one. Opening at index+1 put the new tab
+           beside the old one for the instant before it closed, so the strip
+           visibly jumped on every job. Taking the outgoing tab's own index
+           means the replacement lands exactly where it was. */
+        chrome.tabs.create({ url, active: true, index: (sender.tab.index != null ? sender.tab.index : undefined) }, (t) => {
           void chrome.runtime.lastError;
           // The new tab is the runner now; hand the marker over before the old
           // one goes, so no tick in between sees a run with no tab.
