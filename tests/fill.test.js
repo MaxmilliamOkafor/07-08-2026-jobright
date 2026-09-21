@@ -1868,5 +1868,78 @@ eq('and it is the shadow-aware one',
   /SmartRecruiters automation starting \(shadow-aware\)/.test(src), true);
 
 
+/* ── 49. Workday: the account step, and getting to it at all ──────────────── */
+/* Two reports, both on Workday. An NXP job description sat with its Apply
+   button unpressed; a Ciena sign-in page had email and password filled and the
+   Sign In button never pressed, "just keeps re-autofilling". */
+console.log('Workday reaches the form, and gets through the account step');
+
+const wdFn = body('workdayAutomation');
+/* Every other driver moved onto the deep finders years ago; this one still used
+   document.querySelector, which stops at a shadow boundary. */
+eq('the Apply button is looked for across shadow roots, not just the document',
+  /deepAll\(APPLY_IDS, 20\)\.filter\(isVisible\)/.test(wdFn), true);
+eq("Workday's current automation-id is in the list", /adventureButton/.test(wdFn), true);
+eq('and the uxi element id other tenants use', /data-uxi-element-id="Apply"/.test(wdFn), true);
+/* It clicked, slept two seconds and carried on regardless — so when the click
+   did not take, everything after it ran against the job description. */
+eq('the click is confirmed by the page changing, not by a guessed delay',
+  /await waitForStepChange\(before, 12000\);/.test(wdFn), true);
+eq('and retried rather than assumed', /for \(let attempt = 0; attempt < 3 && !onApplyFlow\(\); attempt\+\+\)/.test(wdFn), true);
+eq('a failure to open is reported instead of leaving a silent dead end',
+  /DIAG\('workday\.apply-stuck'/.test(wdFn), true);
+
+/* The deadlock. The fill pass deliberately skips marketing opt-ins; the gate
+   below it demanded that EVERY visible checkbox be ticked. A page with one
+   marketing box could never satisfy its own gate — so the form was never
+   submitted, the pass ran again, refilled, and waited again, forever. */
+const wca = body('fillWorkdayCreateAccount');
+eq('the fill pass skips marketing opt-ins', /if \(!c\.checked && !isMarketingCheckbox\(c\)\) realClick\(c\)/.test(wca), true);
+eq('and the submit gate no longer demands they be ticked',
+  /const consentOK = \$\$\('input\[type=checkbox\]'\)\.filter\(isVisible\)\.every\(c => c\.checked\);/.test(wca), false);
+eq('it asks only about the boxes we are responsible for',
+  /\.filter\(c => !isMarketingCheckbox\(c\) && \(isFieldRequired\(c\) \|\| CONSENT_TEXT_RE\.test\(getLabel\(c\) \|\| ''\)\)\)/.test(wca), true);
+eq('and says so when one genuinely will not tick', /DIAG\('workday\.consent-stuck'/.test(wca), true);
+// Run the gate for real, on the shape that deadlocked.
+{
+  const boxes = [
+    { checked: true, required: true, label: 'I agree to the privacy policy' },
+    { checked: false, required: false, label: 'Send me job alerts and marketing' },
+  ];
+  const isMarketing = (c) => /marketing|job alerts|newsletter|promotions/i.test(c.label);
+  const CONSENT = /\b(consent|agree|privacy|policy|terms|acknowledg\w*)\b/i;
+  eq('the OLD gate never opens on this page', boxes.every((c) => c.checked), false);
+  const gating = boxes.filter((c) => !isMarketing(c) && (c.required || CONSENT.test(c.label)));
+  eq('the new one asks about exactly one box', gating.length, 1);
+  eq('and it is satisfied', gating.every((c) => c.checked), true);
+}
+
+/* The watcher was armed for a manager job and then declined to act on one. */
+const watch = body('startWorkdayAccountWatch');
+eq('the account watcher acts in Queue Manager mode too',
+  /if \(!autoApply && !_mgrDriving && !\(qActive && isRunnerTab\(\)\)\) return;/.test(watch), true);
+
+/* ── 50. a consent banner is a click blocker, not a nuisance ──────────────── */
+console.log('a cookie banner cannot swallow the form');
+const ck = body('dismissCookieBanner');
+eq('it is cleared before anything else is clicked',
+  /await dismissCookieBanner\(\);\n    \/\/ Reveal the application form first/.test(src), true);
+eq('Accept, not Decline — Decline opens a preferences dialog on some sites',
+  /const COOKIE_ACCEPT_RE = \/\^\(accept\|/.test(src), true);
+/* "OK" and "Continue" are everywhere. Pressing the wrong one advances the
+   application, so the button must be inside something that reads as a banner. */
+eq('the button must sit inside something that reads as a consent banner',
+  /if \(t\.length > 40 && t\.length < 4000 && COOKIE_BANNER_RE\.test\(t\)\) \{ banner = scope; break; \}/.test(ck), true);
+eq('and a button with no banner around it is left alone',
+  /if \(!banner\) continue;/.test(ck), true);
+{
+  const A = /^(accept|accept all|accept cookies|accept all cookies|allow all|allow cookies|i agree|agree|got it|ok|understood|continue|akzeptieren|alle akzeptieren|tout accepter|aceptar)$/i;
+  for (const yes of ['Accept Cookies', 'Accept All', 'I Agree', 'Alle akzeptieren'])
+    eq(`"${yes}" is an accept button`, A.test(yes), true);
+  for (const no of ['Decline', 'Reject All', 'Manage preferences', 'Submit application'])
+    eq(`"${no}" is not`, A.test(no), false);
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

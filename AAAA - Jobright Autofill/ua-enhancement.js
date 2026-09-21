@@ -5098,16 +5098,46 @@
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
     const p = await getProfile();
 
-    // Phase 1: Navigate to application form
-    let clicked = false;
-    // Strategy 1: data-automation-id Apply button
-    const applyBtnWd = $('[data-automation-id="applyButton"],[data-automation-id="jobAction-apply"]');
-    if (applyBtnWd && isVisible(applyBtnWd)) { clickEl(applyBtnWd); clicked = true; await sleep(2000); }
-    // Strategy 2: Text-based Apply button
-    if (!clicked) {
-      const allBtns = $$('a, button');
-      for (const b of allBtns) { if (/^\s*(Apply|Apply Now|Apply for Job)\s*$/i.test(b.textContent) && isVisible(b)) { clickEl(b); clicked = true; await sleep(2000); break; } }
+    /* ── Phase 1: get off the job description and into the application ───────
+       This sat on an NXP job description with the Apply button in plain sight
+       and did nothing, and there were three reasons for it, all here.
+
+       `$` and `$$` are document.querySelector(All): they stop at a shadow
+       boundary and never enter an iframe. Every other driver was moved onto the
+       deep finders; this one was not, so a tenant that renders its header in a
+       shadow root hid the Apply button completely.
+
+       The selector list was two automation-ids old. Workday's current CXS job
+       page uses adventureButton, and `data-uxi-element-id="Apply"` on others.
+
+       And a click was assumed to have worked. It fired, slept two seconds, and
+       carried on regardless — so when it did not take, everything after it ran
+       against the job description and found nothing. */
+    const APPLY_IDS = '[data-automation-id="applyButton"],[data-automation-id="jobAction-apply"],' +
+      '[data-automation-id="adventureButton"],[data-uxi-element-id="Apply"],' +
+      '[data-automation-id="applyManually"],a[href$="/apply"],a[href*="/apply/"]';
+    const onApplyFlow = () => /\/apply\b/i.test(location.pathname) || hasApplicationForm() || !!findApplyManually();
+
+    for (let attempt = 0; attempt < 3 && !onApplyFlow(); attempt++) {
+      const btn = deepAll(APPLY_IDS, 20).filter(isVisible)[0] ||
+        deepAll('a,button,[role="button"]', 300).filter(isVisible)
+          .find((b) => /^\s*(apply|apply now|apply for (this )?job|bewerben|postuler)\s*$/i.test(
+            (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()));
+      if (!btn) { await sleep(900); continue; }
+      LOG(`Workday: clicking Apply (attempt ${attempt + 1})`);
+      const before = stepSignature();
+      if (btn.tagName === 'A' && btn.target === '_blank') btn.target = '_self';
+      realClick(btn);
+      noteProgress('clicked Apply');
+      // Wait for the page to actually change rather than guessing at a delay.
+      await waitForStepChange(before, 12000);
+      await waitForApplyTarget(6000);
     }
+    if (!onApplyFlow()) {
+      LOG('Workday: the Apply button never led to the application');
+      DIAG('workday.apply-stuck', 'Apply was present but the application never opened');
+    }
+
     // Always choose "Apply Manually" on Workday's "Start Your Application" modal —
     // never "Autofill with Resume" or "Use My Last Application" — then fill ourselves.
     await waitForApplyTarget(8000);
@@ -7249,8 +7279,29 @@
 
     // Submit the CURRENT form.
     if (onCreate) {
-      const consentOK = $$('input[type=checkbox]').filter(isVisible).every(c => c.checked);
-      if (!consentOK) { LOG('Workday: waiting for consent checkbox…'); return 'working'; }
+      /* This required EVERY visible checkbox to be ticked, while the fill pass
+         above deliberately skips marketing opt-ins. A page with one marketing
+         box could therefore never satisfy its own gate: Create Account was never
+         submitted, the pass ran again, re-filled the same fields, and waited
+         again — forever. From the outside that is "it doesn't click Sign In, it
+         just keeps re-autofilling".
+
+         Only the boxes we are actually responsible for count. A marketing
+         opt-in we chose to leave alone must not hold the form hostage, and an
+         optional box is not consent. */
+      const gating = $$('input[type=checkbox]').filter(isVisible)
+        .filter(c => !isMarketingCheckbox(c) && (isFieldRequired(c) || CONSENT_TEXT_RE.test(getLabel(c) || '')));
+      const consentOK = gating.every(c => c.checked);
+      if (!consentOK) {
+        // Try once more before giving the turn up — the box may have rendered
+        // after the fill pass ran.
+        for (const c of gating) if (!c.checked) realClick(c);
+        if (!gating.every(c => c.checked)) {
+          LOG('Workday: waiting for a required consent checkbox…');
+          DIAG('workday.consent-stuck', 'A required consent box would not tick');
+          return 'working';
+        }
+      }
       if (!createBtn.disabled && createBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
@@ -7296,9 +7347,16 @@
     let busy = false;
     const iv = setInterval(async () => {
       if (busy) return;
-      // Respect the Fully Automated toggle — if it's switched OFF, pause (don't act),
-      // but keep the interval alive so flipping it back ON resumes without a reload.
-      if (!autoApply && !(qActive && isRunnerTab())) return;
+      /* Respect the Fully Automated toggle — if it's switched OFF, pause (don't
+         act), but keep the interval alive so flipping it back ON resumes without
+         a reload.
+
+         _mgrDriving belongs in here. The watcher is ARMED for a manager job
+         (see init), but this guard only knew about the toggle and the single-tab
+         runner — so in Queue Manager mode it woke every 1.5s, decided it was not
+         wanted, and did nothing at all. The account step was then never handled
+         in exactly the mode that runs 685 of them. */
+      if (!autoApply && !_mgrDriving && !(qActive && isRunnerTab())) return;
       ticks++;
       if (ticks > 160) { clearInterval(iv); LOG('Workday account watcher: stopped (timeout)'); return; } // ~240s — multi-step create→signin needs headroom
       try {
@@ -10313,6 +10371,44 @@
     return deepOne('[data-automation-id="applyManually"]') ||
       findButtonByText(/^\s*apply manually\s*$|^apply without (a )?(resume|sign)|^fill (it )?out manually|^continue manually|^enter manually/i);
   }
+  /* ── THE COOKIE BANNER ─────────────────────────────────────────────────────
+     Ciena's Workday sign-in page carried one across the top of the form. A
+     consent banner is not a nuisance to the automation, it is a click blocker:
+     these are usually fixed-position with a high z-index, and a real click on
+     anything underneath lands on the banner instead. Every step after it then
+     appears to do nothing.
+
+     Accept, not Decline, and only the banner's own button: Accept is what makes
+     it go away everywhere, whereas Decline on some implementations opens a
+     preferences dialog — a second, larger blocker. */
+  const COOKIE_BANNER_RE = /\b(cookie|cookies|consent|privacy preferences|tracking technolog)/i;
+  const COOKIE_ACCEPT_RE = /^(accept|accept all|accept cookies|accept all cookies|allow all|allow cookies|i agree|agree|got it|ok|understood|continue|akzeptieren|alle akzeptieren|tout accepter|aceptar)$/i;
+
+  async function dismissCookieBanner() {
+    try {
+      const btns = deepAll('button,a,[role="button"]', 200).filter(isVisible);
+      for (const b of btns) {
+        const label = (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+        if (!label || label.length > 30 || !COOKIE_ACCEPT_RE.test(label)) continue;
+        // It must actually be in a consent banner — "OK" and "Continue" are
+        // everywhere, and pressing the wrong one advances the application.
+        let scope = b, banner = null;
+        for (let up = 0; up < 6 && scope; up++) {
+          const t = (scope.innerText || scope.textContent || '');
+          if (t.length > 40 && t.length < 4000 && COOKIE_BANNER_RE.test(t)) { banner = scope; break; }
+          scope = scope.parentElement;
+        }
+        if (!banner) continue;
+        LOG(`Dismissing a cookie banner via "${label}" — it sits over the form`);
+        realClick(b);
+        DIAG('page.cookie-banner', label);
+        await sleep(500);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   async function clickApplyManually() {
     const am = findApplyManually();
     if (am && isVisible(am)) {
@@ -11279,6 +11375,9 @@
     // A modal left open by a previous step swallows every click that follows, so
     // clear one before doing anything else.
     await resolveBlockingDialog();
+    // A consent banner sits OVER the form and swallows the clicks aimed at it,
+    // so it has to go before anything is clicked. See dismissCookieBanner.
+    await dismissCookieBanner();
     // Reveal the application form first if we're on a listing/landing page.
     await openApplicationForm();
     // Create an account / sign in with saved credentials if the ATS requires it.

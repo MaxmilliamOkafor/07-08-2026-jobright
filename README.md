@@ -2290,7 +2290,46 @@ mirror the control; the `<select>` is set directly instead, matched on option
 confirmed against the control afterwards — `setSelectValue` reports success
 unconditionally, so trusting it would claim a select it never set.
 
-Suite total: **1,236 assertions**, all green on Jobright 1.23.0.
+### Workday: never reaching the form, then never getting past the account step
+
+Two reports, both Workday.
+
+**An NXP job description sat with its Apply button unpressed.** Three reasons,
+all in the driver's first phase. It used `$`/`$$` — `document.querySelector` —
+which stops at a shadow boundary, while every other driver had long since moved
+to the deep finders. Its selector list was two automation-ids out of date
+(Workday's current job page uses `adventureButton`). And it clicked, slept two
+seconds, and carried on regardless, so when the click did not take, everything
+after it ran against the job description. It now looks across shadow roots,
+knows the current ids, waits for the page to actually change, and retries — and
+says so when Apply leads nowhere instead of dying quietly.
+
+**A Ciena sign-in page had email and password filled and Sign In never pressed
+— "just keeps re-autofilling".** The Create Account branch deadlocked itself:
+the fill pass deliberately skips marketing opt-ins, and the submit gate below it
+demanded that *every* visible checkbox be ticked. One marketing box and the form
+could never satisfy its own gate — never submitted, pass runs again, refills,
+waits again, forever. The gate now asks only about the boxes we are responsible
+for: required ones and genuine consent.
+
+The account watcher had a second bug in the same area. It is armed for a manager
+job, but its guard only knew about the Fully Automated toggle and the single-tab
+runner — so in **Queue Manager mode** it woke every 1.5s, decided it was not
+wanted, and did nothing. The account step was never handled in exactly the mode
+that runs hundreds of jobs.
+
+### A consent banner is a click blocker
+
+Ciena's page carried a cookie banner across the top of the form. These are
+fixed-position with a high z-index, so a real click on anything underneath lands
+on the banner instead and every step afterwards appears to do nothing. It is
+dismissed before anything else is clicked — Accept rather than Decline, since
+Decline opens a preferences dialog on some implementations, which is a second
+and larger blocker. The button must sit inside something that reads as a consent
+banner, because "OK" and "Continue" are everywhere and pressing the wrong one
+submits the application.
+
+Suite total: **1,262 assertions**, all green on Jobright 1.23.0.
 
 ---
 
