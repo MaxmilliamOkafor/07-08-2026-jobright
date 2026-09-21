@@ -295,6 +295,29 @@
      Fire-and-forget by design — a diagnostic that can delay or break the thing
      it is diagnosing is worse than no diagnostic. It never records a field's
      VALUE; see the header of ua-diagnostics.js. */
+  /* Ask the service worker to run this content script in every frame of this
+     tab. A content script cannot do it itself — injecting into a cross-origin
+     frame needs chrome.scripting, which only the worker has.
+
+     It matters because several ATS put the actual application form in a
+     cross-origin iframe: Workable embeds, iCIMS, SuccessFactors, Taleo,
+     BrassRing. From the top document that form does not exist — no fields, no
+     Apply button — so the job is written off as "not an application page" and
+     skipped. The Queue Manager already asked for this when it opened a tab; the
+     single-tab runner and the Fully Automated path never did, which is why the
+     same job could be skipped in one mode and applied to in the other.
+
+     Once per document: the injection is cheap but not free, and nothing about a
+     frame list changes without a navigation. */
+  let _framesRequested = false;
+  function requestFrameInjection() {
+    if (_framesRequested) return;
+    _framesRequested = true;
+    try {
+      chrome.runtime.sendMessage({ type: 'UA_INJECT_FRAMES' }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
+
   function DIAG(code, reason, extra) {
     try {
       chrome.runtime.sendMessage({
@@ -3520,13 +3543,43 @@
 
   // True if the element is already (roughly) within the viewport, so we don't need to
   // scroll. Repeated scrollIntoView during autofill was making the page jump up/down.
+  /* This demanded the element be ENTIRELY inside the viewport. On a real form
+     that is almost never true — a tall fieldset, a control at the top edge, a
+     radio group that straddles the fold all failed it — so nearly every click
+     scrolled, a pass with twenty controls scrolled twenty times, and the passes
+     repeat. That is the "jitters, scrolls up and down super fast".
+
+     Being visible enough to click is the actual question, and a control the user
+     can see any part of is visible enough. */
   function inView(el) {
-    try { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= (window.innerHeight || document.documentElement.clientHeight); }
-    catch (_) { return true; }
+    try {
+      const r = el.getBoundingClientRect();
+      const h = window.innerHeight || document.documentElement.clientHeight;
+      if (!r.width && !r.height) return true;          // nothing to scroll to
+      // Any overlap with the viewport, plus a margin so a control just past the
+      // fold does not start a scroll of its own.
+      const MARGIN = Math.round(h * 0.25);
+      return r.bottom > -MARGIN && r.top < h + MARGIN;
+    } catch (_) { return true; }
   }
-  // Scroll only when needed, and INSTANT + 'nearest' (no smooth animation, no forced
-  // centering) so the page doesn't bounce around while filling/clicking.
-  function scrollIfNeeded(el) { try { if (el && !inView(el)) el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {} }
+
+  /* A second guard, on top of inView. Several passes run over the same form in
+     sequence, and each one walking top-to-bottom produces a sweep; back-to-back
+     sweeps are what it looks like from the outside. A click does not actually
+     need the element on screen — synthetic events carry no coordinates and
+     el.click() works off-screen — so scrolling is a courtesy, and skipping one
+     costs nothing but doing it forty times a second costs the page. */
+  let _lastScrollAt = 0;
+  const SCROLL_MIN_GAP_MS = 400;
+  function scrollIfNeeded(el) {
+    try {
+      if (!el || inView(el)) return;
+      const now = Date.now();
+      if (now - _lastScrollAt < SCROLL_MIN_GAP_MS) return;
+      _lastScrollAt = now;
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } catch (_) {}
+  }
   function clickEl(el) { if (!el) return false; scrollIfNeeded(el); realClick(el); return true; }
   // Automation should run only when Fully Automated is ON, or a bulk (CSV) run is active
   // in this runner tab. Long loops poll this so flipping the toggle OFF halts them.
@@ -6151,9 +6204,21 @@
     const p = await getProfile();
     await loadAnswerBank();
 
+    /* Workable is embedded on the employer's own careers page far more often
+       than it is visited at apply.workable.com, and the embed is a cross-origin
+       iframe. From the top document there is no form and no Apply button, so the
+       job was written off as "not an application page" and skipped. */
+    requestFrameInjection();
+
     const form = await waitFor('.application-form,form[data-ui="application-form"],form', 10000);
-    if (!form) { LOG('No Workable form found'); await directAutofillFlow(); return; }
-    await sleep(1200);
+    if (!form) {
+      // Not here — but it may be in the frame we just asked to be injected.
+      LOG('No Workable form in this document — leaving the embedded copy to fill it');
+      DIAG('workable.no-form-here', 'Form not in the top document; relying on the frame injection');
+      await directAutofillFlow();
+      return;
+    }
+    await waitForFormStable(2500);
 
     // 1) Known fields (data-ui + name + aria-label fallbacks). Fill each once.
     const wkFields = {
@@ -6169,8 +6234,10 @@
     for (const [sels, val] of Object.entries(wkFields)) {
       if (!val) continue;
       for (const sel of sels.split(',')) {
-        const el = $(sel.trim());
-        if (el && isVisible(el) && !el.value?.trim()) { el.focus({ preventScroll: true }); nativeSet(el, val); await sleep(70); break; }
+        // deepAll, not $: a Workable embed and several of its own widgets sit
+        // behind a boundary document.querySelector does not cross.
+        const el = deepAll(sel.trim(), 4).filter(isVisible)[0];
+        if (el && !(el.value || '').trim()) { el.focus({ preventScroll: true }); nativeSet(el, val); await sleep(70); break; }
       }
     }
     await fixPhoneCountryCode();
@@ -6674,33 +6741,69 @@
   // ===================== iCIMS AUTOMATION =====================
   async function icimsAutomation() {
     LOG('iCIMS automation starting...');
-    // iCIMS often has an "Apply" link that opens a new page or iframe
-    const applyBtn = $('a.iCIMS_MainLink[href*="apply"],a[title*="Apply"],a.header-apply-button,.iCIMS_ApplyLink,button.applyButton');
-    if (applyBtn && isVisible(applyBtn)) {
-      LOG('Clicking iCIMS Apply button');
-      realClick(applyBtn);
-      await sleep(4000);
-    }
-    // iCIMS can load in an iframe
-    const iframe = $('iframe[src*="icims"],iframe[name*="icims"]');
-    if (iframe) {
-      LOG('iCIMS iframe detected — content script cannot access cross-origin iframe, proceeding with main page');
-    }
-    // Wait for form fields
-    await waitFor('.iCIMS_InfoMsg_Job,.iCIMS_Forms_Region,form,.applicant-form', 8000);
-    await sleep(1500);
-    // iCIMS-specific fields (from SpeedyApply)
     const p = await getProfile();
+    await loadAnswerBank();
+
+    /* iCIMS puts the whole application in a cross-origin iframe. This driver
+       used to detect that, log that it could not reach into one, and carry on
+       against the top document — which has no form in it.
+
+       It can reach into one now. The worker injects this script into every
+       frame, and the copy that lands inside the iframe runs the fill-only path
+       there. All the top document has to do is ask, and then wait. That is the
+       difference between the form being filled and the job being written off as
+       "not an application page". */
+    requestFrameInjection();
+
+    // The Apply control. Deep, because a white-labelled iCIMS careers site wraps
+    // the posting in the employer's own components.
+    const applyBtn = deepAll('a.iCIMS_MainLink[href*="apply" i],a[title*="Apply" i],a.header-apply-button,' +
+      '.iCIMS_ApplyLink,button.applyButton,a[href*="/apply" i],#quickApply,[id*="applyButton" i]', 20)
+      .filter(isVisible)[0] || findApplyButton();
+    if (applyBtn && !/\/(apply|login|register)\b/i.test(location.pathname)) {
+      LOG('Clicking iCIMS Apply');
+      const before = stepSignature();
+      if (applyBtn.tagName === 'A' && applyBtn.target === '_blank') applyBtn.target = '_self';
+      realClick(applyBtn);
+      noteProgress('clicked Apply');
+      await waitForStepChange(before, 12000);
+      requestFrameInjection();          // a new document means new frames
+    }
+
+    /* The account wall. iCIMS parks a posting at /jobs/<id>/login and will not
+       show the form until there is an account — that is what "iCIMS requires
+       signup" is. handleAccountAuth owns the email-first / create-vs-sign-in
+       decision and the per-employer bookkeeping, so it is the same code every
+       other walled ATS uses rather than a second copy here. */
+    if (looksLikeAuthPage() || /\/(login|register|createaccount)\b/i.test(location.pathname)) {
+      LOG('iCIMS account wall — handing over to the shared account handler');
+      await handleAccountAuth();
+      await waitForFormStable(4000);
+    }
+
+    await waitFor('.iCIMS_InfoMsg_Job,.iCIMS_Forms_Region,form,.applicant-form', 8000);
+    await waitForFormStable(3000);
+
+    // iCIMS's own field ids, where the top document can see them. When the form
+    // is in the iframe these find nothing and the injected copy does the work.
     const icimsFields = {
-      '#PersonProfileFields\\.Login': p.email || '',
-      '#PersonProfileFields\\.LastName': p.last_name || p.lastName || '',
-      '#PersonProfileFields\\.Email': p.email || '',
+      'input[id="PersonProfileFields.Login"],input[name="PersonProfileFields.Login"]': p.email || '',
+      'input[id="PersonProfileFields.Email"],input[name="PersonProfileFields.Email"]': p.email || '',
+      'input[id="PersonProfileFields.FirstName"]': p.first_name || p.firstName || '',
+      'input[id="PersonProfileFields.LastName"]': p.last_name || p.lastName || '',
+      'input[id="PersonProfileFields.Phone"]': p.phone || '',
     };
     for (const [sel, val] of Object.entries(icimsFields)) {
-      try { const el = $(sel); if (el && !el.value && val) nativeSet(el, val); } catch (_) { }
+      if (!val) continue;
+      try {
+        const el = deepAll(sel, 4).filter(isVisible)[0];
+        if (el && !(el.value || '').trim()) { el.focus({ preventScroll: true }); nativeSet(el, val); }
+      } catch (_) {}
     }
+
     await fixPhoneCountryCode();
     await tailorFirstFlow();
+    learnFromFilledFields();
   }
 
   // ===================== LINKEDIN EASY APPLY =====================
@@ -11375,6 +11478,10 @@
     // A modal left open by a previous step swallows every click that follows, so
     // clear one before doing anything else.
     await resolveBlockingDialog();
+    // Several ATS put the form in a CROSS-ORIGIN iframe this document cannot see
+    // into. Only the worker can reach those. See requestFrameInjection.
+    requestFrameInjection();
+    await resolveBlockingDialog();
     // A consent banner sits OVER the form and swallows the clicks aimed at it,
     // so it has to go before anything is clicked. See dismissCookieBanner.
     await dismissCookieBanner();
@@ -11407,7 +11514,7 @@
     else if (isTaleo() || platform === 'Taleo') await taleoAutomation();
     else if (isAdpMyJobs()) await adpMyJobsAutomation();
     else if (/jobvite\.com/i.test(url)) await jobviteAutomation();
-    else if (/workable\.com/i.test(url)) await workableAutomation();
+    else if (/workable\.com/i.test(url) || platform === 'Workable') await workableAutomation();
     else if (/indeed\.com/i.test(url)) await indeedEasyApply();
     else if (/breezy\.hr|breezyhr\.com/i.test(url)) await breezyhrAutomation();
     else if (/ats\.rippling\.com/i.test(url)) await ripplingAutomation();
@@ -11509,6 +11616,11 @@
     // where we click "Apply" to reveal the form). Skipping was the #1 reason the
     // CSV queue "did nothing" on many sites.
     const runnerActive = qActive && isRunnerTab();
+    /* Reach the cross-origin frames before anything looks for a form. The Queue
+       Manager asks for this when it opens a tab; the single-tab runner and the
+       Fully Automated path never did, so an embedded Workable/iCIMS form was
+       invisible to them. See requestFrameInjection. */
+    if (runnerActive || autoApply) requestFrameInjection();
     // Manager mode: this tab was opened by the Queue Manager for a specific job.
     // Ask the service worker by tab id first (authoritative, redirect-proof); fall
     // back to the legacy window.name / URL-matching path only if it can't answer.

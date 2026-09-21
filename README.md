@@ -2329,7 +2329,44 @@ and larger blocker. The button must sit inside something that reads as a consent
 banner, because "OK" and "Continue" are everywhere and pressing the wrong one
 submits the application.
 
-Suite total: **1,262 assertions**, all green on Jobright 1.23.0.
+### Workable and iCIMS: the form was in a frame nothing could see
+
+Both were reported skipping, and both are named in the orchestrator's own
+comment as ATS that put the application in a **cross-origin iframe**. The worker
+could already inject this script into those frames — `injectAllFrames` has been
+there all along. Only the Queue Manager ever asked it to.
+
+So the same job could be applied to in one mode and skipped in the other. The
+single-tab runner and the Fully Automated path now ask too, via a
+`UA_INJECT_FRAMES` message the worker answers for the sender's own tab, once per
+document.
+
+The iCIMS driver had literally detected the iframe, logged that it could not
+reach into one, and carried on against a top document with no form in it. It now
+asks for the frames, asks again after Apply navigates (new document, new
+frames), and hands its account wall — the `/jobs/<id>/login` route, which is what
+"iCIMS requires signup" means — to the shared handler rather than a second copy
+of that logic.
+
+Workable was routed by **host only**, so a board white-labelled onto an
+employer's domain fell through to the generic path while Workday, Greenhouse and
+the rest accepted the DOM fingerprint. Its fields were also read with
+`document.querySelector`, which does not cross a boundary.
+
+### "Autofill jitters, scrolls up and down super fast"
+
+`inView` demanded that a control be **entirely** inside the viewport. On a real
+form that is almost never true — a tall fieldset, a control at the top edge, a
+radio group straddling the fold all failed it — so nearly every click scrolled,
+a pass with twenty controls scrolled twenty times, and the passes repeat.
+
+Being visible enough to click is the actual question, so any overlap with the
+viewport now counts, plus a 25% margin. On top of that, scrolls are rate-limited
+to one per 400ms: a click does not need the element on screen (synthetic events
+carry no coordinates and `el.click()` works off-screen), so scrolling is a
+courtesy — skipping one costs nothing, doing forty a second costs the page.
+
+Suite total: **1,287 assertions**, all green on Jobright 1.23.0.
 
 ---
 

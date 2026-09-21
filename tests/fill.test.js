@@ -1941,5 +1941,76 @@ eq('and a button with no banner around it is left alone',
 }
 
 
+/* ── 51. the form is often in a frame this document cannot see ────────────── */
+/* "workable struggles and just skips aswell, so does icims" — and both are
+   named in the orchestrator's own comment as ATS that put the application in a
+   CROSS-ORIGIN iframe. The worker could already inject into those frames. Only
+   the Queue Manager ever asked it to. */
+console.log('every mode can reach an embedded form, not just the Queue Manager');
+eq('the worker answers a request to reach into a tab\'s frames',
+  /if \(msg\.type === 'UA_INJECT_FRAMES'\) \{/.test(orch), true);
+eq('and it injects into the SENDER\'s tab, not one it was told about',
+  /const tabId = sender && sender\.tab && sender\.tab\.id;\n        if \(tabId != null\) injectAllFrames\(tabId\);/.test(orch), true);
+const rfi = body('requestFrameInjection');
+eq('the content script asks once per document, not per pass',
+  /if \(_framesRequested\) return;\n    _framesRequested = true;/.test(rfi), true);
+eq('the single-tab runner asks',
+  /if \(runnerActive \|\| autoApply\) requestFrameInjection\(\);/.test(src), true);
+eq('and so does every Fully Automated dispatch',
+  /requestFrameInjection\(\);\n    await resolveBlockingDialog\(\);/.test(src), true);
+
+const ic = body('icimsAutomation');
+eq('iCIMS no longer announces that it is giving up on the iframe',
+  /content script cannot access cross-origin iframe/.test(src), false);
+eq('it asks for the frames instead', /requestFrameInjection\(\);/.test(ic), true);
+eq('and asks again after Apply navigates, because those are new frames',
+  (ic.match(/requestFrameInjection\(\);/g) || []).length >= 2, true);
+eq('its account wall goes through the shared handler, not a second copy',
+  /await handleAccountAuth\(\);/.test(ic), true);
+eq('and the wall is recognised from the route iCIMS parks postings at',
+  /\\\/\(login\|register\|createaccount\)\\b/.test(ic), true);
+
+const wk = body('workableAutomation');
+eq('Workable asks for the frames too', /requestFrameInjection\(\);/.test(wk), true);
+eq('and says so rather than failing silently when the form is elsewhere',
+  /DIAG\('workable\.no-form-here'/.test(wk), true);
+eq('its fields are found across boundaries, not with document.querySelector',
+  /const el = deepAll\(sel\.trim\(\), 4\)\.filter\(isVisible\)\[0\];/.test(wk), true);
+/* Workable is white-labelled onto employer domains constantly, and the route
+   only consulted the host — so a fingerprinted Workable board fell through to
+   the generic path while Workday, Greenhouse and the rest got their drivers. */
+eq('a fingerprinted Workable board reaches its own driver',
+  /platform === 'Workable'\) await workableAutomation\(\)/.test(src), true);
+
+/* ── 52. the autofill must not shake the page ─────────────────────────────── */
+/* "autofill jitters scroll up/down super fast". */
+console.log('filling a form does not shake it');
+const iv2 = body('inView');
+/* The old test demanded the element be ENTIRELY inside the viewport, which on a
+   real form is almost never true — so nearly every click scrolled. */
+eq('any part of a control being visible is enough', /r\.bottom > -MARGIN && r\.top < h \+ MARGIN/.test(iv2), true);
+eq('with a margin, so a control just past the fold does not start a scroll',
+  /const MARGIN = Math\.round\(h \* 0\.25\);/.test(iv2), true);
+const sc = body('scrollIfNeeded');
+eq('and scrolls are rate-limited on top of that',
+  /if \(now - _lastScrollAt < SCROLL_MIN_GAP_MS\) return;/.test(sc), true);
+eq('still instant and "nearest" — never smooth, never centred',
+  /el\.scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/.test(sc), true);
+// The arithmetic, on a 900px viewport.
+{
+  const h = 900, MARGIN = Math.round(h * 0.25);
+  const vis = (top, bottom) => bottom > -MARGIN && top < h + MARGIN;
+  eq('a control in the middle needs no scroll', vis(400, 440), true);
+  eq('one straddling the fold needs no scroll', vis(870, 930), true);
+  eq('one just below it needs no scroll either', vis(950, 990), true);
+  eq('one far below does', vis(2000, 2040), false);
+  eq('one scrolled far above does', vis(-900, -860), false);
+  // The old rule, for contrast: it would have scrolled for three of those five.
+  const old = (top, bottom) => top >= 0 && bottom <= h;
+  eq('the old rule scrolled for a control straddling the fold', old(870, 930), false);
+  eq('and for one just below it', old(950, 990), false);
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

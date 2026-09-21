@@ -806,6 +806,19 @@
          lever.co to smartrecruiters.com, so the runner marker was wiped at the
          first cross-site hop. The service worker's view of a tab id is not
          affected by any of that. */
+      /* "Reach into my frames too." Only the worker can do this — a content
+         script cannot inject into a cross-origin frame — and until now only the
+         Queue Manager ever asked. The single-tab runner drove the same job URLs
+         with no way to see into an embedded form, so Workable embeds, iCIMS,
+         SuccessFactors, Taleo and BrassRing were invisible to it and every one
+         of them was written off as "not an application page". */
+      if (msg.type === 'UA_INJECT_FRAMES') {
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (tabId != null) injectAllFrames(tabId);
+        try { sendResponse({ ok: tabId != null }); } catch (_) {}
+        return false;
+      }
+
       if (msg.type === 'UA_WHICH_TAB') {
         const tabId = sender && sender.tab && sender.tab.id;
         sendResponse({ tabId: tabId == null ? null : tabId });
