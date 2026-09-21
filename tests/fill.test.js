@@ -1748,8 +1748,21 @@ eq('terminal outcomes are reported from the shared save, not from each exit',
 const rtj = body('reportTerminalJobs');
 eq('every terminal status counts, successes included',
   /const TERMINAL = \['done', 'failed', 'timeout', 'skipped'\];/.test(src), true);
-eq('each job is reported once, however many times the queue is saved',
-  /if \(!id \|\| _diagReported\.has\(id\)\) continue;/.test(rtj), true);
+/* The mark has to OUTLIVE the document. A Set in this module lasted exactly one
+   page: every navigation started an empty one, so every finished job was
+   reported again on the next page, and the next. A 64-job queue reported 265. */
+eq('the "already reported" mark is stored on the job, so it survives a navigation',
+  /if \(j\.diagged\) continue;\n        j\.diagged = true;/.test(rtj), true);
+eq('and it is not a per-document Set any more', /_diagReported/.test(src), false);
+/* Re-reporting also poisoned the ATS column: an old job re-described from
+   whatever page happened to be open got stamped with THAT page's platform, which
+   filed jobs.workable.com and jobs.smartrecruiters.com under Greenhouse. */
+eq('a job is described only by what the queue knows about it',
+  /ats: j\.jobBoard \|\| 'unknown',/.test(rtj), true);
+eq('never by the page that happens to be loaded', /detectATS\(\)/.test(rtj), false);
+// A retry is a genuinely new outcome and must be counted again.
+eq('retrying a failed job clears the mark',
+  /delete j\.diagged;          \/\/ a retry is a new outcome/.test(src), true);
 eq('and the reason travels with it', /DIAG\('job\.' \+ j\.status, j\.error \|\| '', \{/.test(rtj), true);
 eq('the manager path reports its own outcomes too',
   /DIAG\('job\.' \+ status, error \|\| '', \{ detail: \{ ms:/.test(src), true);

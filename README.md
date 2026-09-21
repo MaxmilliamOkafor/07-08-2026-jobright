@@ -2366,7 +2366,52 @@ to one per 400ms: a click does not need the element on screen (synthetic events
 carry no coordinates and `el.click()` works off-screen), so scrolling is a
 courtesy — skipping one costs nothing, doing forty a second costs the page.
 
-Suite total: **1,287 assertions**, all green on Jobright 1.23.0.
+### `nativeSet is not defined` — the recorder's first real catch
+
+The first diagnostics export covered 265 jobs and named one failure above every
+other, on every single board: **`nativeSet is not defined`**.
+
+`nativeSet` is the setter every driver writes fields through. Six weeks ago a
+commit renamed this file's copy to `nativeSetLegacyUnused` and added the
+replacement — to a **different IIFE**, past the end of the scope its hundred
+callers live in. Every one of those calls threw `ReferenceError`, every throw was
+swallowed by the `try/catch` around its pass, and the field was silently left
+empty. That is a large share of every "filled nothing and skipped" since.
+
+`tests/references.test.js` had checked that called names were declared, but
+file-wide — it saw a declaration and a call and was satisfied. It is scope-aware
+now: each top-level IIFE is checked against its own declarations plus the module
+level. That immediately found two more of the same thing (`extractJDCompany`
+called from the main scope but declared in a later one, and `nativeSet` needed by
+the STAR-answers scope once the shared copy moved). `stripLiterals` also had to
+start preserving newlines, or every line number it reported pointed at the wrong
+code.
+
+### The count was wrong, and so were the ATS labels
+
+265 jobs from a 64-job queue. The "already reported" mark was a `Set` in the
+content script, which lasts exactly one document: every navigation started an
+empty one, so every finished job was reported again on the next page, and the
+next. The mark lives on the job record now, which is saved with the queue — and
+is cleared on retry, because a retry is a genuinely new outcome.
+
+The same bug poisoned the ATS column. Re-describing an old job from whatever page
+happened to be open stamped it with *that* page's platform, which is how
+`jobs.workable.com` and `jobs.smartrecruiters.com` were both filed under
+Greenhouse. A job is now described only by what the queue knows about it.
+
+### "Leave site?" is off, unconditionally
+
+It was gated on the automation flag, so it kept returning in the gaps — before a
+job claims the tab, after the run hands it back, on a tab the queue skipped. Each
+one a frozen page waiting for a human to click Leave.
+
+The gate is now a constant. The cost is real and worth stating: a form you were
+filling in **by hand** in one of these tabs will no longer warn you before you
+navigate away. `confirm`, `alert` and `prompt` are *not* unconditional — those
+still behave normally while you browse.
+
+Suite total: **1,342 assertions**, all green on Jobright 1.23.0.
 
 ---
 

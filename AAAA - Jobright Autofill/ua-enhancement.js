@@ -712,17 +712,27 @@
      that set a terminal status, because those are scattered across the retry
      paths and a diagnostic that covers seven of eight exits is the kind that
      makes you trust a wrong number. New exits are covered automatically. */
-  const _diagReported = new Set();
   const TERMINAL = ['done', 'failed', 'timeout', 'skipped'];
   function reportTerminalJobs() {
     try {
       for (const j of queue) {
         if (!j || !TERMINAL.includes(j.status)) continue;
-        const id = j.id || j.url;
-        if (!id || _diagReported.has(id)) continue;
-        _diagReported.add(id);
+        /* The mark lives ON THE JOB, which is saved to storage with the queue.
+
+           It was a Set in this module, and a module lasts exactly as long as one
+           document: every navigation started a fresh, empty one, so every job
+           that had already finished was reported again on the next page — and
+           the next, and the next. A 64-job queue came out as 265.
+
+           It also poisoned the ATS column. Re-reporting an old job from whatever
+           page happened to be open stamped it with THAT page's ATS, which is how
+           jobs.workable.com and jobs.smartrecruiters.com both ended up filed
+           under Greenhouse. A job is now only ever described by what the queue
+           itself knows about it. */
+        if (j.diagged) continue;
+        j.diagged = true;
         DIAG('job.' + j.status, j.error || '', {
-          ats: j.jobBoard || (typeof detectATS === 'function' && detectATS()) || 'unknown',
+          ats: j.jobBoard || 'unknown',
           url: j.url,
           detail: j.duration ? { ms: j.duration } : undefined,
         });
@@ -2736,31 +2746,52 @@
     }
   }
 
-  function nativeSetLegacyUnused(el, val) {
-    if (el.disabled || el.readOnly) return false;
+  /* THE field setter. Every driver writes through this.
+
+     It spent six weeks declared in the WRONG IIFE. An earlier change renamed
+     this copy to nativeSetLegacyUnused and put the replacement further down the
+     file, past the end of this scope — so the hundred calls in here were all to
+     an undeclared name. Each one threw ReferenceError, each throw was swallowed
+     by the try/catch around its pass, and the field was simply left empty. That
+     is a large share of "filled nothing and skipped".
+
+     The run recorder found it in a single batch: "nativeSet is not defined",
+     ten jobs. references.test.js is now scope-aware so a declaration in one
+     IIFE can never again satisfy a call in another. */
+  function nativeSet(el, val) {
+    if (!el || el.disabled || el.readOnly) return false;
+    // On Workday, plain .value assignment leaves fields "unregistered" (validation
+    // fails, Continue/Create stays disabled). Use real-typing there so React commits.
+    if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+        el.type !== 'checkbox' && el.type !== 'radio' &&
+        typeof isWorkday === 'function' && isWorkday()) {
+      return reactTypeValue(el, String(val));
+    }
     try {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype :
         el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) { setter.call(el, ''); setter.call(el, val); } else el.value = val;
-    } catch (_) { el.value = val; }
-    el.dispatchEvent(new Event('focus', { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    const reactEvt = new Event('input', { bubbles: true, composed: true });
-    Object.defineProperty(reactEvt, 'simulated', { value: true });
-    el.dispatchEvent(reactEvt);
+    } catch (_) { try { el.value = val; } catch (__) { return false; } }
+    // Composed, and repeated on the shadow host chain — otherwise the component
+    // that owns this input never learns the value and re-renders it empty.
+    fireOnHostChain(el, ['focus', 'input', 'change']);
+    // React's synthetic-event bridge wants its own marked input event.
+    try {
+      const reactEvt = new Event('input', { bubbles: true, composed: true });
+      Object.defineProperty(reactEvt, 'simulated', { value: true });
+      el.dispatchEvent(reactEvt);
+    } catch (_) {}
     if (el.type === 'tel' || /phone|mobile|cell/i.test(el.name || el.id || '')) {
       for (const ch of String(val)) {
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true, composed: true }));
-        el.dispatchEvent(new KeyboardEvent('keypress', { key: ch, bubbles: true, composed: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true, composed: true }));
+        for (const t of ['keydown', 'keypress', 'keyup']) {
+          try { el.dispatchEvent(new KeyboardEvent(t, { key: ch, bubbles: true, composed: true })); } catch (_) {}
+        }
       }
     }
-    el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
-    if (el.getAttribute('ng-model') || el.getAttribute('[(ngModel)]') || el.getAttribute('formControlName')) {
-      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    fireOnHostChain(el, ['blur']);
+    if (el.getAttribute && (el.getAttribute('ng-model') || el.getAttribute('[(ngModel)]') || el.getAttribute('formControlName'))) {
+      fireAll(el, ['input', 'change']);
     }
     return true;
   }
@@ -8093,7 +8124,7 @@
     if (qStoppedAt < 0 || qStoppedAt >= queue.length) return false;
     // Reset jobs from stoppedAt onwards to pending
     for (let i = qStoppedAt; i < queue.length; i++) {
-      if (queue[i].status === 'applying' || queue[i].status === 'timeout') queue[i].status = 'pending';
+      if (queue[i].status === 'applying' || queue[i].status === 'timeout') { queue[i].status = 'pending'; delete queue[i].diagged; }
     }
     qActive = true; qPaused = false;
     markRunnerTab();
@@ -8453,6 +8484,7 @@
       j.error = null;
       j.startedAt = null;
       j.completedAt = null;
+      delete j.diagged;          // a retry is a new outcome; it must be counted again
       j.duration = null;
       count++;
     }
@@ -10968,6 +11000,23 @@
     return acted;
   }
 
+  /* The employer's name off the page. A copy of this lives in a later IIFE too,
+     which is where it used to be declared — and the main scope called it from
+     there, which is not a thing JavaScript allows. Small and pure, so a copy is
+     the honest fix; sharing it would mean a module boundary this file does not
+     have. */
+  function extractJDCompany() {
+    const sels = ['[data-automation-id*="companyName"]', '[data-testid*="company"]',
+      '[class*="company-name"]', '[class*="CompanyName"]'];
+    for (const sel of sels) {
+      const el = deepOne(sel);
+      const t = el && (el.textContent || '').trim();
+      if (t) return t.slice(0, 80);
+    }
+    const meta = document.querySelector('meta[property="og:site_name"]');
+    return (meta && meta.content) ? meta.content.slice(0, 80) : '';
+  }
+
   /* Tell the MAIN-world hooks whether the automation currently owns this tab.
      While this is off, native dialogs behave exactly as the site intended.
 
@@ -12279,6 +12328,26 @@ Result: Shipped my first production change in week three and my notes doc became
       answer: `I bring a rare combination of deep technical skills, a track record of shipping on time, and the communication ability to align stakeholders. I will ramp up quickly, own my work end-to-end, and raise the bar for the team around me.` },
   ];
 
+  /* A local setter for this scope. The shared one lives in the main IIFE with
+     its hundred callers, and nothing here can see it. */
+  function nativeSet(el, val) {
+    if (!el || el.disabled || el.readOnly) return false;
+    try {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (setter) { setter.call(el, ''); setter.call(el, val); } else el.value = val;
+    } catch (_) { try { el.value = val; } catch (__) { return false; } }
+    for (const t of ['focus', 'input', 'change', 'blur']) {
+      try { el.dispatchEvent(new Event(t, { bubbles: true, composed: true })); } catch (_) {}
+    }
+    try {
+      const reactEvt = new Event('input', { bubbles: true, composed: true });
+      Object.defineProperty(reactEvt, 'simulated', { value: true });
+      el.dispatchEvent(reactEvt);
+    } catch (_) {}
+    return true;
+  }
+
   function textareaLooksEmpty(el) {
     if (!el || el.disabled || el.readOnly) return false;
     return !el.value || !el.value.trim() || el.value.trim().length < 10;
@@ -12295,43 +12364,6 @@ Result: Shipped my first production change in week three and my notes doc became
     return (parent?.textContent || '').trim();
   }
 
-  function nativeSet(el, val) {
-    if (!el || el.disabled || el.readOnly) return false;
-    // On Workday, plain .value assignment leaves fields "unregistered" (validation
-    // fails, Continue/Create stays disabled). Use real-typing there so React commits.
-    if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
-        el.type !== 'checkbox' && el.type !== 'radio' &&
-        typeof isWorkday === 'function' && isWorkday()) {
-      return reactTypeValue(el, String(val));
-    }
-    try {
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype :
-        el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      if (setter) { setter.call(el, ''); setter.call(el, val); } else el.value = val;
-    } catch (_) { try { el.value = val; } catch (__) { return false; } }
-    // Composed, and repeated on the shadow host chain — otherwise the component
-    // that owns this input never learns the value and re-renders it empty.
-    fireOnHostChain(el, ['focus', 'input', 'change']);
-    // React's synthetic-event bridge wants its own marked input event.
-    try {
-      const reactEvt = new Event('input', { bubbles: true, composed: true });
-      Object.defineProperty(reactEvt, 'simulated', { value: true });
-      el.dispatchEvent(reactEvt);
-    } catch (_) {}
-    if (el.type === 'tel' || /phone|mobile|cell/i.test(el.name || el.id || '')) {
-      for (const ch of String(val)) {
-        for (const t of ['keydown', 'keypress', 'keyup']) {
-          try { el.dispatchEvent(new KeyboardEvent(t, { key: ch, bubbles: true, composed: true })); } catch (_) {}
-        }
-      }
-    }
-    fireOnHostChain(el, ['blur']);
-    if (el.getAttribute && (el.getAttribute('ng-model') || el.getAttribute('[(ngModel)]') || el.getAttribute('formControlName'))) {
-      fireAll(el, ['input', 'change']);
-    }
-    return true;
-  }
 
   function scanAndAnswer() {
     const textareas = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));

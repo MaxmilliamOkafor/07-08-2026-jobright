@@ -573,7 +573,8 @@
   $('btnRetry').addEventListener('click', async () => {
     let n = 0;
     await mutateQ((q) => {
-      for (const j of q) if (j.status === 'failed' || j.status === 'timeout') { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; n++; }
+      // delete j.diagged: a retried job is a new outcome and must be counted again.
+      for (const j of q) if (j.status === 'failed' || j.status === 'timeout') { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; delete j.diagged; n++; }
     });
     log(n ? `${n} failed job${n === 1 ? '' : 's'} back to pending` : 'No failed jobs', n ? 'ok' : '');
     if (n && running) cmd('kick');
@@ -628,7 +629,7 @@
       const id = btn.dataset.retry;
       await mutateQ((q) => {
         const j = q.find((x) => x.id === id);
-        if (j) { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; }
+        if (j) { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; delete j.diagged; }
       });
       if (running) cmd('kick');
     }

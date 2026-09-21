@@ -10,16 +10,21 @@ const fs = require('fs');
 /* Strip comments and string/template/regex literals so their contents can't look
    like code. Deliberately conservative: when in doubt, keep the text (a false
    "declared" is harmless; a false "missing" would be noise). */
+/* Newlines are preserved through everything this removes. Without that, a file
+   with block comments and multi-line template literals comes out shorter than it
+   went in, and every line number reported against it points at the wrong code —
+   which is exactly what happened the first time this was made scope-aware. */
 function stripLiterals(src) {
   let out = '';
   let i = 0;
   const n = src.length;
+  const keepLines = (from, to) => { for (let k = from; k < to && k < n; k++) if (src[k] === '\n') out += '\n'; };
   while (i < n) {
     const c = src[i], d = src[i + 1];
     if (c === '/' && d === '/') { while (i < n && src[i] !== '\n') i++; continue; }
-    if (c === '/' && d === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
+    if (c === '/' && d === '*') { const s0 = i; i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; keepLines(s0, i); continue; }
     if (c === '"' || c === "'" || c === '`') {
-      const q = c; i++;
+      const q = c; const qStart = i; i++;
       while (i < n) {
         if (src[i] === '\\') { i += 2; continue; }
         if (src[i] === q) { i++; break; }
@@ -37,6 +42,7 @@ function stripLiterals(src) {
         i++;
       }
       out += ' ';
+      keepLines(qStart, i);
       continue;
     }
     // Regex literal: only when a regex can legally start here — after an operator,
@@ -108,9 +114,12 @@ function declaredNames(src) {
   add(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*[,;\n]/, 1);                // plain bindings
   add(/([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?(?:function\b|\()/, 1);          // object-literal methods
   add(/\bclass\s+([A-Za-z_$][\w$]*)/, 1);
-  // destructuring: const { a, b } = ... / const [a, b] = ...
+  /* Destructuring: const { a, b } = … / const [a, b] = … and the for-of form,
+     `for (const [name, fn] of steps)`, which binds exactly the same way. Missing
+     the for-of case made every such binding look like an undeclared function the
+     moment one of them was called. */
   let m;
-  const dre = /\b(?:const|let|var)\s*[{[]([^}\]]{0,300})[}\]]\s*=/g;
+  const dre = /\b(?:const|let|var)\s*[{[]([^}\]]{0,300})[}\]]\s*(?:=|\bof\b|\bin\b)/g;
   while ((m = dre.exec(src))) {
     for (const part of m[1].split(',')) {
       const name = part.split(':').pop().split('=')[0].replace(/[.\s]/g, '');
@@ -154,24 +163,65 @@ function calledNames(src) {
   return calls;
 }
 
+/* The top-level IIFEs, which are what "scope" means in these files. A helper
+   declared in one of them is invisible to the others, so checking the whole file
+   at once answers the wrong question — and it answered it wrongly for six weeks.
+
+   nativeSet, the setter every driver writes fields through, was renamed in one
+   IIFE and its replacement added to a DIFFERENT one. A hundred calls in the main
+   scope were to an undeclared name; every one threw ReferenceError, every throw
+   was swallowed by the try/catch around its pass, and the field was left empty.
+   A file-wide check saw a declaration and a call and was satisfied. */
+function scopesOf(raw) {
+  const lines = raw.split('\n');
+  const spans = [];
+  lines.forEach((l, i) => {
+    if (/^\(\s*(async\s+)?function\s*\(/.test(l)) spans.push({ start: i, end: -1 });
+    if (/^\}\)\(\);?\s*$/.test(l)) {
+      for (let k = spans.length - 1; k >= 0; k--) if (spans[k].end < 0) { spans[k].end = i; break; }
+    }
+  });
+  for (const sp of spans) if (sp.end < 0) sp.end = lines.length - 1;
+  // Anything outside every IIFE is module-level and visible to all of them.
+  const inAny = (i) => spans.some((sp) => i >= sp.start && i <= sp.end);
+  const outer = lines.filter((_, i) => !inAny(i)).join('\n');
+  return { lines, spans, outer };
+}
+
 let fail = 0;
 for (const file of process.argv.slice(2)) {
   const raw = fs.readFileSync(file, 'utf8');
   const src = stripLiterals(raw);
-  const declared = declaredNames(src);
-  const calls = calledNames(src);
+  /* Spans come from the RAW text: stripLiterals rewrites string bodies and does
+     not promise to preserve line count, so slicing the stripped copy by raw line
+     numbers pointed at the wrong code. Slice raw, strip each piece. */
+  const { lines, spans, outer } = scopesOf(raw);
+  const outerDeclared = declaredNames(stripLiterals(outer));
   const missing = [];
-  for (const [name, line] of calls) {
-    if (declared.has(name) || GLOBALS.has(name)) continue;
-    missing.push({ name, line });
+  const seen = new Set();
+  let totalCalls = 0, totalDecls = outerDeclared.size;
+  // Each IIFE is checked against ITS OWN declarations plus the module level.
+  for (const sp of spans) {
+    const body = stripLiterals(lines.slice(sp.start, sp.end + 1).join('\n'));
+    const declared = declaredNames(body);
+    totalDecls += declared.size;
+    const calls = calledNames(body);
+    totalCalls += calls.size;
+    for (const [name, line] of calls) {
+      if (declared.has(name) || outerDeclared.has(name) || GLOBALS.has(name)) continue;
+      const key = name + '@' + sp.start;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      missing.push({ name, line: sp.start + line, scope: sp.start + 1 });
+    }
   }
   const label = file.split('/').pop();
   if (missing.length) {
-    console.log(`  FAIL ${label}: ${missing.length} call(s) to undeclared function(s)`);
-    for (const x of missing.slice(0, 25)) console.log(`       ${label}:${x.line}  ${x.name}(...)`);
+    console.log(`  FAIL ${label}: ${missing.length} call(s) to a name not declared in that scope`);
+    for (const x of missing.slice(0, 25)) console.log(`       ${label}:${x.line}  ${x.name}(...)  [IIFE starting line ${x.scope}]`);
     fail++;
   } else {
-    console.log(`  ok   ${label}: every called function is declared (${calls.size} distinct calls, ${declared.size} declarations)`);
+    console.log(`  ok   ${label}: every call resolves within its own scope (${totalCalls} distinct calls, ${totalDecls} declarations across ${spans.length} scope(s))`);
   }
 }
 
