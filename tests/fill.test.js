@@ -547,6 +547,8 @@ const shapeStart = src.indexOf('  const COVER_FIELD_RE =');
 const shapeEnd = src.indexOf('\n  function guessFieldValue(');
 if (shapeStart < 0 || shapeEnd < 0) throw new Error('answer-shape block not found');
 const shapeCtx = { company: '', title: '', required: false };
+const shippedYears = (src.match(/\n\s*years:\s*'(\d+)'/) || [])[1];
+if (!shippedYears) throw new Error('DEFAULTS.years not found');
 new Function('exports', `
   const getFullQuestionText = () => '';
   const getLabel = () => '';
@@ -556,6 +558,9 @@ new Function('exports', `
   const extractJDTitle = () => exports.title;
   const isFieldRequired = () => exports.required;
   const location = { hostname: 'boards.greenhouse.io', pathname: '/', search: '' };
+  // The REAL shipped default, read out of the file — so changing it in the
+  // extension changes what these assertions are checking against.
+  const DEFAULTS = { years: ${JSON.stringify(shippedYears)} };
 ${src.slice(shapeStart, shapeEnd)}
   Object.assign(exports, { refineAnswerForControl, looksLikeYesNoQuestion, isFreeTextControl,
     tailorCoverText, todayForField, pageCompanyName, COVER_FIELD_RE });
@@ -579,9 +584,26 @@ eq('the same range is left alone for a dropdown, where it is a real option',
   refine('5-8', 'How many years of SaMD/Digital health experience do you have?', dropdown), '5-8');
 eq('a number box gets the number out of a wordy answer',
   refine('about 8 years', 'Years of experience', numberBox), '8');
-eq('and is left empty rather than given prose it cannot parse',
-  refine('about eight', 'Years of experience', numberBox), '');
 eq('a salary box is untouched', refine('45000', 'What are your base salary expectations for this role?', numberBox), '45000');
+
+/* Zero years is a knockout, and one reached a live Comeet application:
+   "How many years of hands-on experience do you have with Linux system
+   administration and troubleshooting?" was submitted as 0. Every route to an
+   unusable number now lands on the real figure instead. */
+const LINUX_Q = 'How many years of hands-on experience do you have with Linux system administration and troubleshooting?';
+for (const [val, why] of [
+  ['0', 'a saved zero'],
+  ['00', 'a padded zero'],
+  ['0 years', 'zero with a unit'],
+  ['', 'nothing resolved at all'],
+  ['about eight', 'prose a number box cannot parse'],
+]) eq(`${why} never reaches a years box`, refine(val, LINUX_Q, numberBox), shippedYears);
+eq('and the same holds in a free-text years box', refine('0', LINUX_Q, textBox), shippedYears);
+eq(`the figure it falls back to is the shipped default (${shippedYears})`, shippedYears, '7');
+eq('a real answer of zero to something that is NOT a years question is kept',
+  refine('0', 'How many dependents do you have?', numberBox), '0');
+eq("the candidate's own profile figure beats the default",
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '11' }, numberBox), '11');
 
 // A Yes/No where a value belongs.
 eq('"Yes" is not the name of an employee',
@@ -1230,14 +1252,68 @@ eq('a 3s pause at 1x is unchanged', scaledFn(3000, 60, sp(1)), 3000);
    300ms, and several passes call it two or three times each. Anything expensive
    in there is multiplied by a dozen open job tabs. */
 console.log('the deep walk stays out of the hot loop');
+/* This is where an allow-list of tag names lived for three versions, and it
+   broke SmartRecruiters completely: the list named LEAF components (spl-input,
+   spl-select) but those sit inside WRAPPER custom elements, and a wrapper not on
+   the list was never descended into — so every field beneath it was invisible.
+
+   The assertion that used to sit here checked that the allow-list was being
+   used. It asserted the MECHANISM, so it passed happily while the extension
+   found zero fields on every SmartRecruiters job. What follows asserts the
+   PROPERTY instead: any shadow host is reachable, whatever it is called. */
 const dq = body('deepQueryAll');
-eq('shadow hosts are NOT found by enumerating every element in the document',
-  /querySelectorAll\('\*'\)/.test(dq), false);
-eq('they are found by naming the tags that actually host them',
-  /querySelectorAll\(SHADOW_HOST_SEL\)/.test(dq), true);
-const hostSel = src.match(/const SHADOW_HOST_SEL = \[([\s\S]*?)\]\.join/)[1];
-for (const tag of ['spl-input', 'oj-select-single', 'mat-select', 'sl-select', 'ion-select', 'vaadin-combo-box', 'plasmo-csui'])
-  eq(`${tag} is still reachable through its shadow root`, hostSel.includes(tag), true);
+eq('the descent goes through the cached host finder', /shadowHostsIn\(node\)/.test(dq), true);
+const finder = body('shadowHostsIn');
+eq('which enumerates completely rather than guessing tag names',
+  /node\.querySelectorAll\('\*'\)/.test(finder), true);
+eq('and keeps our own UI out of it', /!isOwnUi\(el\)/.test(finder), true);
+eq('the cost is paid by a cache, not by an incomplete list',
+  /if \(hit && now - hit\.at < HOST_CACHE_TTL\) return hit\.hosts;/.test(finder), true);
+eq('the cache is short-lived, so a newly mounted field is picked up quickly',
+  /const HOST_CACHE_TTL = 400;/.test(src), true);
+eq('no allow-list of tag names survives', /SHADOW_HOST_SEL/.test(src), false);
+
+/* The test that would have caught it. A wrapper custom element nobody has heard
+   of, with the real field inside ITS shadow root — exactly SmartRecruiters'
+   shape, and exactly what a named list cannot cover. */
+{
+  const ctx = {};
+  new Function('exports', `
+    const isOwnUi = () => false;
+    const _hostCache = new WeakMap();
+    const HOST_CACHE_TTL = 400;
+    ${body('shadowHostsIn')}
+    ${body('deepQueryAll')}
+    exports.deepQueryAll = deepQueryAll;
+  `)(ctx);
+
+  // A minimal DOM: nodes with querySelectorAll, an optional shadowRoot, and a tag.
+  const mk = (tag, kids = [], shadow = null) => {
+    const el = { tagName: tag.toUpperCase(), children: kids, shadowRoot: shadow };
+    el.querySelectorAll = (sel) => {
+      const out = [];
+      const walk = (n) => {
+        for (const c of n.children || []) {
+          const tags = sel.split(',').map((t) => t.trim().toLowerCase());
+          if (sel === '*' || tags.includes((c.tagName || '').toLowerCase())) out.push(c);
+          walk(c);                       // light DOM only — shadow is crossed by the caller
+        }
+      };
+      walk(el);
+      return out;
+    };
+    return el;
+  };
+  const field = mk('spl-input');
+  // The wrapper is a custom element with a name no allow-list would contain.
+  const innerRoot = mk('#shadow-root', [field]);
+  const wrapper = mk('sr-question-block', [], innerRoot);
+  const doc = mk('#document', [wrapper]);
+
+  const found = ctx.deepQueryAll('spl-input', doc, 50);
+  eq('a field inside an UNKNOWN wrapper\'s shadow root is still found', found.length, 1);
+  eq('and it is the right element', found[0] === field, true);
+}
 
 eq('the fingerprint is memoised', /if \(now - _sigAt < SIG_TTL_MS\) return _sigCache;/.test(src), true);
 eq('the cache is short enough to see a real step change on the next poll',
@@ -1307,6 +1383,688 @@ eq('4 in a batch → 300ms each (1.2s total)', per(4, 800), 300);
 eq('12 in a batch → 100ms each (1.2s total)', per(12, 800), 100);
 eq('the total ramp is bounded however large the batch', per(12, 800) * 12 <= 1300, true);
 eq('and never drops below a floor that would burst a single site', per(40, 800), 60);
+
+/* ── 39. a fuzzy match must not answer a knockout question ────────────────── */
+/* The saved-response bank is matched on 40% keyword overlap, and it answers
+   BEFORE any of the knockout reasoning runs. That is how a stray "No" landed on
+   "Do you have hands-on experience with Linux patch and package management?" —
+   an automatic rejection, decided by an unrelated saved entry that happened to
+   share some nouns. The guard runs for real here. */
+console.log('a saved Yes/No cannot lose a knockout');
+const koCtx = {};
+/* Every top-level regex constant, lifted verbatim. Listing them by hand meant
+   the harness broke each time the logic under test reached for one more. */
+const reLines = (src.match(/^  const [A-Z][A-Z0-9_]*_RE = \/.*\/[a-z]*;$/gm) || []).join('\n  ');
+if (!/ELIGIBILITY_WORD_RE/.test(reLines)) throw new Error('regex constants not found');
+new Function('exports', `
+  const LOG = () => {};
+  ${body('safeKnockoutAnswer')}
+  ${body('determineYesNo')}
+  ${body('workAuthorisationAnswer')}
+  ${body('workAuthOptionIndex')}
+  ${reLines}
+  exports.safe = safeKnockoutAnswer;
+  exports.decide = determineYesNo;
+`)(koCtx);
+const safe = (saved, q) => koCtx.safe(saved, q.toLowerCase());
+
+// The exact question off the user's Comeet screenshot.
+for (const q of [
+  'do you have hands-on experience with linux patch and package management?',
+  'do you have experience with backup and recovery operations in linux environments?',
+  'do you have hands-on experience with bash and/or python scripting and automation?',
+]) {
+  eq(`"${q.slice(0, 46)}…" is answered yes`, koCtx.decide(q), 'yes');
+  eq('and a saved "No" is refused', safe('No', q), '');
+  eq('while a saved "Yes" agrees and is kept', safe('Yes', q), 'Yes');
+}
+
+// The one that cost a real application: the recruiter was told the candidate
+// could not work in Belgium.
+eq('a saved "No" cannot answer a right-to-work question',
+  safe('No', 'Are you legally authorized to work in this country?'), '');
+
+// The guard is narrow on purpose — it must not touch anything else.
+eq('a saved "No" to a sponsorship question is the RIGHT answer and survives',
+  safe('No', 'Will you now or in the future require visa sponsorship?'), 'No');
+eq('a saved "No" to a question that is not a knockout is left alone',
+  safe('No', 'Did you hear about us from a current employee?'), 'No');
+eq('a written answer is never second-guessed',
+  safe('2 weeks', 'What is your notice period?'), '2 weeks');
+eq('a salary is never second-guessed', safe('85000', 'Desired salary'), '85000');
+eq('nothing saved stays nothing saved', safe('', 'Do you have hands-on experience with Go?'), '');
+
+eq('the radio path goes through the guard',
+  /const savedAnswer = savedAnswerFor\(questionText\);/.test(src), true);
+eq('and so does the fuzzy half of the text path',
+  /safeKnockoutAnswer\(findSavedResponseMatch\(questionText\), questionText\)/.test(src), true);
+/* An answer the user typed against THIS question is not a fuzzy match, and
+   their word is final — the guard must not touch it. */
+eq('an exact learned answer is left to stand',
+  /\|\| getLearnedAnswer\(label, el, true\) \|\| guessValue\(label, p\) \|\|/.test(src), true);
+
+/* ── 40. nothing may pause a run waiting for a human ──────────────────────── */
+/* "Leave site? Changes you made may not be saved." froze a 685-job run on
+   Oracle Cloud. Two things had to be true and neither was: the shield must
+   still be up when the dialog fires, and if it ever gets through anyway the
+   worker must take the tab away rather than let the queue sit. */
+console.log('a native dialog cannot stop the run');
+const hooks = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-page-hooks.js'), 'utf8');
+eq('the shield outlasts the job it was raised for',
+  /const until = Number\(root\.getAttribute\('data-ua-grace'\) \|\| 0\);/.test(hooks), true);
+eq('and it is a window, not a permanent hand-back',
+  /return until > 0 && Date\.now\(\) < until;/.test(hooks), true);
+eq('clearing the flag starts that window rather than taking effect at once',
+  /el\.setAttribute\('data-ua-grace', String\(Date\.now\(\) \+ AUTO_FLAG_GRACE_MS\)\);/.test(src), true);
+eq('turning it back on cancels the window',
+  /el\.setAttribute\('data-ua-auto', '1'\);\n        el\.removeAttribute\('data-ua-grace'\);/.test(src), true);
+eq('the window only has to outlast a navigation, so it is short',
+  /const AUTO_FLAG_GRACE_MS = 20000;/.test(src), true);
+// The page still gets its dialogs back — the whole point of the window ending.
+const shieldUp = (auto, grace, now) => auto === '1' || (Number(grace || 0) > 0 && now < Number(grace || 0));
+eq('during a job: shielded', shieldUp('1', 0, 1000), true);
+eq('just after a job, mid-navigation: still shielded', shieldUp(null, 21000, 5000), true);
+eq('once the window passes: the site gets its warning back', shieldUp(null, 21000, 22000), false);
+eq('a page the automation never touched is never shielded', shieldUp(null, null, 5000), false);
+
+eq('the worker pings the runner tab it cannot otherwise see into',
+  /chrome\.tabs\.sendMessage\(tabId, \{ type: 'UA_RUNNER_PING' \}/.test(orch), true);
+eq('a frozen tab answers nothing, so the timeout is the answer',
+  /setTimeout\(\(\) => finish\(false\), 4000\);/.test(orch), true);
+eq('the content script can always answer it — synchronously, with no work',
+  /if \(msg && msg\.type === 'UA_RUNNER_PING'\) \{\n      try \{ sendResponse\(\{ alive: true \}\);/.test(src), true);
+eq('silence is only acted on after it has gone on long enough',
+  /if \(Date\.now\(\) - since < RUNNER_FROZEN_MS\) return;/.test(orch), true);
+eq('and that window is three missed pings, not one',
+  /const RUNNER_FROZEN_MS = 45 \* 1000;/.test(orch), true);
+/* remove() is the one navigation a beforeunload handler cannot veto. reload and
+   update both re-raise the prompt we are stuck behind, so they are not options. */
+eq('the stuck tab is closed, not reloaded',
+  /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
+eq('and the run carries on in a fresh tab on the same job',
+  /chrome\.tabs\.create\(\{ url, active: true \}/.test(orch), true);
+eq('which is handed the runner marker so it resumes rather than idles',
+  /if \(t && typeof t\.id === 'number'\) set\(\{ ua_runner_tab: t\.id \}\);/.test(orch), true);
+eq('with nothing left to resume it does not churn tabs',
+  /if \(!current \|\| !current\.url\) \{ await set\(\{ \[RUNNER_SILENT_KEY\]: 0 \}\); return; \}/.test(orch), true);
+eq('a runner tab that no longer exists is not given the silence window at all',
+  /if \(!gone\) \{\n      const since = \(await get\(RUNNER_SILENT_KEY\)\) \|\| 0;/.test(orch), true);
+eq('and closing it says so rather than being reported as silence',
+  /gone\n      \? 'Runner tab was closed — reopening so the run continues'/.test(orch), true);
+eq('the watch survives a service-worker restart',
+  /if \(\(await get\(K\.OLD_RUNNER\)\) === true\) armRunnerWatch\(\);/.test(orch), true);
+eq('a manager job tab held by the same dialog is not given the full nav grace',
+  /!\(_tabStatus\[j\.id\] === 'complete' && silent\)\) continue;/.test(orch), true);
+
+
+/* ── 41. Oracle's required dropdowns must actually take a value ───────────── */
+/* A Recruiting Cloud application came back with "This info is required." under
+   Ethnicity, Gender and the disability question, on a form the pass believed it
+   had answered. Two causes: the option was matched on a bare substring, and the
+   pick was committed by a synthetic click a JET component ignores. */
+console.log('custom dropdowns commit for real');
+const combo = body('commitCustomDropdown');
+eq('whole-word matching, not substring',
+  combo.includes("new RegExp('\\\\b' + w.replace"), true);
+eq('filler words cannot decide a match', /const STOP = \/\^\(the\|and\|for\|you/.test(combo), true);
+eq('the option sharing the most words wins, not the first one touched',
+  /if \(n > best\) \{ best = n; if \(n\) pick = o; \}/.test(combo), true);
+/* The bug this replaced: "I do not have a disability" picked whichever option
+   contained the letters n-o-t. Run the two matchers against the real option
+   list off the screenshot. */
+{
+  const OPTS = ['Affects your mobility', 'Affects your muscles, joints, bones',
+    'Is because of Covid/Long Covid', 'Not applicable', 'Prefer not to answer'];
+  const WANT = 'i do not have a disability';
+  const oldWords = WANT.split(/\s+/).filter((w) => w.length > 2);
+  const oldPick = OPTS.find((o) => oldWords.some((w) => o.toLowerCase().includes(w)));
+  eq('the old matcher answered a disability question with "Not applicable"', oldPick, 'Not applicable');
+  const STOP = /^(the|and|for|you|your|have|has|with|that|this|are|not|any|all|its|from|out|our|their|does|did|was|were|will|would|can|able)$/;
+  const words = WANT.split(/[^a-z0-9]+/i).filter((w) => w.length > 2 && !STOP.test(w));
+  eq('"not" and "have" no longer get a vote', words.join(','), 'disability');
+  let best = -1, pick = null;
+  for (const o of OPTS) {
+    const n = words.filter((w) => new RegExp('\\b' + w + '\\b').test(o.toLowerCase())).length;
+    if (n > best) { best = n; if (n) pick = o; }
+  }
+  eq('and with nothing genuinely matching it declines rather than guessing', pick, null);
+}
+eq('a demographic question with no match still declines rather than inventing',
+  /pick = real\.find\(o => \/prefer not\|decline\|do not wish\|not to say\/i\.test\(comboText\(o\)\)\);/.test(combo), true);
+
+eq('a click that did not take is followed by the keyboard',
+  /if \(!comboHasValue\(combo\)\) \{ await commitByKeyboard\(combo, pick\); \}/.test(combo), true);
+const kb = body('commitByKeyboard');
+eq('which walks the list by the row the component itself is tracking',
+  /aria-activedescendant/.test(kb), true);
+eq('and commits with Enter, the way the component expects',
+  /key\('Enter', 'Enter'\);/.test(kb), true);
+eq('the walk is bounded — an unnavigable list is not a loop',
+  /for \(let i = 0; i < 40 && active\(\) !== wantId; i\+\+\)/.test(kb), true);
+eq('and it gives up rather than pressing Enter on the wrong row',
+  /if \(active\(\) !== wantId\) return false;/.test(kb), true);
+eq('its key events cross the shadow boundary like every other one',
+  /composed: true/.test(kb), true);
+
+const disc = body('fillCustomDropdowns__impl');
+for (const tag of ['oj-select-single', 'oj-c-select-single', 'oj-select-one', 'oj-combobox-one'])
+  eq(`${tag} is discovered`, disc.includes(tag), true);
+
+
+/* ── 42. the two answers that went out wrong on one Greenhouse form ───────── */
+/* job-boards.greenhouse.io/materiom/jobs/5225191007 submitted:
+     "How many years of professional experience…?"  → "Less than 1 year"
+     "Will you require visa sponsorship…?"          → "Yes"
+   Both are knockouts, and both were self-inflicted. */
+console.log('a years dropdown and a sponsorship question, off one real form');
+
+/* The exact option list a Greenhouse years dropdown offers. The scorer is run
+   for real — this is not a check that some code exists. */
+{
+  const score = new Function('return ' + body('scoreExperienceRange').replace(/^\s*function\s+/, 'function '))();
+  const OPTS = ['Less than 1 year', '1-2 years', '3-5 years', '5-10 years', '10+ years'];
+  const bestFor = (yrs) => {
+    let best = 0, pick = null;
+    for (const o of OPTS) { const v = score(o, yrs); if (v > best) { best = v; pick = o; } }
+    return pick || OPTS[OPTS.length - 1];
+  };
+  eq('7 years picks the band that contains it', bestFor(7), '5-10 years');
+  eq('12 years reaches the open-ended top band', bestFor(12), '10+ years');
+  eq('3 years picks its own band, not a higher one', bestFor(3), '3-5 years');
+  eq('the worst option is never what 7 years scores to', bestFor(7) === 'Less than 1 year', false);
+  // The old behaviour, for the record: nothing matched "7", so required fell to real[0].
+  eq('and real[0] — what used to be picked — is the worst answer on the list',
+    OPTS[0], 'Less than 1 year');
+  // An unscoreable list must fail upward, not downward.
+  const odd = ['Entry level', 'Mid level', 'Senior'];
+  let best = 0, pick = null;
+  for (const o of odd) { const v = score(o, 7); if (v > best) { best = v; pick = o; } }
+  eq('a list the scorer cannot read falls to the TOP, not the bottom',
+    pick || odd[odd.length - 1], 'Senior');
+}
+const cd = body('commitCustomDropdown');
+eq('the dropdown committer scores ranges before anything else',
+  /const s = scoreExperienceRange\(comboText\(o\), yrs\);/.test(cd), true);
+eq('it recognises a years question from the full question, not just the label',
+  /const qFull = String\(getFullQuestionText\(combo\) \|\| getLabel\(combo\) \|\| ''\);/.test(cd), true);
+eq('and an unscoreable years list takes the last option, never the first',
+  /if \(!pick && real\.length\) pick = real\[real\.length - 1\];/.test(cd), true);
+eq('the generic matchers only get a say once the range pass has had one',
+  /if \(!pick && want\) \{/.test(cd), true);
+
+/* The sponsorship answer. These two questions sat next to each other on the
+   form and share nearly every word, so the 40%-overlap matcher handed the
+   second one's "Yes" to the first. */
+const SPONSOR_Q = 'Will you require visa sponsorship within the next 18 months to work in the United Kingdom?';
+const RTW_Q = 'Do you currently have the right to work in the United Kingdom?';
+eq('the sponsorship question is reasoned to No', koCtx.decide(SPONSOR_Q.toLowerCase()), 'no');
+eq('the right-to-work question next to it is reasoned to Yes', koCtx.decide(RTW_Q.toLowerCase()), 'yes');
+eq('a "Yes" bleeding across from the neighbour is refused', safe('Yes', SPONSOR_Q), '');
+eq('while the neighbour keeps its own Yes', safe('Yes', RTW_Q), 'Yes');
+eq('and a saved "No" — the right answer — still stands', safe('No', SPONSOR_Q), 'No');
+// Why it got through before: the question names none of the old knockout words.
+{
+  const OLD = /\b(hands.?on|experience|experienced|proficien\w*|familiar|comfortable|willing|able to|capable|authoriz\w*|eligib\w*|right to work|legally|relocat\w*|commute|available|start date|do you have|have you (used|worked|built|managed))\b/i;
+  eq('the old guard did not consider a sponsorship question a knockout',
+    OLD.test(SPONSOR_Q), false);
+}
+for (const q of [
+  'Do you now or will you in the future require sponsorship for employment visa status?',
+  'Will you require a work permit to be employed in Ireland?',
+  'Do you require visa sponsorship?',
+]) eq(`"${q.slice(0, 44)}…" is guarded`, safe('Yes', q), '');
+
+
+/* ── 43. the run must say WHY, not just how many ──────────────────────────── */
+/* Four screenshots of a failing run arrived carrying nothing but a count: "37
+   failed". The reasons were recorded on every job the whole time; they were
+   only readable in a side panel that is not what is on screen during a run. */
+console.log('the panel says why jobs are failing');
+{
+  const grpCtx = {};
+  new Function('exports', `
+    let queue = [];
+    ${body('failureGroups')}
+    ${body('topFailureReason')}
+    ${body('failureReportText')}
+    exports.load = (q) => { queue = q; };
+    exports.top = topFailureReason;
+    exports.report = failureReportText;
+  `)(grpCtx);
+
+  grpCtx.load([
+    { url: 'https://a/1', status: 'done' },
+    { url: 'https://a/2', status: 'done' },
+    { url: 'https://a/3', status: 'failed', error: 'No application form found' },
+    { url: 'https://a/4', status: 'failed', error: 'No application form found' },
+    { url: 'https://a/5', status: 'failed', error: 'No application form found' },
+    { url: 'https://a/6', status: 'timeout', error: 'Tab went silent for 20s' },
+    { url: 'https://a/7', status: 'skipped', error: 'Skipped by user' },
+    { url: 'https://a/8', status: 'skipped', error: 'Already applied / posting closed' },
+  ]);
+  const top = grpCtx.top();
+  eq('the reason that cost the most jobs is the one surfaced',
+    top.reason, 'failed: No application form found');
+  eq('with its count', top.n, 3);
+  eq('and the total it is a share of', top.total, 5);
+  eq('a job you skipped yourself is not a failure', grpCtx.report().includes('a/7'), false);
+  eq('but a job skipped for a reason of its own is', grpCtx.report().includes('a/8'), true);
+
+  const rep = grpCtx.report();
+  eq('the report opens with what happened',
+    rep.split('\n')[0], 'Jobright queue — 8 jobs, 2 applied, 5 not');
+  eq('the biggest group is first', rep.indexOf('3x') < rep.indexOf('1x'), true);
+  eq('and every failing URL is in it', /https:\/\/a\/3/.test(rep), true);
+
+  grpCtx.load([{ url: 'https://a/1', status: 'done' }]);
+  eq('a clean run shows no failure line at all', grpCtx.top(), null);
+}
+eq('the line is hidden until there is something to say',
+  /<div class="uc-why" id="uc-why" style="display:none"/.test(src), true);
+eq('and it is rendered on every panel update',
+  /whyEl\.textContent = `Most failures: \$\{top\.reason\} \(\$\{top\.n\}\)`;/.test(src), true);
+eq('clicking it copies the whole report',
+  /const text = failureReportText\(\);/.test(src), true);
+eq('with a fallback for when the clipboard is refused',
+  /ok = document\.execCommand\('copy'\);/.test(src), true);
+
+
+/* ── 44. two SmartRecruiters details, checked against a rival's build ─────── */
+/* OptimHire 2.8.9 reads an spl-radio's option text from its `label` ATTRIBUTE
+   and refuses to type into `c-spl-dropdown-search__input`. Both turned out to
+   be bugs here, and both are silent ones — the form looks filled. */
+console.log('SmartRecruiters web components, read correctly');
+{
+  const clCtx = {};
+  new Function('exports', `
+    // getLabel climbs to the group on a web-component radio — that IS the bug.
+    const getLabel = () => 'Do you have the right to work in Ireland?';
+    ${body('choiceLabel')}
+    exports.choiceLabel = choiceLabel;
+  `)(clCtx);
+  const mkRadio = (attrs) => ({
+    tagName: 'SPL-RADIO',
+    getAttribute: (k) => (k in attrs ? attrs[k] : null),
+    shadowRoot: null, value: '', nextElementSibling: null,
+    closest: () => null, textContent: '',
+  });
+  eq('an spl-radio answers with its own label, not the group question',
+    clCtx.choiceLabel(mkRadio({ label: 'Yes' })), 'yes');
+  eq('and its sibling with its own',
+    clCtx.choiceLabel(mkRadio({ label: 'No' })), 'no');
+  // The bug: both options previously came back as the question, so Yes and No
+  // were indistinguishable and the matcher took whichever it saw first.
+  eq('the two options are now distinguishable at all',
+    clCtx.choiceLabel(mkRadio({ label: 'Yes' })) !== clCtx.choiceLabel(mkRadio({ label: 'No' })), true);
+  eq('aria-label serves when there is no label attribute',
+    clCtx.choiceLabel(mkRadio({ 'aria-label': 'Prefer not to say' })), 'prefer not to say');
+  // A NATIVE radio must be unaffected — its label really does live outside it.
+  const native = { tagName: 'INPUT', type: 'radio', getAttribute: () => null,
+    shadowRoot: null, value: '', nextElementSibling: null, closest: () => null, textContent: '' };
+  eq('a native radio still uses the computed label',
+    clCtx.choiceLabel(native), 'do you have the right to work in ireland?');
+}
+{
+  const tsCtx = {};
+  new Function('exports', `
+    ${body('isTransientSearchBox')}
+    exports.f = isTransientSearchBox;
+  `)(tsCtx);
+  const inp = (className, extra) => ({
+    tagName: 'INPUT', className,
+    getAttribute: (k) => (extra && k in extra ? extra[k] : null),
+  });
+  eq("a dropdown's own search box is not a field",
+    tsCtx.f(inp('c-spl-dropdown-search__input')), true);
+  eq('nor is a combobox filter under any other ATS name',
+    tsCtx.f(inp('react-select__search-input')), true);
+  eq('nor one the page declares as a listbox filter',
+    tsCtx.f(inp('', { role: 'searchbox', 'aria-controls': 'lb1' })), true);
+  eq('an ordinary text field is still filled', tsCtx.f(inp('form-control')), false);
+  eq('and a field that merely mentions research is not caught',
+    tsCtx.f(inp('researcher-name-input')), false);
+}
+eq('and the guard sits on the one path every write goes through',
+  /function writeAllowed\(el, val\) \{\n    if \(isTransientSearchBox\(el\)\) return false;/.test(src), true);
+
+
+/* ── 45. the recorder is actually wired to the things it claims to see ────── */
+/* ua-diagnostics.js is tested on its own. What matters here is that the content
+   script FEEDS it — a recorder nothing reports to is worse than none, because
+   its silence reads as "no problems". */
+console.log('every outcome reaches the recorder');
+eq('the report helper exists and never throws at the caller',
+  /function DIAG\(code, reason, extra\) \{\n    try \{/.test(src), true);
+eq('it is fire-and-forget — a diagnostic must not delay what it measures',
+  /\}, \(\) => void chrome\.runtime\.lastError\);/.test(body('DIAG')), true);
+eq('and it tags every event with the ATS', /ats: \(typeof detectATS === 'function' && detectATS\(\)\) \|\| 'unknown',/.test(body('DIAG')), true);
+
+/* The single-tab runner sets a terminal status in eight different places across
+   its retry paths. Reporting from each of them is how you end up covering seven
+   and trusting a wrong number, so it reports from the one function they all
+   funnel through. */
+eq('terminal outcomes are reported from the shared save, not from each exit',
+  /async function saveQ\(\) \{ reportTerminalJobs\(\); await st\.set\(SK\.Q, queue\); \}/.test(src), true);
+const rtj = body('reportTerminalJobs');
+eq('every terminal status counts, successes included',
+  /const TERMINAL = \['done', 'failed', 'timeout', 'skipped'\];/.test(src), true);
+/* The mark has to OUTLIVE the document. A Set in this module lasted exactly one
+   page: every navigation started an empty one, so every finished job was
+   reported again on the next page, and the next. A 64-job queue reported 265. */
+eq('the "already reported" mark is stored on the job, so it survives a navigation',
+  /if \(j\.diagged\) continue;\n        j\.diagged = true;/.test(rtj), true);
+eq('and it is not a per-document Set any more', /_diagReported/.test(src), false);
+/* Re-reporting also poisoned the ATS column: an old job re-described from
+   whatever page happened to be open got stamped with THAT page's platform, which
+   filed jobs.workable.com and jobs.smartrecruiters.com under Greenhouse. */
+eq('a job is described only by what the queue knows about it',
+  /ats: j\.jobBoard \|\| 'unknown',/.test(rtj), true);
+eq('never by the page that happens to be loaded', /detectATS\(\)/.test(rtj), false);
+// A retry is a genuinely new outcome and must be counted again.
+eq('retrying a failed job clears the mark',
+  /delete j\.diagged;          \/\/ a retry is a new outcome/.test(src), true);
+eq('and the reason travels with it', /DIAG\('job\.' \+ j\.status, j\.error \|\| '', \{/.test(rtj), true);
+eq('the manager path reports its own outcomes too',
+  /DIAG\('job\.' \+ status, error \|\| '', \{ detail: \{ ms:/.test(src), true);
+
+/* The most useful thing it collects. */
+eq('every unanswered required question is reported, by its label',
+  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label\);/.test(src), true);
+eq('with the fill progress alongside it',
+  /DIAG\('stage\.fill', where, \{ detail: \{ done: r\.done, total: r\.total, pct: r\.pct \} \}\);/.test(src), true);
+
+/* Stages, so a failure comes with the story of how far it got. */
+const np = body('noteProgress');
+eq('each stage is recorded as the job passes through it',
+  /if \(what !== _lastDiagStage\) \{ _lastDiagStage = what; DIAG\('stage', what\); \}/.test(np), true);
+eq('but a long form calling it per field does not become a thousand rows',
+  /_lastDiagStage/.test(np), true);
+
+/* Errors, but only ours. */
+eq('a page error during a job is recorded', /DIAG\('page\.error'/.test(src), true);
+eq('and a rejected promise', /DIAG\('page\.reject'/.test(src), true);
+eq('neither fires while you are just browsing',
+  /const _diagAutomating = \(\) => \{/.test(src) && /if \(!_diagAutomating\(\)\) return;/.test(src), true);
+
+/* The bug that made the one line naming a blocking question name nothing. */
+const fr = body('fillReport');
+eq('getMissingRequired returns LABELS, and fillReport now treats them as such',
+  /const l = String\(raw == null \? '' : raw\)/.test(fr), true);
+eq('the old element-shaped read is gone',
+  /getLabel\(el\) \|\| el\.name \|\| el\.id \|\| '\(unlabelled\)'/.test(fr), false);
+
+
+/* ── 46. a required cover letter is an upload, not a text box ─────────────── */
+/* Greenhouse reported "Cover Letter is required." in red on a form the pass
+   believed it had finished: the widget has Attach / Google Drive / Enter
+   manually beside it, so nothing that fills textareas touched it and nothing
+   that attaches the CV recognised it. */
+console.log('a required cover letter no longer blocks the submit');
+const coverFn = body('satisfyCoverLetter');
+eq('an OPTIONAL cover letter is still left alone — a generic one is worse than none',
+  /if \(!required\) return false;/.test(coverFn), true);
+eq("the ATS's own red message counts as required",
+  /cover\.\?letter\\s\+is\\s\+required\|required/.test(coverFn), true);
+eq('one already written is not overwritten',
+  /\(t\.value \|\| ''\)\.trim\(\)\.length > 40/.test(coverFn), true);
+eq('nor is one already attached',
+  /f\.files && f\.files\.length/.test(coverFn), true);
+eq('the manual box is preferred — it is the path a person would use',
+  coverFn.indexOf('MANUAL_ENTRY_RE') < coverFn.indexOf('new File('), true);
+eq('and the letter is addressed to this employer, not generic',
+  /tailorCoverText\(p\.cover_letter \|\| DEFAULTS\.cover,/.test(coverFn), true);
+eq('otherwise a plain-text file, which these widgets all accept',
+  /new File\(\[letter\], 'cover-letter\.txt', \{ type: 'text\/plain' \}\)/.test(coverFn), true);
+eq('and the outcome is recorded either way', /DIAG\('cover\.blocked'/.test(coverFn), true);
+eq('the pass runs as part of the fill, right after the CV',
+  /try \{ if \(await satisfyCoverLetter\(p\)\) filled\+\+; \}/.test(src), true);
+
+/* ── 47. dropdowns that are not comboboxes ────────────────────────────────── */
+/* Comeet renders a Bootstrap dropdown: <div class="dropdown"><a
+   class="dropdown-toggle"> over <ul class="dropdown-menu"><li><a>. It carries no
+   ARIA roles at all, so neither the discovery selector nor the option reader
+   matched one, and every Comeet dropdown sat on its placeholder. */
+console.log('Bootstrap dropdowns and costumed selects');
+const disc2 = body('fillCustomDropdowns__impl');
+for (const sel of ['[data-toggle="dropdown"]', '[data-bs-toggle="dropdown"]', 'a.dropdown-toggle'])
+  eq(`${sel} is discovered`, disc2.includes(sel), true);
+const vo = body('visibleOptions');
+eq('a Bootstrap menu\'s rows are readable as options', vo.includes('.dropdown-menu li'), true);
+eq('including the anchors inside them', vo.includes('.dropdown-menu a'), true);
+
+/* A "nice-select" wrapper is only a costume over a real <select>. */
+const cd2 = body('commitCustomDropdown');
+eq('a wrapper hiding a real select is driven through the select',
+  /combo\.parentElement\.querySelector\('select'\)/.test(cd2), true);
+eq('matched on the option TEXT, because that is what the answer is',
+  /opts\.find\(\(o\) => norm\(o\.text\) === want\)/.test(cd2), true);
+/* setSelectValue returns true unconditionally, so trusting it would report
+   success on a select it never set. */
+eq('and confirmed against the control rather than taken on trust',
+  /if \(native\.value === hit\.value\) \{/.test(cd2), true);
+eq('a wrapper with no matching option falls through to the click path',
+  cd2.indexOf('const hit = opts.find') < cd2.indexOf('triggerMouse(combo);'), true);
+
+/* ── 48. the redeclaration guard ──────────────────────────────────────────── */
+/* A second, older smartRecruitersAutomation was sitting in this file. A later
+   function declaration silently replaces an earlier one in the same scope, so
+   one of the two never ran — and an edit made to the wrong copy would have done
+   nothing, with no error to explain it. */
+console.log('no driver is shadowed by a second copy of itself');
+{
+  const lines = src.split('\n');
+  const scopes = [];
+  lines.forEach((l, i) => {
+    if (/^\(\s*(async\s+)?function\s*\(/.test(l)) scopes.push({ start: i, end: -1 });
+    if (/^\}\)\(\);?\s*$/.test(l)) {
+      for (let k = scopes.length - 1; k >= 0; k--) if (scopes[k].end < 0) { scopes[k].end = i; break; }
+    }
+  });
+  const dupes = [];
+  for (const sc of scopes) {
+    const seen = new Map();
+    for (let i = sc.start; i <= (sc.end < 0 ? lines.length - 1 : sc.end); i++) {
+      const m = lines[i].match(/^  (?:async )?function ([A-Za-z_$][\w$]*)\s*\(/);
+      if (!m) continue;
+      if (seen.has(m[1])) dupes.push(m[1]);
+      else seen.set(m[1], i + 1);
+    }
+  }
+  eq('nothing is declared twice in one scope', dupes, []);
+  // The same name in two SEPARATE IIFEs is fine and deliberate — those are
+  // different scopes and neither can see the other.
+  eq('and there really are several scopes to distinguish', scopes.length > 5, true);
+}
+eq('the dead SmartRecruiters driver is gone, the shadow-aware one remains',
+  (src.match(/async function smartRecruitersAutomation\(/g) || []).length, 1);
+eq('and it is the shadow-aware one',
+  /SmartRecruiters automation starting \(shadow-aware\)/.test(src), true);
+
+
+/* ── 49. Workday: the account step, and getting to it at all ──────────────── */
+/* Two reports, both on Workday. An NXP job description sat with its Apply
+   button unpressed; a Ciena sign-in page had email and password filled and the
+   Sign In button never pressed, "just keeps re-autofilling". */
+console.log('Workday reaches the form, and gets through the account step');
+
+const wdFn = body('workdayAutomation');
+/* Every other driver moved onto the deep finders years ago; this one still used
+   document.querySelector, which stops at a shadow boundary. */
+eq('the Apply button is looked for across shadow roots, not just the document',
+  /deepAll\(APPLY_IDS, 20\)\.filter\(isVisible\)/.test(wdFn), true);
+eq("Workday's current automation-id is in the list", /adventureButton/.test(wdFn), true);
+eq('and the uxi element id other tenants use', /data-uxi-element-id="Apply"/.test(wdFn), true);
+/* It clicked, slept two seconds and carried on regardless — so when the click
+   did not take, everything after it ran against the job description. */
+eq('the click is confirmed by the page changing, not by a guessed delay',
+  /await waitForStepChange\(before, 12000\);/.test(wdFn), true);
+eq('and retried rather than assumed', /for \(let attempt = 0; attempt < 3 && !onApplyFlow\(\); attempt\+\+\)/.test(wdFn), true);
+eq('a failure to open is reported instead of leaving a silent dead end',
+  /DIAG\('workday\.apply-stuck'/.test(wdFn), true);
+
+/* The deadlock. The fill pass deliberately skips marketing opt-ins; the gate
+   below it demanded that EVERY visible checkbox be ticked. A page with one
+   marketing box could never satisfy its own gate — so the form was never
+   submitted, the pass ran again, refilled, and waited again, forever. */
+const wca = body('fillWorkdayCreateAccount');
+eq('the fill pass skips marketing opt-ins', /if \(!c\.checked && !isMarketingCheckbox\(c\)\) realClick\(c\)/.test(wca), true);
+eq('and the submit gate no longer demands they be ticked',
+  /const consentOK = \$\$\('input\[type=checkbox\]'\)\.filter\(isVisible\)\.every\(c => c\.checked\);/.test(wca), false);
+eq('it asks only about the boxes we are responsible for',
+  /\.filter\(c => !isMarketingCheckbox\(c\) && \(isFieldRequired\(c\) \|\| CONSENT_TEXT_RE\.test\(getLabel\(c\) \|\| ''\)\)\)/.test(wca), true);
+eq('and says so when one genuinely will not tick', /DIAG\('workday\.consent-stuck'/.test(wca), true);
+// Run the gate for real, on the shape that deadlocked.
+{
+  const boxes = [
+    { checked: true, required: true, label: 'I agree to the privacy policy' },
+    { checked: false, required: false, label: 'Send me job alerts and marketing' },
+  ];
+  const isMarketing = (c) => /marketing|job alerts|newsletter|promotions/i.test(c.label);
+  const CONSENT = /\b(consent|agree|privacy|policy|terms|acknowledg\w*)\b/i;
+  eq('the OLD gate never opens on this page', boxes.every((c) => c.checked), false);
+  const gating = boxes.filter((c) => !isMarketing(c) && (c.required || CONSENT.test(c.label)));
+  eq('the new one asks about exactly one box', gating.length, 1);
+  eq('and it is satisfied', gating.every((c) => c.checked), true);
+}
+
+/* The watcher was armed for a manager job and then declined to act on one. */
+const watch = body('startWorkdayAccountWatch');
+eq('the account watcher acts in Queue Manager mode too',
+  /if \(!autoApply && !_mgrDriving && !\(qActive && isRunnerTab\(\)\)\) return;/.test(watch), true);
+
+/* ── 50. a consent banner is a click blocker, not a nuisance ──────────────── */
+console.log('a cookie banner cannot swallow the form');
+const ck = body('dismissCookieBanner');
+eq('it is cleared before anything else is clicked',
+  /await dismissCookieBanner\(\);\n    \/\/ Reveal the application form first/.test(src), true);
+eq('Accept, not Decline — Decline opens a preferences dialog on some sites',
+  /const COOKIE_ACCEPT_RE = \/\^\(accept\|/.test(src), true);
+/* "OK" and "Continue" are everywhere. Pressing the wrong one advances the
+   application, so the button must be inside something that reads as a banner. */
+eq('the button must sit inside something that reads as a consent banner',
+  /if \(t\.length > 40 && t\.length < 4000 && COOKIE_BANNER_RE\.test\(t\)\) \{ banner = scope; break; \}/.test(ck), true);
+eq('and a button with no banner around it is left alone',
+  /if \(!banner\) continue;/.test(ck), true);
+{
+  const A = /^(accept|accept all|accept cookies|accept all cookies|allow all|allow cookies|i agree|agree|got it|ok|understood|continue|akzeptieren|alle akzeptieren|tout accepter|aceptar)$/i;
+  for (const yes of ['Accept Cookies', 'Accept All', 'I Agree', 'Alle akzeptieren'])
+    eq(`"${yes}" is an accept button`, A.test(yes), true);
+  for (const no of ['Decline', 'Reject All', 'Manage preferences', 'Submit application'])
+    eq(`"${no}" is not`, A.test(no), false);
+}
+
+
+/* ── 51. the form is often in a frame this document cannot see ────────────── */
+/* "workable struggles and just skips aswell, so does icims" — and both are
+   named in the orchestrator's own comment as ATS that put the application in a
+   CROSS-ORIGIN iframe. The worker could already inject into those frames. Only
+   the Queue Manager ever asked it to. */
+console.log('every mode can reach an embedded form, not just the Queue Manager');
+eq('the worker answers a request to reach into a tab\'s frames',
+  /if \(msg\.type === 'UA_INJECT_FRAMES'\) \{/.test(orch), true);
+eq('and it injects into the SENDER\'s tab, not one it was told about',
+  /const tabId = sender && sender\.tab && sender\.tab\.id;\n        if \(tabId != null\) injectAllFrames\(tabId\);/.test(orch), true);
+const rfi = body('requestFrameInjection');
+eq('the content script asks once per document, not per pass',
+  /if \(_framesRequested\) return;\n    _framesRequested = true;/.test(rfi), true);
+eq('the single-tab runner asks',
+  /if \(runnerActive \|\| autoApply\) requestFrameInjection\(\);/.test(src), true);
+eq('and so does every Fully Automated dispatch',
+  /requestFrameInjection\(\);\n    await resolveBlockingDialog\(\);/.test(src), true);
+
+const ic = body('icimsAutomation');
+eq('iCIMS no longer announces that it is giving up on the iframe',
+  /content script cannot access cross-origin iframe/.test(src), false);
+eq('it asks for the frames instead', /requestFrameInjection\(\);/.test(ic), true);
+eq('and asks again after Apply navigates, because those are new frames',
+  (ic.match(/requestFrameInjection\(\);/g) || []).length >= 2, true);
+eq('its account wall goes through the shared handler, not a second copy',
+  /await handleAccountAuth\(\);/.test(ic), true);
+eq('and the wall is recognised from the route iCIMS parks postings at',
+  /\\\/\(login\|register\|createaccount\)\\b/.test(ic), true);
+
+const wk = body('workableAutomation');
+eq('Workable asks for the frames too', /requestFrameInjection\(\);/.test(wk), true);
+eq('and says so rather than failing silently when the form is elsewhere',
+  /DIAG\('workable\.no-form-here'/.test(wk), true);
+eq('its fields are found across boundaries, not with document.querySelector',
+  /const el = deepAll\(sel\.trim\(\), 4\)\.filter\(isVisible\)\[0\];/.test(wk), true);
+/* Workable is white-labelled onto employer domains constantly, and the route
+   only consulted the host — so a fingerprinted Workable board fell through to
+   the generic path while Workday, Greenhouse and the rest got their drivers. */
+eq('a fingerprinted Workable board reaches its own driver',
+  /platform === 'Workable'\) await workableAutomation\(\)/.test(src), true);
+
+/* ── 52. the autofill must not shake the page ─────────────────────────────── */
+/* "autofill jitters scroll up/down super fast". */
+console.log('filling a form does not shake it');
+const iv2 = body('inView');
+/* The old test demanded the element be ENTIRELY inside the viewport, which on a
+   real form is almost never true — so nearly every click scrolled. */
+eq('any part of a control being visible is enough', /r\.bottom > -MARGIN && r\.top < h \+ MARGIN/.test(iv2), true);
+eq('with a margin, so a control just past the fold does not start a scroll',
+  /const MARGIN = Math\.round\(h \* 0\.25\);/.test(iv2), true);
+const sc = body('scrollIfNeeded');
+eq('and scrolls are rate-limited on top of that',
+  /if \(now - _lastScrollAt < SCROLL_MIN_GAP_MS\) return;/.test(sc), true);
+eq('still instant and "nearest" — never smooth, never centred',
+  /el\.scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/.test(sc), true);
+// The arithmetic, on a 900px viewport.
+{
+  const h = 900, MARGIN = Math.round(h * 0.25);
+  const vis = (top, bottom) => bottom > -MARGIN && top < h + MARGIN;
+  eq('a control in the middle needs no scroll', vis(400, 440), true);
+  eq('one straddling the fold needs no scroll', vis(870, 930), true);
+  eq('one just below it needs no scroll either', vis(950, 990), true);
+  eq('one far below does', vis(2000, 2040), false);
+  eq('one scrolled far above does', vis(-900, -860), false);
+  // The old rule, for contrast: it would have scrolled for three of those five.
+  const old = (top, bottom) => top >= 0 && bottom <= h;
+  eq('the old rule scrolled for a control straddling the fold', old(870, 930), false);
+  eq('and for one just below it', old(950, 990), false);
+}
+
+
+/* ── 53. three things the first real diagnostics export exposed ───────────── */
+console.log('what the recorder found out about the recorder');
+
+/* (a) The most useful section came out EMPTY across 1,482 recorded outcomes.
+   Unanswered questions were only ever captured from logFillReport, which runs
+   when a submit is attempted — so a job that failed before reaching submit,
+   which is most of them, contributed nothing. */
+const ruq = body('reportUnansweredQuestions');
+eq('unanswered questions are captured at the moment a job fails',
+  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label\);/.test(ruq), true);
+eq('and nothing is emitted when there is nothing to say',
+  /if \(!r \|\| !r\.missingLabels \|\| !r\.missingLabels\.length\) return;/.test(ruq), true);
+eq('the manager path captures on failure and timeout',
+  /if \(status === 'failed' \|\| status === 'timeout'\) reportUnansweredQuestions\('when the job failed'\);/.test(src), true);
+eq('and so does the single-tab path, while still on the page',
+  /LOG\('Queue job: submission NOT confirmed'[^\n]*\n            \/\/ While still on the page[^\n]*\n            reportUnansweredQuestions\('when the job failed'\);/.test(src), true);
+/* A success needs no explanation, and capturing one would bury the failures. */
+eq('a job that worked is not asked what it failed to answer',
+  /if \(status === 'failed' \|\| status === 'timeout'\)/.test(src), true);
+
+/* (b) "A listener indicated an asynchronous response by returning true, but the
+   message channel closed before a response was received" — our own bug. The
+   handler replied and THEN claimed it would reply later. */
+eq('a handler that has already replied does not also claim async',
+  /sendResponse\(\{ ok: true \}\);\n      \/\* false, not true\./.test(src), true);
+eq('it returns false', /return false;\n    \}\n  \}\);/.test(src), true);
+
+/* (c) "script error" with nothing else is unactionable — it is what a
+   cross-origin script gives. The stack frame is what locates the fault. */
+eq('a page error carries the frame that raised it',
+  src.includes("at = ((e && e.error && e.error.stack) || '').split('") && /frame: at\.trim\(\)\.slice\(0, 160\)/.test(src), true);
+eq('and so does a rejected promise',
+  /const stack = \(event\.reason && event\.reason\.stack\) \|\| '';/.test(src), true);
+/* Neither may fire while you are merely browsing: most pages throw something,
+   and a recorder full of other people's bugs hides ours. */
+eq('the page-error hook stands down when no job is being driven',
+  /window\.addEventListener\('error', \(e\) => \{\n      if \(!_diagAutomating\(\)\) return;/.test(src), true);
+eq('and the rejection hook only records while one is',
+  /if \(_diagAutomating\(\)\) \{\n      try \{\n        const stack =/.test(src), true);
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -60,13 +60,18 @@ for (const perm of ['storage', 'tabs', 'scripting', 'sidePanel', 'alarms', 'cont
 const sw = fs.readFileSync(path.join(dir, m.background.service_worker), 'utf8');
 /importScripts\(["']\/ua-orchestrator\.js["']\)/.test(sw) ? ok('service worker imports the orchestrator') : no('service worker does not import ua-orchestrator.js');
 fs.existsSync(path.join(dir, 'ua-orchestrator.js')) ? ok('ua-orchestrator.js present') : no('ua-orchestrator.js missing');
+/* Same for the recorder. A Jobright patch that ships its own service worker
+   REPLACES this file and takes the appended lines with it, and a recorder that
+   silently stopped recording is worse than none — you would trust its silence. */
+/importScripts\(["']\/ua-diagnostics\.js["']\)/.test(sw) ? ok('service worker imports the diagnostics recorder') : no('service worker does not import ua-diagnostics.js');
+fs.existsSync(path.join(dir, 'ua-diagnostics.js')) ? ok('ua-diagnostics.js present') : no('ua-diagnostics.js missing');
 
 process.exit(bad ? 1 : 0);
 NODE
 [ $? -eq 0 ] || fails=$((fails + 1))
 
 step "Undeclared-function references"
-node tests/references.test.js "$EXT/ua-enhancement.js" "$EXT/ua-queue.js" "$EXT/ua-orchestrator.js" "$EXT/ua-page-hooks.js" || fails=$((fails + 1))
+node tests/references.test.js "$EXT/ua-enhancement.js" "$EXT/ua-queue.js" "$EXT/ua-orchestrator.js" "$EXT/ua-page-hooks.js" "$EXT/ua-diagnostics.js" || fails=$((fails + 1))
 
 step "Automation gate (Fully Automated toggle)"
 node tests/gate.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
@@ -87,6 +92,7 @@ node tests/csv-parsers.test.js "$EXT/ua-enhancement.js" || fails=$((fails + 1))
 
 step "CSV import (queue manager panel)"
 node tests/queue-panel.test.js "$EXT/ua-queue.js" || fails=$((fails + 1))
+node tests/diagnostics.test.js "$EXT/ua-diagnostics.js" || fails=$((fails + 1))
 
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))

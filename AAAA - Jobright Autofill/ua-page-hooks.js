@@ -22,11 +22,19 @@
  *
  * SAFETY
  * ------
- * The hooks are inert unless the automation is actually driving this tab. The
- * isolated content script sets `data-ua-auto="1"` on <html> for the lifetime of a
- * job and removes it afterwards; while that attribute is absent, every dialog
- * behaves exactly as the site intended. That matters because these overrides are
- * page-wide — you must still get a real confirm box when you are browsing.
+ * The confirm/alert/prompt hooks are inert unless the automation is actually
+ * driving this tab. The isolated content script sets `data-ua-auto="1"` on <html>
+ * for the lifetime of a job and removes it afterwards; while that attribute is
+ * absent, those dialogs behave exactly as the site intended. That matters because
+ * these overrides are page-wide — you must still get a real confirm box when you
+ * are browsing.
+ *
+ * `beforeunload` is the exception, and it is unconditional. "Leave site? Changes
+ * you made may not be saved." is never useful here and freezes the page until a
+ * human clicks Leave. Gating it on the automation flag meant it kept returning in
+ * the gaps — before a job claims the tab, after the run hands it back, on a tab
+ * the queue skipped. The cost is that this browser tab will not warn you about
+ * losing an unsaved form you were filling in by hand.
  *
  * ANSWER POLICY
  * -------------
@@ -43,9 +51,41 @@
   window.__uaPageHooksInstalled = true;
 
   const root = document.documentElement;
+  /* `data-ua-auto` is set for the lifetime of a job. `data-ua-grace` carries the
+     timestamp the shield may come down at, and exists because the dialog that
+     matters most — "Leave site?" — fires during the navigation AWAY from the
+     page, after the job is over. Honouring the grace window keeps the shield up
+     across that navigation; see setAutomationFlag in ua-enhancement.js.
+
+     This gates the confirm/alert/prompt hooks, which SHOULD stand down when the
+     automation is not driving — you must still get a real confirm box while
+     browsing. beforeunload is deliberately not gated on it any more; see
+     beforeUnloadSilenced. */
   const automating = () => {
-    try { return root && root.getAttribute('data-ua-auto') === '1'; } catch (_) { return false; }
+    try {
+      if (!root) return false;
+      if (root.getAttribute('data-ua-auto') === '1') return true;
+      const until = Number(root.getAttribute('data-ua-grace') || 0);
+      return until > 0 && Date.now() < until;
+    } catch (_) { return false; }
   };
+
+  /* ── "Leave site?" is off, full stop ───────────────────────────────────────
+     This was gated on the automation flag, which meant it kept coming back:
+     during the gap before a job claims the tab, on a page the run had already
+     handed back, on a tab the queue skipped. Every one of those is a frozen page
+     waiting for a human to click Leave, and there is no version of this prompt
+     that helps someone running hundreds of applications.
+
+     So it is unconditional. The trade is real and worth naming: if you are
+     typing into a form in a tab this extension is loaded in, and you navigate
+     away, the browser will no longer warn you that you would lose it. That is
+     the behaviour asked for, and the one the other bulk-apply tools ship.
+
+     Everything else the page does in its beforeunload handler still runs —
+     analytics, cleanup, saving a draft. Only its ability to raise the prompt is
+     taken away. */
+  const beforeUnloadSilenced = () => true;
 
   // "Remove X?", "Delete this attachment?", "Discard your changes?" — anything
   // whose effect is to throw away work already done on the page.
@@ -142,9 +182,8 @@
      returns undefined, because returning a string arms the dialog too.
 
      Gated at DISPATCH time, not at registration: the page registers its handler
-     once at load, long before a job starts. While you are browsing manually the
-     listener runs untouched and you get the warning exactly as the site intended.
-     Only the automation's own navigations are silent. */
+     once at load, long before a job starts. The gate itself is now always open —
+     see beforeUnloadSilenced — so no navigation in this tab raises the prompt. */
   const origAdd = EventTarget.prototype.addEventListener;
   const origRemove = EventTarget.prototype.removeEventListener;
 
@@ -174,13 +213,13 @@
     const already = wrapped.get(listener);
     if (already) return already;
     const w = function (e) {
-      if (!automating()) return listener.apply(this, arguments);   // exactly as the site intended
+      if (!beforeUnloadSilenced()) return listener.apply(this, arguments);
       let r;
       try { r = listener.call(this, shieldEvent(e)); } catch (_) {}
       // Belt and braces: clear anything the handler managed to set on the real
       // event, and never pass a string back — either would raise the prompt.
       try { e.returnValue = undefined; } catch (_) {}
-      report('beforeunload', 'Leave site? suppressed while automating', true);
+      report('beforeunload', 'Leave site? suppressed', true);
       return undefined;
     };
     wrapped.set(listener, w);

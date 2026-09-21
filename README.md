@@ -2062,6 +2062,397 @@ Suite total: **1,069 assertions**, all green on Jobright 1.23.0.
 
 ---
 
+## v16.9 — every SmartRecruiters job, and a dialog that stopped a 685-job run
+
+Four separate reports, one run: every `jobs.smartrecruiters.com` job failing, a
+"Leave site?" prompt freezing the queue on Oracle Cloud, `0` typed into a
+years-of-experience box, and knockout questions answered against the candidate.
+
+### Every SmartRecruiters job failed, and it was v16.4's fault
+
+v16.4 cut CPU cost by replacing the shadow-host search in `deepQueryAll` with a
+fixed list of tag names. The list held **leaf** components — `spl-input`,
+`spl-select`. SmartRecruiters nests those inside its own **wrapper** custom
+elements, so the wrapper was never recognised as a shadow host, never descended
+into, and every field beneath it was invisible. Zero fields means no form, which
+the runner reports as a failed job — for the entire ATS.
+
+Wrapper names are private to each ATS, so a list can never be right here.
+`shadowHostsIn` enumerates completely again and pays for it with a 400ms
+`WeakMap` cache keyed on the root, which keeps the hot path (`stepSignature`,
+polled every 300ms in every open tab) cheap without hiding anything.
+
+The assertion that should have caught this was itself the problem: it checked
+that the allow-list was *being used* — the mechanism, not the property — so it
+stayed green while the extension found nothing. It now asserts that a field
+inside an **unknown** wrapper's shadow root is reachable, built as a real DOM.
+
+### "Leave site?" could stop everything, and nothing would restart it
+
+The shield in `ua-page-hooks.js` is armed by `data-ua-auto`, which is set for the
+lifetime of a job. But `beforeunload` fires during the navigation **away** from a
+page — after the job ends, after the flag is handed back. The shield was down at
+exactly the moment it was needed, and Oracle Cloud's HCM pages froze a 685-job
+run behind a prompt no script could answer.
+
+Clearing the flag now opens a 20-second grace window (`data-ua-grace`) instead of
+taking effect at once. That outlasts a navigation; after it, the site gets its
+own warnings back, which it must.
+
+A shield is a race, so there is now a backstop that does not have to win one. The
+Queue Manager supervises its job tabs because it opened them; the single-tab
+runner drives the whole queue from inside one page, so when that page stops
+running JavaScript there is by definition nothing left in it to notice. The
+worker now pings it, and a tab that cannot answer for 45 seconds is **closed and
+replaced** — `tabs.remove()` is the one navigation a `beforeunload` handler
+cannot veto, where reload and update both re-raise the prompt. A tab that no
+longer exists skips the wait entirely: closing the runner tab used to end a
+600-job run in silence, with the queue still active and the marker pointing at a
+dead tab id.
+
+A manager job tab held by the same dialog no longer gets the full 45s navigation
+grace either — a tab that is `complete` **and** silent is not loading anything.
+
+### `0` years of experience
+
+"How many years of hands-on experience do you have with Linux system
+administration and troubleshooting?" was submitted as **0** — a number that fails
+every minimum-years screen there is. Nothing legitimately resolves to zero there,
+so an empty answer, a value that parsed down to nothing, and a saved `0` all fall
+back to the real figure. The default is now **7** rather than 5, and the
+candidate's own profile figure beats both.
+
+### A fuzzy match could lose a knockout
+
+Saved answers are matched on 40% keyword overlap and were consulted *before* any
+of the knockout reasoning ran. That is how a stray "No" reached "Do you have
+hands-on experience with Linux patch and package management?" — an automatic
+rejection decided by an unrelated saved entry that happened to share some nouns.
+It is the same failure mode as the recruiter who was told the candidate could not
+work in Belgium.
+
+A saved **Yes/No** that contradicts the reasoning is now dropped on knockout
+questions, and only there. A saved salary, notice period or written answer is
+untouched; so is an answer the user typed against that exact question, because
+their word is final.
+
+### Oracle's required dropdowns stayed empty
+
+A Recruiting Cloud application came back with "This info is required." under
+Ethnicity, Gender and the disability question, on a form the pass believed it had
+answered. Two causes, both fixed:
+
+- **Substring matching.** "I do not have a disability" picked whichever option
+  contained the letters `n-o-t` — "Not applicable". Matching is whole-word now,
+  filler words get no vote, and the option sharing the most words wins.
+- **A click JET ignores.** Oracle's selects track the highlighted row in
+  `aria-activedescendant` and commit on Enter, so a synthetic click on the row
+  left the field looking untouched. A commit that does not take is now followed
+  by the keyboard — bounded, and it gives up rather than pressing Enter on the
+  wrong row. Discovery also covers all three generations Oracle ships side by
+  side (`oj-select-single`, `oj-c-select-single`, `oj-select-one`,
+  `oj-combobox-one`).
+
+Mutations checked: restoring the tag-name allow-list, removing the grace window,
+removing the zero-years fallback, and letting a contradicting saved answer
+through. All four fail the suite.
+
+### "15 failed" with no way to see why
+
+Every failure already carried a reason — `No application form found`, `Sign-in
+required`, `Tab went silent for 20s` — and there was nowhere to read them all at
+once. **⚠ Copy failures** in the Queue Manager puts the lot on the clipboard,
+grouped by reason and ordered by how many jobs each one cost, because fifteen
+failures are usually three causes and the counts say which to fix first.
+
+### A years dropdown that picked the worst option, and a sponsorship Yes
+
+One Greenhouse form submitted both:
+
+- **"How many years of professional experience…?" → "Less than 1 year".** A years
+  dropdown is a list of ranges, and none of the matchers can read one: looking
+  for `7` among "Less than 1 year", "1-2 years", "3-5 years", "5-10 years" finds
+  nothing, so the required-field fallback took `real[0]` — the first option,
+  which on an ordered list is always the worst. The committer now scores the
+  ranges the way the radio path already did, and a list it cannot score falls to
+  the **top** rather than the bottom.
+- **"Will you require visa sponsorship within the next 18 months to work in the
+  United Kingdom?" → "Yes".** The right-to-work question sat directly beneath it
+  and shares nearly every word, so the 40%-overlap matcher handed that
+  question's saved "Yes" across — telling the employer the candidate needs
+  sponsorship when they do not. Sponsorship, visas and work permits are knockout
+  questions now, so a contradicting saved answer is dropped there too.
+
+### The run now says WHY, not just how many
+
+Four screenshots of a failing run arrived carrying nothing but a count — "37
+failed". Every failure had recorded a reason the whole time; they were only
+readable in the Queue Manager, which is not what is on screen during a run. The
+run panel now carries a line — **Most failures: … (n)** — and clicking it copies
+the full grouped report.
+
+### Two SmartRecruiters details, from OptimHire 2.8.9
+
+Both were silent bugs here — the form looks filled either way.
+
+- **`<spl-radio label="Yes">`.** Option text lives in the `label` **attribute**.
+  `getLabel()` finds nothing local on a web-component radio and climbs to the
+  group, so every option in a group came back as the question text — Yes and No
+  were indistinguishable and the matcher took whichever it saw first. A custom
+  element is now asked for its own label before anything climbs.
+- **The search box inside an open dropdown is not a field.** It looks like one to
+  every enumerator — visible, empty, with the dropdown's label above it — so the
+  answer was typed into it, the list filtered to nothing, and the real field
+  stayed empty. Matched on the role rather than on any one ATS's class name.
+
+### The run recorder
+
+Four screenshots of a failing run arrived carrying nothing but a count. The
+reasons existed on every job the whole time; they were scattered across job
+objects and a per-tab console buffer that dies with the page, so the only
+question that matters after a bulk run — *which* ATS is failing, *how*, and
+*how often* — had no answer.
+
+`ua-diagnostics.js` runs in the service worker and is written to by every tab.
+It survives navigations, tab closes and worker restarts. **🩺 Diagnostics** in
+the Queue Manager copies and downloads the whole thing.
+
+It records **every outcome, not just failures** — "12 failed" means nothing
+without the number that got through — and reports five sections:
+
+1. **Outcomes by ATS**, with a success rate. A skip is excluded from the
+   denominator; it was never attempted.
+2. **Boards with trouble** — the employer's *full* hostname, because
+   `careers-amd.icims.com` and `careers-xyz.icims.com` are different walls, and
+   a platform that averages fine can still have a board that never works.
+3. **What went wrong**, counted, worst platform first.
+4. **Required questions left unanswered** — the exact wording of every question
+   the filler had no answer for. The most actionable section in the file.
+5. **Recent events** — the stage-by-stage trail through one job.
+
+Two layers keep it a fixed size: an aggregate that grows with the number of
+*distinct problems*, never with the size of a run (2,000 identical failures are
+one row), and a capped ring of recent events. Writes are serialised, because a
+dozen job tabs incrementing a shared counter lose increments otherwise — and a
+recorder that quietly undercounts is worse than none.
+
+**It never records a field's value.** Question labels yes, answers never: a
+report that carries what you typed is a copy of your personal data going
+wherever the report goes.
+
+Instrumentation sits on `saveQ`, the one function all eight terminal-status
+paths funnel through, rather than on each of them — covering seven of eight is
+how you end up trusting a wrong number.
+
+While wiring it up: `fillReport()` read `getMissingRequired()`'s return as
+elements, but it returns label **strings**, so every entry collapsed to
+`(unlabelled)` — the one line meant to name the blocking question had been
+naming nothing.
+
+### A driver that could never have run
+
+A second, older `smartRecruitersAutomation` was sitting in this file. JavaScript
+lets a later `function f(){}` silently replace an earlier one in the same scope
+— no error, no warning — so one of the two never ran, and an edit made to the
+wrong copy would have done nothing with no way to tell why.
+
+It happened to be the dead one that was stale, so it cost nothing this time. Had
+the order been reversed, every SmartRecruiters job would have run the naive
+driver and no amount of reading the shadow-aware code would have explained it.
+Deleted, and `tests/references.test.js` now fails on any such pair — scope-aware,
+since the same helper name in two separate IIFEs is fine and deliberate.
+
+### "Cover Letter is required."
+
+Greenhouse reported this in red on a form the pass believed it had finished. A
+required cover letter is not a text box — it is an upload widget with Attach /
+Google Drive / **Enter manually** beside it, so nothing that fills textareas
+touched it and nothing that attaches the CV recognised it either.
+
+Two ways to satisfy one, in order of how much the employer will like the result:
+open the **Enter manually** box and write a letter addressed to them, or failing
+that synthesise a `.txt` and attach it — every one of these widgets lists txt
+among its accepted types. Only ever when it is **required**; an optional cover
+letter is still left alone, because a generic one nobody asked for is worse than
+none.
+
+### Dropdowns that are not comboboxes
+
+Comeet renders a Bootstrap dropdown — `a.dropdown-toggle` over
+`ul.dropdown-menu > li > a` — with no ARIA roles at all. Neither the discovery
+selector nor the option reader matched one, so every Comeet dropdown sat on its
+placeholder. Both now cover it.
+
+And some "dropdowns" are only a costume: a nice-select-style wrapper over a real
+`<select>`. Driving the costume means synthesising clicks on rows that merely
+mirror the control; the `<select>` is set directly instead, matched on option
+**text** (the answer is "5-10 years", not whatever value the page uses) and
+confirmed against the control afterwards — `setSelectValue` reports success
+unconditionally, so trusting it would claim a select it never set.
+
+### Workday: never reaching the form, then never getting past the account step
+
+Two reports, both Workday.
+
+**An NXP job description sat with its Apply button unpressed.** Three reasons,
+all in the driver's first phase. It used `$`/`$$` — `document.querySelector` —
+which stops at a shadow boundary, while every other driver had long since moved
+to the deep finders. Its selector list was two automation-ids out of date
+(Workday's current job page uses `adventureButton`). And it clicked, slept two
+seconds, and carried on regardless, so when the click did not take, everything
+after it ran against the job description. It now looks across shadow roots,
+knows the current ids, waits for the page to actually change, and retries — and
+says so when Apply leads nowhere instead of dying quietly.
+
+**A Ciena sign-in page had email and password filled and Sign In never pressed
+— "just keeps re-autofilling".** The Create Account branch deadlocked itself:
+the fill pass deliberately skips marketing opt-ins, and the submit gate below it
+demanded that *every* visible checkbox be ticked. One marketing box and the form
+could never satisfy its own gate — never submitted, pass runs again, refills,
+waits again, forever. The gate now asks only about the boxes we are responsible
+for: required ones and genuine consent.
+
+The account watcher had a second bug in the same area. It is armed for a manager
+job, but its guard only knew about the Fully Automated toggle and the single-tab
+runner — so in **Queue Manager mode** it woke every 1.5s, decided it was not
+wanted, and did nothing. The account step was never handled in exactly the mode
+that runs hundreds of jobs.
+
+### A consent banner is a click blocker
+
+Ciena's page carried a cookie banner across the top of the form. These are
+fixed-position with a high z-index, so a real click on anything underneath lands
+on the banner instead and every step afterwards appears to do nothing. It is
+dismissed before anything else is clicked — Accept rather than Decline, since
+Decline opens a preferences dialog on some implementations, which is a second
+and larger blocker. The button must sit inside something that reads as a consent
+banner, because "OK" and "Continue" are everywhere and pressing the wrong one
+submits the application.
+
+### Workable and iCIMS: the form was in a frame nothing could see
+
+Both were reported skipping, and both are named in the orchestrator's own
+comment as ATS that put the application in a **cross-origin iframe**. The worker
+could already inject this script into those frames — `injectAllFrames` has been
+there all along. Only the Queue Manager ever asked it to.
+
+So the same job could be applied to in one mode and skipped in the other. The
+single-tab runner and the Fully Automated path now ask too, via a
+`UA_INJECT_FRAMES` message the worker answers for the sender's own tab, once per
+document.
+
+The iCIMS driver had literally detected the iframe, logged that it could not
+reach into one, and carried on against a top document with no form in it. It now
+asks for the frames, asks again after Apply navigates (new document, new
+frames), and hands its account wall — the `/jobs/<id>/login` route, which is what
+"iCIMS requires signup" means — to the shared handler rather than a second copy
+of that logic.
+
+Workable was routed by **host only**, so a board white-labelled onto an
+employer's domain fell through to the generic path while Workday, Greenhouse and
+the rest accepted the DOM fingerprint. Its fields were also read with
+`document.querySelector`, which does not cross a boundary.
+
+### "Autofill jitters, scrolls up and down super fast"
+
+`inView` demanded that a control be **entirely** inside the viewport. On a real
+form that is almost never true — a tall fieldset, a control at the top edge, a
+radio group straddling the fold all failed it — so nearly every click scrolled,
+a pass with twenty controls scrolled twenty times, and the passes repeat.
+
+Being visible enough to click is the actual question, so any overlap with the
+viewport now counts, plus a 25% margin. On top of that, scrolls are rate-limited
+to one per 400ms: a click does not need the element on screen (synthetic events
+carry no coordinates and `el.click()` works off-screen), so scrolling is a
+courtesy — skipping one costs nothing, doing forty a second costs the page.
+
+### `nativeSet is not defined` — the recorder's first real catch
+
+The first diagnostics export covered 265 jobs and named one failure above every
+other, on every single board: **`nativeSet is not defined`**.
+
+`nativeSet` is the setter every driver writes fields through. Six weeks ago a
+commit renamed this file's copy to `nativeSetLegacyUnused` and added the
+replacement — to a **different IIFE**, past the end of the scope its hundred
+callers live in. Every one of those calls threw `ReferenceError`, every throw was
+swallowed by the `try/catch` around its pass, and the field was silently left
+empty. That is a large share of every "filled nothing and skipped" since.
+
+`tests/references.test.js` had checked that called names were declared, but
+file-wide — it saw a declaration and a call and was satisfied. It is scope-aware
+now: each top-level IIFE is checked against its own declarations plus the module
+level. That immediately found two more of the same thing (`extractJDCompany`
+called from the main scope but declared in a later one, and `nativeSet` needed by
+the STAR-answers scope once the shared copy moved). `stripLiterals` also had to
+start preserving newlines, or every line number it reported pointed at the wrong
+code.
+
+### The count was wrong, and so were the ATS labels
+
+265 jobs from a 64-job queue. The "already reported" mark was a `Set` in the
+content script, which lasts exactly one document: every navigation started an
+empty one, so every finished job was reported again on the next page, and the
+next. The mark lives on the job record now, which is saved with the queue — and
+is cleared on retry, because a retry is a genuinely new outcome.
+
+The same bug poisoned the ATS column. Re-describing an old job from whatever page
+happened to be open stamped it with *that* page's platform, which is how
+`jobs.workable.com` and `jobs.smartrecruiters.com` were both filed under
+Greenhouse. A job is now described only by what the queue knows about it.
+
+### "Leave site?" is off, unconditionally
+
+It was gated on the automation flag, so it kept returning in the gaps — before a
+job claims the tab, after the run hands it back, on a tab the queue skipped. Each
+one a frozen page waiting for a human to click Leave.
+
+The gate is now a constant. The cost is real and worth stating: a form you were
+filling in **by hand** in one of these tabs will no longer warn you before you
+navigate away. `confirm`, `alert` and `prompt` are *not* unconditional — those
+still behave normally while you browse.
+
+### Three things the recorder found out about itself
+
+The first real export, 1,482 recorded outcomes, and its most useful section was
+**empty**. Unanswered questions were only ever captured from `logFillReport`,
+which runs when a submit is attempted — so a job that failed *before* reaching
+submit, which is most of them, contributed nothing at all. They are captured at
+the moment of failure now, in both the manager and single-tab paths, while the
+page is still there to be read. A job that succeeded is not asked what it failed
+to answer.
+
+`page.reject: A listener indicated an asynchronous response by returning true,
+but the message channel closed before a response was received` — our own bug. A
+handler called `sendResponse` and *then* returned `true`, telling Chrome to hold
+the port open for a reply that had already been sent.
+
+`page.error: script error` with nothing else is what a cross-origin script gives
+and cannot be acted on. Both hooks now carry the stack frame that raised the
+fault. They still only fire while a job is being driven — a recorder full of
+other sites' bugs hides ours.
+
+Suite total: **1,353 assertions**, all green on Jobright 1.23.0.
+
+---
+
+## Reading the diagnostics
+
+**Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
+report in it — read it there, **Copy all** to paste it somewhere, or **Download
+.txt** for a timestamped file. **Reset record** starts the count over, which is
+worth doing before a fresh test run: a record spanning several builds mixes
+bugs that are fixed with ones that are not and the counts stop meaning anything.
+
+To open the panel: right-click any page → **Jobright Queue Manager (side
+panel)**, or the **🗂 Queue Manager** button in Jobright's own sidebar.
+
+During a run the in-page panel also carries a one-line summary — *Most failures:
+… (n)* — and clicking that line copies the same grouped list for the current
+queue.
+
+The report is plain text, five sections, worst first. Nothing in it is a field
+value; question labels only.
+
 ## Using the CSV queue
 
 1. Right-click any page → **Jobright Queue Manager (side panel)** — or use the

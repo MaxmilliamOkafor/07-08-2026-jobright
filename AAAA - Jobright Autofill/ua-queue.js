@@ -183,6 +183,89 @@
     log(`${sourceName ? sourceName + ': ' : 'Import: '}${parts.join(', ')}`, additions.length ? 'ok' : 'err');
   }
 
+  /* Every failure with its reason, grouped and counted, as plain text.
+     A run that reports "15 failed" and nothing else cannot be acted on — the
+     reasons are all recorded per job, they were just never anywhere you could
+     get at them in one go. Grouped because fifteen failures are usually three
+     causes, and the counts are what say which one to fix first. */
+  /* The whole recorder, as one block of text. "Copy failures" covers the run
+     you just did; this covers everything the extension has ever seen — which
+     ATS are working, which are not, and the exact questions it could not
+     answer. Downloaded as well as copied, because a long report is past what
+     most places will take on a paste. */
+  /* Show the report before doing anything with it. Copying and downloading
+     silently — which is what this did — leaves you with no idea whether it
+     worked or what is in it, and reading it is the point: the fix list is in
+     there, not in the file name. */
+  function extractDiagnostics() {
+    const box = $('diagBox');
+    box.value = 'Reading…';
+    try { $('diagDlg').showModal(); } catch (_) { $('diagDlg').setAttribute('open', ''); }
+    chrome.runtime.sendMessage({ type: 'UA_DIAG_REPORT' }, (r) => {
+      void chrome.runtime.lastError;
+      box.value = (r && r.text) ||
+        'Diagnostics unavailable — the service worker did not answer.\n\n' +
+        'Reload the extension at chrome://extensions and run a batch, then try again.';
+      box.scrollTop = 0;
+    });
+  }
+
+  function downloadDiagnostics() {
+    const text = $('diagBox').value || '';
+    if (!text.trim()) return;
+    try {
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `jobright-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      log('Diagnostics downloaded', 'ok');
+    } catch (_) { log('Could not download — select the text and copy it instead', 'err'); }
+  }
+
+  function copyFailures() {
+    const bad = queue.filter((j) => j.status === 'failed' || j.status === 'timeout' || j.status === 'skipped');
+    if (!bad.length) { log('No failures to copy', 'ok'); return; }
+    const byReason = new Map();
+    for (const j of bad) {
+      const key = `${j.status}: ${j.error || 'no reason recorded'}`;
+      if (!byReason.has(key)) byReason.set(key, []);
+      byReason.get(key).push(j.url);
+    }
+    const groups = [...byReason.entries()].sort((a, b) => b[1].length - a[1].length);
+    const done = queue.filter((j) => j.status === 'done').length;
+    const out = [
+      `Jobright queue — ${queue.length} jobs, ${done} applied, ${bad.length} not`,
+      '',
+    ];
+    for (const [reason, urls] of groups) {
+      out.push(`${urls.length}x  ${reason}`);
+      for (const u of urls.slice(0, 8)) out.push(`      ${u}`);
+      if (urls.length > 8) out.push(`      …and ${urls.length - 8} more`);
+      out.push('');
+    }
+    const text = out.join('\n');
+    const ok = () => log(`Copied ${bad.length} failure${bad.length === 1 ? '' : 's'} in ${groups.length} group${groups.length === 1 ? '' : 's'}`, 'ok');
+    try {
+      navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok));
+    } catch (_) { fallbackCopy(text, ok); }
+  }
+  // Clipboard access can be refused in a side panel; a textarea always works.
+  function fallbackCopy(text, ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      ok();
+    } catch (_) { log('Could not copy — use ⬇ Export instead', 'err'); }
+  }
+
   function exportCsv() {
     const cols = ['url', 'title', 'companyName', 'jobBoard', 'status', 'error', 'addedAt', 'startedAt', 'completedAt', 'duration'];
     const esc = (v) => { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
@@ -468,10 +551,30 @@
   });
 
   $('btnExport').addEventListener('click', exportCsv);
+  $('btnCopyFails').addEventListener('click', copyFailures);
+  $('btnDiag').addEventListener('click', extractDiagnostics);
+  $('diagDownload').addEventListener('click', downloadDiagnostics);
+  $('diagClose').addEventListener('click', () => { try { $('diagDlg').close(); } catch (_) { $('diagDlg').removeAttribute('open'); } });
+  $('diagCopy').addEventListener('click', () => {
+    const text = $('diagBox').value || '';
+    const ok = () => log('Diagnostics copied', 'ok');
+    try { navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok)); }
+    catch (_) { fallbackCopy(text, ok); }
+  });
+  /* Clearing is offered because a record spanning several builds mixes bugs that
+     are fixed with ones that are not, and the counts stop meaning anything. */
+  $('diagClear').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'UA_DIAG_CLEAR' }, () => {
+      void chrome.runtime.lastError;
+      $('diagBox').value = 'Record cleared. Run a batch, then open this again.';
+      log('Diagnostics record cleared', 'ok');
+    });
+  });
   $('btnRetry').addEventListener('click', async () => {
     let n = 0;
     await mutateQ((q) => {
-      for (const j of q) if (j.status === 'failed' || j.status === 'timeout') { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; n++; }
+      // delete j.diagged: a retried job is a new outcome and must be counted again.
+      for (const j of q) if (j.status === 'failed' || j.status === 'timeout') { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; delete j.diagged; n++; }
     });
     log(n ? `${n} failed job${n === 1 ? '' : 's'} back to pending` : 'No failed jobs', n ? 'ok' : '');
     if (n && running) cmd('kick');
@@ -526,7 +629,7 @@
       const id = btn.dataset.retry;
       await mutateQ((q) => {
         const j = q.find((x) => x.id === id);
-        if (j) { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; }
+        if (j) { j.status = 'pending'; j.error = null; j.startedAt = null; j.completedAt = null; delete j.diagged; }
       });
       if (running) cmd('kick');
     }

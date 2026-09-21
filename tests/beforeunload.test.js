@@ -95,30 +95,46 @@ for (const [how, handler] of Object.entries(ARMERS)) {
   eq(`window.onbeforeunload = fn + ${how} → suppressed`, env.fire(), false);
 }
 
-console.log('while browsing manually, the site behaves exactly as it intended');
+/* This used to stand down whenever a job was not in flight, and that is exactly
+   how the prompt kept coming back: in the gap before a job claims the tab, on a
+   page the run had already handed back, on a tab the queue skipped. Each one is
+   a frozen page waiting for a human to click Leave.
+
+   It is unconditional now, and the cost is named rather than hidden: a form you
+   were filling in BY HAND in one of these tabs will no longer warn you before
+   you navigate away from it. */
+console.log('and it stays off when no job is running — that is the point');
 for (const [how, handler] of Object.entries(ARMERS)) {
   const env = makeEnv({ automating: () => false });
   env.win.addEventListener('beforeunload', handler);
-  eq(`addEventListener + ${how} → still warns you`, env.fire(), true);
+  eq(`idle, addEventListener + ${how} → still no prompt`, env.fire(), false);
 }
 for (const [how, handler] of Object.entries(ARMERS)) {
   const env = makeEnv({ automating: () => false });
   env.win.onbeforeunload = handler;
-  eq(`window.onbeforeunload = fn + ${how} → still warns you`, env.fire(), true);
+  eq(`idle, window.onbeforeunload = fn + ${how} → still no prompt`, env.fire(), false);
 }
 
-console.log('the decision is made when the event fires, not when it is registered');
+console.log('no state can bring it back');
 {
-  // The page registers its handler at load, long before a job starts.
   let automating = false;
   const env = makeEnv({ automating: () => automating });
   env.win.addEventListener('beforeunload', (e) => { e.preventDefault(); });
-  eq('registered while idle, fired while idle → warns', env.fire(), true);
+  eq('registered and fired while idle', env.fire(), false);
   automating = true;
-  eq('same listener, fired mid-run → suppressed', env.fire(), false);
+  eq('fired mid-run', env.fire(), false);
   automating = false;
-  eq('and it warns again the moment the run ends', env.fire(), true);
+  eq('and fired again after the run ends', env.fire(), false);
 }
+eq('the gate is a constant, not a flag that can flip back',
+  /const beforeUnloadSilenced = \(\) => true;/.test(src), true);
+eq('and the wrapper asks it, not the automation flag',
+  /if \(!beforeUnloadSilenced\(\)\) return listener\.apply\(this, arguments\);/.test(src), true);
+/* confirm/alert/prompt are NOT unconditional — those must still behave normally
+   while you are browsing, or you would lose real dialogs you asked for. */
+eq('confirm still stands down when the automation is not driving',
+  /if \(automating\(\)\) \{\n      \/\/ Answering "no" to a destructive prompt/.test(src), true);
+eq('and so does alert', /if \(!automating\(\)\) return orig\.alert\.apply\(window, arguments\);/.test(src), true);
 
 console.log('the page keeps working');
 {
