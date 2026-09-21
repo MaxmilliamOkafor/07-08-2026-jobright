@@ -2458,7 +2458,25 @@ The diagnostics trail is what identified this: last event
 entries worth reading. Stages are breadcrumbs, not problems; they stay in RECENT
 EVENTS where they belong.
 
-Suite total: **1,367 assertions**, all green on Jobright 1.23.0.
+### Nothing about the run is pinned over the employer's page any more
+
+Two overlays went:
+
+- The **CAPTCHA bar** — full width, amber, pinned to the top, covering the
+  employer's own header and sitting above the form you were reading. It is
+  information about the *run*, and the run already has a panel. The state is held
+  now and the control panel renders it: *"Waiting — solve the reCAPTCHA to
+  continue"*, in the one place already dedicated to what the run is doing.
+  Nothing is lost, and a run waiting on a human no longer reads as
+  "Processing…", which looked exactly like a hang.
+- The **"&lt;ATS&gt; Detected" pill** in the top-right corner, for the same reason.
+  The panel names the platform, the queue rows carry it, and the whole
+  diagnostics report is organised by it.
+
+The control panel itself stays — it is the Pause / Skip / Quit you actually
+press.
+
+Suite total: **1,376 assertions**, all green on Jobright 1.23.0.
 
 ---
 

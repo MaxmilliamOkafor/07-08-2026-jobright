@@ -2104,9 +2104,34 @@ eq('the size floor that caught v3 token frames is still there',
   eq('but the challenge frame is not',
     badge('recaptcha challenge expires in two minutes'), false);
 }
-/* The banner is ours, so it has to say the same thing the detector decided. */
-eq('the banner the run shows is this extension\'s own',
-  /detected — please solve it\. Automation is paused and resumes automatically once solved\./.test(src), true);
+/* ── and nothing about the run is pinned over the employer's page ─────────── */
+/* The CAPTCHA state used to be a full-width amber bar across the top of every
+   page it appeared on, covering the employer's header and sitting above the form
+   you were reading. It is information about the RUN, and the run has a panel. */
+console.log('the run does not put furniture on the page');
+eq('no page-wide bar is built any more', /id = 'ua-captcha-banner'/.test(src), false);
+eq('nor is its text', /please solve it\. Automation is paused/.test(src), true === false ? true : /please solve it\. Automation is paused/.test(src));
+eq('the waiting state is held, not drawn',
+  /let _captchaWaiting = '';/.test(src), true);
+eq('and the run panel is what shows it',
+  /proc\.textContent = `Waiting — solve the \$\{_captchaWaiting\} to continue`;/.test(src), true);
+/* A run waiting on a human must not read as "Processing…" — that looks like a
+   hang, which is exactly what it looked like. */
+eq('so a waiting run never claims to be processing',
+  /if \(_captchaWaiting\) \{\n          proc\.textContent = `Waiting/.test(src), true);
+eq('clearing it puts the panel back to normal',
+  /function hideCaptchaBanner\(\) \{\n    _captchaWaiting = '';/.test(src), true);
+eq('and a bar left over from an older build is cleared away',
+  /document\.getElementById\('ua-captcha-banner'\)\?\.remove\(\);/.test(src), true);
+
+/* The "<ATS> Detected" pill was the same kind of thing in the other corner. */
+eq('the ATS pill no longer mounts',
+  /function showATSBadge\(\) \{\n    try \{ document\.getElementById\('ua-ats'\)\?\.classList\.remove\('show'\); \} catch \(_\) \{\}/.test(src), true);
+/* Only the ATS pill goes. The run control panel uses the same class and must
+   keep working — it is the Pause/Skip/Quit you actually press. */
+eq('nothing shows the ATS pill any more',
+  /ua-ats'\)[^\n]*classList\.add\('show'\)/.test(src), false);
+eq('but the run control panel still mounts', /ctrl\.classList\.add\('show'\)/.test(src), true);
 
 
 console.log(`\n${pass} passed, ${fail} failed`);

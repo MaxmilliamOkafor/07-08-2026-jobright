@@ -4376,19 +4376,26 @@
       return null;
     } catch (_) { return null; }
   }
+  /* There used to be a full-width bar pinned across the top of the page here,
+     and it was the wrong place for this. It covered the employer's own header on
+     every page it appeared on, it sat above the form you were trying to read,
+     and it was page-wide furniture for a piece of information about the RUN.
+
+     The run already has somewhere to say things: the control panel, which is on
+     screen for the whole run and out of the way of the page. So the state is
+     held here and the panel renders it — see updateCtrl. Nothing is lost; it
+     simply stopped shouting. */
+  let _captchaWaiting = '';
   function showCaptchaBanner(provider) {
-    try {
-      let b = document.getElementById('ua-captcha-banner');
-      if (!b) {
-        b = document.createElement('div');
-        b.id = 'ua-captcha-banner';
-        b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b45309;color:#fff;padding:10px 16px;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.35)';
-        (document.body || document.documentElement).appendChild(b);
-      }
-      b.textContent = `🧩 ${provider || 'Captcha'} detected — please solve it. Automation is paused and resumes automatically once solved.`;
-    } catch (_) {}
+    _captchaWaiting = provider || 'CAPTCHA';
+    try { updateCtrl(); } catch (_) {}
   }
-  function hideCaptchaBanner() { try { document.getElementById('ua-captcha-banner')?.remove(); } catch (_) {} }
+  function hideCaptchaBanner() {
+    _captchaWaiting = '';
+    // Clear any bar left over from a build that still drew one.
+    try { document.getElementById('ua-captcha-banner')?.remove(); } catch (_) {}
+    try { updateCtrl(); } catch (_) {}
+  }
   // Wait (bounded) for the visible captcha to be solved/dismissed. Returns true if clear.
   /* A CAPTCHA is a human check and this does not try to answer one. What it does
      is make the wait VISIBLE and bounded. A queue job runs in a background tab, so
@@ -10354,7 +10361,14 @@
       }
       const proc = document.getElementById('uc-proc');
       if (proc) {
-        if (qPaused) { proc.textContent = 'Paused'; proc.classList.add('paused'); }
+        /* A run that is waiting on you must say so, or it reads as "Processing…"
+           forever and looks like a hang. This is the same information the
+           page-wide banner used to carry, in the one place already dedicated to
+           the state of the run. */
+        if (_captchaWaiting) {
+          proc.textContent = `Waiting — solve the ${_captchaWaiting} to continue`;
+          proc.classList.add('paused');
+        } else if (qPaused) { proc.textContent = 'Paused'; proc.classList.add('paused'); }
         else { proc.textContent = 'Processing…'; proc.classList.remove('paused'); }
       }
       // Reflect persisted speed on the selector.
@@ -10418,7 +10432,18 @@
     else { el.className = 'ua-stat off'; t.textContent = 'Inactive'; }
   }
 
-  function showATSBadge() { const a = detectATS(); if (a) { document.getElementById('ua-ats-n').textContent = a + ' Detected'; document.getElementById('ua-ats').classList.add('show'); } }
+  /* The "<ATS> Detected" pill in the top-right corner is gone for the same
+     reason the CAPTCHA bar is: it is furniture pinned over the employer's own
+     page, telling you something about the run rather than about the page it is
+     covering. The run panel already names the platform, the queue rows carry it,
+     and the diagnostics report is built around it — three places that are not
+     on top of the form.
+
+     The element and its styles are left in place so nothing that looks for them
+     breaks; it simply never mounts. */
+  function showATSBadge() {
+    try { document.getElementById('ua-ats')?.classList.remove('show'); } catch (_) {}
+  }
 
   // ===================== OBSERVER =====================
   let _sbInjectThrottle = 0;
