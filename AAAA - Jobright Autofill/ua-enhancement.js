@@ -4992,8 +4992,12 @@
       if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
       LOG(`Multi-page: processing page ${page}`);
 
-      // Wait for page content to change
-      await sleep(2000);
+      /* Every wait in this loop is now speed-scaled. They were flat numbers, so
+         the 1x/1.5x/2x/3x selector did nothing here at all — and this loop is
+         where a job spends most of its life. A page iteration carried close to
+         ten seconds of unconditional sleep, eighteen pages of budget, and the
+         selector could not touch a millisecond of it. */
+      await sleep(scaled(2000, 350));
 
       // Detect whether the page actually advanced. getPageHash is URL + visible-field
       // count + labels, which stays IDENTICAL when a Workday-style page rejects "Save
@@ -5005,7 +5009,7 @@
       // now know how to (e.g. the disclosure "No" defaults + the React select setter).
       const newHash = getPageHash();
       if (page > 1 && newHash === prevPageHash) {
-        await sleep(2000);
+        await sleep(scaled(2000, 350));
         const stillSame = getPageHash() === prevPageHash;
         const fixable = pageHasValidationError() || getMissingRequired().length > 0;
         if (stillSame) {
@@ -5028,25 +5032,30 @@
 
       // Try Jobright autofill again
       await triggerAutofill();
-      await sleep(3000);
+      await sleep(scaled(3000, 500));
 
-      // Fallback fill — two passes + validation fix
-      await fallbackFill();
-      await sleep(1000);
-      await fallbackFill();
-      await sleep(500);
+      /* Fallback fill. The second pass exists to catch fields that only appear
+         once the first pass answers something — so it is worth running when the
+         first pass DID something, and pure cost when it did not. It used to run
+         unconditionally, twice a page, eighteen pages deep. */
+      const firstPass = await fallbackFill();
+      if (firstPass) {
+        await sleep(scaled(1000, 200));
+        await fallbackFill();
+      }
+      await sleep(scaled(500, 120));
       // Conditional sub-questions, declaration boxes and anything still required —
       // this is also what re-scans after an answer reveals a follow-up question.
       await guaranteeRequiredFields();
       await handleValidationErrors();
-      await sleep(300);
+      await sleep(scaled(300, 100));
 
       // Submit or next
       const beforeAction = getPageHash();
       const action = await autoSubmitOrNext();
       if (action === 'submitted') {
         LOG('Submitted on page ' + page);
-        await sleep(3000);
+        await sleep(scaled(3000, 600));
         if (confirmSubmitted()) { LOG('Success confirmed after submit'); break; }
         // Some ATS show a final review/confirm step after the first "submit" —
         // keep looping so we click it too instead of stopping prematurely.
@@ -5061,13 +5070,13 @@
         continue;
       } else {
         // No submit/next found — re-fill once and retry; only stop if still nothing.
-        await sleep(1500);
+        await sleep(scaled(1500, 300));
         await openApplicationForm();
         await handleAccountAuth();
         await fallbackFill();
         await handleValidationErrors();
         const retry = await autoSubmitOrNext();
-        if (retry) { LOG('Retry result: ' + retry); await sleep(3000); continue; }
+        if (retry) { LOG('Retry result: ' + retry); await sleep(scaled(3000, 600)); continue; }
         LOG('Nothing left to click on page ' + page + ' — ending loop');
         break;
       }

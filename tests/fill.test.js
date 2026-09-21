@@ -2134,5 +2134,52 @@ eq('nothing shows the ATS pill any more',
 eq('but the run control panel still mounts', /ctrl\.classList\.add\('show'\)/.test(src), true);
 
 
+/* ── 55. the speed selector must reach the loop a job lives in ────────────── */
+/* "automation is too slow". A diagnostics trail over six Greenhouse jobs showed
+   the same four passes cycling, and multiPageLoop — where a job spends most of
+   its life — carried close to ten seconds of UNCONDITIONAL sleep per page
+   iteration, eighteen pages of budget, every one of them a flat number the
+   1x/1.5x/2x/3x selector could not touch. */
+console.log('the speed selector reaches the multi-page loop');
+const mpl = body('multiPageLoop');
+eq('no flat sleep is left in the loop', /await sleep\(\d/.test(mpl), false);
+eq('and every wait goes through the scaler',
+  (mpl.match(/sleep\(scaled\(/g) || []).length >= 8, true);
+/* Each has a floor: at 3x a wait still has to be long enough for a page to do
+   something, or the loop just spins faster over the same unchanged DOM. */
+for (const [ms, floor] of [[2000, 350], [3000, 500], [1500, 300], [300, 100]])
+  eq(`the ${ms}ms wait keeps a ${floor}ms floor`, mpl.includes(`scaled(${ms}, ${floor})`), true);
+
+/* The second fill pass exists to catch fields revealed BY the first. If the
+   first filled nothing, there is nothing to reveal and it is pure cost —
+   twice a page, eighteen pages deep. */
+eq('the second fill pass only runs when the first one did something',
+  /const firstPass = await fallbackFill\(\);\n      if \(firstPass\) \{/.test(mpl), true);
+eq('and fallbackFill reports a count for it to test',
+  /return filled \+ refilled \+ locFixed;/.test(body('fallbackFill__impl')), true);
+
+// The arithmetic, on the real numbers.
+{
+  const scaled = (ms, floor, factor) => Math.max(floor || 60, Math.round(ms * factor));
+  const F = { 1: 1, 1.5: 0.66, 2: 0.45, 3: 0.3 };
+  const perPage = (f) => scaled(2000, 350, f) + scaled(3000, 500, f) +
+    scaled(1000, 200, f) + scaled(500, 120, f) + scaled(300, 100, f);
+  eq('a page iteration at 1x sleeps 6.8s', perPage(F[1]), 6800);
+  eq('at 2x it sleeps 3.1s', perPage(F[2]), 3060);
+  eq('and at 3x, 2.05s', perPage(F[3]), 2050);
+  eq('so 3x is roughly three times faster through the loop',
+    Math.round((perPage(F[1]) / perPage(F[3])) * 10) / 10 >= 3, true);
+  // …and skipping the dead second pass takes more off again.
+  const withoutSecond = (f) => perPage(f) - scaled(1000, 200, f);
+  eq('a page where the first pass filled nothing is cheaper still',
+    withoutSecond(F[3]) < perPage(F[3]), true);
+  /* The floors are what stop 3x becoming a busy-loop over an unchanged page. */
+  eq('no wait collapses below its floor at 3x', scaled(300, 100, F[3]), 100);
+}
+/* The inter-job delay was already speed-aware; this checks it stayed that way. */
+eq('the gap between jobs still follows the selector',
+  /const QUEUE_DELAYS = \{ 1: 1500, 1\.5: 1000, 2: 600, 3: 300 \};/.test(src), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

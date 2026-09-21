@@ -2476,7 +2476,24 @@ Two overlays went:
 The control panel itself stays — it is the Pause / Skip / Quit you actually
 press.
 
-Suite total: **1,376 assertions**, all green on Jobright 1.23.0.
+### The speed selector never reached the loop a job lives in
+
+`multiPageLoop` carried close to **ten seconds of unconditional sleep per page
+iteration**, with eighteen pages of budget — and every one of those waits was a
+flat number, so 1x / 1.5x / 2x / 3x could not touch a millisecond of it. This is
+where a job spends most of its life.
+
+All nine are scaled now, each with a floor so 3x does not become a busy-loop over
+an unchanged page. A page iteration goes from **6.8s of sleep at 1x to 2.05s at
+3x**, and 3x is now genuinely about three times faster through the loop rather
+than only affecting the gaps between jobs.
+
+The second fill pass also stopped running unconditionally. It exists to catch
+fields that appear *because* the first pass answered something — so when the
+first pass fills nothing there is nothing to reveal, and it was pure cost, twice
+a page, eighteen pages deep.
+
+Suite total: **1,391 assertions**, all green on Jobright 1.23.0.
 
 ---
 
