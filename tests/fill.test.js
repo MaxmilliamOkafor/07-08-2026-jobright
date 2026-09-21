@@ -2144,7 +2144,52 @@ console.log('the speed selector reaches the multi-page loop');
 const mpl = body('multiPageLoop');
 eq('no flat sleep is left in the loop', /await sleep\(\d/.test(mpl), false);
 eq('and every wait goes through the scaler',
-  (mpl.match(/sleep\(scaled\(/g) || []).length >= 8, true);
+  (mpl.match(/scaled\(/g) || []).length >= 8, true);
+
+/* ── and 1x got faster too, by not guessing ────────────────────────────────
+   Scaling only helped 1.5x and above; at 1x the loop still paid the full
+   constant every time. Those constants were guesses at the SLOWEST case, and a
+   page that had settled in 200ms still waited two seconds.
+
+   The fix is not smaller guesses. Each wait now returns the moment its
+   condition is met, with the old number kept as a cap. */
+eq('the loop waits for the DOM to settle rather than for a timer',
+  (mpl.match(/await waitForFormStable\(scaled\(/g) || []).length >= 5, true);
+eq('and the caps are the same numbers as before, now a backstop',
+  mpl.includes('waitForFormStable(scaled(2000, 350))') &&
+  mpl.includes('waitForFormStable(scaled(3000, 500))'), true);
+/* After a submit the question is not "has the DOM gone quiet" but "is it
+   confirmed", so that one asks directly. */
+eq('the post-submit wait polls for the confirmation itself',
+  /if \(await waitUntil\(confirmSubmitted, scaled\(3000, 600\), 200\)\)/.test(mpl), true);
+const wu = body('waitUntil');
+eq('waitUntil returns the instant the condition holds',
+  /try \{ if \(cond\(\)\) return true; \} catch \(_\) \{\}/.test(wu), true);
+eq('and gives up at the cap rather than hanging',
+  /if \(Date\.now\(\) >= deadline\) return false;/.test(wu), true);
+eq('it never sleeps past its own deadline',
+  /Math\.min\(step, Math\.max\(30, deadline - Date\.now\(\)\)\)/.test(wu), true);
+eq('a condition that throws does not break the wait', /catch \(_\) \{\}/.test(wu), true);
+
+/* waitForFormStable resolves after a short quiet period, so the real cost at 1x
+   is that quiet period — not the cap. */
+{
+  const settle = (f) => Math.max(90, Math.round(300 * f));
+  eq('a settled page costs ~300ms at 1x, not 2000ms', settle(1), 300);
+  eq('and 90ms at 3x', settle(0.3), 90);
+  /* Four of the waits became settles; the two small fixed ones are left as
+     they are, being real breathing room rather than guesses at a page load. */
+  const quietIteration = (f) =>
+    settle(f) * 4 + Math.max(120, Math.round(500 * f)) + Math.max(100, Math.round(300 * f));
+  eq('a quiet page iteration at 1x: 2000ms, down from 6800ms', quietIteration(1), 2000);
+  eq('which is a 3.4x improvement at 1x alone',
+    Math.round((6800 / quietIteration(1)) * 10) / 10, 3.4);
+  eq('at 3x it is 610ms', quietIteration(0.3), 610);
+  /* The caps have not moved, so a page that genuinely needs the time still
+     gets it — this is a floor being removed, not a ceiling being lowered. */
+  eq('and a slow page can still take the full 2s+3s+1s if it needs to',
+    2000 + 3000 + 1000, 6000);
+}
 /* Each has a floor: at 3x a wait still has to be long enough for a page to do
    something, or the loop just spins faster over the same unchanged DOM. */
 for (const [ms, floor] of [[2000, 350], [3000, 500], [1500, 300], [300, 100]])

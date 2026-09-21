@@ -2541,21 +2541,30 @@ ATS losing a draft it would rebuild from the server.
 The tab swap between jobs now opens the replacement at the **outgoing tab's own
 index**, so the strip no longer jumps.
 
-### Is it faster?
+### Is it faster — including at 1x?
 
-Per page iteration, sleep only:
+Scaling only helped 1.5x and above. At 1x the loop still paid the full constant
+every time, and those constants were guesses at the *slowest* case: a page that
+had settled in 200ms still waited two seconds.
+
+The fix was not smaller guesses. Four of the waits now return the moment the DOM
+goes quiet (`waitForFormStable`, which was already there), and the post-submit
+wait polls for the confirmation itself rather than sleeping through the worst
+case. **The old numbers are kept as caps** — a page that genuinely needs the time
+still gets it. This removes a floor; it does not lower a ceiling.
+
+Per page iteration:
 
 | | 1x | 1.5x | 2x | 3x |
 |---|---|---|---|---|
-| before | 6800ms | 6800ms | 6800ms | 6800ms |
-| after | 6800ms | 4488ms | 3060ms | **2050ms** |
-| after, when the first fill pass found nothing | 5800ms | 3828ms | 2610ms | **1750ms** |
+| original (flat, unscalable) | 6800ms | 6800ms | 6800ms | 6800ms |
+| worst case now (the caps) | 6800ms | 4488ms | 3060ms | 2050ms |
+| **a page that has settled** | **2000ms** | **1320ms** | **900ms** | **610ms** |
 
-A three-page job spent **20.4s asleep at every speed setting**; at 3x it is now
-**6.2s**. The selector did nothing here before, so everything in the 1.5x/2x/3x
-columns is new.
+A three-page job on settled pages: **20.4s → 6.0s at 1x**, 1.8s at 3x. That is
+3.4x at 1x alone, before the selector does anything.
 
-Suite total: **1,419 assertions**, all green on Jobright 1.23.0.
+Suite total: **1,432 assertions**, all green on Jobright 1.23.0.
 
 ---
 

@@ -4491,6 +4491,20 @@
      it was a flat 300ms however fast the run was set to go. Scaled now; the
      overall timeout is left alone, because that is a safety cap rather than a
      pace. */
+  /* Wait for something to become true, and return the moment it does. The
+     alternative — sleeping for however long the slowest case takes — is what
+     made 1x slow: the timer ran in full even when the page had settled in
+     200ms. The cap is the backstop, not the expected cost. */
+  async function waitUntil(cond, maxMs, stepMs) {
+    const deadline = Date.now() + (maxMs || 3000);
+    const step = stepMs || 150;
+    for (;;) {
+      try { if (cond()) return true; } catch (_) {}
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(step, Math.max(30, deadline - Date.now())));
+    }
+  }
+
   function waitForFormStable(timeout = 3000) {
     return new Promise(resolve => {
       let timer = null;
@@ -5030,7 +5044,7 @@
          where a job spends most of its life. A page iteration carried close to
          ten seconds of unconditional sleep, eighteen pages of budget, and the
          selector could not touch a millisecond of it. */
-      await sleep(scaled(2000, 350));
+      await waitForFormStable(scaled(2000, 350));
 
       // Detect whether the page actually advanced. getPageHash is URL + visible-field
       // count + labels, which stays IDENTICAL when a Workday-style page rejects "Save
@@ -5042,7 +5056,7 @@
       // now know how to (e.g. the disclosure "No" defaults + the React select setter).
       const newHash = getPageHash();
       if (page > 1 && newHash === prevPageHash) {
-        await sleep(scaled(2000, 350));
+        await waitForFormStable(scaled(2000, 350));
         const stillSame = getPageHash() === prevPageHash;
         const fixable = pageHasValidationError() || getMissingRequired().length > 0;
         if (stillSame) {
@@ -5065,7 +5079,7 @@
 
       // Try Jobright autofill again
       await triggerAutofill();
-      await sleep(scaled(3000, 500));
+      await waitForFormStable(scaled(3000, 500));
 
       /* Fallback fill. The second pass exists to catch fields that only appear
          once the first pass answers something — so it is worth running when the
@@ -5073,7 +5087,7 @@
          unconditionally, twice a page, eighteen pages deep. */
       const firstPass = await fallbackFill();
       if (firstPass) {
-        await sleep(scaled(1000, 200));
+        await waitForFormStable(scaled(1000, 200));
         await fallbackFill();
       }
       await sleep(scaled(500, 120));
@@ -5088,8 +5102,11 @@
       const action = await autoSubmitOrNext();
       if (action === 'submitted') {
         LOG('Submitted on page ' + page);
-        await sleep(scaled(3000, 600));
-        if (confirmSubmitted()) { LOG('Success confirmed after submit'); break; }
+        // Leave the instant the confirmation appears rather than always paying
+        // for the slowest ATS.
+        if (await waitUntil(confirmSubmitted, scaled(3000, 600), 200)) {
+          LOG('Success confirmed after submit'); break;
+        }
         // Some ATS show a final review/confirm step after the first "submit" —
         // keep looping so we click it too instead of stopping prematurely.
         continue;
@@ -5103,13 +5120,13 @@
         continue;
       } else {
         // No submit/next found — re-fill once and retry; only stop if still nothing.
-        await sleep(scaled(1500, 300));
+        await waitForFormStable(scaled(1500, 300));
         await openApplicationForm();
         await handleAccountAuth();
         await fallbackFill();
         await handleValidationErrors();
         const retry = await autoSubmitOrNext();
-        if (retry) { LOG('Retry result: ' + retry); await sleep(scaled(3000, 600)); continue; }
+        if (retry) { LOG('Retry result: ' + retry); await waitForFormStable(scaled(3000, 600)); continue; }
         LOG('Nothing left to click on page ' + page + ' — ending loop');
         break;
       }
