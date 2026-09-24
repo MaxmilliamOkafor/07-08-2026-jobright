@@ -8,7 +8,12 @@ function makeChrome() {
   const store = {};
   const listeners = { changed: [], msg: [], tabUpdated: [], tabRemoved: [], alarm: [], menu: [] };
   let nextTabId = 100;
-  const tabs = new Map();          // tabId → {id, url}
+  const tabs = new Map();          // tabId → {id, url, windowId, active}
+  /* Windows, modelled the way Chrome behaves: a tab created with no windowId
+     lands in whichever window has focus at that moment. */
+  const windows = new Map([[1, { id: 1, type: 'normal', focused: true }]]);
+  let nextWinId = 2;
+  const focusedWin = () => { for (const w of windows.values()) if (w.focused) return w.id; return null; };
   const sent = [];                 // messages the worker sent into tabs
 
   const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
@@ -43,8 +48,11 @@ function makeChrome() {
     tabs: {
       create(opts, cb) {
         const id = nextTabId++;
-        tabs.set(id, { id, url: opts.url });
-        setTimeout(() => cb && cb({ id, url: opts.url }), 0);
+        const windowId = opts.windowId != null ? opts.windowId : focusedWin();
+        if (!windows.has(windowId)) { chrome.runtime.lastError = { message: 'No window' }; setTimeout(() => { cb && cb(undefined); chrome.runtime.lastError = undefined; }, 0); return; }
+        const t = { id, url: opts.url, windowId, active: opts.active !== false };
+        tabs.set(id, t);
+        setTimeout(() => cb && cb({ ...t }), 0);
       },
       get(id, cb) {
         setTimeout(() => {
@@ -53,12 +61,39 @@ function makeChrome() {
         }, 0);
       },
       remove(id, cb) { tabs.delete(id); setTimeout(() => cb && cb(), 0); },
+      update(id, props, cb) {
+        const t = tabs.get(id);
+        if (t && props.url && !chrome.__blockNav) {
+          t.url = props.url;
+          setTimeout(() => listeners.tabUpdated.forEach((l) => l(id, { status: 'loading', url: props.url }, { ...t })), 0);
+        }
+        if (t && props.active) t.active = true;
+        setTimeout(() => cb && cb(t ? { ...t } : undefined), 0);
+      },
       sendMessage(tabId, payload, opts, cb) {
         sent.push({ tabId, payload });
         setTimeout(() => cb && cb({ ok: true }), 0);
       },
       onUpdated: { addListener: (l) => listeners.tabUpdated.push(l) },
       onRemoved: { addListener: (l) => listeners.tabRemoved.push(l) },
+    },
+    windows: {
+      get(id, opts, cb) {
+        setTimeout(() => {
+          if (windows.has(id)) { chrome.runtime.lastError = undefined; cb({ ...windows.get(id) }); }
+          else { chrome.runtime.lastError = { message: 'No window' }; cb(undefined); chrome.runtime.lastError = undefined; }
+        }, 0);
+      },
+      getLastFocused(opts, cb) { setTimeout(() => cb(focusedWin() != null ? { ...windows.get(focusedWin()) } : undefined), 0); },
+      create(opts, cb) {
+        const wid = nextWinId++;
+        windows.set(wid, { id: wid, type: 'normal', focused: opts.focused !== false });
+        if (opts.focused !== false) for (const w of windows.values()) w.focused = w.id === wid;
+        const tid = nextTabId++;
+        const t = { id: tid, url: opts.url, windowId: wid, active: true };
+        tabs.set(tid, t);
+        setTimeout(() => cb && cb({ id: wid, tabs: [{ ...t }] }), 0);
+      },
     },
     alarms: {
       create: () => {}, clear: () => {},
@@ -72,7 +107,10 @@ function makeChrome() {
     notifications: { create: (id, o, cb) => cb && cb() },
     sidePanel: { open: () => Promise.resolve() },
   };
-  return { chrome, store, listeners, tabs, sent };
+  return { chrome, store, listeners, tabs, sent, windows,
+    focus(id) { for (const w of windows.values()) w.focused = w.id === id; },
+    openWindow() { const wid = nextWinId++; windows.set(wid, { id: wid, type: 'normal', focused: false }); return wid; },
+    closeWindow(id) { windows.delete(id); for (const [tid, t] of tabs) if (t.windowId === id) tabs.delete(tid); } };
 }
 
 const tick = (n = 30) => new Promise((r) => { let i = 0; const step = () => (++i >= n ? r() : setTimeout(step, 0)); step(); });
@@ -517,6 +555,74 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('run ends only when nothing is left', env.store.ua_mgr_active, false);
     const logged = (env.store.ua_mgr_log || []).map((l) => JSON.parse(l).m).join(' | ');
     eq('the ending is announced with a breakdown', /Queue complete — \d+ applied/.test(logged), true);
+  }
+
+    /* ── N. the run stays in ONE window, in the background ──
+     "It keeps switching tabs… and stop switching the tab into a different
+     window." A tab created with no window lands wherever you are working. */
+  console.log('a run stays in its own window and never takes the front');
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2'), job('c', 'https://a.com/3')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });   // pressed in window 1
+    await tick(60);
+    eq('the run records the window it was started in', env.store.ua_run_window, 1);
+    const first = [...env.tabs.values()][0];
+    eq('the first job opens there', first && first.windowId, 1);
+    eq('in the background', first && first.active, false);
+
+    // You move to another window and carry on working.
+    const mine = env.openWindow();
+    env.focus(mine);
+    await send(env.listeners, { type: 'UA_JOB_RESULT', id: 'a', status: 'done', ts: 501 });
+    await tick(80);
+    const next = [...env.tabs.values()].find((t) => /a\.com\/2/.test(t.url));
+    eq('the next job opens in the RUN\'s window, not the one you are using', next && next.windowId, 1);
+    eq('still in the background', next && next.active, false);
+    eq('nothing was opened in your window', [...env.tabs.values()].some((t) => t.windowId === mine), false);
+
+    // You close the run's window; the run must not move into yours.
+    env.closeWindow(1);
+    await send(env.listeners, { type: 'UA_JOB_RESULT', id: 'b', status: 'done', ts: 502 });
+    await tick(120);
+    const third = [...env.tabs.values()].find((t) => /a\.com\/3/.test(t.url));
+    eq('with its window gone, the run opens a window of its own', !!third && third.windowId !== mine && third.windowId !== 1, true);
+    eq('which does not take focus', env.windows.get(third && third.windowId) && env.windows.get(third.windowId).focused, false);
+    eq('and your window keeps focus', env.windows.get(mine).focused, true);
+  }
+
+  /* ── N+1. single-tab mode moves to the next job in the SAME tab ── */
+  console.log('the single-tab runner moves to the next job in place');
+  {
+    const env = makeChrome();
+    load(env);
+    await tick();
+    env.chrome.tabs.create({ url: 'https://ats.com/job/1', active: false, windowId: 1 }, () => {});
+    await tick();
+    const tab = [...env.tabs.values()][0];
+    const nav = (url) => new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_NAV_NEXT', url }, { tab: { id: tab.id, index: 0, windowId: 1, active: false } }, resolve);
+        if (kept === true) return;
+      }
+      resolve(undefined);
+    });
+    await nav('https://ats.com/job/2');
+    await new Promise((r) => setTimeout(r, 3300));
+    eq('no new tab is opened', env.tabs.size, 1);
+    eq('the same tab now shows the next job', env.tabs.get(tab.id) && env.tabs.get(tab.id).url, 'https://ats.com/job/2');
+
+    // A page that holds the navigation: the swap stays in that window, in the background.
+    env.chrome.__blockNav = true;
+    await nav('https://ats.com/job/3');
+    await new Promise((r) => setTimeout(r, 3300));
+    const repl = [...env.tabs.values()].find((t) => /job\/3/.test(t.url));
+    eq('a held page is swapped out', !!repl && !env.tabs.has(tab.id), true);
+    eq('into the same window', repl && repl.windowId, 1);
+    eq('without coming to the front', repl && repl.active, false);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

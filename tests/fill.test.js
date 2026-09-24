@@ -1482,8 +1482,8 @@ eq('and that window is three missed pings, not one',
    update both re-raise the prompt we are stuck behind, so they are not options. */
 eq('the stuck tab is closed, not reloaded',
   /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
-eq('and the run carries on in a fresh tab on the same job',
-  /chrome\.tabs\.create\(\{ url, active: true \}/.test(orch), true);
+eq('and the run carries on in a fresh BACKGROUND tab, in the same window, on the same job',
+  /const t = await openRunTab\(url, \{ active: false, windowId: old \? old\.windowId : undefined \}\);/.test(orch), true);
 eq('which is handed the runner marker so it resumes rather than idles',
   /if \(t && typeof t\.id === 'number'\) set\(\{ ua_runner_tab: t\.id \}\);/.test(orch), true);
 eq('with nothing left to resume it does not churn tabs',
@@ -2249,13 +2249,20 @@ eq('and the fallback runs at most once', /if \(!done\) \{ done = true;/.test(gnj
 
 eq('the worker closes the old tab, which beforeunload cannot veto',
   /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
-eq('the next job opens in a fresh tab',
-  /chrome\.tabs\.create\(\{ url, active: true, index:/.test(orch), true);
+eq('the next job opens in the SAME tab, navigated in place',
+  /chrome\.tabs\.update\(tabId, \{ url \}, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
+eq('a swap happens only if the in-place move never started',
+  /if \(started\) return;\n\s*chrome\.tabs\.create\(\{ url, active: !!was\.active,/.test(orch), true);
+/* "It keeps switching tabs — it's messing up my use of my PC." Nothing the
+   automation does on its own may bring a tab or window to the front. */
+eq('no automated path opens an active tab', /tabs\.create\(\{[^}]*active: true/.test(orch), false);
+eq('no automated path activates a tab', /tabs\.update\([^)]*active: true/.test(orch), false);
+eq('no automated path focuses a window', /windows\.update\(/.test(orch) || /windows\.update\(|tabs\.update\([^)]*active/.test(src), false);
 /* The marker has to move BEFORE the old tab goes, or a watchdog tick in between
    sees an active run with no runner tab and starts rescuing it. */
 {
   const nav = orch.slice(orch.indexOf("msg.type === 'UA_NAV_NEXT'"), orch.indexOf("msg.type === 'UA_INJECT_FRAMES'"));
-  eq('the runner marker moves to the new tab before the old one closes',
+  eq('on a swap, the runner marker moves to the new tab before the old one closes',
     nav.indexOf('ua_runner_tab: t.id') < nav.indexOf('chrome.tabs.remove(tabId'), true);
   eq('and only an http(s) url is ever opened', nav.includes("test(url)") && nav.includes('https?:'), true);
   eq('a tab we cannot identify is refused outright', /tabId == null/.test(nav), true);

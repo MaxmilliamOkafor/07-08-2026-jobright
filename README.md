@@ -2870,6 +2870,29 @@ Suite total: **1,616 assertions**, all green.
 
 ---
 
+## v17.6 — a run stays in one tab, one window, and never takes the front
+
+"It keeps switching tabs… and stop switching the tab into a different window."
+Two causes, both fixed:
+
+- **Single-tab mode opened every next job as a new *active* tab** (and closed
+  the old one) — Chrome brings an active tab to the front, so each job pulled
+  you out of whatever you were doing. The same tab is now navigated in place:
+  no new tab, no activation, the tab strip does not move. Only if a page holds
+  the navigation for 3s is the tab swapped — in the same window, and in front
+  only if it already was.
+- **New tabs went to whichever window you were using.** Chrome does that for a
+  tab created without a window. A run now records the window you pressed Start
+  in and opens every job tab there, in the background. Close that window and
+  the run opens one of its own, unfocused — it never moves into yours.
+
+The stuck-tab recovery follows the same rules. A test fails if anything the
+automation does on its own opens an active tab, activates a tab, or focuses a
+window. (The Queue Manager's own "focus this job" button still does, because
+you pressed it.)
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
