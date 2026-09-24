@@ -373,11 +373,15 @@
         return false;
       }
       if (msg.type === 'UA_DIAG_REPORT') {
-        report().then((text) => { try { sendResponse({ ok: true, text }); } catch (_) {} });
+        // Both outcomes reply. A report that throws must not leave the viewer
+        // sitting on "Reading…" until the port is torn down.
+        report().then((text) => { try { sendResponse({ ok: true, text }); } catch (_) {} },
+          (e) => { try { sendResponse({ ok: false, text: 'Diagnostics failed to build: ' + ((e && e.message) || e) }); } catch (_) {} });
         return true;   // async
       }
       if (msg.type === 'UA_DIAG_CLEAR') {
-        clear().then(() => { try { sendResponse({ ok: true }); } catch (_) {} });
+        clear().then(() => { try { sendResponse({ ok: true }); } catch (_) {} },
+          () => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
     });

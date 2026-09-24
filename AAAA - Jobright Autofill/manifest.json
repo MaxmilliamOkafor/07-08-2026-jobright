@@ -36,7 +36,8 @@
     "alarms",
     "contextMenus",
     "notifications",
-    "identity"
+    "identity",
+    "unlimitedStorage"
   ],
   "content_scripts": [
     {

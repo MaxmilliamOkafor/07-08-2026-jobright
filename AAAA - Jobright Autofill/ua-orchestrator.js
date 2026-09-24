@@ -770,7 +770,7 @@
             log(`✓ ${label} — challenge cleared, resuming`, 'ok');
           }
           sendResponse({ ok: true });
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
 
@@ -788,7 +788,7 @@
             if (typeof msg.pct === 'number') j.pct = msg.pct;
           });
           sendResponse({ ok: true });
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
 
@@ -857,7 +857,9 @@
       if (msg.type === 'UA_WHICH_TAB') {
         const tabId = sender && sender.tab && sender.tab.id;
         sendResponse({ tabId: tabId == null ? null : tabId });
-        return true;
+        // Replied already — false, or Chrome holds the port open for a second
+        // reply that never comes and the caller sees "message channel closed".
+        return false;
       }
 
       /* Pull-based assignment: a content script that booted after every push
@@ -876,7 +878,7 @@
           const q = (await get(K.Q)) || [];
           const job = q.find((j) => j.id === jobId && j.status === 'applying');
           sendResponse({ job: job || null, settings: await settings() });
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
 
@@ -902,7 +904,7 @@
               default: return sendResponse({ ok: false, reason: 'unknown-cmd' });
             }
           } catch (e) { sendResponse({ ok: false, reason: (e && e.message) || 'error' }); }
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
     });

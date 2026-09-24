@@ -683,10 +683,26 @@
   ];
 
   // ===================== STORAGE & STATE =====================
+  /* A failed write used to vanish. chrome.storage reports errors through
+     runtime.lastError, and nothing here read it — so when the store filled up,
+     EVERY write failed at once, the queue included, and a run simply stopped
+     saving its progress with no sign of why. The write still resolves (callers
+     must not hang), but it now says so, in the log and in the diagnostics. */
+  let _storageErrorReported = false;
   const st = {
-    get: k => new Promise(r => chrome.storage.local.get(k, d => r(d[k]))),
-    set: (k, v) => new Promise(r => chrome.storage.local.set({ [k]: v }, r)),
-    getMulti: keys => new Promise(r => chrome.storage.local.get(keys, d => r(d)))
+    get: k => new Promise(r => chrome.storage.local.get(k, d => { void chrome.runtime.lastError; r(d ? d[k] : undefined); })),
+    set: (k, v) => new Promise(r => chrome.storage.local.set({ [k]: v }, () => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        LOG(`Could not save ${k}: ${err.message || err}`);
+        if (!_storageErrorReported) {
+          _storageErrorReported = true;
+          try { DIAG('storage.error', String(err.message || err).slice(0, 160), { detail: { key: k } }); } catch (_) {}
+        }
+      }
+      r();
+    })),
+    getMulti: keys => new Promise(r => chrome.storage.local.get(keys, d => { void chrome.runtime.lastError; r(d || {}); }))
   };
   // Keep the Fully-Automated state authoritative across tabs/re-renders: whenever the
   // stored value changes (this tab, another tab, or a race), adopt it and repaint. This
@@ -1462,10 +1478,22 @@
     if (!strong && !/\b(work|working|worked|employ\w*|job|jobs|role|position|hire[dsr]?|career|country|nationality)\b/.test(q)) return null;
     // And never hijack a different knockout that happens to share the vocabulary.
     if (/\b(criminal|convict\w*|felony|misdemean\w*|debarr\w*|excluded by|non.?compete|restrictive covenant|terminated|dismissed|discharged|disciplin\w*|pending charges|drug (test|screen)|background check)\b/.test(q)) return null;
+    /* "Do you have any restrictions on your right to work in the UK?" has no
+       sponsorship word in it, so it fell straight through to the plain
+       eligibility answer — Yes — which tells the employer you ARE restricted.
+       A restriction being asked about is the inverted question; one being
+       ruled out ("without restrictions", "unrestricted") is not. */
+    if (/\b(restriction|restrictions|limitation|limitations|conditions?)\s+(on|to|attached to|placed on)\b/.test(q) &&
+        !/\b(without|no|free of|free from|not subject to)\s+(any\s+)?(visa\s+)?(restriction|limitation|condition)/.test(q)) return 'no';
     // No sponsorship mentioned at all: a plain "are you allowed to work here?".
     if (!sponsorship) return 'yes';
     // Sponsorship IS mentioned — is it being ruled out, held, or asked for?
     if (SPONSORSHIP_NEGATED_RE.test(q)) return 'yes';
+    /* A need that governs sponsorship directly outranks "hold". "Do you hold a
+       visa that would require our sponsorship?" matched HOLDS first and came back
+       Yes — "I need you to sponsor me". The negated form ("a visa that does NOT
+       require sponsorship") is already answered by the line above. */
+    if (/\b(requir\w*|need\w*)\s+(our|your|the|an?|any|company|employer|continued|further)?\s*('?s\s+)?(visa\s+)?sponsor/.test(q)) return 'no';
     if (HOLDS_AUTHORISATION_RE.test(q)) return 'yes';
     if (SPONSORSHIP_NEED_RE.test(q)) return 'no';
     if (eligibility) return 'yes';
@@ -1503,6 +1531,10 @@
       /require.*(sponsor|visa|work.?permit)/, /need.*(sponsor|visa|work.?permit)/,
       /(require|requiring|need|needing).*sponsorship/, /sponsorship.*(required|needed)/,
       /previously.*worked.*for/, /former.*employee/, /current.*employee/,
+      // "Have you applied to this company in the last 6 months?" — the same
+      // question as "applied before", with a window on it.
+      /(applied|interviewed)\s+(to|with|for|at)\s+(this|our|the)\s+(company|organi[sz]ation|firm|business|role|position|team)/,
+      /(applied|interviewed)[^.?]{0,40}\b(in|within)\s+the\s+(last|past)\b/,
       /worked.*(here|for us|for this|for the company).*before/, /applied.*before/,
       /criminal|convicted|felony|misdemeanor/, /non.?compete|restrictive.*covenant/,
       /conflict.*interest/, /(family|relative).*work/, /ever.*(work|employ).*(for|with).*(us|this|company)/,
@@ -4595,7 +4627,7 @@
         LOG(`CAPTCHA (${c.provider}) detected — automation paused, waiting for you to solve it`);
         try { c.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
       }
-      await sleep(2000);
+      await sleep(scaled(2000, 1000));
     }
     hideCaptchaBanner();
     const still = !!detectCaptcha();
@@ -4811,7 +4843,7 @@
     if (missing.length) {
       // Third pass, after a longer wait: SPA forms mount fields after first paint,
       // so the earlier sweeps genuinely could not see them yet.
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
       await fallbackFill();
       await guaranteeRequiredFields();
       await sleep(300);
@@ -5051,7 +5083,7 @@
     // Wait for Jobright sidebar to load (shadow-aware)
     const sidebar = await waitForSidebar(15000);
     if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow(); return; }
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
 
     // Step 1: Click "Generate Custom Resume" only if the user opted into tailoring
     // during the queue. By default we skip it for reliability (the resume-generator
@@ -5061,7 +5093,7 @@
     if (tailorBtn && isVisible(tailorBtn)) {
       LOG('Step 1: Clicking Generate Custom Resume');
       realClick(tailorBtn);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
 
       // Wait for tailoring to complete (watch for loading to finish)
       LOG('Waiting for resume tailoring to complete...');
@@ -5077,9 +5109,9 @@
           // If no loading and no button, don't spin forever
           if (!loading) { LOG('No loading indicator and no autofill button — moving on'); break; }
         }
-        await sleep(1500);
+        await sleep(scaled(1500, 750));
       }
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
     } else {
       LOG('Step 1: No tailor button found — skipping to autofill');
     }
@@ -5089,7 +5121,7 @@
     if (continueBtn && isVisible(continueBtn)) {
       LOG('Step 2: Clicking Continue button');
       realClick(continueBtn);
-      await sleep(2000);
+      await sleep(scaled(2000, 1000));
     }
 
     // Step 4: Click the Autofill button
@@ -5098,7 +5130,7 @@
 
     // Wait for Jobright autofill to complete (watch for "Filling" → "Autofill" text change)
     LOG('Waiting for Jobright autofill to complete...');
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     const fillStart = Date.now();
     while (Date.now() - fillStart < 15000) { // 15s max (reduced from 60s)
       const afBtn = sidebar.querySelector('.auto-fill-button');
@@ -5106,9 +5138,9 @@
         const txt = afBtn.textContent?.trim().toLowerCase() || '';
         if (txt === 'autofill' || txt === '' || txt === 'filled') break; // Done filling
       } else break; // Button gone — don't wait forever
-      await sleep(1000);
+      await sleep(scaled(1000, 500));
     }
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
 
     // Step 5: Try resume upload if needed
     await tryResumeUpload();
@@ -5116,7 +5148,7 @@
     // Step 6: Fallback fill to catch missed fields
     LOG('Step 4: Running fallback fill for missed fields');
     await fallbackFill();
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
     // Second pass
     await fallbackFill();
     await sleep(500);
@@ -5130,7 +5162,7 @@
     LOG('Step 5: Auto-submit/next');
     await autoSubmitOrNext();
     await learnFromPage();
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     // Remaining pages / review-confirm / account walls are driven to completion by
     // the dispatcher's universal multi-page driver after this returns.
   }
@@ -5286,17 +5318,17 @@
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
   async function directAutofillFlow() {
     await triggerAutofill();
-    await sleep(5000);
+    await sleep(scaled(5000, 2500));
     await fixPhoneCountryCode();
     await fallbackFill();
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
     await fallbackFill();
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
     // Conditional sub-questions + declaration boxes + anything still required.
     await guaranteeRequiredFields();
     await handleValidationErrors();
     await autoSubmitOrNext();
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     // Remaining pages are driven by the dispatcher's universal multi-page driver.
   }
 
@@ -5305,7 +5337,7 @@
     LOG('Ashby automation starting...');
     const form = await waitFor('form,.ashby-application-form,[data-testid="application-form"]', 10000);
     if (!form) { LOG('No Ashby form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -5315,7 +5347,7 @@
     LOG('BambooHR automation starting...');
     const form = await waitFor('.RenderForm,form#applicationForm,.positionapply', 10000);
     if (!form) { LOG('No BambooHR form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -5502,7 +5534,7 @@
     // never "Autofill with Resume" or "Use My Last Application" — then fill ourselves.
     await waitForApplyTarget(8000);
     await clickApplyManually();
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // STEP 1 of 7 — Create Account / Sign In — handled fully by SpeedyApply during
     // the queue (fills email + password + verifyPassword + createAccountCheckbox and
@@ -5511,12 +5543,12 @@
     // Sign-up flow still works when you're not running the bulk queue.
     await waitForApplyTarget(6000);
     await fillWorkdayCreateAccount(true);
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Wait for form page
     const fp = await waitFor("[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']", 10000);
     if (!fp) { LOG('Workday form page not found'); return; }
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
 
     // STEP 2 of 7 — My Information — filled fully by SpeedyApply.
     await workdayFillName(p);
@@ -5531,7 +5563,7 @@
 
     // Jobright autofill as a BACKUP — catches any field SpeedyApply missed on this page.
     await triggerAutofill();
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     await fallbackFill();
 
     // Phase 3: continue (tailor + autofill) into the multi-page flow.
@@ -5675,7 +5707,7 @@
     const addEduBtn = $('button[data-automation-id="btnAddEducationHistory"],button[data-automation-id="add-button"]');
     const eduSection = $('[data-automation-id="educationSection"],[data-automation-id="formField-school"]');
     if (!eduSection && addEduBtn && isVisible(addEduBtn)) {
-      realClick(addEduBtn); await sleep(1500);
+      realClick(addEduBtn); await sleep(scaled(1500, 750));
     }
 
     const school = p.school || p.university || '';
@@ -5785,7 +5817,7 @@
     const addExpBtn = $('button[data-automation-id="btnAddWorkHistory"],button[data-automation-id="add-button"]');
     const expSection = $('[data-automation-id="workSection"],[data-automation-id="formField-jobTitle"]');
     if (!expSection && addExpBtn && isVisible(addExpBtn)) {
-      realClick(addExpBtn); await sleep(1500);
+      realClick(addExpBtn); await sleep(scaled(1500, 750));
     }
 
     const title = p.current_title || p.title || '';
@@ -5920,7 +5952,7 @@
       xpath("//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'add') and contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'language')]");
     const langSection = $('[data-automation-id="languageSection"],[data-automation-id="formField-language"]');
     if (!langSection && addLangBtn && isVisible(addLangBtn)) {
-      realClick(addLangBtn); await sleep(1500);
+      realClick(addLangBtn); await sleep(scaled(1500, 750));
     }
 
     // Strategy 1: data-automation-id based language dropdown
@@ -6098,7 +6130,7 @@
         fileInput.files = dt.files;
         fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         LOG(`Workday: resume injected via DataTransfer — ${resumeData.fileName}`);
-        await sleep(1500);
+        await sleep(scaled(1500, 750));
         return true;
       } catch (err) { LOG('Workday: resume injection failed — ' + err.message); }
     }
@@ -6203,7 +6235,7 @@
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping Workday flow'); break; }
       if (checkSuccess()) { LOG('Workday: success detected'); break; }
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
 
       // Detect current page type
       let currentPageType = 'unknown';
@@ -6217,7 +6249,7 @@
         LOG('Workday: stuck on same page — running validation fix');
         await handleValidationErrors();
         await fallbackFill();
-        await sleep(1000);
+        await sleep(scaled(1000, 500));
       }
       lastPageType = currentPageType;
 
@@ -6244,7 +6276,7 @@
           LOG('Workday: clicking Submit on review page');
           await sleep(500);
           realClick(submitBtn);
-          await sleep(3000);
+          await sleep(scaled(3000, 1500));
           break;
         }
       }
@@ -6258,8 +6290,8 @@
       // view, re-fills + fixes validation if "Continue to the next page" is disabled,
       // and submits on the final review page).
       const action = await autoSubmitOrNext();
-      if (action === 'submitted') { await sleep(2500); if (confirmSubmitted()) break; }
-      else if (action === 'next_page') { await sleep(2500); }
+      if (action === 'submitted') { await sleep(scaled(2500, 1250)); if (confirmSubmitted()) break; }
+      else if (action === 'next_page') { await sleep(scaled(2500, 1250)); }
       else { LOG('Workday: no next/submit button found'); break; }
     }
   }
@@ -6270,7 +6302,7 @@
     const p = await getProfile();
     const form = await waitFor('#application_form,#application,.application-form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Greenhouse-specific field selectors (from SpeedyApply)
     const ghFields = {
@@ -6297,12 +6329,12 @@
     if (applyLink && isVisible(applyLink) && !location.href.includes('/apply')) {
       LOG('Clicking Lever Apply button');
       realClick(applyLink);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
     }
     // Wait for form — Lever uses many different form selectors
     const form = await waitFor('.application-form,#application-form,.postings-form,form[action*="apply"],.application-page,.content form,.main-content form,form', 8000);
     if (!form) { LOG('No Lever form found'); await directAutofillFlow(); return; }
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
 
     const p = await getProfile();
     await loadAnswerBank();
@@ -6389,7 +6421,7 @@
     await triggerAutofillQuick();
 
     // Phase 8: Final fallback pass
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     await fallbackFill();
     await sleep(500);
     await handleValidationErrors();
@@ -6420,7 +6452,7 @@
     // Wait for Taleo form (various selectors)
     const form = await waitFor('#requisitionDescriptionInterface,form[name="submitAction"],.candidate-self-service,#contentContainer,.requisitionContent,form', 10000);
     if (!form) { LOG('No Taleo form found'); await directAutofillFlow(); return; }
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
 
     // Taleo uses numbered fieldsets and iframe-heavy layouts
     // Phase 1: Fill personal info fields
@@ -6468,12 +6500,12 @@
     const applyBtn = $('a.jv-button-apply,.jv-apply-button,a[href*="/apply"],button.apply-button');
     if (applyBtn && isVisible(applyBtn) && !/\/apply/i.test(location.pathname)) {
       realClick(applyBtn);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
     }
 
     const form = await waitFor('.jv-application-form,form[name="applicationForm"],.application-form,form', 10000);
     if (!form) { LOG('No Jobvite form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Jobvite field patterns
     const jvFields = {
@@ -6651,7 +6683,7 @@
     const applyBtn = $('button[id="indeedApplyButton"],#applyButtonLinkContainer a,button[class*="apply"],a[class*="apply"]');
     if (applyBtn && isVisible(applyBtn)) {
       realClick(applyBtn);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
     }
 
     // Indeed uses an iframe for the application
@@ -6663,7 +6695,7 @@
     // Wait for form (Indeed sometimes uses inline forms)
     const form = await waitFor('form[id*="apply"],form[class*="apply"],.ia-Questions,form', 8000);
     if (!form) { LOG('No Indeed form found'); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Indeed multi-step flow
     const MAX_STEPS = 8;
@@ -6705,16 +6737,16 @@
         LOG('Indeed: clicking Submit');
         await sleep(500);
         realClick(submitBtn);
-        await sleep(3000);
+        await sleep(scaled(3000, 1500));
         break;
       }
       if (continueBtn && isVisible(continueBtn)) {
         realClick(continueBtn);
-        await sleep(2500);
+        await sleep(scaled(2500, 1250));
         continue;
       }
       const txtBtn = $$('button').filter(isVisible).find(b => /^(continue|next|submit|apply)\b/i.test((b.textContent || '').trim()));
-      if (txtBtn) { realClick(txtBtn); await sleep(2500); continue; }
+      if (txtBtn) { realClick(txtBtn); await sleep(scaled(2500, 1250)); continue; }
       break;
     }
     learnFromFilledFields();
@@ -6729,7 +6761,7 @@
 
     const form = await waitFor('.breezy-apply-form,form[id*="application"],.position-apply,form', 10000);
     if (!form) { LOG('No BreezyHR form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // BreezyHR field patterns
     const brFields = {
@@ -6762,7 +6794,7 @@
 
     const form = await waitFor('form,[class*="application-form"],[data-testid*="application"]', 10000);
     if (!form) { LOG('No Rippling form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Rippling uses React-based forms
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -6813,7 +6845,7 @@
 
     const form = await waitFor('.apply-form,form[id*="application"],form[class*="candidate"],form', 10000);
     if (!form) { LOG('No ADP form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     const adpFields = {
       'input[id*="firstName"],input[name*="firstName"]': p.first_name || p.firstName || '',
@@ -6846,7 +6878,7 @@
 
     const form = await waitFor('form[id*="application"],form,.applicationForm,[class*="applyForm"]', 10000);
     if (!form) { LOG('No SuccessFactors form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // SuccessFactors uses various field naming conventions
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -6893,7 +6925,7 @@
 
     const form = await waitFor('#jazzhr-apply,form[id*="apply"],form.resume-form,form', 10000);
     if (!form) { LOG('No JazzHR form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     const jzFields = {
       '#first_name,input[name="first_name"]': p.first_name || p.firstName || '',
@@ -6936,7 +6968,7 @@
 
     const form = await waitFor('form[class*="application"],form,.apply-form', 10000);
     if (!form) { LOG('No Handshake form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Fill all visible empty fields using generic approach
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -7015,7 +7047,7 @@
 
     const form = await waitFor('.apply-form,form[class*="application"],[class*="ApplicationForm"],form', 10000);
     if (!form) { LOG('No Eightfold form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Eightfold uses React with custom components
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -7124,18 +7156,18 @@
     if (easyApplyBtn && isVisible(easyApplyBtn)) {
       LOG('Clicking Easy Apply button');
       realClick(easyApplyBtn);
-      await sleep(2000);
+      await sleep(scaled(2000, 1000));
     }
     // Wait for the modal form
     const modal = await waitFor('.jobs-easy-apply-modal,.jobs-easy-apply-content,[class*="easy-apply"],.artdeco-modal', 8000);
     if (!modal) { LOG('LinkedIn Easy Apply modal not found'); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // LinkedIn Easy Apply has multiple pages — loop through them
     const MAX_STEPS = 8;
     for (let step = 1; step <= MAX_STEPS; step++) {
       LOG(`LinkedIn Easy Apply: step ${step}`);
-      await sleep(1000);
+      await sleep(scaled(1000, 500));
 
       // Fill visible fields
       const p = await getProfile();
@@ -7183,7 +7215,7 @@
         LOG('LinkedIn: clicking Submit');
         await sleep(500);
         realClick(submitBtn);
-        await sleep(2000);
+        await sleep(scaled(2000, 1000));
         // Check for success
         const dismiss = modal.querySelector('button[aria-label*="Dismiss" i],button[data-control-name="close_artdeco_modal"]');
         if (dismiss) { LOG('LinkedIn: Application submitted successfully!'); realClick(dismiss); }
@@ -7192,20 +7224,20 @@
       if (reviewBtn && isVisible(reviewBtn)) {
         LOG('LinkedIn: clicking Review');
         realClick(reviewBtn);
-        await sleep(2000);
+        await sleep(scaled(2000, 1000));
         continue;
       }
       if (nextBtn && isVisible(nextBtn)) {
         LOG('LinkedIn: clicking Next');
         realClick(nextBtn);
-        await sleep(2000);
+        await sleep(scaled(2000, 1000));
         continue;
       }
 
       // Fallback: text-based button search
       const allBtns = $$('button', modal).filter(isVisible);
       const txtBtn = allBtns.find(b => /^(submit|next|continue|review)\b/i.test((b.textContent || '').trim()));
-      if (txtBtn) { realClick(txtBtn); await sleep(2000); continue; }
+      if (txtBtn) { realClick(txtBtn); await sleep(scaled(2000, 1000)); continue; }
 
       LOG('LinkedIn: No next/submit button found — stopping');
       break;
@@ -7445,10 +7477,10 @@
   // ===================== RESUME TAILORING (on Jobright website) =====================
   async function resumeTailoringAutomation() {
     if (!isJobright() || (!location.href.includes('plugin_tailor=1') && !location.href.includes('/jobs/info/'))) return;
-    await sleep(3000);
-    let el = await findByText('button,a,div[role="button"]', /improve my resume/i, 8000); if (el) { clickEl(el); await sleep(2000); }
-    el = await findByText('button,a,div[role="button"],label,span', /full edit/i, 5000); if (el) { clickEl(el); await sleep(3000); }
-    el = await findByText('button,a,span,div[role="button"],label', /select all/i, 5000); if (el) { clickEl(el); await sleep(1000); }
+    await sleep(scaled(3000, 1500));
+    let el = await findByText('button,a,div[role="button"]', /improve my resume/i, 8000); if (el) { clickEl(el); await sleep(scaled(2000, 1000)); }
+    el = await findByText('button,a,div[role="button"],label,span', /full edit/i, 5000); if (el) { clickEl(el); await sleep(scaled(3000, 1500)); }
+    el = await findByText('button,a,span,div[role="button"],label', /select all/i, 5000); if (el) { clickEl(el); await sleep(scaled(1000, 500)); }
     el = await findByText('button,a,div[role="button"]', /generate (my new )?resume|generate$/i, 5000); if (el) clickEl(el);
   }
 
@@ -7457,7 +7489,7 @@
   // locate the button via getSidebar()/findAutofillButton() rather than document.
   async function triggerAutofill__impl() {
     await waitForSidebar(8000);
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     // Try several times — the button may still be mounting / disabled while the
     // sidebar hydrates. This is the click that was silently failing in 1.14.0.
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -7475,11 +7507,11 @@
   async function triggerAutofillQuick__impl() {
     let b = findAutofillButton();
     if (!b) { LOG('No sidebar/autofill button — skipping quick autofill'); return false; }
-    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered'); await sleep(3000); return true; }
+    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered'); await sleep(scaled(3000, 1500)); return true; }
     // One retry after 1.5s
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     b = findAutofillButton();
-    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered (retry)'); await sleep(3000); return true; }
+    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered (retry)'); await sleep(scaled(3000, 1500)); return true; }
     return false;
   }
   // Stall watchdog stands down while this runs — see withBusy.
@@ -8075,7 +8107,7 @@
         }
         await withBusy('verifying submission', async () => {
           for (let check = 0; check < 6 && !finalized; check++) {
-            await sleep(1500);
+            await sleep(scaled(1500, 750));
             if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
             if (confirmSubmitted()) { success = true; break; }
             if (pageHasFailure()) break;
@@ -8273,7 +8305,7 @@
             // Verify submission (poll for a confirmation signal).
             await withBusy('verifying submission', async () => {
             for (let check = 0; check < 6; check++) {
-              await sleep(2000);
+              await sleep(scaled(2000, 1000));
               // A captcha popping up post-submit blocks confirmation — wait it out.
               if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
               if (confirmSubmitted()) { success = true; break; }
@@ -8289,11 +8321,11 @@
               await fallbackFill();
               await guaranteeRequiredFields();
               const r = await autoSubmitOrNext();
-              if (r === 'next_page') { await sleep(2500); await multiPageLoop(); }
+              if (r === 'next_page') { await sleep(scaled(2500, 1250)); await multiPageLoop(); }
             } catch (e) { LOG('Retry pass error:', e?.message || e); }
             await withBusy('verifying submission', async () => {
               for (let check = 0; check < 5; check++) {
-                await sleep(2000);
+                await sleep(scaled(2000, 1000));
                 if (confirmSubmitted()) { success = true; break; }
                 // Validation error that persists across the whole poll → the form can't be
                 // satisfied automatically; stop retrying and mark failed.
@@ -8332,7 +8364,7 @@
 
           await learnFromPage();
           await saveQ(); await saveStats(); renderQ(); updateCtrl();
-          await sleep(2000);
+          await sleep(scaled(2000, 1000));
           goNext();
           return;
         }
@@ -8501,6 +8533,7 @@
     await st.set('ua_app_history', _appHistory);
   }
 
+  const APP_HISTORY_CAP = 5000;
   async function recordApplication(url, title, status, atsName, duration) {
     await loadAppHistory();
     _appHistory.unshift({
@@ -8511,8 +8544,26 @@
       duration: duration || 0,
       company: extractCompanyFromUrl(url),
     });
-    // Keep last 500 applications
-    if (_appHistory.length > 500) _appHistory = _appHistory.slice(0, 500);
+    /* This history is what "Skip jobs already applied to" checks. It was capped
+       at 500 entries of ANY status, so on 685-job queues the oldest real
+       applications fell off the end within one run — and the next batch could
+       apply to the same job a second time, which is exactly what that option
+       exists to prevent.
+
+       Bigger now, and when it does overflow, failures and skips go first: they
+       are useless for de-duplication, while an "applied" entry is the one thing
+       that must not be forgotten. */
+    if (_appHistory.length > APP_HISTORY_CAP) {
+      const keep = [];
+      let excess = _appHistory.length - APP_HISTORY_CAP;
+      // Walk oldest-first (the array is newest-first) dropping non-applications.
+      for (let i = _appHistory.length - 1; i >= 0; i--) {
+        const e = _appHistory[i];
+        if (excess > 0 && e && e.status !== 'applied') { excess--; continue; }
+        keep.unshift(e);
+      }
+      _appHistory = keep.slice(0, APP_HISTORY_CAP);
+    }
     await saveAppHistory();
     // On a CONFIRMED submission, queue a LinkedIn recruiter follow-up for this company/
     // role. The LinkedIn module (below) sends it when you land on a matching profile.
@@ -9603,14 +9654,19 @@
       if (!filtered.length) {
         respList.innerHTML = `<div style="text-align:center;padding:12px;color:#9ca3af">${filt ? 'No matches' : 'No saved responses yet'}</div>`;
       } else {
+        /* Every value below is escaped. Saved responses are LEARNED from page
+           question text, so a keyword is page-controlled: a label carrying
+           <img src=x onerror=…> was stored as-is and then rendered into this
+           drawer on whatever site it was opened on next, where an inline
+           handler runs in that page. */
         respList.innerHTML = filtered.map((r, i) => {
           const idx = _savedResponses.indexOf(r);
           return `<div style="padding:6px 8px;border:1px solid #f3f4f6;border-radius:6px;margin-bottom:4px;background:#fafafa" data-resp-idx="${idx}">
             <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="color:#7c3aed;font-weight:600;font-size:9px">${(r.keywords || []).join(', ')}</span>
+              <span style="color:#7c3aed;font-weight:600;font-size:9px">${escHtml((r.keywords || []).join(', '))}</span>
               <span style="color:#d1d5db;font-size:8px">×${r.appearances || 1}</span>
             </div>
-            <div style="color:#374151;font-size:10px;margin-top:2px;word-break:break-word">${(r.response || '').slice(0, 120)}${(r.response || '').length > 120 ? '…' : ''}</div>
+            <div style="color:#374151;font-size:10px;margin-top:2px;word-break:break-word">${escHtml((r.response || '').slice(0, 120))}${(r.response || '').length > 120 ? '…' : ''}</div>
             <button class="ua-resp-del-one" data-idx="${idx}" style="font-size:8px;color:#ef4444;background:none;border:none;cursor:pointer;padding:2px 0;margin-top:2px">remove</button>
           </div>`;
         }).join('');
@@ -10882,7 +10938,7 @@
         await clickApplyManually();
         if ((await waitForApplyTarget(9000)) === 'form' || hasApplicationForm()) return true;
         // Give the form a little more time instead of re-clicking Apply.
-        await sleep(1500);
+        await sleep(scaled(1500, 750));
         if (hasApplicationForm()) return true;
         // If the modal genuinely re-rendered, choose Apply Manually once more, then stop.
         if (findApplyManually()) { await clickApplyManually(); await waitForApplyTarget(9000); }
@@ -11191,7 +11247,7 @@
             // any English word, so both halves of the old test failed on it.
             return t.length < 44 && /(create (an )?account|sign ?up|register|new user|konto erstellen|erstellen sie ein konto|registrieren|cr[ée]er un compte|s'inscrire|crear una cuenta|reg[íi]strate|registrati|account aanmaken|skapa konto)/i.test(t);
           });
-        if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(1500); }
+        if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(scaled(1500, 750)); }
       }
       if (!looksLikeAuthPage()) return false;
 
@@ -11257,7 +11313,7 @@
           LOG('Account exists — switching to sign-in');
           const toggle = deepAll('button,a,[role="button"]', 200).filter(isVisible)
             .find((b) => /^(sign ?in|log ?in|already have)/i.test(normLabel(b.textContent)));
-          if (toggle) { realClick(toggle); await sleep(1500); }
+          if (toggle) { realClick(toggle); await sleep(scaled(1500, 750)); }
         }
       }
       // Creating an account often lands straight on "check your inbox".
@@ -11563,7 +11619,7 @@
         LOG('SmartRecruiters: submitting via "' + controlLabel(submit) + '"');
         realClick(submit);
         markSubmitAttempt();
-        await sleep(3500);
+        await sleep(scaled(3500, 1750));
         await resolveBlockingDialog();
         break;
       }
@@ -11693,7 +11749,7 @@
 
       const action = await autoSubmitOrNext();
       if (action === 'submitted') {
-        await sleep(3000);
+        await sleep(scaled(3000, 1500));
         if (confirmSubmitted()) { LOG('Avature: success confirmed'); break; }
         continue;
       }
@@ -11766,17 +11822,17 @@
       await handleValidationErrors();
 
       const r = await autoSubmitOrNext();
-      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'submitted') { await sleep(scaled(3000, 1500)); break; }
       if (r === 'next_page') { await waitForStepChange(stepSig, 15000); continue; }
 
       // Oracle's own wording, when the generic pass found nothing to click.
       const sub = findSubmitControl();
-      if (sub) { LOG('Oracle: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
+      if (sub) { LOG('Oracle: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(scaled(3000, 1500)); continue; }
       const btn = deepQueryAll('button,oj-button,a[role="button"]').filter(isVisible)
         .find(b => /^\s*(continue|next|review|save and continue)\b/i.test((b.textContent || '').trim()));
       if (!btn) break;
       realClick(btn);
-      await sleep(2500);
+      await sleep(scaled(2500, 1250));
     }
     learnFromFilledFields();
     LOG('Oracle Recruiting Cloud automation complete');
@@ -11818,16 +11874,16 @@
       await handleValidationErrors();
 
       const r = await autoSubmitOrNext();
-      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'submitted') { await sleep(scaled(3000, 1500)); break; }
       if (r === 'next_page') { await waitForStepChange(stepSig, 15000); continue; }
 
       const sub = findSubmitControl();
-      if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
+      if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(scaled(3000, 1500)); continue; }
       const btn = deepQueryAll('button,a[role="button"]').filter(isVisible)
         .find(b => /^\s*(next|continue|review)\b/i.test((b.textContent || '').trim()));
       if (!btn) break;
       realClick(btn);
-      await sleep(2500);
+      await sleep(scaled(2500, 1250));
     }
     learnFromFilledFields();
     LOG('ADP myjobs automation complete');
@@ -11964,7 +12020,7 @@
         await handleValidationErrors();
         logFillReport('Sub-frame pass ' + (pass + 1));
       } catch (e) { LOG('Sub-frame fill error:', e?.message || e); }
-      await sleep(4000);
+      await sleep(scaled(4000, 2000));
     }
   }
 
@@ -12030,7 +12086,7 @@
     // /apply, /jobs, /careers) would let Fully Automated fill non-job forms.
     if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday())) {
       LOG(`Fully Automated: starting full automation for ${ats || 'Workday'}`);
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
       await dispatchATSAutomation();
     }
     if (runnerActive) {
@@ -12038,7 +12094,7 @@
       // across the navigation and ua_qa is in storage, so the job in flight is
       // picked straight back up rather than the run appearing to stop.
       LOG('Queue runner tab resumed' + (document.referrer ? ' (after navigation)' : ''));
-      await sleep(1000);
+      await sleep(scaled(1000, 500));
       processQ();
     }
     // Manager-driven tab: run this ONE job to a verified terminal status and report.
@@ -12057,7 +12113,7 @@
     // Jobright's native flow handle it, so the toggle is the single source of truth.
     if (isWorkday() && (autoApply || runnerActive || mgrJob)) startWorkdayAccountWatch();
     if (isJobright()) {
-      await sleep(2000); resumeTailoringAutomation();
+      await sleep(scaled(2000, 1000)); resumeTailoringAutomation();
       // Capture Jobright's Insider Connections (recruiter/hiring manager for this role) so a
       // follow-up can be aimed at the exact person. Re-capture as the panel loads/expands.
       const roleGuess = ((document.querySelector('h1, [class*="job-title"], [class*="jobTitle"]')?.textContent) || '').trim().slice(0, 80);
@@ -16087,6 +16143,13 @@ a[href*="/checkout" i],
     finally { _busy = false; }
   }
 
+  /* This scope renders company names, job titles and scraped contact names
+     into innerHTML on linkedin.com. All of them come from pages — job boards
+     and Jobright's Insider Connections — so none of them may reach the DOM as
+     markup. */
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (ch) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
   // ---------- on-page control panel ----------
   function renderPanel(c) {
     try {
@@ -16121,7 +16184,7 @@ a[href*="/checkout" i],
                                : ('https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(f.company + ' recruiter'));
               const label = top ? ((top.name ? top.name.split(/\s+/)[0] : 'contact') + ' →') : 'find →';
               const line = (f.company) + (f.role ? ' · ' + f.role : '');
-              return '<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid #eee"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (top && top.title ? String(top.title).replace(/"/g, '&quot;') : '') + '">' + line + '</span><a href="' + href + '" target="_self" style="color:#0a66c2;text-decoration:none;flex:0 0 auto">' + label + '</a></div>';
+              return '<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid #eee"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(top && top.title ? top.title : '') + '">' + esc(line) + '</span><a href="' + esc(href) + '" target="_self" style="color:#0a66c2;text-decoration:none;flex:0 0 auto">' + esc(label) + '</a></div>';
             }).join('') +
             '<textarea id="ua-li-tpl" style="width:100%;box-sizing:border-box;margin-top:8px;min-height:54px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;font:11px/1.4 inherit;resize:vertical" placeholder="Message template">' + (c.template).replace(/</g, '&lt;') + '</textarea>' +
             '<div style="font-size:9px;color:#888;margin-top:3px">Placeholders: {first} {role} {company}</div>' +

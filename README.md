@@ -2662,6 +2662,66 @@ Suite total: **1,477 assertions**, all green on Jobright 1.23.1.
 
 ---
 
+## v17.2 — a full audit
+
+A systematic pass, one bug class at a time — the classes this codebase has
+actually had — with every hit triaged by hand and every real one fixed and
+locked with a test. Classes that came back clean are listed too, because a clean
+result is also a result.
+
+### Came back clean
+- **Non-composed synthetic events** — none (the v16 rewrite held).
+- **`eval`, `new Function`, string timers** in shipped code — none.
+- **Polling intervals on unrelated sites** — every tight timer is gated to
+  jobright.ai or a genuine application page.
+- **`JSON.parse` of stored values** — every one is inside a `try`.
+- **The Queue Manager page** — zero `innerHTML`; links only after `isSafeUrl`.
+- **Hard-coded secrets or personal data** — none.
+
+### Fixed
+1. **Two stored-injection paths.** Saved-response keywords are *learned from page
+   question text*, and were rendered raw into the drawer on whichever site it was
+   opened next — an `<img onerror>` in a question label would run there. The
+   Recruiter Follow-up panel did the same on linkedin.com with company names,
+   job titles and scraped contact names. All escaped now.
+2. **85 waits the speed selector could not reach** — 173 seconds of them,
+   including 17s in the generic flow every unrecognised job goes through. All
+   scaled, never below half their original time, since some wait on a server.
+   The Gmail poll is deliberately left alone.
+3. **Storage that could fail silently.** Write errors were never read, so a full
+   store failed *every* write at once — the queue included — without a sign.
+   They are logged and reported now, and `unlimitedStorage` removes the 10MB
+   cliff.
+4. **"Skip already applied" forgetting applications.** The history it reads was
+   capped at 500 entries of any status, so on 685-job queues real applications
+   fell off within one run and could be applied to again. Now 5,000, and
+   overflow evicts failures and skips before any real application.
+5. **Message handlers.** `UA_WHICH_TAB` replied and then claimed an async reply —
+   the "message channel closed" bug, split over two lines so a one-line check
+   missed it. Eight async handlers had no rejection path and could leave a caller
+   hanging; each now replies either way.
+6. **"Sign-in failed" when the real problem was a missing client ID** for the
+   Gmail reader. It says which box is empty now.
+7. **Three knockout answers that would have rejected you**, found by running the
+   real decider against 54 phrasings:
+   - "Do you have any **restrictions** on your right to work in the UK?" — was Yes
+   - "Do you hold a visa that would **require our sponsorship**?" — was Yes
+   - "Have you applied to this company **in the last 6 months**?" — was Yes
+
+   All 54 are now a permanent test, and a failure names the exact question.
+
+### Reported, not changed
+The "credit bypass" in `ua-enhancement.js` overrides `fetch` to fake Jobright and
+Simplify+ premium-subscription responses. It came in with the original upload
+(commit `eade20f`) and was left as it is. Worth knowing: it is the most fragile
+code in the extension — it depends on the exact shape of those services'
+responses, so a patch can break it silently — and it works around their paid
+tiers, which their terms of service do not allow.
+
+Suite total: **1,509 assertions**, all green on Jobright 1.23.1.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

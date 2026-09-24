@@ -2427,5 +2427,206 @@ eq('and gives up after a few passes rather than going round until the cap',
 eq('a page that is past the wall resets the count', /authWallPasses = 0;\n\n      \/\/ Try Jobright autofill again/.test(mpl2), true);
 
 
+/* ── 59. the full audit ───────────────────────────────────────────────────── */
+/* A systematic pass, one bug class at a time — the classes this codebase has
+   actually had — with every hit triaged. Each class is locked here so it cannot
+   come back quietly. */
+console.log('audit: page-derived text never reaches the DOM as markup');
+{
+  /* Saved responses are LEARNED from page question text, so a keyword is
+     page-controlled; it was rendered raw into the drawer on whatever site it was
+     opened on next. */
+  const resp = src.slice(src.indexOf('respList.innerHTML = filtered.map('), src.indexOf('respList.innerHTML = filtered.map(') + 1500);
+  eq('saved-response keywords are escaped', resp.includes("${escHtml((r.keywords || []).join(', '))}"), true);
+  eq('and so is the response text', resp.includes("${escHtml((r.response || '').slice(0, 120))}"), true);
+  /* The follow-up panel renders company, role and a scraped contact name on
+     linkedin.com — all from pages. */
+  const rp = body('renderPanel');
+  eq('the follow-up panel escapes the company and role', /'\+ esc\(line\) \+'|\+ esc\(line\) \+/.test(rp), true);
+  eq('and the contact label', /\+ esc\(label\) \+/.test(rp), true);
+  eq('and the title attribute', /title="' \+ esc\(/.test(rp), true);
+  // The escaper itself, run for real.
+  const esc = new Function('return ' + (src.match(/const esc = (\(v\) => String[\s\S]*?\[ch\]\)\);)/) || [])[1])();
+  eq('the escaper neutralises a tag', esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
+  eq('and both quote styles, so an attribute cannot be broken out of', esc(`"'`), '&quot;&#39;');
+}
+{
+  /* The Queue Manager is an extension page: an injection there runs with the
+     extension's own privileges. It must never use innerHTML at all. */
+  const qsrc = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-queue.js'), 'utf8');
+  eq('the privileged Queue Manager page has no innerHTML at all', /\.innerHTML\s*=/.test(qsrc), false);
+  eq('and only ever links to http(s)', /if \(isSafeUrl\(j\.url\)\) \{ a\.href = j\.url;/.test(qsrc), true);
+}
+
+console.log('audit: the speed selector reaches every wait');
+{
+  /* 86 flat waits, 173 seconds of them, the selector could not touch —
+     including 17s in the generic flow every unrecognised job goes through. */
+  const lines = src.split('\n');
+  const flat = [];
+  let fn = '';
+  lines.forEach((l, i) => {
+    const m = l.match(/^  (?:async )?function ([\w$]+)/); if (m) fn = m[1];
+    if (/await sleep\(\d{4,}\)/.test(l) && fn !== 'resolveEmailVerification__impl') flat.push(`${fn}:${i + 1}`);
+  });
+  eq('no flat wait of a second or more is left outside the mailbox poll', flat, []);
+  /* The mailbox poll is deliberately NOT scaled — halving it doubles Gmail API
+     calls for nothing a user would see. */
+  eq('the mailbox poll keeps its own pace', /await sleep\(4000\);\s+\/\/ the mail has not landed yet/.test(src), true);
+  // Every converted wait keeps at least half its time, at any speed.
+  const conv = [...src.matchAll(/await sleep\(scaled\((\d{4,}), (\d+)\)\)/g)];
+  eq('there are many converted waits', conv.length >= 85, true);
+  eq('and every one keeps at least half its original time',
+    conv.every(([, ms, floor]) => Number(floor) >= Math.floor(Number(ms) / 2) - 0), true);
+  const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
+  eq('a 3s wait is 3s at 1x', scaledFn(3000, 1500, 1), 3000);
+  eq('and 1.5s at 3x — never cut below half, since some wait on a server', scaledFn(3000, 1500, 0.3), 1500);
+}
+
+console.log('audit: storage cannot fail silently, and cannot forget an application');
+{
+  const stBlock = src.slice(src.indexOf('  const st = {'), src.indexOf('  const st = {') + 900);
+  eq('a failed write is read, not ignored', /const err = chrome\.runtime\.lastError;/.test(stBlock), true);
+  eq('and reported in the log and the diagnostics', /LOG\(`Could not save \$\{k\}/.test(stBlock) && /DIAG\('storage\.error'/.test(stBlock), true);
+  eq('the caller still gets its reply either way', /\n      r\(\);\n    \}\)\),/.test(stBlock), true);
+  const mf = manifest;
+  eq('the extension is not held to the 10MB default quota', mf.permissions.includes('unlimitedStorage'), true);
+
+  /* The history "Skip already applied" reads was capped at 500 of ANY status,
+     so on a 685-job queue real applications fell off the end within a run. */
+  eq('the history holds far more than one run', /const APP_HISTORY_CAP = 5000;/.test(src), true);
+  eq('the old 500 cap is gone', /_appHistory\.length > 500/.test(src), false);
+  // Run the eviction for real.
+  const evict = (hist, cap) => {
+    if (hist.length <= cap) return hist;
+    const keep = []; let excess = hist.length - cap;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const e = hist[i];
+      if (excess > 0 && e && e.status !== 'applied') { excess--; continue; }
+      keep.unshift(e);
+    }
+    return keep.slice(0, cap);
+  };
+  // newest first: 3 applied, then 4 failed, then 2 old applied
+  const h = [{ u: 'a3', status: 'applied' }, { u: 'a2', status: 'applied' }, { u: 'a1', status: 'applied' },
+    { u: 'f4', status: 'failed' }, { u: 'f3', status: 'failed' }, { u: 'f2', status: 'skipped' }, { u: 'f1', status: 'failed' },
+    { u: 'old2', status: 'applied' }, { u: 'old1', status: 'applied' }];
+  const kept = evict(h, 6).map((e) => e.u);
+  eq('overflow drops failures and skips before any application', kept, ['a3', 'a2', 'a1', 'f4', 'old2', 'old1']);
+  eq('so an old application is still remembered', kept.includes('old1'), true);
+  eq('the real code evicts the same way',
+    /if \(excess > 0 && e && e\.status !== 'applied'\) \{ excess--; continue; \}/.test(src), true);
+}
+
+console.log('audit: every message the worker answers, it answers exactly once');
+{
+  /* Replying and THEN returning true tells Chrome a second reply is coming;
+     the caller sees "the message channel closed". UA_WHICH_TAB did exactly that,
+     split across two lines so a one-line check missed it. */
+  const wt = orch.slice(orch.indexOf("msg.type === 'UA_WHICH_TAB'"), orch.indexOf("msg.type === 'UA_WHICH_TAB'") + 500);
+  eq('UA_WHICH_TAB replies synchronously and returns false', /sendResponse\(\{ tabId:[^\n]*\n[\s\S]*?return false;/.test(wt), true);
+  /* An async handler that throws must still reply, or the caller hangs. */
+  const asyncBranches = (orch.match(/\}\)\(\)\.catch\(\(\) => \{ try \{ sendResponse\(\{ ok: false \}\); \} catch \(_\) \{\} \}\);/g) || []).length;
+  eq('every async handler in the worker replies even when it throws', asyncBranches >= 4, true);
+  eq('none is left without one', /\}\)\(\);\s*\n\s*return true;/.test(orch), false);
+}
+
+console.log('audit: a missing mailbox client ID says so');
+{
+  const mb = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-mailbox.js'), 'utf8');
+  eq('connecting without a client ID is reported as that, not as a Google refusal',
+    /return sendResponse\(\{ ok: false, reason: 'no-client-id' \}\);/.test(mb), true);
+  eq('but a Chrome-managed sign-in, if one exists, is still allowed through',
+    /const managed = await chromeToken\(false\)\.catch\(\(\) => null\);/.test(mb), true);
+  eq('every async mailbox handler replies even when it throws',
+    (mb.match(/\}\)\(\)\.catch\(\(\) => \{ try \{ sendResponse\(\{ ok: false \}\); \} catch \(_\) \{\} \}\);/g) || []).length >= 4, true);
+}
+
+
+/* ── 60. knockout answers, against real phrasing ──────────────────────────── */
+/* A wrong Yes/No here is not a wrong field; it is an automatic rejection. This
+   runs the real decider against 54 phrasings — the ordinary ones and the
+   inverted ones where rules like these usually break. Three were wrong until
+   the audit:
+     "Do you have any RESTRICTIONS on your right to work in the UK?"  → was Yes
+     "Do you hold a visa that would REQUIRE our sponsorship?"          → was Yes
+     "Have you applied to this company in the last 6 months?"          → was Yes */
+console.log('knockout answers are the ones that do not get you rejected');
+{
+  const koCtx2 = {};
+  new Function('exports', `
+    ${reLines}
+    ${body('workAuthorisationAnswer')}
+    ${body('workAuthOptionIndex')}
+    ${body('determineYesNo')}
+    exports.d = determineYesNo;
+  `)(koCtx2);
+  const CASES = [
+    // right to work — Yes
+    ['Are you legally authorized to work in the United States?', 'yes'],
+    ['Are you legally authorised to work in the UK?', 'yes'],
+    ['Do you have the right to work in Ireland?', 'yes'],
+    ['Do you currently have the right to work in the United Kingdom?', 'yes'],
+    ['Are you able to work in the Netherlands without sponsorship?', 'yes'],
+    ['Can you work in Belgium without requiring a visa?', 'yes'],
+    ['Are you eligible to work in the EU?', 'yes'],
+    ['Do you hold a valid work permit for Switzerland?', 'yes'],
+    ['Are you a citizen or permanent resident of Canada?', 'yes'],
+    ['Please confirm you do not require visa sponsorship', 'yes'],
+    ['I am authorized to work in the US without sponsorship', 'yes'],
+    ['Will you be able to work without restrictions?', 'yes'],
+    ['Are you legally able to work in Ireland without any visa restrictions?', 'yes'],
+    ['Do you have unrestricted right to work in Australia?', 'yes'],
+    ['Are you authorized to work for any employer in the US?', 'yes'],
+    ['Can you legally work in Canada?', 'yes'],
+    // sponsorship / restriction — No
+    ['Will you now or in the future require sponsorship for employment visa status (e.g. H-1B)?', 'no'],
+    ['Will you require visa sponsorship within the next 18 months to work in the United Kingdom?', 'no'],
+    ['Do you require a work permit to work in Germany?', 'no'],
+    ['Would you need visa support to take up this role?', 'no'],
+    ['Are you currently on a visa that requires sponsorship to change employers?', 'no'],
+    ['Do you need the company to sponsor your visa now or in the future?', 'no'],
+    ['Do you have any restrictions on your right to work in the UK?', 'no'],
+    ['Would your employment be subject to obtaining a work permit?', 'no'],
+    ['Is visa sponsorship required for you to work in Poland?', 'no'],
+    ['Do you currently hold a visa that would require our sponsorship?', 'no'],
+    ['Will you be requiring immigration support to work for us?', 'no'],
+    ['Will you ever require sponsorship to maintain your work authorization?', 'no'],
+    ['Do you need a visa to work in Spain?', 'no'],
+    // availability / fit — Yes
+    ['Are you willing to relocate to London?', 'yes'],
+    ['Are you comfortable working from our Dublin office 3 days a week?', 'yes'],
+    ['Are you currently residing in Romania?', 'yes'],
+    ['Are you at least 18 years of age?', 'yes'],
+    ['Do you have 5+ years of experience with Kubernetes?', 'yes'],
+    ['Do you have hands-on experience with Linux patch and package management?', 'yes'],
+    ['Do you consent to a background check?', 'yes'],
+    ['Can you start within 4 weeks?', 'yes'],
+    ['Are you open to travel up to 25%?', 'yes'],
+    ['Is your notice period less than 3 months?', 'yes'],
+    ['Do you have a valid driving licence?', 'yes'],
+    ['Are you willing to undergo a drug test?', 'yes'],
+    ['Would you be able to work in the office five days a week?', 'yes'],
+    ['Are you prepared to relocate at your own expense?', 'yes'],
+    // history / conduct — No
+    ['Have you ever been convicted of a felony?', 'no'],
+    ['Have you previously worked for Stripe?', 'no'],
+    ['Are you a current employee of Deloitte?', 'no'],
+    ['Do you have any relatives working at this company?', 'no'],
+    ['Are you subject to a non-compete agreement?', 'no'],
+    ['Have you ever been terminated from employment?', 'no'],
+    ['Do you have any criminal convictions?', 'no'],
+    ['Have you applied to this company in the last 6 months?', 'no'],
+    ['Do you have any pending criminal charges?', 'no'],
+    ['Are you bound by any restrictive covenants from a previous employer?', 'no'],
+    ['Have you been dismissed from any position?', 'no'],
+  ];
+  const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
+    .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
+  eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
+  eq('the battery really is 54 questions', CASES.length, 54);
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

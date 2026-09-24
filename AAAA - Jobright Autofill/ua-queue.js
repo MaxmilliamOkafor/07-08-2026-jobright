@@ -722,7 +722,11 @@ function wireMailbox() {
   if (connect) connect.addEventListener('click', async () => {
     state.textContent = 'Mailbox: opening Google sign-in…';
     const r = await mailSend({ type: 'UA_MAIL_CONNECT', clientId: id ? id.value.trim() : '' });
-    if (!r.ok) state.textContent = 'Mailbox: sign-in failed (' + (r.reason || 'unknown') + ')';
+    if (!r.ok) {
+      state.textContent = r.reason === 'no-client-id'
+        ? 'Mailbox: paste your Google OAuth client ID first (see README → "Connecting one")'
+        : 'Mailbox: sign-in failed (' + (r.reason || 'unknown') + ')';
+    }
     await refreshMailbox();
   });
   if (disconnect) disconnect.addEventListener('click', async () => {

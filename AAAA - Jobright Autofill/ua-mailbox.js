@@ -275,6 +275,15 @@
     if (msg.type === 'UA_MAIL_CONNECT') {
       (async () => {
         if (msg.clientId) await local.set(K.CLIENT_ID, String(msg.clientId).trim());
+        /* Say which thing is missing. With no oauth2 block in the manifest the
+           Chrome-managed sign-in cannot work, so the only route is the PKCE
+           flow, and that needs YOUR client ID. Without one the answer used to be
+           "sign-in-failed" — which reads like Google refused you, not like a box
+           was left empty. */
+        if (!(await local.get(K.CLIENT_ID))) {
+          const managed = await chromeToken(false).catch(() => null);
+          if (!managed) return sendResponse({ ok: false, reason: 'no-client-id' });
+        }
         const t = await getToken(true);
         if (!t) return sendResponse({ ok: false, reason: 'sign-in-failed' });
         let address = '';
@@ -283,7 +292,7 @@
         await local.set(K.ENABLED, true);
         log('Mailbox connected: ' + (address || 'unknown address') + ' (read-only)');
         sendResponse({ ok: true, address });
-      })();
+      })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
       return true;
     }
 
@@ -294,7 +303,7 @@
         await local.set(K.ACCOUNT, '');
         log('Mailbox disconnected and the token revoked');
         sendResponse({ ok: true });
-      })();
+      })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
       return true;
     }
 
@@ -306,7 +315,7 @@
           hasClientId: !!(await local.get(K.CLIENT_ID)),
           connected: !!(await sess.get(K.TOKEN)),
         });
-      })();
+      })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
       return true;
     }
 
@@ -323,7 +332,7 @@
         if (!hosts.length) return sendResponse({ ok: false, reason: 'no-hosts' });
         try { sendResponse(await findVerification({ hosts, companies: (msg.companies || []).slice(0, 3) })); }
         catch (e) { sendResponse({ ok: false, reason: String(e.message || e) }); }
-      })();
+      })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
       return true;
     }
   });
