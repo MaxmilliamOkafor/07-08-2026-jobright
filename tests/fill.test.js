@@ -2341,5 +2341,91 @@ eq('the keyboard reinforcement only fires when the click did not take',
   /if \(!findPacItems\(\)\.length && locationAccepted\(el\)\) \{/.test(body('commitAutocompleteOnce')), true);
 
 
+/* ── 58. the iCIMS login loop ─────────────────────────────────────────────── */
+/* From a real export. The login SUCCEEDED — the run reached
+   /candidate?from=login and filled sixteen fields — and then went round again:
+   an Apply link back to the job page, "entering the account email" into the
+   application form, a CV uploaded twice across iCIMS's reload, until the 150s
+   cap. On a second board the whole fill ran against the login page itself. */
+console.log('iCIMS gets through its login and stays through');
+{
+  const re = new RegExp((src.match(/const IN_APPLICATION_URL_RE = \/(.*)\/i;/) || [])[1], 'i');
+  const past = (url) => { const u = new URL(url); return re.test(u.pathname + u.search); };
+  // The exact URLs from the export.
+  eq('iCIMS\'s post-login application page is inside the application',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate?from=login&csrf=9AEFF7D91043FC5E&hashed=-626008887'), true);
+  eq('including the magic-link variant it lands on first',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate?from=login&eem=3gsKV&code=489f&eu_resident=1&accept_gdpr=1'), true);
+  eq('and the page it reloads to after a CV upload',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate?from=login&csrf=9AEF&uploadResume=1&uploadResume=1'), true);
+  eq('the job description is NOT — Apply must still work there',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/job?mobile=false&width=1904'), false);
+  eq('nor is the login wall itself — it still has to be signed in',
+    past('https://careers-sig.icims.com/jobs/10903/login?iis=jobright'), false);
+  // Nothing outside that shape may change behaviour.
+  for (const u of ['https://job-boards.greenhouse.io/acme/jobs/123',
+    'https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/Dublin/X_R1/apply',
+    'https://jobs.lever.co/acme/abc/apply', 'https://jobs.smartrecruiters.com/Acme/123-x'])
+    eq(`${u.split('/')[2]} is unaffected`, past(u), false);
+}
+eq('an application page is never mistaken for a sign-in wall',
+  /function looksLikeAuthPage\(\) \{\n    \/\/ The URL is the ATS telling us sign-in is done\. It outranks any field\.\n    if \(pastTheApplyStep\(\)\) return false;/.test(src), true);
+eq('the generic opener does not click Apply from inside the application',
+  /if \(pastTheApplyStep\(\)\) return true;\n    while \(clicks < limit\) \{/.test(src), true);
+/* My own guard from the previous iCIMS change listed /apply, /login and
+   /register and missed /candidate — which is how the run went back to /job. */
+eq('and neither does the iCIMS driver, which is where the loop started',
+  /if \(applyBtn && !pastTheApplyStep\(\) && /.test(body('icimsAutomation')), true);
+
+/* The reload around a CV upload. */
+{
+  const cvCtx = {};
+  const store = {};
+  new Function('exports', `
+    let location = { search: '', pathname: '/jobs/2878/x/candidate' };
+    const sessionStorage = { getItem: (k) => exports.store[k] || null, setItem: (k, v) => { exports.store[k] = v; } };
+    let document = { body: { innerText: '' } };
+    ${(src.match(/  const CV_NOTE_MS = [^\n]+/) || [''])[0]}
+    ${body('cvUploadedHereRecently')}
+    ${body('noteCvUploadedHere')}
+    ${body('cvRequiredErrorShowing')}
+    exports.recent = cvUploadedHereRecently;
+    exports.note = noteCvUploadedHere;
+    exports.required = cvRequiredErrorShowing;
+    exports.at = (search, text) => { location.search = search; document.body.innerText = text || ''; };
+  `)(Object.assign(cvCtx, { store }));
+  cvCtx.at('?from=login&csrf=9AEF');
+  eq('a page that has seen no upload is free to upload', cvCtx.recent(), false);
+  cvCtx.at('?from=login&csrf=9AEF&uploadResume=1');
+  eq('iCIMS\'s own uploadResume=1 means it has one already', cvCtx.recent(), true);
+  cvCtx.at('?from=login&csrf=9AEF');
+  cvCtx.note();
+  eq('and so does this tab having uploaded here a moment ago', cvCtx.recent(), true);
+  cvCtx.at('?x', 'Resume is required');
+  eq('but a visible "Resume is required" means the file really is gone', cvCtx.required(), true);
+  cvCtx.at('?x', 'Please upload your CV');
+  eq('in any of its wordings', cvCtx.required(), true);
+  cvCtx.at('?x', 'Upload your resume (optional). Accepted: pdf, docx.');
+  eq('while an upload HINT is not a complaint', cvCtx.required(), false);
+}
+const ar = body('attachResume__impl');
+eq('a CV the ATS just reloaded around is not uploaded again',
+  /if \(cvUploadedHereRecently\(\) && !cvRequiredErrorShowing\(\)\) \{/.test(ar), true);
+eq('the note is written the moment the file goes in, not on confirmation',
+  ar.indexOf('noteCvUploadedHere();') > ar.indexOf("fireOnHostChain(inp, ['input', 'change']);") &&
+  ar.indexOf('noteCvUploadedHere();') < ar.indexOf('await sleep(500);'), true);
+
+/* The login page filled as if it were the application. */
+const mpl2 = body('multiPageLoop');
+eq('a page that is still a sign-in wall is not filled as an application',
+  mpl2.indexOf('if (looksLikeAuthPage()) {') < mpl2.indexOf('await triggerAutofill();') &&
+  mpl2.indexOf('if (looksLikeAuthPage()) {') > mpl2.indexOf('await handleAccountAuth();'), true);
+eq('it waits for the sign-in to land instead',
+  /await waitForStepChange\(getPageHash\(\), scaled\(8000, 2500\)\);\n        continue;/.test(mpl2), true);
+eq('and gives up after a few passes rather than going round until the cap',
+  /const MAX_AUTH_WALL_PASSES = 3;/.test(mpl2) && /DIAG\('auth\.stuck'/.test(mpl2), true);
+eq('a page that is past the wall resets the count', /authWallPasses = 0;\n\n      \/\/ Try Jobright autofill again/.test(mpl2), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

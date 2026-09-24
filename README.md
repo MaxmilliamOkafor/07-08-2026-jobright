@@ -2617,6 +2617,51 @@ Suite total: **1,453 assertions**, all green on Jobright 1.23.1.
 
 ---
 
+## v17.1 — the iCIMS login loop
+
+The diagnostics trail showed the login **succeeding**: the run reached
+`/candidate?from=login` — iCIMS's application page — and filled sixteen fields.
+Then it went round again until the 150s cap. Four separate things kept it going.
+
+**Clicking Apply from inside the application.** The Apply guard added to the
+iCIMS driver in v16.x listed `/apply`, `/login` and `/register` and missed
+`/candidate`, so the signed-in run found an Apply link, clicked it, and went back
+to the job description. That one was mine. `openApplicationForm`, which runs on
+every page of the loop, had the same hole.
+
+**Treating the application as a login wall.** `looksLikeAuthPage` saw an email
+field on `/candidate` and started "entering the account email" into the
+application form. iCIMS literally says `from=login` in that URL.
+
+Both now go through one predicate, `pastTheApplyStep()`, which reads the URL
+shapes that mean "already inside the application" — `from=login`, and
+`/jobs/<id>/<slug>/candidate|questions|confirm|submit`. The URL is the ATS saying
+sign-in is done, so it outranks any field. It is kept to those shapes so no other
+ATS changes behaviour; tests confirm Greenhouse, Workday, Lever and
+SmartRecruiters URLs are untouched, and that the job description and the login
+wall itself are still treated as what they are.
+
+**Uploading the CV twice across iCIMS's reload.** iCIMS processes an upload by
+reloading with `uploadResume=1`, and the reloaded page shows the file in a form
+the attach check did not recognise — so it was uploaded again, and the URL grew
+`uploadResume=1&uploadResume=1`. Now either iCIMS's own parameter or a per-page
+note this tab keeps for ten minutes means "already uploaded". The note is written
+the moment the file goes in, not on confirmation, since on a reloading ATS
+confirmation is exactly what never arrives. A visible "Resume is required" still
+overrides both.
+
+**Filling the login page as if it were the application.** On a second board the
+whole pipeline — CV, dropdowns, "0 of 0 required fields" — ran against the login
+page, and then pressed its button as a submit. A page that is still a sign-in
+wall after signing in now waits for the sign-in to land, and after three passes
+stops and reports `auth.stuck` instead of going round until the cap.
+
+Each fix is mutation-checked on its own.
+
+Suite total: **1,477 assertions**, all green on Jobright 1.23.1.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

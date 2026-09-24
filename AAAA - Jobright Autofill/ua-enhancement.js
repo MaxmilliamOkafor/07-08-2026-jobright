@@ -3340,9 +3340,41 @@
   }
   /* Attach the CV on any ATS. Returns 'already' | 'attached' | 'no-resume' |
      'no-field' so the caller can report precisely instead of failing blind. */
+  /* A CV this tab has already uploaded on this page, which the ATS then
+     reloaded around.
+
+     iCIMS processes an upload by reloading the page with uploadResume=1. The
+     reloaded page shows the file in a form resumeAlreadyAttached did not
+     recognise, so the CV was attached again — another reload, and the URL grew
+     uploadResume=1&uploadResume=1. Two signals, either one enough: the ATS's own
+     parameter, and a note this tab keeps per page for ten minutes. A visible
+     "resume is required" still overrides both, because then the file really is
+     gone. */
+  const CV_NOTE_MS = 10 * 60 * 1000;
+  function cvUploadedHereRecently() {
+    try {
+      if (/[?&]uploadResume=1\b/i.test(location.search)) return true;
+      const t = Number(sessionStorage.getItem('ua_cv_up:' + location.pathname) || 0);
+      return !!t && Date.now() - t < CV_NOTE_MS;
+    } catch (_) { return false; }
+  }
+  function noteCvUploadedHere() {
+    try { sessionStorage.setItem('ua_cv_up:' + location.pathname, String(Date.now())); } catch (_) {}
+  }
+  function cvRequiredErrorShowing() {
+    try {
+      const t = (document.body && document.body.innerText || '').slice(0, 20000);
+      return /(resume|r[ée]sum[ée]|cv)[^.\n]{0,40}(is required|required field|must be (uploaded|attached)|please (upload|attach))|please (upload|attach) (a |your )?(resume|cv)/i.test(t);
+    } catch (_) { return false; }
+  }
+
   async function attachResume__impl() {
     if (resumeUploadInFlight()) { await waitForResumeUpload(20000); }
     if (resumeAlreadyAttached()) { LOG('CV already attached — leaving it alone'); return 'already'; }
+    if (cvUploadedHereRecently() && !cvRequiredErrorShowing()) {
+      LOG('CV was uploaded on this page already and the ATS reloaded around it — not uploading again');
+      return 'already';
+    }
     const inputs = resumeFileInputs();
     if (!inputs.length) return 'no-field';
     const file = await storedResumeFile();
@@ -3362,6 +3394,11 @@
            "struggled to attach" on SmartRecruiters. */
         fireOnHostChain(inp, ['input', 'change']);
         noteProgress('attaching CV');
+        /* Noted the moment the file goes in, not when attachment is confirmed —
+           on an ATS that reloads around the upload (iCIMS), confirmation is
+           exactly what never arrives, and the note is what stops the reloaded
+           page uploading it all over again. */
+        noteCvUploadedHere();
         await sleep(500);
         if (resumeUploadInFlight() || resumeAlreadyAttached()) {
           await waitForResumeUpload(25000);
@@ -5106,6 +5143,9 @@
     const MAX_PAGES = 18;
     let prevPageHash = getPageHash();
     let samePageRetries = 0;
+    // Consecutive pages that were still a sign-in wall after we tried to sign in.
+    let authWallPasses = 0;
+    const MAX_AUTH_WALL_PASSES = 3;
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping multi-page loop'); break; }
       if (checkSuccess()) { LOG('Success detected — stopping multi-page loop'); break; }
@@ -5157,6 +5197,26 @@
       // to application" button, or an account-creation / sign-in wall.
       await openApplicationForm();
       await handleAccountAuth();
+
+      /* Still a sign-in page after signing in? Then it is not an application
+         yet, and filling it as one is wrong: on careers-sig.icims.com the whole
+         pipeline ran against the login page — CV attached, dropdowns answered,
+         "0 of 0 required fields" — and then pressed its button as if submitting
+         an application. Give the sign-in a moment to land instead, and after a
+         few attempts say plainly that it did not, rather than burning the job's
+         time budget going round. */
+      if (looksLikeAuthPage()) {
+        authWallPasses++;
+        if (authWallPasses > MAX_AUTH_WALL_PASSES) {
+          LOG('Multi-page: still on the sign-in page after ' + MAX_AUTH_WALL_PASSES + ' attempts — stopping');
+          DIAG('auth.stuck', 'Sign-in did not complete after ' + MAX_AUTH_WALL_PASSES + ' attempts');
+          break;
+        }
+        LOG('Multi-page: waiting for the sign-in to go through (attempt ' + authWallPasses + ')');
+        await waitForStepChange(getPageHash(), scaled(8000, 2500));
+        continue;
+      }
+      authWallPasses = 0;
 
       // Try Jobright autofill again
       await triggerAutofill();
@@ -7007,7 +7067,10 @@
     const applyBtn = deepAll('a.iCIMS_MainLink[href*="apply" i],a[title*="Apply" i],a.header-apply-button,' +
       '.iCIMS_ApplyLink,button.applyButton,a[href*="/apply" i],#quickApply,[id*="applyButton" i]', 20)
       .filter(isVisible)[0] || findApplyButton();
-    if (applyBtn && !/\/(apply|login|register)\b/i.test(location.pathname)) {
+    /* The guard that was here listed /apply, /login and /register and missed
+       /candidate — iCIMS's application page — so a signed-in run clicked Apply
+       again and went back to the job description. */
+    if (applyBtn && !pastTheApplyStep() && !/\/(apply|login|register)\b/i.test(location.pathname)) {
       LOG('Clicking iCIMS Apply');
       const before = stepSignature();
       if (applyBtn.tagName === 'A' && applyBtn.target === '_blank') applyBtn.target = '_self';
@@ -10806,6 +10869,9 @@
   async function openApplicationForm__impl(maxClicks) {
     const limit = maxClicks || 3;
     let clicks = 0;
+    // Inside the application already: an Apply link here leads back to the job
+    // description, and from there round the login again. See pastTheApplyStep.
+    if (pastTheApplyStep()) return true;
     while (clicks < limit) {
       if (hasApplicationForm()) return true;
       // If a "Start Your Application" choice modal is up, pick Apply Manually and WAIT
@@ -10950,7 +11016,24 @@
   function authPasswordFields() {
     return deepAll('input[type=password]', 12).filter((el) => isVisible(el) && !el.disabled);
   }
+  /* Already inside the application — past the job description AND past the
+     login. From here, "Apply" goes backwards and an email box is a profile
+     field, not a wall.
+
+     iCIMS says so in its own URLs: after a successful sign-in it lands on
+     /jobs/<id>/<slug>/candidate?from=login. A run was reaching exactly that page,
+     filling sixteen fields, and then going round again — clicking an Apply link
+     back to the job page, and "entering the account email" into the application
+     form — until the 150s cap. Kept to URL shapes that mean this unambiguously,
+     so no other ATS changes behaviour. */
+  const IN_APPLICATION_URL_RE = /[?&]from=login\b|\/jobs\/\d+\/[^/?#]+\/(candidate|questions|confirm|submit)\b/i;
+  function pastTheApplyStep() {
+    try { return IN_APPLICATION_URL_RE.test(location.pathname + location.search); } catch (_) { return false; }
+  }
+
   function looksLikeAuthPage() {
+    // The URL is the ATS telling us sign-in is done. It outranks any field.
+    if (pastTheApplyStep()) return false;
     if (authPasswordFields().length) return true;
     const email = authEmailField();
     if (!email) return false;
