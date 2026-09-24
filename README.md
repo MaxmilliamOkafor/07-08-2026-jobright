@@ -2774,6 +2774,59 @@ Suite total: **1,553 assertions**, all green.
 
 ---
 
+## v17.4 — found by driving the real extension in a browser
+
+The extension was loaded into Chromium, given a profile and a queued job, and
+left to run against local application forms served under a real ATS hostname —
+the same path a CSV job takes. What it did was recorded field by field. Every
+bug below was seen happening, fixed, and then seen gone.
+
+### Answers
+| Seen | Cause | Now |
+| --- | --- | --- |
+| **"Will you require sponsorship?" answered Yes** | a seeded "visa status" entry tied with "require sponsorship" and won by list order; its sentence was then fuzzy-matched onto "Yes" | the more specific entry wins; a sentence is never squeezed onto a yes/no knockout — the decider answers it |
+| Location filled "Dublin, Ireland" whatever the profile said | "Location" alone matched the seeded "current location" (1 of 2 words) | a multi-word entry needs 2+ words; seeds must match fully; seeds for facts the profile owns (location, salary, notice, degree…) are never used |
+| **Wrong answers came back on every later application** | the automation "learned" its own fills — the browser reports its focus moves as genuine events, and a learned answer outranks everything | only fields you actually typed in or clicked are learned; old learned answers are knockout-checked unless you gave them |
+| A required Yes/No radio left empty, submit blocked | every option of a `<fieldset>` radio read as the *question* text, so no option could match | each option reads its own label |
+| "Are you at least 18?" never answered from the bank | words under 3 letters were dropped before matching `at` / `18` | matched against every word |
+| "Have you ever worked for Acme before?" → Yes | phrasing missing | → No (while "worked for a startup before" stays Yes) |
+
+### "100% filled, then skipped" — reading the form's own errors
+The form was complete but Submit did nothing: the browser was blocking it over
+a required radio, silently, and the old handler neither read that nor looked at
+any field that already had a value. Now every field the page says is wrong is
+read — the browser's own validation, `aria-invalid` + its message, and inline
+error text beside the field — classified, and fixed specifically, **before**
+Submit is pressed and again after:
+
+- *"valid phone number… international format"* → the profile number as `+447700900123`
+  (always rebuilt from the profile, keeping its own country code)
+- *"valid URL"* → `https://…`
+- *"at least 100 characters"* → the answer is extended, never by repeating a sentence
+- *"between 0 and 5"*, *"whole number"* → a plain number within range
+- *"maximum 50 characters"* → trimmed at a word
+- *"select from the list"* → picked from the suggestions
+- *"required"* → answered, ticked, or the CV attached
+
+Each one is logged as `Form says "Phone *": … → reformatted the number`, one it
+cannot fix is recorded in 🩺 Diagnostics under the field's name, and a job that
+still fails says which field and what the form said. A message already acted on
+is not acted on again until the site re-checks it.
+
+### The flicker
+Jobright's own fill engine smooth-scrolls every field it fills to the top or
+centre of the screen. During an automated run those scrolls are now calm: none
+to something already visible, never animated, at most one jump per 0.7s, and
+focusing a field never scrolls. Outside a run nothing changes.
+
+### Oracle
+The email-step check could match a short application section and type the email
+into its first box; it now requires a box that is actually an email field.
+
+Suite total: **1,595 assertions**, all green.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

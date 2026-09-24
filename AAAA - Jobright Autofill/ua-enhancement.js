@@ -115,6 +115,61 @@
   if (window.__uaEnhancementLoaded) return;
   window.__uaEnhancementLoaded = true;
 
+  /* ── CALM SCROLLING DURING AN AUTOMATED RUN ────────────────────────────────
+     "It flickers up and down on autofill." Jobright's own fill engine — which
+     runs in this same content-script world — smooth-scrolls every field it
+     fills to the top or centre of the screen, one after another, and the page
+     glides up and down for each. While an automated run owns the tab, scroll
+     requests made from THIS world (ours and Jobright's engine) are made calm:
+     no smooth animation, no scrolling to something already on screen, and at
+     most one jump per 700ms. A click does not need its target on screen, so
+     nothing is lost. The page's own scripts (a different world) are untouched,
+     and outside an automated run nothing changes at all. */
+  try {
+    const automatingNow = () => {
+      try {
+        const de = document.documentElement;
+        if (de.getAttribute('data-ua-auto') === '1') return true;
+        return Number(de.getAttribute('data-ua-grace') || 0) > Date.now();
+      } catch (_) { return false; }
+    };
+    let lastJump = 0;
+    const GAP = 700;
+    const onScreen = (el) => {
+      try {
+        const r = el.getBoundingClientRect();
+        const h = window.innerHeight || document.documentElement.clientHeight;
+        if (!r.width && !r.height) return true;
+        return r.bottom > 0 && r.top < h;
+      } catch (_) { return true; }
+    };
+    const origSIV = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (arg) {
+      if (!automatingNow()) return origSIV.apply(this, arguments);
+      if (onScreen(this)) return;
+      const now = Date.now();
+      if (now - lastJump < GAP) return;
+      lastJump = now;
+      return origSIV.call(this, { block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    };
+    const calmWindowScroll = (orig) => function (a, b) {
+      if (!automatingNow()) return orig.apply(this, arguments);
+      const now = Date.now();
+      if (now - lastJump < GAP) return;
+      lastJump = now;
+      if (a && typeof a === 'object') return orig.call(this, Object.assign({}, a, { behavior: 'instant' }));
+      return orig.apply(this, arguments);
+    };
+    window.scrollTo = calmWindowScroll(window.scrollTo);
+    window.scroll = calmWindowScroll(window.scroll);
+    window.scrollBy = calmWindowScroll(window.scrollBy);
+    const origFocus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (opts) {
+      if (!automatingNow()) return origFocus.apply(this, arguments);
+      return origFocus.call(this, Object.assign({}, opts || {}, { preventScroll: true }));
+    };
+  } catch (_) {}
+
   // ===================== TEMP IN-DEPTH DEBUG LOGGER (toggle with Alt+D) =====================
   // A deep instrumentation layer that records, on the live ATS page, without DevTools:
   //   • every console.* call (incl. [UA] logs)      • clicks (real + programmatic)
@@ -1278,7 +1333,12 @@
        not: the user answered that precise question themselves, and their word is
        final even on a knockout. See safeKnockoutAnswer. */
     const fromSaved = safeKnockoutAnswer(findSavedResponseMatch(questionText), questionText);
-    const raw = fromSaved || getLearnedAnswer(label, el, true) || guessValue(label, p) ||
+    /* An exact learned answer is final only when YOU gave it. Answers recorded
+       before v17.4 include the automation's own fills (see _userTouched), so
+       those go through the same knockout filter as everything else. */
+    const exact = getLearnedAnswer(label, el, true);
+    const exactOk = exact && (isManualAnswer(label, el) ? exact : safeKnockoutAnswer(exact, questionText));
+    const raw = fromSaved || exactOk || guessValue(label, p) ||
       safeKnockoutAnswer(getLearnedAnswer(label, el), questionText) || '';
     // Last step: make the answer fit the control it is going into.
     return refineAnswerForControl(raw, label, p, el);
@@ -1305,17 +1365,41 @@
     const qNorm = questionText.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
     const qWords = qNorm.split(' ').filter(w => w.length > 2);
     if (!qWords.length) return '';
-    let bestMatch = null, bestScore = 0;
+    const qAll = new Set(qNorm.split(' '));
+    /* Three rules, each learned from a wrong answer on a live form:
+       • One word of a two-word entry is not a match. "Location (City)" hit the
+         seeded "current location" entry on the word "location" alone and was
+         answered "Dublin, Ireland" whatever the profile said.
+       • A seeded (generic) entry must match completely — it is a guess about
+         the question, not the user's own words.
+       • On a tie the MORE SPECIFIC entry wins, then the user's own over a seed.
+         Strict first-wins let "visa status" beat "require sponsorship" on
+         "Will you require sponsorship for employment visa status?", and the
+         answer that came back was mapped onto "Yes". */
+    let bestMatch = null, bestKey = null;
     for (const entry of _savedResponses) {
       if (!entry.keywords || !entry.keywords.length || !entry.response) continue;
-      const matchCount = entry.keywords.filter(kw => qWords.includes(kw.toLowerCase())).length;
+      // Against EVERY word of the question: entries like ['at', 'least', '18']
+      // can never match if the short words were thrown away first.
+      const matchCount = entry.keywords.filter(kw => qAll.has(String(kw).toLowerCase())).length;
       const score = matchCount / entry.keywords.length;
-      if (score > bestScore && score >= 0.4) { bestScore = score; bestMatch = entry.response; }
+      if (score < 0.4 || matchCount < Math.min(2, entry.keywords.length)) continue;
+      if (entry.seeded && score < 1) continue;
+      if (entry.seeded && SEED_PROFILE_OWNED_RE.test(entry.keywords.join(' '))) continue;
+      const key = [score, matchCount, entry.seeded ? 0 : 1];
+      if (!bestKey || key[0] > bestKey[0] || (key[0] === bestKey[0] && (key[1] > bestKey[1] ||
+          (key[1] === bestKey[1] && key[2] > bestKey[2])))) { bestKey = key; bestMatch = entry.response; }
     }
     return bestMatch || '';
   }
+  /* Seeded entries that stand in for facts the PROFILE owns — where you live,
+     what you earn, your notice period, your degree. A generic stand-in must never
+     outrank the real value, so these seeds are not consulted at all; the profile
+     (and its defaults) answer these questions. "visa status" is here too: it is
+     a knockout, and the knockout decider answers it. */
+  const SEED_PROFILE_OWNED_RE = /^(current location|desired salary|expected salary|salary expectation|minimum salary|current salary|hourly rate|notice period|days notice required|highest degree|education level|field study|major|gpa|professional certifications|visa status)$/;
 
-  function addSavedResponse(keywords, response) {
+  function addSavedResponse(keywords, response, manual) {
     if (!keywords || !keywords.length || !response) return;
     // Check for duplicate
     const existing = _savedResponses.findIndex(r =>
@@ -1323,10 +1407,11 @@
     );
     if (existing >= 0) {
       _savedResponses[existing].response = response;
+      if (manual) { _savedResponses[existing].manual = true; delete _savedResponses[existing].seeded; }
       _savedResponses[existing].appearances = (_savedResponses[existing].appearances || 0) + 1;
       _savedResponses[existing].updatedAt = Date.now();
     } else {
-      _savedResponses.push({ keywords, response, appearances: 1, createdAt: Date.now(), updatedAt: Date.now() });
+      _savedResponses.push({ keywords, response, appearances: 1, createdAt: Date.now(), updatedAt: Date.now(), ...(manual ? { manual: true } : {}) });
     }
     saveSavedResponses();
   }
@@ -1361,6 +1446,35 @@
     } catch (_) { return getLabel(el); }
   }
 
+  /* Fields YOU actually typed in, picked from or clicked. The automation's own
+     fills must never be "learned": a learned answer outranks every guess, so one
+     wrong fill — "Yes" to a sponsorship question — was saved and then repeated
+     on every application after it. isTrusted alone does not tell them apart:
+     the automation focuses each field it fills, and the browser reports the
+     resulting focus change as a genuine event. Keys, pointer presses and real
+     typing cannot be produced by a script, so those are what count. */
+  const _userTouched = new WeakSet();
+  const _noteUserTouch = (e) => {
+    try {
+      if (!e.isTrusted) return;
+      const t = e.composedPath ? e.composedPath()[0] : e.target;
+      if (!t || !t.tagName) return;
+      const f = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ? t : (t.closest && t.closest('label') && t.closest('label').control) || null;
+      if (f) _userTouched.add(f);
+    } catch (_) {}
+  };
+  /* Not 'input' or 'change': when a script calls .click() on a checkbox or radio,
+     Chrome fires the input/change that follow as TRUSTED events — the consent box
+     the automation ticked was being "learned" as your answer that way. */
+  try { for (const ev of ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop']) window.addEventListener(ev, _noteUserTouch, true); } catch (_) {}
+  function userTouched(el) { try { return !!el && _userTouched.has(el); } catch (_) { return false; } }
+  // Questions whose learned answer came from you (kept across pages).
+  let _manualKeys = {};
+  try { st.get('ua_manual_answer_keys').then((m) => { if (m && typeof m === 'object') _manualKeys = m; }).catch(() => {}); } catch (_) {}
+  function isManualAnswer(label, el) {
+    for (const c of [label, el && el.name, el && el.id]) { const k = c && normalizeKey(c); if (k && _manualKeys[k]) return true; }
+    return false;
+  }
   // Persist one manually-given Q&A into BOTH stores the fill paths read from:
   // the answer bank (exact/fuzzy label match) and saved responses (keyword match,
   // which is what answerKnockoutRadioGroup / choice groups consult).
@@ -1370,16 +1484,17 @@
     if (!question || question.length < 3 || !answer || answer.length > 300) return;
     if (/ssn|social.?security|password|credit.?card|cvv|routing|iban|passport.?number/i.test(question)) return;
     // Already known with the same answer (change + focusout both fire for one edit) — skip.
-    if (_answerBank[normalizeKey(question)] === answer) return;
+    if (_answerBank[normalizeKey(question)] === answer && _manualKeys[normalizeKey(question)]) return;
     learnAnswer(question, answer);
+    try { _manualKeys[normalizeKey(question)] = Date.now(); st.set('ua_manual_answer_keys', _manualKeys); } catch (_) {}
     const keywords = question.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2).slice(0, 12);
-    if (keywords.length >= 2) addSavedResponse(keywords, answer);
+    if (keywords.length >= 2) addSavedResponse(keywords, answer, true);
     LOG(`Learned: "${question.slice(0, 70)}" → "${answer.slice(0, 40)}"`);
   }
 
   function learnFromFilledFields() {
     deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
-      .filter(el => isVisible(el) && hasFieldValue(el))
+      .filter(el => isVisible(el) && hasFieldValue(el) && userTouched(el))
       .forEach(el => {
         // Radio/checkbox: question is the GROUP's, answer is the checked option's label.
         if (el.type === 'radio' || el.type === 'checkbox') {
@@ -1557,6 +1672,9 @@
       /(applied|interviewed)\s+(to|with|for|at)\s+(this|our|the)\s+(company|organi[sz]ation|firm|business|role|position|team)/,
       /(applied|interviewed)[^.?]{0,40}\b(in|within)\s+the\s+(last|past)\b/,
       /worked.*(here|for us|for this|for the company).*before/, /applied.*before/,
+      // Prior employment with the employer named on the page: "Have you ever
+      // worked for Acme before?", "previously been employed by Acme?".
+      /have you (ever )?(previously )?worked (for|at) (?!an? |any )[^?]*\bbefore\b/, /(previously|ever) been employed (by|at|with)/,
       /criminal|convicted|felony|misdemeanor/, /non.?compete|restrictive.*covenant/,
       /conflict.*interest/, /(family|relative).*work/, /ever.*(work|employ).*(for|with).*(us|this|company)/,
       /pending.*charges/, /terminated|fired|dismissed|discharged/, /debarred/
@@ -1684,11 +1802,18 @@
   function safeKnockoutAnswer(saved, questionText) {
     if (!saved) return saved;
     const s = String(saved).trim().toLowerCase();
-    if (!/^(yes|no|y|n|true|false)$/.test(s)) return saved;
     if (!KNOCKOUT_Q_RE.test(questionText)) return saved;
     let want = '';
     try { want = determineYesNo(String(questionText).toLowerCase()); } catch (_) {}
     if (want !== 'yes' && want !== 'no') return saved;
+    /* A sentence, not a yes/no, on a yes/no knockout: whatever it says, it is
+       then squeezed onto the form's Yes/No options by fuzzy matching, and that
+       is how "Authorized to work without sponsorship" became "Yes" to "Will you
+       require sponsorship?". The decider answers these directly instead. */
+    if (!/^(yes|no|y|n|true|false)$/.test(s)) {
+      LOG(`Ignoring a saved sentence on a knockout question — the safe answer (${want}) is used instead`);
+      return '';
+    }
     const says = /^(yes|y|true)$/.test(s) ? 'yes' : 'no';
     if (says === want) return saved;
     LOG(`Ignoring a saved "${s}" on a knockout question — it contradicts the safe answer (${want})`);
@@ -2172,6 +2297,29 @@
       if (tag.includes('-') && r.getAttribute) {
         out = (r.getAttribute('label') || r.getAttribute('aria-label') || '').trim();
       }
+      /* A native radio's OWN label next. getLabel() prefers the group's legend
+         for a radio — right for learning which question was answered, wrong
+         here: every option of <fieldset><legend>Have you worked for Acme?
+         </legend><label><input> Yes</label>… came back as the question, the
+         Yes/No matcher found neither, and a required question was left empty
+         on every form built that way. */
+      if (!out && r.labels && r.labels.length) {
+        out = Array.from(r.labels).map((l) => {
+          const c = l.cloneNode(true);
+          c.querySelectorAll('input,select,textarea').forEach((x) => x.remove());
+          return c.textContent || '';
+        }).join(' ').trim();
+      }
+      if (!out && r.getAttribute) out = (r.getAttribute('aria-label') || '').trim();
+      if (!out && r.getAttribute && r.getAttribute('aria-labelledby')) {
+        try {
+          const root = r.getRootNode ? r.getRootNode() : document;
+          out = r.getAttribute('aria-labelledby').split(/\s+/)
+            .map((id) => { const n = root.getElementById ? root.getElementById(id) : document.getElementById(id); return n ? n.textContent : ''; })
+            .join(' ').trim();
+        } catch (_) {}
+      }
+      if (!out && r.getAttribute && r.getAttribute('role') === 'radio') out = (r.textContent || '').trim();
       if (!out) out = getLabel(r) || '';
       if (!out) out = (r.getAttribute && (r.getAttribute('aria-label') || r.getAttribute('label'))) || '';
       if (!out && r.shadowRoot) out = (r.shadowRoot.textContent || '').trim();
@@ -2392,7 +2540,7 @@
       const lastTry = _choiceAnsweredAt.get(nq);
       if (lastTry && Date.now() - lastTry < CHOICE_RETRY_MS) continue;
       // An answer the user gave manually before (learned Q&A) wins over the defaults.
-      const learned = findSavedResponseMatch(q) || getLearnedAnswer(q);
+      const learned = safeKnockoutAnswer(findSavedResponseMatch(q) || getLearnedAnswer(q), q);
       if (learned) {
         const lnorm = learned.toLowerCase().trim();
         // Exact label match FIRST — a learned "No" must hit the "No" option, not
@@ -4374,8 +4522,10 @@
 
   // ===================== LEARN FROM PAGE (capture filled answers) =====================
   async function learnFromPage() {
+    // Only what you entered yourself — see _userTouched.
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
-      .filter(el => isVisible(el) && hasFieldValue(el));
+      .filter(el => isVisible(el) && hasFieldValue(el) && userTouched(el));
+    if (!inputs.length) return;
     for (const el of inputs) {
       const lbl = getLabel(el);
       if (!lbl) continue;
@@ -4492,13 +4642,14 @@
   // "no Submit control" usually means the form has another page or the button sits
   // in a frame we did not reach; "no confirmation" means it probably did send.
   function submitFailureReason(validationStuck) {
-    if (validationStuck) return 'Validation errors could not be resolved';
+    if (validationStuck) { const e = remainingErrorSummary(); return 'Validation errors could not be resolved' + (e ? ' — ' + e : ''); }
     if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
     return 'Submit was clicked but no confirmation appeared';
   }
   // A persistent inline validation error means a required field couldn't be satisfied.
   function pageHasValidationError() {
     try {
+      if (readFieldErrors().length) return true;
       const el = $('[aria-invalid="true"],.error,.is-invalid,[class*="field-error"],[class*="fieldError"],[role="alert"]');
       if (!el || !isVisible(el)) return false;
       // [role=alert] is also used for success toasts — only count it if the text looks like an error.
@@ -4873,6 +5024,16 @@
     // An upload still in flight is the difference between "resume attached" and
     // "resume required" on most ATS. Never submit through one.
     if (resumeUploadInFlight()) { LOG('Waiting for a file upload to finish before submitting'); await waitForResumeUpload(25000); }
+    /* What the FORM says is still wrong — including the browser's own checks,
+       which block a native submit without a word: the click lands, nothing
+       happens, and the job used to sit there until it timed out. */
+    try {
+      const p = await getProfile();
+      for (let pass = 0; pass < 2 && readFieldErrors().length; pass++) {
+        if (!(await fixFieldErrorsFromPage(p))) break;
+        await sleep(300);
+      }
+    } catch (_) {}
     logFillReport('Before submit');
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
@@ -7294,17 +7455,329 @@
     return false;
   }
 
+  /* ── READING THE FORM'S OWN ERROR MESSAGES ─────────────────────────────────
+     A form that is 100% filled can still refuse to submit: the phone is in the
+     wrong format, the salary has a comma in it, the city was typed but not
+     picked from the list, a required radio the browser itself is guarding.
+     Guessing from field state misses all of those. The site TELLS us what is
+     wrong — in its inline error text, in aria-invalid + aria-describedby, and
+     in the browser's own constraint validation — so read that, per field, and
+     fix what it says. */
+  const FIELD_ERROR_SEL = '.error,.field-error,.error-message,.errorMessage,.validation-error,.invalid-feedback,' +
+    '.help-block.with-errors,.field-validation-error,.form-error,.input-error,[class*="error-text" i],[class*="errorText" i],' +
+    '[class*="error-message" i],[class*="errorMessage" i],[class*="field-error" i],[class*="fieldError" i],' +
+    '[class*="helper-text" i][class*="error" i],[role="alert"],[aria-live="assertive"],[data-error],.Mui-error,.ant-form-item-explain-error';
+  const FIELD_ERROR_TEXT_RE = /required|can'?t be (blank|empty)|cannot be (blank|empty)|must|invalid|not valid|valid (e-?mail|phone|number|url|date|value|option|location|city)|please (enter|select|choose|provide|fill|complete|answer|upload|attach|check)|too (long|short)|at (least|most)|maximum|minimum|characters|digits|format|from the (list|dropdown|suggestions)|mandatory|missing|not allowed|only (numbers|digits|letters)|exceed/i;
+  const FIELD_CONTAINER_SEL = '.field,.form-group,.form-field,.form-item,.ant-form-item,.MuiFormControl-root,[class*="field" i],[class*="question" i],[class*="Question"],fieldset,li,[role="group"],[role="radiogroup"]';
+  let _lastFieldErrors = [];
+
+  function textOfIds(el, attr) {
+    try {
+      const ids = (el.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
+      if (!ids.length) return '';
+      const root = el.getRootNode ? el.getRootNode() : document;
+      return ids.map((id) => { const n = (root.getElementById ? root.getElementById(id) : null) || document.getElementById(id); return n && isVisible(n) ? n.textContent : ''; })
+        .join(' ').replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+  function nativeErrorKind(v) {
+    if (!v) return '';
+    if (v.valueMissing) return 'required';
+    if (v.typeMismatch) return 'type';
+    if (v.patternMismatch) return 'pattern';
+    if (v.tooLong) return 'tooLong';
+    if (v.tooShort) return 'tooShort';
+    if (v.rangeUnderflow || v.rangeOverflow || v.stepMismatch) return 'range';
+    if (v.badInput) return 'number';
+    return v.customError ? 'custom' : '';
+  }
+  function classifyFieldError(el, msg, nativeKind) {
+    const m = String(msg || '').toLowerCase();
+    const lbl = String(fieldName(el) || '').toLowerCase();
+    if (el.type === 'file') return 'file';
+    if (/from the (list|dropdown|suggestions)|select (a|an|one|your)? ?(valid )?(location|city|option|address)|valid (location|city|address)|choose .* from/.test(m)) return 'list';
+    if (nativeKind === 'type' && el.type === 'email' || /valid e-?mail|e-?mail (address )?(is )?(invalid|not valid)/.test(m)) return 'email';
+    if (nativeKind === 'type' && el.type === 'url' || /valid (url|link|web ?site)|must (start|begin) with http/.test(m)) return 'url';
+    if ((el.type === 'tel' || /phone|mobile|telephone/.test(lbl)) && (nativeKind === 'pattern' || /valid|invalid|format|digits|number|country code/.test(m))) return 'phone';
+    if (nativeKind === 'tooLong' || /(maximum|max\.?|at most|no more than|up to|exceed\w*) (of )?\d+ (characters|chars)|too long/.test(m)) return 'tooLong';
+    if (nativeKind === 'tooShort' || /(minimum|min\.?|at least) (of )?\d+ (characters|chars|words)|too short/.test(m)) return 'tooShort';
+    if (nativeKind === 'range' || /(greater|less|more|fewer) than|between -?\d[\d,.]* and -?\d|must be (at least|at most|no (more|less) than) -?\d/.test(m)) return 'range';
+    if (nativeKind === 'number' || /(must be|enter|only|should be) (a |an )?(valid )?(number|numeric|digits?|integer|whole number)|numbers? only|digits only|numeric value/.test(m)) return 'number';
+    if (/(valid|invalid|correct) date|mm\s*\/\s*dd|dd\s*\/\s*mm|yyyy/.test(m)) return 'date';
+    if (nativeKind === 'required' || /required|can'?t be (blank|empty)|cannot be (blank|empty)|mandatory|please (enter|select|choose|provide|fill|complete|answer|check)|missing/.test(m)) return 'required';
+    if (nativeKind === 'pattern' || /format|invalid|not valid/.test(m)) return 'pattern';
+    return 'other';
+  }
+
+  /* A field's own name: its <label>, aria-label or aria-labelledby. getLabel()
+     also reads aria-describedby — which is where the ERROR text lives, so a
+     phone box came back named "Please enter a valid phone number". */
+  function fieldName(el) {
+    try {
+      if (el.labels && el.labels.length) {
+        const t = Array.from(el.labels).map((l) => { const c = l.cloneNode(true); c.querySelectorAll('input,select,textarea').forEach((x) => x.remove()); return c.textContent; }).join(' ').replace(/\s+/g, ' ').trim();
+        if (t) return t;
+      }
+      const a = (el.getAttribute('aria-label') || '').trim() || textOfIds(el, 'aria-labelledby');
+      if (a) return a;
+      if (el.type === 'radio' || el.type === 'checkbox') { const q = getQuestionForInput(el); if (q) return q; }
+    } catch (_) {}
+    return String(getLabel(el) || el.name || el.id || '');
+  }
+  /* The smallest ancestor (up to four levels) that holds this one question and
+     an error message. Class names vary by ATS — "field", "form-group", or none
+     at all — so the structure decides, not the class. */
+  function errorTextNear(el) {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+      const ctrls = Array.from(node.querySelectorAll('input:not([type=hidden]),select,textarea'))
+        .filter((c) => c !== el && !(c.type === 'radio' && el.type === 'radio' && c.name === el.name));
+      if (ctrls.length) return '';        // grew past this question — stop
+      const cand = Array.from(node.querySelectorAll(FIELD_ERROR_SEL + ',small,span,p,div'))
+        .find((n) => n !== el && !n.contains(el) && isVisible(n) && !n.querySelector('input,select,textarea,label') &&
+          (n.matches(FIELD_ERROR_SEL) || /error|invalid|warn|danger|alert/i.test(safeClass(n) + ' ' + (n.id || ''))) &&
+          FIELD_ERROR_TEXT_RE.test(n.textContent || '') && (n.textContent || '').trim().length < 200);
+      if (cand) return cand.textContent;
+    }
+    return '';
+  }
+  /* Every field the page currently says is wrong, with the page's own words. */
+  function readFieldErrors() {
+    const out = [];
+    const seen = new Set();
+    const push = (el, msg, nativeKind, live) => {
+      const key = el.type === 'radio' && el.name ? 'radio:' + el.name : el;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const message = String(msg || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+      out.push({ el, message, live: !!live, kind: classifyFieldError(el, message, nativeKind), label: fieldName(el).replace(/\s+/g, ' ').trim().slice(0, 80) });
+    };
+    const controls = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=search]),select,textarea', 400)
+      /* Hidden radios and checkboxes count (styled controls hide the real
+         input). A hidden FILE input does not: upload widgets keep one that stays
+         "required and empty" even after they have uploaded the CV themselves. */
+      .filter((el) => !el.disabled && (isVisible(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && el.closest('label,' + FIELD_CONTAINER_SEL))));
+    for (const el of controls) {
+      try {
+        // 1. The browser's own verdict — this is what silently blocks a native submit.
+        if (el.willValidate && el.validity && !el.validity.valid) {
+          push(el, el.validationMessage || '', nativeErrorKind(el.validity), true);
+          continue;
+        }
+        // 2. The site marked it invalid and (usually) pointed at the message.
+        const ariaBad = el.getAttribute('aria-invalid') === 'true';
+        let msg = ariaBad ? (textOfIds(el, 'aria-errormessage') || textOfIds(el, 'aria-describedby')) : '';
+        // 3. Inline error text in the field's own container — only when that
+        //    container holds this one question, so a message is never pinned on
+        //    the wrong field.
+        if (!msg || !FIELD_ERROR_TEXT_RE.test(msg)) msg = errorTextNear(el) || msg;
+        if (msg && FIELD_ERROR_TEXT_RE.test(msg)) push(el, msg, ariaBad ? 'custom' : '');
+        else if (ariaBad && !hasFieldValue(el)) push(el, 'marked invalid', 'required');
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /* The profile phone in the other shapes forms accept. Always built from the
+     PROFILE number, never from whatever is in the box: building each retry from
+     the previous retry's output compounded — +44 7700 900123 became
+     353447700900123 in three steps. The number's own country code wins over
+     the default; the site's wording picks which shape goes first. */
+  const DIAL_CODES = ['1', '7', '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49', '51', '52', '54', '55', '56', '57', '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91', '92', '94', '234', '254', '351', '352', '353', '354', '356', '357', '358', '359', '370', '371', '372', '380', '385', '386', '420', '421', '852', '971', '972', '973', '974', '966'];
+  function phoneVariants(raw, p, message) {
+    const src = String((p && p.phone) || raw || '').trim();
+    let digits = src.replace(/[^\d+]/g, '').replace(/^00/, '+');
+    const defCc = (String((p && (p.phoneCountryCode || p.country_code)) || DEFAULTS.phoneCountryCode || '').match(/\d+/) || [''])[0];
+    let cc = '', rest = '';
+    if (digits.startsWith('+')) {
+      const d = digits.slice(1);
+      cc = (defCc && d.startsWith(defCc)) ? defCc : (DIAL_CODES.slice().sort((x, y) => y.length - x.length).find((c) => d.startsWith(c)) || '');
+      rest = d.slice(cc.length);
+    } else {
+      cc = defCc;
+      rest = digits.replace(/^0/, '');
+    }
+    if (!rest || rest.length < 6) return [];
+    const e164 = cc ? '+' + cc + rest : '+' + rest;
+    const national = '0' + rest;
+    const intlNoPlus = e164.slice(1);
+    const m = String(message || '').toLowerCase();
+    let order;
+    if (/international|country code|\+\d|e\.?g\.? ?\+|e164|with the \+/.test(m)) order = [e164, intlNoPlus, national];
+    else if (/digits only|numbers only|only (numbers|digits)|without (spaces|symbols|the \+)/.test(m)) order = [national, intlNoPlus, rest];
+    else if (/10.?digit/.test(m)) order = [rest.slice(-10), national, e164];
+    else order = [e164, national, intlNoPlus, rest];
+    return [...new Set(order.filter(Boolean))];
+  }
+  function patternAccepts(el, val) {
+    try {
+      if (!el.pattern) return null;
+      return new RegExp('^(?:' + el.pattern + ')$', 'u').test(val);
+    } catch (_) { return null; }
+  }
+  const _errFixTries = new WeakMap();
+
+  /* Fix one field the page complained about. Returns a short description of
+     what was done (for the log), or '' when nothing could be done. */
+  async function fixFieldError(item, p) {
+    const { el, kind, message } = item;
+    const n = (_errFixTries.get(el) || 0) + 1;
+    _errFixTries.set(el, n);
+    if (n > 4) return '';
+    const cur = el.tagName === 'SELECT' ? '' : String(el.value || '');
+    const label = item.label || getLabel(el) || '';
+    const numIn = (re) => { const m = String(message).match(re); return m ? Number(m[1].replace(/,/g, '')) : NaN; };
+    const setText = (v) => { try { el.focus({ preventScroll: true }); } catch (_) {} nativeSet(el, v); try { el.dispatchEvent(new Event('blur', { bubbles: true, composed: true })); } catch (_) {} return true; };
+
+    if (el.type === 'radio') {
+      const scope = (el.closest && el.closest('fieldset,[role="radiogroup"],' + FIELD_CONTAINER_SEL)) || el.form || document;
+      const radios = Array.from(scope.querySelectorAll('input[type=radio]')).filter((r) => r.name === el.name);
+      if (radios.some((r) => r.checked)) return '';
+      return answerKnockoutRadioGroup(radios, scope, p) ? 'answered the question' : '';
+    }
+    if (el.type === 'checkbox') {
+      if (el.checked || isMarketingCheckbox(el)) return '';
+      if (isVisible(el)) realClick(el); else el.click();
+      return el.checked ? 'ticked it' : '';
+    }
+    if (el.type === 'file') {
+      const r = await attachResume();
+      return r === 'attached' ? 'attached the CV' : '';
+    }
+    if (el.tagName === 'SELECT') {
+      const want = guessFieldValue(label, p, el);
+      const opts = Array.from(el.options).filter((o) => o.value !== '' && !/^(select|choose|please|--)/i.test(o.text.trim()));
+      const opt = (want && (opts.find((o) => o.text.trim().toLowerCase() === want.toLowerCase()) || opts.find((o) => o.text.toLowerCase().includes(want.toLowerCase()))));
+      if (opt) { setSelectValue(el, opt.value); return 'picked "' + opt.text.trim().slice(0, 30) + '"'; }
+      return '';
+    }
+    switch (kind) {
+      case 'email': {
+        const e = String(p.email || (await getAppEmail()) || '').trim();
+        return e && e !== cur ? setText(e) && 'used the profile email' : '';
+      }
+      case 'phone': {
+        const variants = phoneVariants(cur, p, message);
+        const fits = variants.filter((v) => (el.maxLength > 0 ? v.length <= el.maxLength : true) && patternAccepts(el, v) !== false);
+        const pick = fits[(n - 1) % Math.max(1, fits.length)] || variants[(n - 1) % Math.max(1, variants.length)];
+        return pick && pick !== cur ? setText(pick) && 'reformatted the number' : '';
+      }
+      case 'url': {
+        const u = cur.trim() || p.linkedin || p.linkedin_url || p.website || '';
+        if (!u) return '';
+        const fixed = /^https?:\/\//i.test(u) ? u : 'https://' + u.replace(/^\/+/, '');
+        return fixed !== cur ? setText(fixed) && 'made it a full https:// link' : '';
+      }
+      case 'number': case 'range': {
+        let v = cur.replace(/[, ]/g, '').match(/-?\d+(\.\d+)?/);
+        v = v ? v[0] : String(guessFieldValue(label, p, el) || '').replace(/[, ]/g, '').match(/-?\d+(\.\d+)?/)?.[0] || '';
+        if (!v) return '';
+        let num = Number(v);
+        const min = el.min !== '' && el.min != null ? Number(el.min) : numIn(/(?:at least|minimum(?: of)?|greater than|more than|between)\s*(-?[\d,.]+)/i);
+        const max = el.max !== '' && el.max != null ? Number(el.max) : numIn(/(?:at most|maximum(?: of)?|less than|no more than|and)\s*(-?[\d,.]+)/i);
+        if (!isNaN(min) && num < min) num = min;
+        if (!isNaN(max) && num > max) num = max;
+        const out = String(num);
+        return out !== cur ? setText(out) && 'entered a plain number' : '';
+      }
+      case 'tooLong': {
+        const lim = el.maxLength > 0 ? el.maxLength : numIn(/(\d+)\s*(?:characters|chars)/i);
+        if (!lim || cur.length <= lim) return '';
+        let t = cur.slice(0, lim);
+        const cut = t.lastIndexOf(' ');
+        if (cut > lim * 0.6) t = t.slice(0, cut);
+        return setText(t.trim()) && 'shortened it to ' + lim + ' characters';
+      }
+      case 'tooShort': {
+        const lim = el.minLength > 0 ? el.minLength : numIn(/(\d+)\s*(?:characters|chars)/i);
+        if (!lim || el.tagName !== 'TEXTAREA') return '';
+        let t = cur.trim();
+        // Each sentence at most once — padding by repeating one reads as a bot.
+        let co = '';
+        try { co = pageCompanyName() || ''; } catch (_) {}
+        const filler = [
+          (p.cover_letter || p.cover || '').trim(),
+          DEFAULTS.why,
+          `My experience maps closely to what this role needs, and I am confident I could contribute quickly${co ? ' at ' + co : ''}.`,
+          DEFAULTS.cover,
+          'I would welcome the chance to discuss how I can help the team.',
+        ].filter(Boolean);
+        for (const f of filler) if (t.length < lim && !t.includes(f)) t = (t ? t + ' ' : '') + f;
+        return t !== cur ? setText(t) && 'expanded the answer' : '';
+      }
+      case 'list': {
+        const q = /locat|city|town|address|where/i.test(label) ? locationQuery(p) : (cur || guessFieldValue(label, p, el));
+        if (!q) return '';
+        return (await commitAutocomplete(el, q)) ? 'picked it from the suggestions' : '';
+      }
+      case 'pattern': {
+        if (!cur) break;
+        const tries = [cur.trim(), cur.replace(/\s+/g, ''), cur.replace(/[^\d]/g, ''), cur.toUpperCase(), cur.toLowerCase()];
+        const ok = tries.find((t) => t && t !== cur && patternAccepts(el, t) === true);
+        return ok ? setText(ok) && 'changed it to the required format' : '';
+      }
+      default: break;
+    }
+    // Required / other: an empty field gets the best answer we have.
+    if (!hasFieldValue(el)) {
+      const v = guessFieldValue(label, p, el);
+      if (v) return setText(v) && 'filled it';
+    }
+    return '';
+  }
+
+  /* A site's error text stays on screen until IT re-checks the field — usually
+     on the next Submit. Re-reading that stale text after we have already fixed
+     the field "fixed" it again, and a correct +447700900123 was swapped for a
+     worse format before the site ever saw it. So once a field is fixed, its
+     message is ignored until a Submit has happened or the value changes. The
+     browser's own checks are live and are always believed. */
+  const _errFixStamp = new WeakMap();
+  const errFieldValue = (el) => { try { return el.type === 'radio' || el.type === 'checkbox' ? String(el.checked) : String(el.value || ''); } catch (_) { return ''; } };
+  /* Read the page's errors, fix each one, and say what was done. */
+  async function fixFieldErrorsFromPage(p) {
+    const errs = readFieldErrors();
+    _lastFieldErrors = errs;
+    if (!errs.length) return 0;
+    let fixed = 0;
+    for (const e of errs.slice(0, 25)) {
+      const stamp = _errFixStamp.get(e.el);
+      if (!e.live && stamp && stamp.round === _lastSubmitAt && stamp.value === errFieldValue(e.el)) continue;
+      let what = '';
+      try { what = await fixFieldError(e, p); } catch (_) {}
+      if (what) _errFixStamp.set(e.el, { round: _lastSubmitAt, value: errFieldValue(e.el) });
+      LOG(`Form says "${e.label || 'field'}": ${e.message || e.kind}` + (what ? ` → ${what}` : ' → no automatic fix'));
+      if (what) fixed++;
+      else DIAG('field.error', (e.label || 'field') + ' — ' + (e.message || e.kind), { kind: e.kind });
+      await sleep(60);
+    }
+    return fixed;
+  }
+  // The most useful sentence about what is still wrong, for the job's reason.
+  function remainingErrorSummary() {
+    try {
+      const errs = readFieldErrors();
+      _lastFieldErrors = errs;
+      if (!errs.length) return '';
+      const first = errs[0];
+      return `${first.label || 'a field'}: ${first.message || first.kind}` + (errs.length > 1 ? ` (+${errs.length - 1} more)` : '');
+    } catch (_) { return ''; }
+  }
+
   // ===================== FORM VALIDATION ERROR HANDLER =====================
   async function handleValidationErrors__impl() {
     // Wait a moment for validation to trigger
     await sleep(500);
+    // The page's own messages first — see readFieldErrors.
+    let fixedFromMessages = 0;
+    try { fixedFromMessages = await fixFieldErrorsFromPage(await getProfile()); } catch (e) { LOG('Field-error pass error:', e?.message || e); }
     const errors = deepAll('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
       .filter(el => isVisible(el) && el.textContent?.trim());
 
-    if (!errors.length) return 0;
+    if (!errors.length) return fixedFromMessages;
     LOG(`Found ${errors.length} validation errors — attempting to fix`);
 
-    let fixed = 0;
+    let fixed = fixedFromMessages;
     const p = await getProfile();
     for (const errEl of errors) {
       // Find the associated input
@@ -11090,6 +11563,18 @@
         (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '')));
     return labelled || byAttr[0] || null;
   }
+  /* Only a box that SAYS it wants an email — type, name, id, autocomplete or
+     label. authEmailField() falls back to "the first text box" for walls whose
+     only clue is the page copy; that fallback is wrong anywhere the question is
+     "is this an email step at all?", because on a short application section
+     the first text box is the e-signature or a name. */
+  function strictEmailField() {
+    return deepAll('input[type=email],input[autocomplete="email"],input[autocomplete="username"],input[name*="email" i],input[id*="email" i],input[type=text],input:not([type])', 80)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly)
+      .find((el) => el.type === 'email' || /e-?mail/i.test(
+        (el.name || '') + ' ' + (el.id || '') + ' ' + (el.autocomplete || '') + ' ' +
+        (getLabel(el) || '') + ' ' + (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || ''))) || null;
+  }
   function authPasswordFields() {
     return deepAll('input[type=password]', 12).filter((el) => isVisible(el) && !el.disabled);
   }
@@ -11910,10 +12395,15 @@
         await resolveEmailVerification(120000);
         continue;
       }
+      /* The email step and nothing else. An application section with one or
+         two fields (e-signature, supporting documents) is also "under /apply
+         with no full form", and treating it as the email step typed the email
+         into its first box and pressed its button. */
       const onEmailStep = /\/apply\/email\b/i.test(location.pathname) ||
-        (/\/apply\b/i.test(location.pathname) && !hasApplicationForm() && !!authEmailField());
+        (/\/apply\b/i.test(location.pathname) && !hasApplicationForm() && !!strictEmailField() &&
+          !/\/apply\/section\b/i.test(location.pathname));
       if (!onEmailStep) return;
-      const box = authEmailField();
+      const box = strictEmailField();
       const email = await getAppEmail();
       if (!box || !email) { LOG('Oracle: email step with no ' + (box ? 'saved email' : 'email box') + ' — leaving it for you'); return; }
       const before = stepSignature();
@@ -11956,7 +12446,7 @@
        Oracle job pages carry a search box and a job-alert email box — so the
        driver often never pressed Apply Now at all. */
     for (let i = 0; i < 3; i++) {
-      if (/\/apply/i.test(location.href) || hasApplicationForm() || authEmailField()) break;
+      if (/\/apply/i.test(location.href) || hasApplicationForm()) break;
       const apply = findApplyButton() || deepQueryAll('button,a,oj-button,[role="button"]').filter(isVisible)
         .find(b => isApplyLabel(b.textContent || b.getAttribute('title') || b.getAttribute('aria-label') || ''));
       if (!apply) break;
@@ -12303,6 +12793,8 @@
         if (!el || !el.tagName) return;
         const tag = el.tagName;
         if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+        // The automation's own focus() moves raise TRUSTED focusout events.
+        if (!userTouched(el)) return;
         if (/^(hidden|file|submit|button|password)$/.test(el.type || '')) return;
         if (el.type === 'radio' || el.type === 'checkbox') {
           // Question = the GROUP's question, answer = the option label you picked.

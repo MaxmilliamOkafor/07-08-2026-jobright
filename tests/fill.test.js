@@ -180,7 +180,7 @@ eq('SmartRecruiters attaches the CV before sweeping fields',
 eq('SmartRecruiters never advances mid-upload',
   /SmartRecruiters: waiting for the CV upload to finish/.test(src), true);
 eq('no ATS submits through an in-flight upload',
-  /Never submit through one\.[\s\S]{0,200}?logFillReport\('Before submit'\)/.test(src), true);
+  /Never submit through one\.[\s\S]{0,120}?await waitForResumeUpload\(25000\); \}[\s\S]{0,900}?logFillReport\('Before submit'\)/.test(src), true);
 eq('the CV pass is part of the universal fill', /const cvState = await attachResume\(\);/.test(src), true);
 
 /* ── 10. the stall clock must not run during active work ──────────────────── */
@@ -1440,8 +1440,9 @@ eq('and so does the fuzzy half of the text path',
   /safeKnockoutAnswer\(findSavedResponseMatch\(questionText\), questionText\)/.test(src), true);
 /* An answer the user typed against THIS question is not a fuzzy match, and
    their word is final — the guard must not touch it. */
-eq('an exact learned answer is left to stand',
-  /\|\| getLearnedAnswer\(label, el, true\) \|\| guessValue\(label, p\) \|\|/.test(src), true);
+eq('an exact learned answer YOU gave is left to stand',
+  /const exactOk = exact && \(isManualAnswer\(label, el\) \? exact : safeKnockoutAnswer\(exact, questionText\)\);/.test(src), true);
+eq('and it is consulted before the built-in guesses', /const raw = fromSaved \|\| exactOk \|\| guessValue\(label, p\) \|\|/.test(src), true);
 
 /* ── 40. nothing may pause a run waiting for a human ──────────────────────── */
 /* "Leave site? Changes you made may not be saved." froze a 685-job run on
@@ -2625,6 +2626,130 @@ console.log('knockout answers are the ones that do not get you rejected');
     .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
   eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
   eq('the battery really is 54 questions', CASES.length, 54);
+}
+
+/* ── 61. v17.4: what a real browser run showed ────────────────────────────────
+   Every case here came out of driving the shipped extension in Chromium against
+   a local application form (see README v17.4). Behavioural wherever the logic
+   can run outside a page. */
+console.log('v17.4 — the answer bank, native radios, the form\'s own error messages, calm scrolling');
+{
+  // 1. The saved-response matcher, run for real against the REAL seed bank.
+  const seedSrc = src.match(/const SEED = (\[[\s\S]*?\n  \]);/)[1];
+  const SEED = new Function('return ' + seedSrc)().map((e) => ({ ...e, seeded: true }));
+  const mk = (bank) => {
+    const x = {};
+    new Function('exports', 'bank', `
+      let _savedResponses = bank;
+      ${src.match(/  const SEED_PROFILE_OWNED_RE = [^\n]*\n/)[0]}
+      ${body('findSavedResponseMatch')}
+      exports.m = findSavedResponseMatch;
+    `)(x, bank);
+    return x.m;
+  };
+  const match = mk(SEED);
+  eq('"Location (City)" is not answered by the seeded "current location"', match('Location (City) *'), '');
+  eq('the sponsorship question gets the sponsorship entry, not "visa status"',
+    match('Will you now or in the future require sponsorship for employment visa status?'), 'No');
+  eq('a seeded salary never stands in for the profile', match('What are your salary expectations?'), '');
+  eq('a seeded notice period never stands in for the profile', match('What is your notice period?'), '');
+  eq('one word of a two-word entry is not a match', match('Where is your office location?'), '');
+  eq('a full seeded match still answers', match('Are you at least 18 years of age?'), 'Yes');
+  eq('a seed matching 2 of its 3 words is not used (the decider answers instead)', match('Have you previously worked for Acme?'), '');
+  const withMine = mk([...SEED, { keywords: ['previously', 'worked', 'acme'], response: 'Yes', manual: true }]);
+  eq('your own entry still matches', withMine('Have you previously worked for Acme?'), 'Yes');
+
+  // 2. A sentence cannot be squeezed onto a yes/no knockout.
+  eq('a saved sentence on a sponsorship knockout is dropped',
+    safe('Authorized to work without sponsorship', 'Will you now or in the future require sponsorship for employment visa status?'), '');
+  eq('a sentence on an ordinary question is kept', safe('Immediately', 'When can you start?'), 'Immediately');
+
+  // 3. Prior employment phrasings.
+  eq('"Have you ever worked for Acme before?" → no', koCtx.decide('have you ever worked for acme before?'), 'no');
+  eq('"previously been employed by Acme" → no', koCtx.decide('have you previously been employed by acme?'), 'no');
+  eq('"worked for a startup before" is experience → yes', koCtx.decide('have you ever worked for a startup before?'), 'yes');
+
+  // 4. A native radio's OWN label, not the group's legend.
+  const cl = {};
+  new Function('exports', `
+    const getLabel = () => 'have you previously worked for acme? *';
+    ${body('choiceLabel')}
+    exports.c = choiceLabel;
+  `)(cl);
+  const radio = (txt) => ({ tagName: 'INPUT', type: 'radio', getAttribute: () => null,
+    labels: [{ cloneNode: () => ({ querySelectorAll: () => [], textContent: ' ' + txt + ' ' }) }] });
+  eq('each option reads its own label', [cl.c(radio('Yes')), cl.c(radio('No'))], ['yes', 'no']);
+
+  // 5. Learning only from what YOU entered.
+  eq('fields the automation filled are not learned', /\.filter\(el => isVisible\(el\) && hasFieldValue\(el\) && userTouched\(el\)\)/.test(src), true);
+  eq('the focusout learner requires a real touch', /\/\/ The automation's own focus\(\) moves raise TRUSTED focusout events\.\n\s*if \(!userTouched\(el\)\) return;/.test(src), true);
+  eq('input/change are not proof of a human', /for \(const ev of \['keydown', 'pointerdown', 'mousedown', 'paste', 'drop'\]\)/.test(src), true);
+
+  // 6. Phone formats, always from the profile number.
+  const ph = {};
+  new Function('exports', `
+    const DEFAULTS = { phoneCountryCode: '+353' };
+    ${src.match(/  const DIAL_CODES = [^\n]*\n/)[0]}
+    ${body('phoneVariants')}
+    exports.v = phoneVariants;
+  `)(ph);
+  const P = { phone: '+44 7700 900123' };
+  eq('international wording → +447700900123 first', ph.v('', P, 'Enter a phone number in international format, e.g. +14155550123')[0], '+447700900123');
+  eq('the number\'s own +44 is kept, not the +353 default', ph.v('', P, '').every((x) => !/353/.test(x)), true);
+  eq('retries never compound (built from the profile, not the box)', ph.v('353447700900123', P, '')[0], '+447700900123');
+  eq('an Irish national number gets +353', ph.v('', { phone: '087 123 4567' }, 'international format')[0], '+353871234567');
+  eq('"digits only" → a national number', ph.v('', P, 'Digits only please')[0], '07700900123');
+
+  // 7. Classifying the form's own messages.
+  const cf = {};
+  new Function('exports', `
+    const getLabel = () => '', getQuestionForInput = () => '', textOfIds = () => '';
+    ${body('fieldName')}
+    ${body('classifyFieldError')}
+    exports.c = classifyFieldError;
+  `)(cf);
+  const inp = (type, label) => ({ type, labels: [{ cloneNode: () => ({ querySelectorAll: () => [], textContent: label }) }], getAttribute: () => '' });
+  for (const [type, label, msg, kind, want] of [
+    ['tel', 'Phone', 'Please enter a valid phone number', '', 'phone'],
+    ['text', 'LinkedIn', 'Please enter a valid URL', '', 'url'],
+    ['email', 'Email', 'Please include an \'@\' in the email address.', 'type', 'email'],
+    ['text', 'Why us?', 'Your answer must be at least 100 characters', '', 'tooShort'],
+    ['text', 'Summary', 'Maximum 50 characters', '', 'tooLong'],
+    ['text', 'Years', 'Must be between 0 and 5', '', 'range'],
+    ['text', 'Salary', 'Please enter a whole number', '', 'number'],
+    ['text', 'Location', 'Please select a location from the list', '', 'list'],
+    ['text', 'First name', 'This field is required', '', 'required'],
+    ['text', 'Postcode', 'Invalid format', '', 'pattern'],
+  ]) eq(`"${msg}" → ${want}`, cf.c(inp(type, label), msg, kind), want);
+
+  // 8. The error pass runs before Submit, and a failed job says what the form said.
+  eq('errors are read and fixed before Submit is pressed', /for \(let pass = 0; pass < 2 && readFieldErrors\(\)\.length; pass\+\+\) \{/.test(src), true);
+  eq('the browser\'s own validity is read', /if \(el\.willValidate && el\.validity && !el\.validity\.valid\) \{/.test(src), true);
+  eq('a stale message is not "fixed" twice', /if \(!e\.live && stamp && stamp\.round === _lastSubmitAt && stamp\.value === errFieldValue\(e\.el\)\) continue;/.test(src), true);
+  eq('a stuck job names the field and the message', /return 'Validation errors could not be resolved' \+ \(e \? ' — ' \+ e : ''\);/.test(src), true);
+
+  // 9. Calm scrolling, run for real against a fake page.
+  const calm = src.match(/  try \{\n    const automatingNow = [\s\S]*?\n  \} catch \(_\) \{\}\n/)[0];
+  const calls = [];
+  const attrs = { 'data-ua-auto': '1' };
+  const Element = function () {}; Element.prototype.scrollIntoView = function (a) { calls.push(['siv', a]); };
+  const HTMLElement = function () {}; HTMLElement.prototype.focus = function (o) { calls.push(['focus', o]); };
+  const win = { innerHeight: 800, scrollTo(a) { calls.push(['to', a]); } };
+  win.scroll = win.scrollTo; win.scrollBy = win.scrollTo;
+  const doc = { documentElement: { clientHeight: 800, getAttribute: (k) => attrs[k] || null } };
+  new Function('Element', 'HTMLElement', 'window', 'document', calm)(Element, HTMLElement, win, doc);
+  const el = (top) => { const e = new Element(); e.getBoundingClientRect = () => ({ top, bottom: top + 30, width: 100, height: 30 }); return e; };
+  el(100).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  eq('an on-screen field is not scrolled to', calls.length, 0);
+  el(3000).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  eq('an off-screen one jumps once, instantly, to the nearest edge', calls.pop(), ['siv', { block: 'nearest', inline: 'nearest', behavior: 'instant' }]);
+  el(5000).scrollIntoView({ behavior: 'smooth' });
+  eq('and a second jump inside 700ms is dropped', calls.length, 0);
+  new HTMLElement().focus();
+  eq('focus never scrolls during a run', calls.pop(), ['focus', { preventScroll: true }]);
+  attrs['data-ua-auto'] = null;
+  el(9000).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  eq('outside a run, scrolling is untouched', calls.pop(), ['siv', { behavior: 'smooth', block: 'center' }]);
 }
 
 
