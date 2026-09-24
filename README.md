@@ -2722,6 +2722,58 @@ Suite total: **1,509 assertions**, all green on Jobright 1.23.1.
 
 ---
 
+## v17.3 — every board in your queue reaches its own driver
+
+Checked against the **92 real job URLs** in your diagnostics exports: each one
+was run through the shipped detector and the dispatcher's routing chain, and
+every miss was fixed. The URLs are now a permanent test, so a new rule that
+steals a board from its driver fails the suite.
+
+### Routing
+| Board | Was | Now |
+| --- | --- | --- |
+| iCIMS on the employer's own domain (careers.amd.com `/careers-home/jobs/…`, pepsicojobs.com `/main/jobs/…`) | generic flow | **iCIMS driver** |
+| jobs.workable.com (Workable's job-board host) | unrecognised, generic flow | **Workable driver** |
+| BambooHR, Jobvite, Breezy, Rippling, JazzHR, Handshake recognised from the page (white-labelled) | generic flow | **their own drivers** |
+| TriNet Hire, Qureos, Manatal (careers-page.com), Zoho Recruit regional (`.in`, `.eu`…), Radancy/TalentBrew (Arm) | unnamed | named in the log and the diagnostics |
+
+### Oracle Recruiting — JPMorgan, Dell, EY and every `hcmUI` tenant
+Oracle's "create account / sign in" is not a password form, which is why it
+kept stalling:
+
+1. **Apply Now was sometimes never pressed.** The driver treated "any input on
+   the page" as being inside the application — and Oracle job pages carry a
+   search box and a job-alert email box.
+2. **The email step** (`/apply/email`: email + "I agree with the terms and
+   conditions" + Next) is now walked explicitly. The terms tick-box is a hidden
+   input under a styled label, so every visible-only sweep skipped it and Next
+   stayed disabled; it is ticked through the input now (never by clicking the
+   label, which holds the terms link), and a terms dialog's **Agree** is
+   pressed. Next is found by name first — Oracle's header has a *Sign In* link
+   earlier on the page that led off the job.
+3. **The PIN screen** ("Confirm your identity — we sent a code"). Recognised
+   now, and with the Gmail reader connected the PIN is fetched and typed —
+   **one digit per box** on Oracle's six-box layout (the whole code used to go
+   into the first box). Only mail sent since the PIN screen appeared is used, so
+   a second Oracle job in a row cannot be handed the previous job's code, and a
+   rejected code is never retyped. Oracle's own mail senders are searched, since
+   the PIN never comes from the tenant host on screen.
+
+Without the Gmail reader connected, a PIN screen is handed to you with the
+reason, as before.
+
+### SmartRecruiters
+- **Yes/No questions go through the shared knockout engine.** The driver had
+  its own that fell back to **"Yes"** — then to the *first* option — whenever it
+  was unsure: on "Will you require sponsorship?" that is an auto-reject.
+- **Location** goes into the location box. The fix used the first combobox on
+  the page, which is usually the phone-number country picker.
+- The one-click form's **Confirm email** box is filled.
+
+Suite total: **1,553 assertions**, all green.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

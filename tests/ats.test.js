@@ -345,5 +345,110 @@ eq('the icon inside the button\'s own shadow root is read',
 eq('triggerMouse is guarded too, not just realClick',
   /Refusing to pointer-click destructive control/.test(enhSrc), true);
 
+/* ── 6. real queued URLs reach their own driver ───────────────────────────── */
+/* Every URL below came out of real diagnostics exports. The dispatcher's
+   routing chain is rebuilt from the shipped source and walked in order, so a
+   new detection rule that steals a URL from the right driver — or a platform
+   the recogniser names but no branch accepts — fails here. The DOM
+   fingerprint is off: these must route from the URL alone. */
+console.log('real queued URLs → driver');
+const dispatch = grabFn(enhSrc, 'dispatchATSAutomation');
+const chain = [...dispatch.matchAll(/^\s*(?:else\s+)?(?:if\s*\((.+?)\)\s*)?await (\w+)\(\);/gm)]
+  .map((m) => ({ cond: m[1] || 'true', drv: m[2] }))
+  .filter((c) => /Automation$|EasyApply$|^tailorFirstFlow$/.test(c.drv));
+const route = new Function('location', `
+  const detectATSByDom = () => null;
+  const LOG = () => {};
+  ${atsTable}
+  ${avatureRouteRe}
+  ${['isWorkday', 'isSmartRecruiters', 'isOracleCloud', 'isTaleo', 'isAdpMyJobs', 'isAvature', 'detectATS'].map((n) => grabFn(enhSrc, n)).join('\n')}
+  const url = location.href;
+  const platform = detectATS();
+  for (const c of ${JSON.stringify(chain)}) if (eval(c.cond)) return [platform, c.drv];
+  return [platform, null];
+`);
+const routeOf = (href) => { const u = new URL(href); return route({ href, hostname: u.hostname, pathname: u.pathname }); };
+for (const [href, want] of [
+  ['https://careers.amd.com/careers-home/jobs/92491', 'icimsAutomation'],
+  ['https://www.pepsicojobs.com/main/jobs/447137', 'icimsAutomation'],
+  ['https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate', 'icimsAutomation'],
+  ['https://jobs.workable.com/view/1Ctkw2QrCmKk1N9xzFiYAZ/rpa-developer', 'workableAutomation'],
+  ['https://apply.workable.com/acme/j/ABC123/', 'workableAutomation'],
+  ['https://hcyc.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/10393', 'oracleCloudAutomation'],
+  ['https://enterpriseplatform.dell.com/hcmUI/CandidateExperience/en/sites/careers/job/29', 'oracleCloudAutomation'],
+  ['https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/job/210000001', 'oracleCloudAutomation'],
+  ['https://wd3.myworkdaysite.com/recruiting/rabobank/jobs/job/Utrecht', 'workdayAutomation'],
+  ['https://nxp.wd3.myworkdayjobs.com/careers/job/Catania/Senior-Digital-Design-Engineer', 'workdayAutomation'],
+  ['https://job-boards.greenhouse.io/twilio/jobs/8190887', 'greenhouseAutomation'],
+  ['https://jobs.smartrecruiters.com/Grab/744000150545769-senior-data-scientist', 'smartRecruitersAutomation'],
+  ['https://jobs.smartrecruiters.com/oneclick-ui/company/Grab/publication/152ae953-580', 'smartRecruitersAutomation'],
+  ['https://aa115.taleo.net/careersection/qa_external_cs/jobdetail.ftl', 'taleoAutomation'],
+  ['https://career5.successfactors.eu/careers', 'successFactorsAutomation'],
+  ['https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html', 'adpAutomation'],
+  ['https://acme.bamboohr.com/careers/42', 'bamboohrAutomation'],
+  ['https://jobs.jobvite.com/acme/job/oABC123', 'jobviteAutomation'],
+  ['https://acme.breezy.hr/p/abc123-engineer', 'breezyhrAutomation'],
+  ['https://ats.rippling.com/acme/jobs/1234', 'ripplingAutomation'],
+  ['https://acme.applytojob.com/apply/ABC123/Engineer', 'jazzhrAutomation'],
+]) eq(`${new URL(href).hostname}${new URL(href).pathname.slice(0, 28)} → ${want}`, routeOf(href)[1], want);
+// The newly recognised boards are named (the generic flow logs and records them
+// by name), and still go through the generic flow that handles them.
+for (const [href, name] of [
+  ['https://app.trinethire.com/companies/526703-black-lake/jobs/104', 'TriNet Hire'],
+  ['https://jobs.qureos.com/jobs/8410384-remote-data-analyst', 'Qureos'],
+  ['https://careers-page.com/digway-2/job/Y6894W35', 'Manatal'],
+  ['https://kumaran.zohorecruit.in/jobs/Careers/31840000017690179/QA-Lead', 'Zoho'],
+  ['https://careers.arm.com/job/galway/senior-software-ml-engineer/33099/93485591024', 'Radancy'],
+  ['https://careers.sokin.com/jobs/8409552-senior-fullstack-engineer', 'Teamtailor'],
+]) eq(`${new URL(href).hostname} recognised as ${name}`, routeOf(href), [name, 'tailorFirstFlow']);
+
+/* ── 7. Oracle Recruiting's front door + SmartRecruiters knockouts ───────── */
+console.log('Oracle email step, terms box, SmartRecruiters knockouts');
+{
+  // A terms box drawn over a hidden <input>: ticked via the input, never by a
+  // pointer click on the label (which holds the terms link).
+  const mkBox = (label, opts = {}) => {
+    const lab = { textContent: label, visible: opts.labelVisible !== false };
+    const c = { checked: false, disabled: false, visible: !!opts.visible, id: '', lab,
+      closest: () => lab, getRootNode: () => ({}), click() { this.checked = !this.checked; } };
+    return c;
+  };
+  const boxes = [
+    mkBox('I agree with the terms and conditions'),
+    mkBox('Send me job alerts and marketing emails'),
+    mkBox('I agree to the privacy policy', { visible: true }),
+    mkBox('I agree with the terms', { labelVisible: false }),
+    mkBox('Relocation assistance'),
+  ];
+  new Function('boxes', `
+    const deepAll = () => boxes;
+    const isVisible = (el) => el.lab ? el.visible : el.visible;
+    const isMarketingCheckbox = (el) => /marketing|job alerts/i.test(el.lab.textContent);
+    const CSS = { escape: (x) => x };
+    ${grabFn(enhSrc, 'tickHiddenTermsBoxes')}
+    tickHiddenTermsBoxes();
+  `)(boxes);
+  eq('the hidden terms box is ticked', boxes[0].checked, true);
+  eq('a marketing opt-in is not', boxes[1].checked, false);
+  eq('a visible box is left to the visible sweep', boxes[2].checked, false);
+  eq('a box with no visible label is left alone', boxes[3].checked, false);
+  eq('an unrelated hidden box is left alone', boxes[4].checked, false);
+
+  const oracle = grabFn(enhSrc, 'oracleCloudAutomation');
+  eq('Oracle presses Apply Now even with a search box on the job page',
+    /deepQuery\('input,select,textarea,oj-input-text'\)\) break/.test(oracle), false);
+  eq('Oracle walks its email + PIN step before anything else', /await oracleEmailAndPin\(\);/.test(oracle), true);
+  const ep = grabFn(enhSrc, 'oracleEmailAndPin');
+  eq('the email step prefers Next over the header Sign In link',
+    /next = stepButton\(\) \|\| findAuthSubmit\('create'\)/.test(ep), true);
+  eq('the PIN is waited for, not skipped', /await resolveEmailVerification\(120000\)/.test(ep), true);
+
+  const sr = grabFn(enhSrc, 'smartRecruitersAutomation');
+  eq('SmartRecruiters radios use the shared knockout engine', /answerKnockoutRadioGroup\(radios, group, p\)/.test(sr), true);
+  eq('SmartRecruiters never defaults an unsure radio to "yes"', /\|\| 'yes'\)/.test(sr), false);
+  eq('the location fix targets the location box, not the first combobox',
+    /deepQueryAll\('\[role="combobox"\],spl-input\[id="location"\]'\)\.filter\(isVisible\)\[0\]/.test(sr), false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

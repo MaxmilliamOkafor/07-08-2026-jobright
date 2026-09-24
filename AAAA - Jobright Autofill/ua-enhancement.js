@@ -626,6 +626,27 @@
        /jobs/<numeric id>-<slug> — and it was the single biggest fall-through in
        the queue (careers.sumsub.com alone was 20 jobs, plus spacelift, phorest
        and geelyauto). */
+    /* ── Learned from the diagnostics exports (92 real URLs) ─────────────────
+       Each rule below is one of those URLs routing wrongly or not at all.
+       These sit ABOVE the Teamtailor path shape on purpose: TriNet Hire and
+       Qureos use the same /jobs/<digits>-<slug> shape and were being filed as
+       Teamtailor. */
+    { n: 'TriNet Hire', p: /(^|\/\/|\.)trinethire\.com/i },
+    { n: 'Qureos', p: /(^|\/\/|\.)qureos\.com/i },
+    // jobs.workable.com — the most common host in the exports, and the table only
+    // knew apply.workable.com. It reached the Workable driver through a looser
+    // host check, but everything that asks "which ATS is this?" got nothing.
+    { n: 'Workable', p: /(apply|jobs)\.workable\.com/i },
+    // Zoho Recruit serves regional domains; only .com was known (kumaran, trulogik → .in).
+    { n: 'Zoho', p: /zohorecruit\.[a-z.]+\/|recruit\.zoho\./i },
+    // Manatal's hosted career sites: careers-page.com/<company>/job/<id>.
+    { n: 'Manatal', p: /(^|\/\/)careers-page\.com\//i },
+    /* iCIMS's Jibe front-end (careers.amd.com, pepsicojobs.com). It hands off to
+       the iCIMS login, so it is filed as iCIMS and gets that driver — which
+       clicks Apply and follows it. */
+    { n: 'iCIMS', p: /\/careers-home\/jobs\/\d+|\/main\/jobs\/\d+/i },
+    // Radancy / TalentBrew path: /job/<city>/<title>/<client>/<job> (careers.arm.com).
+    { n: 'Radancy', p: /\/job\/[^/?#]+\/[^/?#]+\/\d{3,}\/\d{5,}/i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.
@@ -11099,7 +11120,9 @@
        wall at /jobs/<id>/login with width/height query params, so the path test
        has to cover that shape too. */
     const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname) ||
-      /\/jobs\/\d+\/(login|register)\b/i.test(location.pathname);
+      /\/jobs\/\d+\/(login|register)\b/i.test(location.pathname) ||
+      // Oracle Recruiting's front door: /job/<id>/apply/email.
+      /\/apply\/email\b/i.test(location.pathname);
     if (!urlSaysAuth && !AUTH_COPY_RE.test(copy)) return false;
     // An email box on a page that is ALREADY the application is not a wall.
     return !hasApplicationForm();
@@ -11137,7 +11160,10 @@
      When a mailbox is connected (read-only — see ua-mailbox.js) we can get past
      these without you. When it is not, we say what is blocking the job and hand
      it to you rather than sitting there silently. */
-  const VERIFY_WALL_RE = /verify your (email|account|address)|verification (email|code|link)|check your (inbox|email)|we('ve| have)? sent (you )?(an? )?(email|code|link)|confirm your email|enter the code we sent|activation (email|link)|one.?time (code|passcode)/i;
+  /* Oracle Recruiting (JPMorgan, Dell, EY…) words its PIN screen as an
+     identity check — "Confirm your identity", "Enter the PIN we sent" — rather
+     than an email check, so those phrasings are here too. */
+  const VERIFY_WALL_RE = /verify your (email|account|address|identity)|verification (email|code|link|pin)|check your (inbox|email)|we('ve| have)? sent (you )?(an? )?(email|code|link|pin)|confirm your (email|identity)|enter the (verification |security |one.?time )?(code|pin)( we| that we)? sent|activation (email|link)|one.?time (code|passcode|pin)/i;
 
   function detectEmailVerificationWall() {
     try {
@@ -11158,16 +11184,41 @@
           (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.autocomplete || '');
         if (/password/i.test(hay)) return false;
         return /\b(code|otp|pin|one.?time|verification|passcode|token)\b/i.test(hay);
-      }) || null;
+      }) || codeBoxGroup()[0] || null;
+  }
+  /* A code split into one box per digit — Oracle's PIN screen, and most OTP
+     widgets. The boxes rarely carry a label of their own; four or more
+     single-character inputs side by side are the tell. */
+  function codeBoxGroup() {
+    return deepAll('input[type=text],input[type=tel],input[type=number],input[type=password],input:not([type])', 60)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && el.maxLength === 1)
+      .slice(0, 10)
+      .filter((el, _, all) => all.length >= 4);
+  }
+  /* Type a code into the box we found — or across the group, one digit each.
+     Putting "482913" into the first of six one-digit boxes kept "4" and left the
+     other five empty, so the Verify button never enabled. */
+  function typeVerificationCode(box, code) {
+    const digits = String(code || '').replace(/\s+/g, '');
+    const group = box && box.maxLength === 1 ? codeBoxGroup() : [];
+    if (group.length >= digits.length && group.length > 1) {
+      digits.split('').forEach((ch, i) => {
+        try { group[i].focus({ preventScroll: true }); } catch (_) {}
+        nativeSet(group[i], ch);
+      });
+      return;
+    }
+    try { box.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(box, digits);
   }
 
   /* Ask the service worker for the code or link. The worker's mailbox module is
      read-only and bounded to recent mail from THIS employer — see the header of
      ua-mailbox.js for why each of those limits is there. */
-  function askMailboxForVerification(hosts, companies) {
+  function askMailboxForVerification(hosts, companies, since) {
     return new Promise((res) => {
       try {
-        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies }, (r) => {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies, since: since || 0 }, (r) => {
           void chrome.runtime.lastError;
           res(r || { ok: false, reason: 'no-reply' });
         });
@@ -11182,26 +11233,40 @@
 
     const hosts = [];
     try { hosts.push(location.hostname); } catch (_) {}
+    /* Oracle Recruiting mails its PIN from Oracle's own senders
+       (…@…oraclecloud.com, …@workflow.mail.<region>.cloud.oracle.com), never from
+       the tenant host on screen, so the search has to name those too. */
+    if (isOracleCloud()) hosts.push('oraclecloud.com', 'oracle.com');
     // The employer's own domain too: the mail often comes from the company, not
     // from the ATS that rendered the page.
     const company = pageCompanyName();
     const deadline = Date.now() + (maxWaitMs || 90000);
+    // Only mail sent since this wall appeared (with slack for clock skew) — an
+    // older code belongs to a previous job and is rejected.
+    const since = Date.now() - 3 * 60000;
+    const tried = new Set();
 
     while (Date.now() < deadline) {
       if (autoStopped()) return false;
-      const r = await askMailboxForVerification(hosts, company ? [company] : []);
+      const r = await askMailboxForVerification(hosts, company ? [company] : [], since);
       if (r && r.ok) {
         // Prefer typing a code: it keeps us on the page we are already on.
         const box = verificationCodeField();
-        if (r.code && box) {
+        if (r.code && box && !tried.has(r.code)) {
+          tried.add(r.code);
           LOG('Entering the verification code from your mailbox');
-          box.focus({ preventScroll: true });
-          nativeSet(box, r.code);
+          const before = stepSignature();
+          typeVerificationCode(box, r.code);
           noteProgress('entered the verification code');
-          await sleep(400);
-          const go = findAuthSubmit() || findSubmitControl();
-          if (go) { realClick(go); await waitForStepChange(stepSignature(), 12000); }
-          return true;
+          await sleep(600);
+          // Many OTP widgets submit on the last digit by themselves.
+          if (!detectEmailVerificationWall() || stepSignature() !== before) return true;
+          const go = findVerifySubmit() || findAuthSubmit() || findSubmitControl();
+          if (go) { realClick(go); await waitForStepChange(before, 12000); }
+          if (!detectEmailVerificationWall()) return true;
+          LOG('The code was not accepted — waiting for a newer one');
+          await sleep(4000);
+          continue;
         }
         if (r.link) {
           /* The worker only ever returns a link whose host belongs to the ATS or
@@ -11223,9 +11288,50 @@
     try { reportNeedsHuman('verification email did not arrive'); } catch (_) {}
     return false;
   }
+  // The button under a code box: "Verify", "Confirm", "Submit code".
+  function findVerifySubmit() {
+    return deepAll('button,[role="button"],input[type=submit],input[type=button],oj-button', 150)
+      .filter((b) => isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+      .find((b) => /^(verify|confirm|submit( the)? code|validate)\b/i.test(normLabel(b.textContent || b.value || b.getAttribute('aria-label') || ''))) || null;
+  }
   // Stall watchdog stands down while this runs — see withBusy.
   async function resolveEmailVerification(...a) { return withBusy('waiting for the verification email', () => resolveEmailVerification__impl(...a)); }
 
+  /* A terms box drawn as a styled label over a visually-hidden <input> — Oracle
+     Recruiting's "I agree with the terms and conditions" is one. isVisible()
+     rightly says the input is not visible, so every visible-only sweep skipped
+     it and Next stayed disabled. Only boxes whose own label reads as terms or
+     consent, and never a marketing opt-in. A native .click() is used, not a
+     pointer click on the label: the label holds the "terms and conditions"
+     link, and a click landing on that opens the terms instead of ticking. */
+  function tickHiddenTermsBoxes() {
+    let n = 0;
+    for (const c of deepAll('input[type=checkbox]', 40)) {
+      try {
+        if (c.checked || c.disabled || isVisible(c) || isMarketingCheckbox(c)) continue;
+        const root = c.getRootNode ? c.getRootNode() : document;
+        const lab = (c.id && root.querySelector && root.querySelector('label[for="' + CSS.escape(c.id) + '"]')) || c.closest('label');
+        if (!lab || !isVisible(lab)) continue;
+        if (!/agree|accept|terms|conditions|disclaimer|privacy|consent|acknowledg|certify/i.test(lab.textContent || '')) continue;
+        c.click();
+        if (c.checked) n++;
+      } catch (_) {}
+    }
+    return n;
+  }
+  /* Some tenants make you open the terms and press "Agree" in a dialog. */
+  async function acceptTermsDialog() {
+    const dlg = deepAll('[role="dialog"],oj-dialog,dialog[open],.oj-dialog', 10).filter(isVisible).pop();
+    if (!dlg) return false;
+    const btn = deepAll('button,[role="button"],oj-button,input[type=button],input[type=submit]', 40)
+      .filter((b) => isVisible(b) && dlg.contains(b))
+      .find((b) => /^(i )?(agree|accept)\b/i.test(normLabel(b.textContent || b.value || '')));
+    if (!btn) return false;
+    LOG('Accepting the terms dialog');
+    realClick(btn);
+    await sleep(scaled(600, 300));
+    return true;
+  }
   async function handleAccountAuth__impl() {
     try {
       // Never auto-fill credentials on the user's personal job-board / social logins —
@@ -11279,10 +11385,14 @@
           || /create (an )?(account|profile)|register|sign ?up/i.test((document.body && document.body.innerText || '').toLowerCase().slice(0, 4000));
 
         // Consent / "Agree to Privacy Notice" boxes keep the button disabled.
-        const tickConsents = () => deepAll('input[type=checkbox]', 40).filter(isVisible)
-          .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+        const tickConsents = () => {
+          deepAll('input[type=checkbox]', 40).filter(isVisible)
+            .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+          tickHiddenTermsBoxes();
+        };
         tickConsents();
         await sleep(300);
+        await acceptTermsDialog();
 
         // Wait for the button to actually ENABLE — several ATS keep it disabled
         // until every field validates. Re-fill and re-tick on each pass.
@@ -11528,6 +11638,8 @@
       firstName: p.first_name || p.firstName || '',
       lastName: p.last_name || p.lastName || '',
       email: p.email || '',
+      // The one-click form asks for the address twice.
+      confirmEmail: p.email || '',
       phoneNumber: p.phone || '',
       phone: p.phone || '',
       location: loc,
@@ -11560,7 +11672,12 @@
       // Location typeahead needs its suggestion committed, or SmartRecruiters
       // rejects the step with "Please select a location from the list".
       if (loc) {
-        const locCombo = deepQueryAll('[role="combobox"],spl-input[id="location"]').filter(isVisible)[0];
+        /* The location box, not simply the first combobox: the phone number's
+           country picker is a combobox too and usually comes first, so the city
+           was typed into a country list and the real location stayed empty. */
+        const combos = deepQueryAll('spl-input[id="location"],spl-autocomplete,[role="combobox"]').filter(isVisible);
+        const locCombo = combos.find(c => /locat|city|where.*(live|based)/i.test(
+          (c.id || '') + ' ' + (c.getAttribute('name') || '') + ' ' + (c.getAttribute('aria-label') || '') + ' ' + (getLabel(c) || ''))) || null;
         if (locCombo) await splPickOption(locCombo, p.city || loc);
       }
 
@@ -11575,16 +11692,17 @@
         await sleep(200);
       }
 
-      // spl-radio groups (Yes/No knockouts).
+      /* spl-radio groups (Yes/No knockouts). These go through the same answer
+         engine as every other ATS. The private version here fell back to "yes"
+         — and failing that, to the FIRST option — whenever the guesser was
+         unsure, which on "Will you now or in the future require sponsorship?"
+         is the answer that gets an application auto-rejected. */
       for (const group of deepQueryAll('fieldset[role="radiogroup"],[role="radiogroup"]').filter(isVisible)) {
-        const already = deepQueryAll('spl-radio[checked],input[type="radio"]:checked', group);
+        const already = deepQueryAll('spl-radio[checked],spl-radio[aria-checked="true"],input[type="radio"]:checked', group);
         if (already.length) continue;
-        const q = (group.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-        const want = String(guessFieldValue(q, p, group) || 'yes').toLowerCase();
         const radios = deepQueryAll('spl-radio,input[type="radio"]', group).filter(isVisible);
-        const labelOf = r => ((r.shadowRoot && r.shadowRoot.querySelector('label')?.textContent) || r.textContent || r.value || '').trim().toLowerCase();
-        const pick = radios.find(r => labelOf(r) === want) || radios.find(r => labelOf(r).includes(want)) || radios[0];
-        if (pick) { triggerMouse(pick); await sleep(150); }
+        if (!radios.length) continue;
+        try { if (answerKnockoutRadioGroup(radios, group, p)) await sleep(150); } catch (_) {}
       }
 
       // Consent boxes.
@@ -11783,6 +11901,50 @@
          an Oracle JET app (oj-* components, some in shadow roots).
        • Classic Taleo — *.taleo.net/careersection, server-rendered, frames, and
          numeric field ids that differ per tenant, so it has to be label-driven. */
+  async function oracleEmailAndPin() {
+    for (let pass = 0; pass < 3; pass++) {
+      if (autoStopped()) return;
+      await waitForFormStable(1500);
+      if (detectEmailVerificationWall()) {
+        LOG('Oracle: identity check — a PIN has been emailed');
+        await resolveEmailVerification(120000);
+        continue;
+      }
+      const onEmailStep = /\/apply\/email\b/i.test(location.pathname) ||
+        (/\/apply\b/i.test(location.pathname) && !hasApplicationForm() && !!authEmailField());
+      if (!onEmailStep) return;
+      const box = authEmailField();
+      const email = await getAppEmail();
+      if (!box || !email) { LOG('Oracle: email step with no ' + (box ? 'saved email' : 'email box') + ' — leaving it for you'); return; }
+      const before = stepSignature();
+      if (!(box.value || '').trim()) {
+        try { box.focus({ preventScroll: true }); } catch (_) {}
+        nativeSet(box, email);
+        noteProgress('entering the application email');
+        await sleep(300);
+      }
+      deepAll('input[type=checkbox]', 20).filter(isVisible)
+        .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+      tickHiddenTermsBoxes();
+      await sleep(300);
+      await acceptTermsDialog();
+      /* Next/Continue by name first. Oracle's page header carries a "Sign In"
+         link to the candidate profile, earlier in the DOM than the step's own
+         Next — the generic sign-in finder would take that and leave the job. */
+      const stepButton = () => deepAll('button,[role="button"],input[type=submit],oj-button', 120)
+        .filter((b) => isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+        .find((b) => /^(next|continue|submit)\b/i.test(normLabel(b.textContent || b.value || '')));
+      let next = null;
+      for (let i = 0; i < 8 && !next; i++) {
+        next = stepButton() || findAuthSubmit('create');
+        if (!next) { tickHiddenTermsBoxes(); await acceptTermsDialog(); await sleep(400); }
+      }
+      if (!next) { LOG('Oracle: the Next button never enabled on the email step'); DIAG('oracle.email-stuck'); return; }
+      LOG('Oracle: email step → "' + controlLabel(next).slice(0, 20) + '"');
+      realClick(next);
+      await waitForStepChange(before, 15000);
+    }
+  }
   async function oracleCloudAutomation() {
     LOG('Oracle Recruiting Cloud automation starting...');
     await loadAnswerBank();
@@ -11790,8 +11952,11 @@
 
     // Requisition page → application. Shared apply-label vocabulary, so Oracle
     // gets every wording (and every language) the other drivers understand.
+    /* "Any input on the page" was the test for being past the posting, and
+       Oracle job pages carry a search box and a job-alert email box — so the
+       driver often never pressed Apply Now at all. */
     for (let i = 0; i < 3; i++) {
-      if (/\/apply/i.test(location.href) || deepQuery('input,select,textarea,oj-input-text')) break;
+      if (/\/apply/i.test(location.href) || hasApplicationForm() || authEmailField()) break;
       const apply = findApplyButton() || deepQueryAll('button,a,oj-button,[role="button"]').filter(isVisible)
         .find(b => isApplyLabel(b.textContent || b.getAttribute('title') || b.getAttribute('aria-label') || ''));
       if (!apply) break;
@@ -11802,8 +11967,12 @@
       await waitForStepChange(before, 12000);
     }
 
-    // Oracle asks for an account before the form on many tenants; the shared
-    // credential flow already knows how to satisfy that.
+    /* Oracle's "account" is the email itself: /apply/email takes an address,
+       a terms box and Next — there is no password to create. A returning
+       candidate is then asked to confirm their identity with an emailed PIN.
+       Both are walked here, explicitly, because each one used to stall a job. */
+    await oracleEmailAndPin();
+    // Some tenants also run a classic sign-in page; the shared flow covers that.
     await handleAccountAuth();
     await resolveBlockingDialog();
 
@@ -11929,7 +12098,7 @@
     else if (/icims\.com/i.test(url) || platform === 'iCIMS') await icimsAutomation();
     else if (/linkedin\.com.*\/jobs/i.test(url)) await linkedinEasyApply();
     else if (/ashbyhq\.com/i.test(url) || platform === 'Ashby') await ashbyAutomation();
-    else if (/bamboohr\.com/i.test(url)) await bamboohrAutomation();
+    else if (/bamboohr\.com/i.test(url) || platform === 'BambooHR') await bamboohrAutomation();
     else if (isSmartRecruiters() || platform === 'SmartRecruiters') await smartRecruitersAutomation();
     // Avature — white-labelled onto the employer's domain, so this is routed by
     // its route names, not by host. Must come before the generic fallbacks.
@@ -11939,15 +12108,19 @@
     else if (isOracleCloud() || platform === 'Oracle Recruiting') await oracleCloudAutomation();
     else if (isTaleo() || platform === 'Taleo') await taleoAutomation();
     else if (isAdpMyJobs()) await adpMyJobsAutomation();
-    else if (/jobvite\.com/i.test(url)) await jobviteAutomation();
+    /* Every driver below also accepts the recogniser's answer, not just its own
+       domain. Host-only routing sent a board that EMBEDS the platform — found by
+       its page markers — to the generic path, which is how white-labelled
+       Workable boards were missed. */
+    else if (/jobvite\.com/i.test(url) || platform === 'Jobvite') await jobviteAutomation();
     else if (/workable\.com/i.test(url) || platform === 'Workable') await workableAutomation();
     else if (/indeed\.com/i.test(url)) await indeedEasyApply();
-    else if (/breezy\.hr|breezyhr\.com/i.test(url)) await breezyhrAutomation();
-    else if (/ats\.rippling\.com/i.test(url)) await ripplingAutomation();
+    else if (/breezy\.hr|breezyhr\.com/i.test(url) || platform === 'Breezy' || platform === 'BreezyHR') await breezyhrAutomation();
+    else if (/ats\.rippling\.com/i.test(url) || platform === 'Rippling') await ripplingAutomation();
     else if (/adp\.com|workforcenow\.adp/i.test(url)) await adpAutomation();
     else if (/successfactors\.com/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
-    else if (/jazz\.co|applytojob\.com/i.test(url)) await jazzhrAutomation();
-    else if (/joinhandshake\.com/i.test(url)) await handshakeAutomation();
+    else if (/jazz\.co|applytojob\.com/i.test(url) || platform === 'JazzHR') await jazzhrAutomation();
+    else if (/joinhandshake\.com/i.test(url) || platform === 'Handshake') await handshakeAutomation();
     else if (/governmentjobs\.com|usajobs\.gov/i.test(url)) await usajobsAutomation();
     else if (/eightfold\.ai/i.test(url) || platform === 'Eightfold') await eightfoldAutomation();
     else await tailorFirstFlow();

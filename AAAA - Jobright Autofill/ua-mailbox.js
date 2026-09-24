@@ -247,7 +247,11 @@
     const ids = ((list && list.messages) || []).map((m) => m.id);
     if (!ids.length) return { ok: false, reason: 'no-message' };
 
-    const cutoff = Date.now() - MAX_AGE_MIN * 60000;
+    /* The caller says when the wall appeared. Anything older is the code for a
+       PREVIOUS job — Oracle tenants all mail from the same sender, so a second
+       Oracle job in the same quarter-hour was handed the first job's PIN. */
+    const since = Number(hints && hints.since) || 0;
+    const cutoff = Math.max(Date.now() - MAX_AGE_MIN * 60000, since);
     for (const id of ids) {
       let msg;
       try { msg = await api('/messages/' + id + '?format=full', token); } catch (_) { continue; }
@@ -330,7 +334,7 @@
           try { hosts.push(new URL(sender.tab.url).hostname); } catch (_) {}
         }
         if (!hosts.length) return sendResponse({ ok: false, reason: 'no-hosts' });
-        try { sendResponse(await findVerification({ hosts, companies: (msg.companies || []).slice(0, 3) })); }
+        try { sendResponse(await findVerification({ hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0 })); }
         catch (e) { sendResponse({ ok: false, reason: String(e.message || e) }); }
       })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
       return true;
