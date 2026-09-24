@@ -2431,7 +2431,465 @@ and cannot be acted on. Both hooks now carry the stack frame that raised the
 fault. They still only fire while a job is being driven — a recorder full of
 other sites' bugs hides ours.
 
-Suite total: **1,353 assertions**, all green on Jobright 1.23.0.
+### An invisible CAPTCHA parking the whole run
+
+A 43-job run stopped dead on a Klaviyo Greenhouse embed with every field still
+empty, showing this extension's own banner: *"reCAPTCHA detected — please solve
+it. Automation is paused."* There was nothing to solve.
+
+Greenhouse embeds — and most ATS — carry an **invisible** reCAPTCHA that never
+asks the applicant anything. `detectCaptcha` checked the element's own computed
+style and a minimum size, and that is not how these are hidden: the iframe is a
+normal size, is not itself `display:none`, and is parked far outside the viewport
+or inside a wrapper with `opacity: 0`.
+
+Three questions are asked now, and none of them was before: is it **on screen**,
+is it visible **all the way up** its ancestor chain, and is it the challenge
+rather than the branding badge. The size floor that catches v3 token frames
+stays.
+
+The diagnostics trail is what identified this: last event
+`[Greenhouse EU] opening the application`, then 86 seconds of nothing.
+
+### The problem list was drowning in breadcrumbs
+
+*"ADP WorkforceNow — 261 problems"*, of which 259 were the stage trail —
+`answering dropdowns`, `filling fields`, `attaching the CV` — burying the two
+entries worth reading. Stages are breadcrumbs, not problems; they stay in RECENT
+EVENTS where they belong.
+
+### Nothing about the run is pinned over the employer's page any more
+
+Two overlays went:
+
+- The **CAPTCHA bar** — full width, amber, pinned to the top, covering the
+  employer's own header and sitting above the form you were reading. It is
+  information about the *run*, and the run already has a panel. The state is held
+  now and the control panel renders it: *"Waiting — solve the reCAPTCHA to
+  continue"*, in the one place already dedicated to what the run is doing.
+  Nothing is lost, and a run waiting on a human no longer reads as
+  "Processing…", which looked exactly like a hang.
+- The **"&lt;ATS&gt; Detected" pill** in the top-right corner, for the same reason.
+  The panel names the platform, the queue rows carry it, and the whole
+  diagnostics report is organised by it.
+
+The control panel itself stays — it is the Pause / Skip / Quit you actually
+press.
+
+### The speed selector never reached the loop a job lives in
+
+`multiPageLoop` carried close to **ten seconds of unconditional sleep per page
+iteration**, with eighteen pages of budget — and every one of those waits was a
+flat number, so 1x / 1.5x / 2x / 3x could not touch a millisecond of it. This is
+where a job spends most of its life.
+
+All nine are scaled now, each with a floor so 3x does not become a busy-loop over
+an unchanged page. A page iteration goes from **6.8s of sleep at 1x to 2.05s at
+3x**, and 3x is now genuinely about three times faster through the loop rather
+than only affecting the gaps between jobs.
+
+The second fill pass also stopped running unconditionally. It exists to catch
+fields that appear *because* the first pass answered something — so when the
+first pass fills nothing there is nothing to reveal, and it was pure cost, twice
+a page, eighteen pages deep.
+
+### "Leave site?" after every application — stopped properly this time
+
+The MAIN-world shield disarms `beforeunload` handlers, and it should have been
+enough. It is a **race** by construction: it can only wrap listeners registered
+after it installs, and anything that reassigns
+`EventTarget.prototype.addEventListener` afterwards — the page, a framework,
+another extension — silently replaces the hook. That race was being lost in the
+field, and the prompt came back after every single application.
+
+So the navigation between jobs no longer depends on winning it. The runner used
+to do `location.href = next`, which is a navigation the page gets a vote on. It
+now asks the worker, which **closes this tab and opens the next job in a fresh
+one** — `chrome.tabs.remove()` is the one navigation `beforeunload` cannot veto.
+The queue lives in storage, so nothing is lost, and the runner marker moves to
+the new tab before the old one goes so no watchdog tick sees a run without a tab.
+If the worker does not answer within 1.5s the old road is still there, so an
+asleep worker cannot strand a run.
+
+The shield is still there for navigations a page starts on its own mid-
+application, and it now notices when it has been replaced and puts itself back.
+
+### The interceptor that does not race
+
+Wrapping `addEventListener` was never going to hold, and tightening it three
+times did not change that. It is registered-after-me only, and any later
+reassignment of the prototype method undoes it.
+
+There is now a capture-phase listener registered at `document_start`, before any
+page script exists, that calls **`stopImmediatePropagation()`**. For an event
+targeted at `window`, capture listeners run before bubble ones, and that call
+halts every listener that would have run afterwards — so the page's handlers
+never execute, whenever they were registered and however the prototype has been
+patched since.
+
+An earlier attempt used a capture listener to *clear `returnValue`*, which
+genuinely cannot work: the page's handler runs afterwards and sets it again, and
+`preventDefault()` arms the dialog by itself regardless. Stopping the handlers
+from running is a different mechanism.
+
+**The cost, stated plainly:** the page's `beforeunload` handler no longer runs at
+all, so whatever it did — saving a draft, flushing analytics, releasing a lock —
+does not happen. A test asserts this rather than hiding it. It was chosen because
+a run that stops dead for a human click after every application is worse than an
+ATS losing a draft it would rebuild from the server.
+
+The tab swap between jobs now opens the replacement at the **outgoing tab's own
+index**, so the strip no longer jumps.
+
+### Is it faster — including at 1x?
+
+Scaling only helped 1.5x and above. At 1x the loop still paid the full constant
+every time, and those constants were guesses at the *slowest* case: a page that
+had settled in 200ms still waited two seconds.
+
+The fix was not smaller guesses. Four of the waits now return the moment the DOM
+goes quiet (`waitForFormStable`, which was already there), and the post-submit
+wait polls for the confirmation itself rather than sleeping through the worst
+case. **The old numbers are kept as caps** — a page that genuinely needs the time
+still gets it. This removes a floor; it does not lower a ceiling.
+
+Per page iteration:
+
+| | 1x | 1.5x | 2x | 3x |
+|---|---|---|---|---|
+| original (flat, unscalable) | 6800ms | 6800ms | 6800ms | 6800ms |
+| worst case now (the caps) | 6800ms | 4488ms | 3060ms | 2050ms |
+| **a page that has settled** | **2000ms** | **1320ms** | **900ms** | **610ms** |
+
+A three-page job on settled pages: **20.4s → 6.0s at 1x**, 1.8s at 3x. That is
+3.4x at 1x alone, before the selector does anything.
+
+### Greenhouse "Location (City)"
+
+The only unanswered question in an entire diagnostics export, and three defects
+behind it.
+
+**It was never attempted.** `resolveLocationFields` returned before touching the
+field whenever the profile had no city. It now falls back through what the
+profile actually holds — city, then location, then address, then country — and
+never invents a city. A location autocomplete offers the country as a suggestion,
+and a real place beats a blank required field that blocks the submit.
+
+**It could pick from the wrong list.** `findAutocompleteDropdown` took the first
+visible `[class*="dropdown"]` or `[class*="menu"]` anywhere on the page, which on
+a Greenhouse form can be the Country selector or the site navigation. It now takes
+the listbox the input names in `aria-controls` first, then the input's own field,
+and only then something page-wide that appeared near the input.
+
+**"Typed" was taken for "chosen".** Typing leaves text in the box whether or not a
+suggestion was picked, so a non-empty input proved nothing. Success now means the
+input holds a value with no "is required" / "please select" beside it. A query
+that finds nothing is retried with its first part, and the ArrowDown+Enter
+reinforcement only fires when the click did not take — sending it after a click
+that worked moved the highlight on and committed the *next* suggestion.
+
+Suite total: **1,453 assertions**, all green on Jobright 1.23.0.
+
+---
+
+## v17.0 — rebased onto Jobright 1.23.1
+
+A small patch: three files changed. `helper-app.41ea2652.js` and
+`static/background/index.js` are theirs, taken verbatim — the worker grew by
+235KB — with the three `importScripts` lines re-appended. On the manifest their
+only change was the version; their content scripts and resource list are
+byte-identical, so nothing of ours needed to move.
+
+The new worker was checked for collisions before accepting it: no side panel,
+no alarms, no `UA_` message types, no `beforeunload`, and the same single
+`tabs.remove` it has always had.
+
+`_metadata/verified_contents.json` shipped with the build and was deliberately
+not copied — it is Web Store signing data and has no place in an unpacked
+extension.
+
+The patch procedure in this README was also out of date: it predated
+`ua-page-hooks.js`, the mailbox and the recorder, so following it would have
+dropped two of the three worker lines and the MAIN-world script. It is current
+now.
+
+Suite total: **1,453 assertions**, all green on Jobright 1.23.1.
+
+---
+
+## v17.1 — the iCIMS login loop
+
+The diagnostics trail showed the login **succeeding**: the run reached
+`/candidate?from=login` — iCIMS's application page — and filled sixteen fields.
+Then it went round again until the 150s cap. Four separate things kept it going.
+
+**Clicking Apply from inside the application.** The Apply guard added to the
+iCIMS driver in v16.x listed `/apply`, `/login` and `/register` and missed
+`/candidate`, so the signed-in run found an Apply link, clicked it, and went back
+to the job description. That one was mine. `openApplicationForm`, which runs on
+every page of the loop, had the same hole.
+
+**Treating the application as a login wall.** `looksLikeAuthPage` saw an email
+field on `/candidate` and started "entering the account email" into the
+application form. iCIMS literally says `from=login` in that URL.
+
+Both now go through one predicate, `pastTheApplyStep()`, which reads the URL
+shapes that mean "already inside the application" — `from=login`, and
+`/jobs/<id>/<slug>/candidate|questions|confirm|submit`. The URL is the ATS saying
+sign-in is done, so it outranks any field. It is kept to those shapes so no other
+ATS changes behaviour; tests confirm Greenhouse, Workday, Lever and
+SmartRecruiters URLs are untouched, and that the job description and the login
+wall itself are still treated as what they are.
+
+**Uploading the CV twice across iCIMS's reload.** iCIMS processes an upload by
+reloading with `uploadResume=1`, and the reloaded page shows the file in a form
+the attach check did not recognise — so it was uploaded again, and the URL grew
+`uploadResume=1&uploadResume=1`. Now either iCIMS's own parameter or a per-page
+note this tab keeps for ten minutes means "already uploaded". The note is written
+the moment the file goes in, not on confirmation, since on a reloading ATS
+confirmation is exactly what never arrives. A visible "Resume is required" still
+overrides both.
+
+**Filling the login page as if it were the application.** On a second board the
+whole pipeline — CV, dropdowns, "0 of 0 required fields" — ran against the login
+page, and then pressed its button as a submit. A page that is still a sign-in
+wall after signing in now waits for the sign-in to land, and after three passes
+stops and reports `auth.stuck` instead of going round until the cap.
+
+Each fix is mutation-checked on its own.
+
+Suite total: **1,477 assertions**, all green on Jobright 1.23.1.
+
+---
+
+## v17.2 — a full audit
+
+A systematic pass, one bug class at a time — the classes this codebase has
+actually had — with every hit triaged by hand and every real one fixed and
+locked with a test. Classes that came back clean are listed too, because a clean
+result is also a result.
+
+### Came back clean
+- **Non-composed synthetic events** — none (the v16 rewrite held).
+- **`eval`, `new Function`, string timers** in shipped code — none.
+- **Polling intervals on unrelated sites** — every tight timer is gated to
+  jobright.ai or a genuine application page.
+- **`JSON.parse` of stored values** — every one is inside a `try`.
+- **The Queue Manager page** — zero `innerHTML`; links only after `isSafeUrl`.
+- **Hard-coded secrets or personal data** — none.
+
+### Fixed
+1. **Two stored-injection paths.** Saved-response keywords are *learned from page
+   question text*, and were rendered raw into the drawer on whichever site it was
+   opened next — an `<img onerror>` in a question label would run there. The
+   Recruiter Follow-up panel did the same on linkedin.com with company names,
+   job titles and scraped contact names. All escaped now.
+2. **85 waits the speed selector could not reach** — 173 seconds of them,
+   including 17s in the generic flow every unrecognised job goes through. All
+   scaled, never below half their original time, since some wait on a server.
+   The Gmail poll is deliberately left alone.
+3. **Storage that could fail silently.** Write errors were never read, so a full
+   store failed *every* write at once — the queue included — without a sign.
+   They are logged and reported now, and `unlimitedStorage` removes the 10MB
+   cliff.
+4. **"Skip already applied" forgetting applications.** The history it reads was
+   capped at 500 entries of any status, so on 685-job queues real applications
+   fell off within one run and could be applied to again. Now 5,000, and
+   overflow evicts failures and skips before any real application.
+5. **Message handlers.** `UA_WHICH_TAB` replied and then claimed an async reply —
+   the "message channel closed" bug, split over two lines so a one-line check
+   missed it. Eight async handlers had no rejection path and could leave a caller
+   hanging; each now replies either way.
+6. **"Sign-in failed" when the real problem was a missing client ID** for the
+   Gmail reader. It says which box is empty now.
+7. **Three knockout answers that would have rejected you**, found by running the
+   real decider against 54 phrasings:
+   - "Do you have any **restrictions** on your right to work in the UK?" — was Yes
+   - "Do you hold a visa that would **require our sponsorship**?" — was Yes
+   - "Have you applied to this company **in the last 6 months**?" — was Yes
+
+   All 54 are now a permanent test, and a failure names the exact question.
+
+### Reported, not changed
+The "credit bypass" in `ua-enhancement.js` overrides `fetch` to fake Jobright and
+Simplify+ premium-subscription responses. It came in with the original upload
+(commit `eade20f`) and was left as it is. Worth knowing: it is the most fragile
+code in the extension — it depends on the exact shape of those services'
+responses, so a patch can break it silently — and it works around their paid
+tiers, which their terms of service do not allow.
+
+Suite total: **1,509 assertions**, all green on Jobright 1.23.1.
+
+---
+
+## v17.3 — every board in your queue reaches its own driver
+
+Checked against the **92 real job URLs** in your diagnostics exports: each one
+was run through the shipped detector and the dispatcher's routing chain, and
+every miss was fixed. The URLs are now a permanent test, so a new rule that
+steals a board from its driver fails the suite.
+
+### Routing
+| Board | Was | Now |
+| --- | --- | --- |
+| iCIMS on the employer's own domain (careers.amd.com `/careers-home/jobs/…`, pepsicojobs.com `/main/jobs/…`) | generic flow | **iCIMS driver** |
+| jobs.workable.com (Workable's job-board host) | unrecognised, generic flow | **Workable driver** |
+| BambooHR, Jobvite, Breezy, Rippling, JazzHR, Handshake recognised from the page (white-labelled) | generic flow | **their own drivers** |
+| TriNet Hire, Qureos, Manatal (careers-page.com), Zoho Recruit regional (`.in`, `.eu`…), Radancy/TalentBrew (Arm) | unnamed | named in the log and the diagnostics |
+
+### Oracle Recruiting — JPMorgan, Dell, EY and every `hcmUI` tenant
+Oracle's "create account / sign in" is not a password form, which is why it
+kept stalling:
+
+1. **Apply Now was sometimes never pressed.** The driver treated "any input on
+   the page" as being inside the application — and Oracle job pages carry a
+   search box and a job-alert email box.
+2. **The email step** (`/apply/email`: email + "I agree with the terms and
+   conditions" + Next) is now walked explicitly. The terms tick-box is a hidden
+   input under a styled label, so every visible-only sweep skipped it and Next
+   stayed disabled; it is ticked through the input now (never by clicking the
+   label, which holds the terms link), and a terms dialog's **Agree** is
+   pressed. Next is found by name first — Oracle's header has a *Sign In* link
+   earlier on the page that led off the job.
+3. **The PIN screen** ("Confirm your identity — we sent a code"). Recognised
+   now, and with the Gmail reader connected the PIN is fetched and typed —
+   **one digit per box** on Oracle's six-box layout (the whole code used to go
+   into the first box). Only mail sent since the PIN screen appeared is used, so
+   a second Oracle job in a row cannot be handed the previous job's code, and a
+   rejected code is never retyped. Oracle's own mail senders are searched, since
+   the PIN never comes from the tenant host on screen.
+
+Without the Gmail reader connected, a PIN screen is handed to you with the
+reason, as before.
+
+### SmartRecruiters
+- **Yes/No questions go through the shared knockout engine.** The driver had
+  its own that fell back to **"Yes"** — then to the *first* option — whenever it
+  was unsure: on "Will you require sponsorship?" that is an auto-reject.
+- **Location** goes into the location box. The fix used the first combobox on
+  the page, which is usually the phone-number country picker.
+- The one-click form's **Confirm email** box is filled.
+
+Suite total: **1,553 assertions**, all green.
+
+---
+
+## v17.4 — found by driving the real extension in a browser
+
+The extension was loaded into Chromium, given a profile and a queued job, and
+left to run against local application forms served under a real ATS hostname —
+the same path a CSV job takes. What it did was recorded field by field. Every
+bug below was seen happening, fixed, and then seen gone.
+
+### Answers
+| Seen | Cause | Now |
+| --- | --- | --- |
+| **"Will you require sponsorship?" answered Yes** | a seeded "visa status" entry tied with "require sponsorship" and won by list order; its sentence was then fuzzy-matched onto "Yes" | the more specific entry wins; a sentence is never squeezed onto a yes/no knockout — the decider answers it |
+| Location filled "Dublin, Ireland" whatever the profile said | "Location" alone matched the seeded "current location" (1 of 2 words) | a multi-word entry needs 2+ words; seeds must match fully; seeds for facts the profile owns (location, salary, notice, degree…) are never used |
+| **Wrong answers came back on every later application** | the automation "learned" its own fills — the browser reports its focus moves as genuine events, and a learned answer outranks everything | only fields you actually typed in or clicked are learned; old learned answers are knockout-checked unless you gave them |
+| A required Yes/No radio left empty, submit blocked | every option of a `<fieldset>` radio read as the *question* text, so no option could match | each option reads its own label |
+| "Are you at least 18?" never answered from the bank | words under 3 letters were dropped before matching `at` / `18` | matched against every word |
+| "Have you ever worked for Acme before?" → Yes | phrasing missing | → No (while "worked for a startup before" stays Yes) |
+
+### "100% filled, then skipped" — reading the form's own errors
+The form was complete but Submit did nothing: the browser was blocking it over
+a required radio, silently, and the old handler neither read that nor looked at
+any field that already had a value. Now every field the page says is wrong is
+read — the browser's own validation, `aria-invalid` + its message, and inline
+error text beside the field — classified, and fixed specifically, **before**
+Submit is pressed and again after:
+
+- *"valid phone number… international format"* → the profile number as `+447700900123`
+  (always rebuilt from the profile, keeping its own country code)
+- *"valid URL"* → `https://…`
+- *"at least 100 characters"* → the answer is extended, never by repeating a sentence
+- *"between 0 and 5"*, *"whole number"* → a plain number within range
+- *"maximum 50 characters"* → trimmed at a word
+- *"select from the list"* → picked from the suggestions
+- *"required"* → answered, ticked, or the CV attached
+
+Each one is logged as `Form says "Phone *": … → reformatted the number`, one it
+cannot fix is recorded in 🩺 Diagnostics under the field's name, and a job that
+still fails says which field and what the form said. A message already acted on
+is not acted on again until the site re-checks it.
+
+### The flicker
+Jobright's own fill engine smooth-scrolls every field it fills to the top or
+centre of the screen. During an automated run those scrolls are now calm: none
+to something already visible, never animated, at most one jump per 0.7s, and
+focusing a field never scrolls. Outside a run nothing changes.
+
+### Oracle
+The email-step check could match a short application section and type the email
+into its first box; it now requires a box that is actually an email field.
+
+Suite total: **1,595 assertions**, all green.
+
+---
+
+## v17.5 — dropdowns by meaning, and the OptimHire patch's best parts
+
+Reviewed the OptimHire patch (`optimhire-updates`, branch `claude/jolly-fermat-8VrR3`)
+for what it does better. OptimHire's own AI engine is server-side behind its
+login and cannot live inside this extension; the patch's fill logic can, and
+two of its ideas closed real failures here.
+
+### Required dropdowns left empty — the submit could never happen
+A real-browser run on a form with ordinary range dropdowns left **three required
+fields blank**: text matching cannot answer "0-2 / 3-5 / 6-10 / 10+" for "7".
+The option matcher (ported from OptimHire's `bestSelectOption`, extended) now
+reads options by meaning — on native selects, custom dropdowns, and in the
+error fixer:
+
+| Question | Profile | Picked |
+| --- | --- | --- |
+| Years of experience | 7 | 6-10 years |
+| Expected salary | 85000 | €70,000 - €90,000 (also `$80k-$120k`, `€90,000+`, `Under…`) |
+| Notice period | 1 month / 4 weeks / 30 days | 1 month |
+| Education | Master of Science | Master's degree (never above what you hold) |
+
+When the question gives nothing to match, the profile field it is about is used.
+
+### The profile was being ignored for two answers
+"Years of experience" returned the default 7, and "Notice period" returned
+"Immediately" from an availability rule placed above it — your profile's values
+were never reached. Both now read the profile first.
+
+### Values in the wrong box (from OptimHire's sanitizer)
+After each fill, a box holding something that clearly isn't its answer — a link
+in "Preferred name", an email in "Phone", a name in "Email" — gets the right
+answer or is cleared. Never a box you typed in.
+
+### A browser harness in the repo
+`tests/e2e/run.js` loads the extension in Chromium and runs one queued job
+against a local form served under a real ATS hostname, recording every field,
+every write, scroll direction changes and what was submitted. Four fixtures
+cover the cases above; all four submit with correct answers and no flicker.
+
+Suite total: **1,616 assertions**, all green.
+
+---
+
+## v17.6 — a run stays in one tab, one window, and never takes the front
+
+"It keeps switching tabs… and stop switching the tab into a different window."
+Two causes, both fixed:
+
+- **Single-tab mode opened every next job as a new *active* tab** (and closed
+  the old one) — Chrome brings an active tab to the front, so each job pulled
+  you out of whatever you were doing. The same tab is now navigated in place:
+  no new tab, no activation, the tab strip does not move. Only if a page holds
+  the navigation for 3s is the tab swapped — in the same window, and in front
+  only if it already was.
+- **New tabs went to whichever window you were using.** Chrome does that for a
+  tab created without a window. A run now records the window you pressed Start
+  in and opens every job tab there, in the background. Close that window and
+  the run opens one of its own, unfocused — it never moves into yours.
+
+The stuck-tab recovery follows the same rules. A test fails if anything the
+automation does on its own opens an active tab, activates a tab, or focuses a
+window. (The Queue Manager's own "focus this job" button still does, because
+you pressed it.)
 
 ---
 
@@ -2576,17 +3034,34 @@ the new bundle removed a file the manifest still points at, or if the appended
 
 ## Applying the next Jobright patch
 
-1. Copy the new `contents.*.js`, `helper-app.*.js`, `global.*.css`,
-   `static/background/index.js`, `inter.*.css`, `scroll-to-anchor.*.js` and icons over.
-2. Re-apply the manifest patch: `ua-enhancement.js` as the **first** content script
-   (`document_start`, `all_frames: false`); `ua-enhancement.js`, `ua-queue.html`,
-   `ua-queue.js` in `web_accessible_resources`; `side_panel.default_path` =
-   `ua-queue.html`; permissions `sidePanel`, `alarms`, `contextMenus`, `notifications`.
-3. Re-append to `static/background/index.js`:
+1. Diff the new build against this tree, ignoring `ua-*` files — patches are
+   often small (1.23.1 changed three files), and knowing which is half the job.
+2. Copy over whatever of **theirs** changed: `contents.*.js`, `helper-app.*.js`,
+   `global.*.css`, `inter.*.css`, `scroll-to-anchor.*.js`, icons, and
+   `static/background/index.js`.
+   **Do not copy `_metadata/`.** It is Chrome Web Store signing data and has no
+   place in an unpacked build.
+3. Re-append to `static/background/index.js` — all three, in this order:
    ```js
    try { importScripts("/ua-orchestrator.js"); } catch (e) { console.warn("[UA] orchestrator failed to load", e); }
+   try { importScripts("/ua-mailbox.js"); } catch (e) { console.warn("[UA] mailbox failed to load", e); }
+   try { importScripts("/ua-diagnostics.js"); } catch (e) { console.warn("[UA] diagnostics failed to load", e); }
    ```
-4. `./tests/run.sh`
+4. Merge the manifest by hand — never copy theirs over ours. Take their
+   `version` and any change to *their own* content scripts or resources, and keep
+   ours:
+   - `ua-page-hooks.js` as the **first** content script: `"world": "MAIN"`,
+     `document_start`, `all_frames: true`.
+   - `ua-enhancement.js` second: `document_start`, `all_frames: false`.
+   - `web_accessible_resources` += `ua-enhancement.js`, `ua-queue.html`,
+     `ua-queue.js`, `ua-page-hooks.js`, `ua-diagnostics.js` — and only entries
+     that exist on disk; Jobright's list names ~50 assets it does not ship.
+   - `side_panel.default_path` = `ua-queue.html`.
+   - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
+     `identity`.
+5. Check the new worker for anything that would collide with ours — side panel,
+   alarms, message types beginning `UA_`, `beforeunload`.
+6. `./tests/run.sh`. It fails if any of the three worker lines is missing.
 
 ## Notes
 

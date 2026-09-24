@@ -297,9 +297,14 @@
 
     /* Then the reasons. A bulk run's failures are almost never spread evenly;
        they pile up on two or three platforms, and that is the fix list. */
+    /* A stage is a breadcrumb, not a problem. "ADP WorkforceNow — 261 problems",
+       of which 259 were stage: answering dropdowns and friends, buried the two
+       entries that actually needed reading. The trail still exists in RECENT
+       EVENTS, where it belongs. */
+    const NOT_A_PROBLEM = /^(job\.done|stage(\.|$))/;
     const byAts = new Map();
     for (const r of rows) {
-      if (r.code === 'job.done') continue;      // its own line above; not a problem
+      if (NOT_A_PROBLEM.test(r.code)) continue;
       const cur = byAts.get(r.ats) || { n: 0, rows: [] };
       cur.n += r.n;
       cur.rows.push(r);
@@ -368,11 +373,15 @@
         return false;
       }
       if (msg.type === 'UA_DIAG_REPORT') {
-        report().then((text) => { try { sendResponse({ ok: true, text }); } catch (_) {} });
+        // Both outcomes reply. A report that throws must not leave the viewer
+        // sitting on "Reading…" until the port is torn down.
+        report().then((text) => { try { sendResponse({ ok: true, text }); } catch (_) {} },
+          (e) => { try { sendResponse({ ok: false, text: 'Diagnostics failed to build: ' + ((e && e.message) || e) }); } catch (_) {} });
         return true;   // async
       }
       if (msg.type === 'UA_DIAG_CLEAR') {
-        clear().then(() => { try { sendResponse({ ok: true }); } catch (_) {} });
+        clear().then(() => { try { sendResponse({ ok: true }); } catch (_) {} },
+          () => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
     });

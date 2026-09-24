@@ -187,6 +187,36 @@
   const origAdd = EventTarget.prototype.addEventListener;
   const origRemove = EventTarget.prototype.removeEventListener;
 
+  /* ── The interceptor that does not race ────────────────────────────────────
+     Wrapping addEventListener can only ever cover listeners registered AFTER
+     the wrapper installs, and anything that reassigns the prototype method
+     afterwards undoes it. That race was being lost: the prompt came back.
+
+     This is registered FIRST, at document_start, before any page script exists,
+     and it uses stopImmediatePropagation. For an event targeted at `window`,
+     capture-phase listeners on window run before bubble-phase ones, and
+     stopImmediatePropagation halts every listener that would have run after —
+     so the page's handlers never execute at all, whenever they were registered
+     and however the prototype has been patched since.
+
+     An earlier attempt here used a capture listener to CLEAR returnValue, and
+     that genuinely cannot work: the page's handler runs afterwards and sets it
+     again, and preventDefault() arms the dialog on its own regardless. Stopping
+     the handlers from running is a different mechanism, and it does work.
+
+     The wrapper below stays as well. Sites do real bookkeeping in beforeunload
+     — saving a draft, flushing analytics — and on the rare page where that
+     matters more than the prompt, the wrapper is what still lets the handler
+     run with its teeth pulled. */
+  try {
+    origAdd.call(window, 'beforeunload', function (e) {
+      if (!beforeUnloadSilenced()) return;
+      try { e.stopImmediatePropagation(); } catch (_) {}
+      try { e.returnValue = undefined; } catch (_) {}
+      report('beforeunload', 'Leave site? suppressed before the page could ask', true);
+    }, true);
+  } catch (_) {}
+
   function shieldEvent(e) {
     try {
       return new Proxy(e, {
@@ -226,18 +256,48 @@
     return w;
   }
 
-  EventTarget.prototype.addEventListener = function (type, listener, options) {
-    if (type === 'beforeunload' && typeof listener === 'function') {
-      return origAdd.call(this, type, wrapBeforeUnload(listener), options);
-    }
-    return origAdd.apply(this, arguments);
-  };
-  EventTarget.prototype.removeEventListener = function (type, listener, options) {
-    if (type === 'beforeunload' && typeof listener === 'function' && wrapped.has(listener)) {
-      return origRemove.call(this, type, wrapped.get(listener), options);
-    }
-    return origRemove.apply(this, arguments);
-  };
+  function installAddListenerHook() {
+    const mine = function (type, listener, options) {
+      if (type === 'beforeunload' && typeof listener === 'function') {
+        return origAdd.call(this, type, wrapBeforeUnload(listener), options);
+      }
+      return origAdd.apply(this, arguments);
+    };
+    mine.__uaHook = true;
+    EventTarget.prototype.addEventListener = mine;
+
+    const mineOff = function (type, listener, options) {
+      if (type === 'beforeunload' && typeof listener === 'function' && wrapped.has(listener)) {
+        return origRemove.call(this, type, wrapped.get(listener), options);
+      }
+      return origRemove.apply(this, arguments);
+    };
+    mineOff.__uaHook = true;
+    EventTarget.prototype.removeEventListener = mineOff;
+  }
+  installAddListenerHook();
+
+  /* Patching a prototype is a race, and this one was being lost in the field —
+     "Leave site?" kept appearing after an application despite the wrapper. A
+     page, a framework or another extension that assigns
+     EventTarget.prototype.addEventListener AFTER us silently replaces the hook,
+     and every listener registered from then on is unwrapped.
+
+     So the hook checks it is still the one installed, and puts itself back if
+     not. Cheap — one identity comparison — and it closes the window that a
+     late patcher opens. The navigation between jobs no longer depends on this
+     at all (the worker closes the tab instead), but a page can navigate itself
+     mid-application and this is what covers that. */
+  try {
+    setInterval(() => {
+      try {
+        if (!EventTarget.prototype.addEventListener.__uaHook ||
+            !EventTarget.prototype.removeEventListener.__uaHook) {
+          installAddListenerHook();
+        }
+      } catch (_) {}
+    }, 2000);
+  } catch (_) {}
 
   /* The other way a page arms it: `window.onbeforeunload = fn`. Assigning the
      property bypasses addEventListener entirely, so it needs its own shim. */

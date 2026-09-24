@@ -47,7 +47,40 @@
     LOG: 'ua_mgr_log',
     RUN: 'ua_mgr_run',
     OLD_RUNNER: 'ua_qa',      // the legacy in-page single-tab runner — mutually exclusive
+    WIN: 'ua_run_window',     // the one window a run's tabs live in
   };
+
+  /* ── ONE WINDOW PER RUN ─────────────────────────────────────────────────────
+     "Stop switching the tab into a different window." chrome.tabs.create with
+     no windowId puts the tab in whichever window you are using AT THAT MOMENT,
+     so job tabs followed you from window to window. A run now records its
+     window when it starts, and every tab it opens goes there — in the
+     background. If that window has been closed, the run gets a window of its
+     own, opened unfocused, rather than borrowing yours. */
+  const cb = (fn) => new Promise((res) => { try { fn((v) => { void chrome.runtime.lastError; res(v); }); } catch (_) { res(null); } });
+  async function runWindow() {
+    const id = await get(K.WIN);
+    if (typeof id !== 'number') return null;
+    const w = await cb((done) => chrome.windows.get(id, {}, done));
+    return w && w.type === 'normal' ? id : null;
+  }
+  async function rememberRunWindow(windowId) {
+    if (typeof windowId === 'number') { await set({ [K.WIN]: windowId }); return; }
+    const w = await cb((done) => chrome.windows.getLastFocused({ windowTypes: ['normal'] }, done));
+    await set({ [K.WIN]: w && typeof w.id === 'number' ? w.id : null });
+  }
+  // Open a job tab in the run's window, never in front unless asked.
+  async function openRunTab(url, opts) {
+    const o = opts || {};
+    const win = typeof o.windowId === 'number' ? o.windowId : await runWindow();
+    if (win != null) {
+      const t = await cb((done) => chrome.tabs.create({ url, active: !!o.active, windowId: win, ...(o.index != null ? { index: o.index } : {}) }, done));
+      if (t) return t;
+    }
+    const w = await cb((done) => chrome.windows.create({ url, focused: false }, done));
+    if (w && typeof w.id === 'number') await set({ [K.WIN]: w.id });
+    return (w && w.tabs && w.tabs[0]) || null;
+  }
   const ALARM = 'ua_mgr_watchdog';
   // At most this many CAPTCHA'd tabs are left open waiting for you at once. Past
   // that the oldest is given up on, so a challenge-heavy CSV cannot bury you in
@@ -272,9 +305,8 @@
 
       for (const job of toOpen) {
         const tab = await new Promise((res) => {
-          // active:false → a 200-job run never steals focus; keep browsing while it works.
-          try { chrome.tabs.create({ url: job.url, active: false }, (t) => { void chrome.runtime.lastError; res(t); }); }
-          catch (_) { res(null); }
+          // In the run's own window, in the background — see openRunTab.
+          openRunTab(job.url).then(res, () => res(null));
         });
         if (tab && tab.id != null) {
           const m = await tabMap();
@@ -378,7 +410,7 @@
   }
 
   /* ─────────────────────────── commands ─────────────────────────── */
-  async function start() {
+  async function start(sender) {
     const q = (await get(K.Q)) || [];
     if (!q.some((j) => j.status === 'pending' || j.status === 'applying')) {
       await log('No pending jobs — import a CSV first', 'err');
@@ -402,6 +434,8 @@
       total = jobs.filter((j) => j.status === 'pending').length;
     });
     await set({ [K.ACTIVE]: true, [K.PAUSED]: false, [K.ADVANCE]: null, [K.RUN]: { startedAt: Date.now(), total } });
+    // The window you pressed Start in is the run's window from now on.
+    await rememberRunWindow(sender && sender.tab ? sender.tab.windowId : null);
     const conc = await concurrency();
     await log(`Started — ${total} job${total === 1 ? '' : 's'}, up to ${conc} in parallel background tabs`, 'act');
     armWatchdog();
@@ -641,16 +675,18 @@
     await log(gone
       ? 'Runner tab was closed — reopening so the run continues'
       : 'Runner tab stopped responding — replacing it so the run continues', 'err');
+    // Same window as the tab it replaces, in the background: a recovery must
+    // never pull you out of your own tab, or into another window.
+    const old = gone ? null : await cb((done) => chrome.tabs.get(tabId, done));
     try { chrome.tabs.remove(tabId, () => void chrome.runtime.lastError); } catch (_) {}
     const url = current.url;
-    try {
-      chrome.tabs.create({ url, active: true }, (t) => {
-        void chrome.runtime.lastError;
-        if (t && typeof t.id === 'number') set({ ua_runner_tab: t.id });
-      });
-    } catch (_) {}
+    const t = await openRunTab(url, { active: false, windowId: old ? old.windowId : undefined });
+    if (t && typeof t.id === 'number') await set({ ua_runner_tab: t.id });
   }
 
+  // How long an in-place move to the next job may take to START before the
+  // tab is swapped instead (see UA_NAV_NEXT).
+  const NAV_IN_PLACE_MS = 3000;
   function armRunnerWatch() {
     try { chrome.alarms.create(RUNNER_WATCH, { periodInMinutes: 0.5 }); } catch (_) {}
   }
@@ -770,7 +806,7 @@
             log(`✓ ${label} — challenge cleared, resuming`, 'ok');
           }
           sendResponse({ ok: true });
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
 
@@ -788,7 +824,7 @@
             if (typeof msg.pct === 'number') j.pct = msg.pct;
           });
           sendResponse({ ok: true });
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
 
@@ -812,6 +848,57 @@
          with no way to see into an embedded form, so Workable embeds, iCIMS,
          SuccessFactors, Taleo and BrassRing were invisible to it and every one
          of them was written off as "not an application page". */
+      /* Go to the next job WITHOUT giving the page a chance to object.
+
+         The single-tab runner used to do `location.href = next`, and a page with
+         a beforeunload handler answers that with "Leave site? Changes you made
+         may not be saved." — a modal that stops the run dead until a human
+         clicks Leave, after every single application.
+
+         The MAIN-world shield neutralises those handlers, but it is a race: it
+         only wraps listeners registered after it installs, and anything that
+         re-patches addEventListener afterwards undoes it. Closing the tab is not
+         a race. chrome.tabs.remove() is the one navigation a beforeunload
+         handler has no say in, so the old tab is closed and the next job opens
+         in a fresh one. The queue lives in storage, so nothing is lost. */
+      if (msg.type === 'UA_NAV_NEXT') {
+        const tabId = sender && sender.tab && sender.tab.id;
+        const url = String((msg && msg.url) || '');
+        if (tabId == null || !/^https?:\/\//i.test(url)) {
+          try { sendResponse({ ok: false }); } catch (_) {}
+          return false;
+        }
+        /* ONE tab, and never the front one unless it already was.
+           "It keeps switching tabs — it's messing up my use of my PC." Every
+           job used to open a NEW tab with active:true and close the old one,
+           and Chrome brings an active:true tab to the front — so each job
+           pulled you out of whatever tab you were working in.
+           Now the same tab is navigated in place: no new tab, no activation,
+           the strip does not move. The page's "Leave site?" handler is already
+           disarmed by the MAIN-world hooks; if it somehow still holds the
+           navigation, closing a tab is the one thing it cannot veto, so the
+           old swap remains as a fallback — and even then the replacement is
+           only active if the outgoing tab was the one you were looking at. */
+        const was = sender.tab;
+        let started = false;
+        const onUpd = (id, info) => { if (id === tabId && (info.status === 'loading' || info.url)) started = true; };
+        try { chrome.tabs.onUpdated.addListener(onUpd); } catch (_) {}
+        try { chrome.tabs.update(tabId, { url }, () => void chrome.runtime.lastError); } catch (_) {}
+        setTimeout(() => {
+          try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (_) {}
+          if (started) return;
+          chrome.tabs.create({ url, active: !!was.active, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
+            void chrome.runtime.lastError;
+            // The new tab is the runner now; hand the marker over before the old
+            // one goes, so no tick in between sees a run with no tab.
+            if (t && typeof t.id === 'number') set({ ua_runner_tab: t.id });
+            try { chrome.tabs.remove(tabId, () => void chrome.runtime.lastError); } catch (_) {}
+          });
+        }, NAV_IN_PLACE_MS);
+        try { sendResponse({ ok: true }); } catch (_) {}
+        return false;
+      }
+
       if (msg.type === 'UA_INJECT_FRAMES') {
         const tabId = sender && sender.tab && sender.tab.id;
         if (tabId != null) injectAllFrames(tabId);
@@ -822,7 +909,9 @@
       if (msg.type === 'UA_WHICH_TAB') {
         const tabId = sender && sender.tab && sender.tab.id;
         sendResponse({ tabId: tabId == null ? null : tabId });
-        return true;
+        // Replied already — false, or Chrome holds the port open for a second
+        // reply that never comes and the caller sees "message channel closed".
+        return false;
       }
 
       /* Pull-based assignment: a content script that booted after every push
@@ -841,7 +930,7 @@
           const q = (await get(K.Q)) || [];
           const job = q.find((j) => j.id === jobId && j.status === 'applying');
           sendResponse({ job: job || null, settings: await settings() });
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
 
@@ -849,7 +938,7 @@
         (async () => {
           try {
             switch (msg.cmd) {
-              case 'start':  return sendResponse(await start());
+              case 'start':  return sendResponse(await start(sender));
               case 'stop':   return sendResponse(await stop());
               case 'pause':  return sendResponse(await pause());
               case 'resume': return sendResponse(await resume());
@@ -867,7 +956,7 @@
               default: return sendResponse({ ok: false, reason: 'unknown-cmd' });
             }
           } catch (e) { sendResponse({ ok: false, reason: (e && e.message) || 'error' }); }
-        })();
+        })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
         return true;
       }
     });

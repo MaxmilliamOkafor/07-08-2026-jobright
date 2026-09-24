@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer at Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto} .f{margin:14px 0} label{display:block;font-weight:600}
+input[type=text],input[type=email],input[type=tel],select,textarea{width:100%;padding:6px} .spacer{height:900px}</style>
+</head><body>
+<h1>Senior Data Engineer</h1><div class="company">Acme Corp</div>
+<p>London, United Kingdom</p>
+<div class="spacer">Job description… lorem ipsum.</div>
+<form id="application_form" onsubmit="return window.__submit(event)">
+  <h2>Apply for this job</h2>
+  <div class="f"><label for="first_name">First Name *</label><input type="text" id="first_name" name="first_name" required aria-required="true"></div>
+  <div class="f"><label for="last_name">Last Name *</label><input type="text" id="last_name" name="last_name" required aria-required="true"></div>
+  <div class="f"><label for="pref">Preferred name</label><input type="text" id="pref" name="pref"></div>
+  <div class="f"><label for="email">Email *</label><input type="email" id="email" name="email" required aria-required="true"></div>
+  <div class="f"><label for="phone">Phone *</label><input type="tel" id="phone" name="phone" required aria-required="true"></div>
+  <div class="f"><label for="loc">Location (City) *</label><input type="text" id="loc" name="loc" required aria-required="true"></div>
+  <div class="f"><label for="resume">Resume/CV *</label><input type="file" id="resume" name="resume" required></div>
+  <div class="f"><label for="linkedin">LinkedIn Profile</label><input type="text" id="linkedin" name="linkedin"></div>
+  <div class="f"><label for="cover">Cover Letter</label><textarea id="cover" name="cover"></textarea></div>
+  <div class="f"><label for="q_auth">Are you legally authorized to work in the United Kingdom? *</label>
+    <select id="q_auth" name="q_auth" required><option value="">Select...</option><option>Yes</option><option>No</option></select></div>
+  <div class="f"><label for="q_spons">Will you now or in the future require sponsorship for employment visa status? *</label>
+    <select id="q_spons" name="q_spons" required><option value="">Select...</option><option>Yes</option><option>No</option></select></div>
+  <fieldset class="f"><legend>Have you previously worked for Acme? *</legend>
+    <label><input type="radio" name="q_prev" value="Yes" required> Yes</label>
+    <label><input type="radio" name="q_prev" value="No"> No</label></fieldset>
+  <div class="f"><label for="q_years">How many years of experience do you have with Python? *</label><input type="text" id="q_years" name="q_years" required aria-required="true"></div>
+  <div class="f"><label for="q_salary">What are your salary expectations? *</label><input type="text" id="q_salary" name="q_salary" required aria-required="true"></div>
+  <div class="f"><label for="q_notice">What is your notice period? *</label><input type="text" id="q_notice" name="q_notice" required aria-required="true"></div>
+
+  <div class="f"><label for="s_years">Years of relevant experience *</label><select id="s_years" name="s_years" required><option value="">Select...</option><option>0-2 years</option><option>3-5 years</option><option>6-10 years</option><option>10+ years</option></select></div>
+  <div class="f"><label for="s_sal">Expected annual salary (EUR) *</label><select id="s_sal" name="s_sal" required><option value="">Select...</option><option>Under €50,000</option><option>€50,000 - €70,000</option><option>€70,000 - €90,000</option><option>€90,000+</option></select></div>
+  <div class="f"><label for="s_notice">Notice period *</label><select id="s_notice" name="s_notice" required><option value="">Select...</option><option>Immediately available</option><option>1 week</option><option>2 weeks</option><option>1 month</option><option>2 months</option><option>3 months or more</option></select></div>
+  <div class="f"><label for="s_edu">Highest level of education *</label><select id="s_edu" name="s_edu" required><option value="">Select...</option><option>High school</option><option>Bachelor's degree</option><option>Master's degree</option><option>PhD</option></select></div>
+  <div class="f"><label for="s_hear">How did you hear about this job? *</label><select id="s_hear" name="s_hear" required><option value="">Select...</option><option>Company website</option><option>LinkedIn</option><option>Referral</option><option>Other</option></select></div>
+  <fieldset class="f"><legend>How many years of SQL experience do you have? *</legend>
+    <label><input type="radio" name="r_sql" value="a" required> Less than 1 year</label>
+    <label><input type="radio" name="r_sql" value="b"> 1-3 years</label>
+    <label><input type="radio" name="r_sql" value="c"> 4-6 years</label>
+    <label><input type="radio" name="r_sql" value="d"> 7+ years</label></fieldset>
+  <div class="f"><label for="gender">Gender</label><select id="gender" name="gender"><option value="">Select...</option><option>Male</option><option>Female</option><option>Decline To Self Identify</option></select></div>
+  <div class="f"><label><input type="checkbox" id="consent" name="consent" required> I consent to Acme processing my personal data in accordance with the privacy policy *</label></div>
+  <div class="f"><label><input type="checkbox" id="mkt" name="mkt"> Send me marketing emails about future roles</label></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0, focus: 0 };
+  let lastY = scrollY, lastDir = 0;
+  addEventListener('scroll', () => {
+    __events.scroll++;
+    const d = Math.sign(scrollY - lastY); if (d && lastDir && d !== lastDir) __events.scrollDirChanges++; if (d) lastDir = d; lastY = scrollY;
+  }, true);
+  document.addEventListener('input', (e) => { const k = e.target.name || e.target.id; __events.input[k] = (__events.input[k] || 0) + 1; }, true);
+  window.__seq=[];addEventListener('DOMContentLoaded',()=>{document.getElementById('pref').value='https://linkedin.com/in/maxtest';document.getElementById('phone').value='max.test@example.com';document.getElementById('email').value='Maxmilliam';});document.addEventListener('change', (e) => { if (e.target.name==='gender') __seq.push(e.target.value + '@' + Math.round(performance.now())); const k = 'chg:' + (e.target.name || e.target.id); __events.input[k] = (__events.input[k] || 0) + 1; }, true);
+  window.__submit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(document.getElementById('application_form'));
+    const out = {}; for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name + ':' + v.size : '') : v;
+    window.__submitted = out;
+    try { localStorage.setItem('__submitted', JSON.stringify(out)); } catch (_) {}
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+    return false;
+  };
+</script>
+</body></html>

@@ -115,6 +115,61 @@
   if (window.__uaEnhancementLoaded) return;
   window.__uaEnhancementLoaded = true;
 
+  /* ── CALM SCROLLING DURING AN AUTOMATED RUN ────────────────────────────────
+     "It flickers up and down on autofill." Jobright's own fill engine — which
+     runs in this same content-script world — smooth-scrolls every field it
+     fills to the top or centre of the screen, one after another, and the page
+     glides up and down for each. While an automated run owns the tab, scroll
+     requests made from THIS world (ours and Jobright's engine) are made calm:
+     no smooth animation, no scrolling to something already on screen, and at
+     most one jump per 700ms. A click does not need its target on screen, so
+     nothing is lost. The page's own scripts (a different world) are untouched,
+     and outside an automated run nothing changes at all. */
+  try {
+    const automatingNow = () => {
+      try {
+        const de = document.documentElement;
+        if (de.getAttribute('data-ua-auto') === '1') return true;
+        return Number(de.getAttribute('data-ua-grace') || 0) > Date.now();
+      } catch (_) { return false; }
+    };
+    let lastJump = 0;
+    const GAP = 700;
+    const onScreen = (el) => {
+      try {
+        const r = el.getBoundingClientRect();
+        const h = window.innerHeight || document.documentElement.clientHeight;
+        if (!r.width && !r.height) return true;
+        return r.bottom > 0 && r.top < h;
+      } catch (_) { return true; }
+    };
+    const origSIV = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (arg) {
+      if (!automatingNow()) return origSIV.apply(this, arguments);
+      if (onScreen(this)) return;
+      const now = Date.now();
+      if (now - lastJump < GAP) return;
+      lastJump = now;
+      return origSIV.call(this, { block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    };
+    const calmWindowScroll = (orig) => function (a, b) {
+      if (!automatingNow()) return orig.apply(this, arguments);
+      const now = Date.now();
+      if (now - lastJump < GAP) return;
+      lastJump = now;
+      if (a && typeof a === 'object') return orig.call(this, Object.assign({}, a, { behavior: 'instant' }));
+      return orig.apply(this, arguments);
+    };
+    window.scrollTo = calmWindowScroll(window.scrollTo);
+    window.scroll = calmWindowScroll(window.scroll);
+    window.scrollBy = calmWindowScroll(window.scrollBy);
+    const origFocus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (opts) {
+      if (!automatingNow()) return origFocus.apply(this, arguments);
+      return origFocus.call(this, Object.assign({}, opts || {}, { preventScroll: true }));
+    };
+  } catch (_) {}
+
   // ===================== TEMP IN-DEPTH DEBUG LOGGER (toggle with Alt+D) =====================
   // A deep instrumentation layer that records, on the live ATS page, without DevTools:
   //   • every console.* call (incl. [UA] logs)      • clicks (real + programmatic)
@@ -626,6 +681,27 @@
        /jobs/<numeric id>-<slug> — and it was the single biggest fall-through in
        the queue (careers.sumsub.com alone was 20 jobs, plus spacelift, phorest
        and geelyauto). */
+    /* ── Learned from the diagnostics exports (92 real URLs) ─────────────────
+       Each rule below is one of those URLs routing wrongly or not at all.
+       These sit ABOVE the Teamtailor path shape on purpose: TriNet Hire and
+       Qureos use the same /jobs/<digits>-<slug> shape and were being filed as
+       Teamtailor. */
+    { n: 'TriNet Hire', p: /(^|\/\/|\.)trinethire\.com/i },
+    { n: 'Qureos', p: /(^|\/\/|\.)qureos\.com/i },
+    // jobs.workable.com — the most common host in the exports, and the table only
+    // knew apply.workable.com. It reached the Workable driver through a looser
+    // host check, but everything that asks "which ATS is this?" got nothing.
+    { n: 'Workable', p: /(apply|jobs)\.workable\.com/i },
+    // Zoho Recruit serves regional domains; only .com was known (kumaran, trulogik → .in).
+    { n: 'Zoho', p: /zohorecruit\.[a-z.]+\/|recruit\.zoho\./i },
+    // Manatal's hosted career sites: careers-page.com/<company>/job/<id>.
+    { n: 'Manatal', p: /(^|\/\/)careers-page\.com\//i },
+    /* iCIMS's Jibe front-end (careers.amd.com, pepsicojobs.com). It hands off to
+       the iCIMS login, so it is filed as iCIMS and gets that driver — which
+       clicks Apply and follows it. */
+    { n: 'iCIMS', p: /\/careers-home\/jobs\/\d+|\/main\/jobs\/\d+/i },
+    // Radancy / TalentBrew path: /job/<city>/<title>/<client>/<job> (careers.arm.com).
+    { n: 'Radancy', p: /\/job\/[^/?#]+\/[^/?#]+\/\d{3,}\/\d{5,}/i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.
@@ -683,10 +759,26 @@
   ];
 
   // ===================== STORAGE & STATE =====================
+  /* A failed write used to vanish. chrome.storage reports errors through
+     runtime.lastError, and nothing here read it — so when the store filled up,
+     EVERY write failed at once, the queue included, and a run simply stopped
+     saving its progress with no sign of why. The write still resolves (callers
+     must not hang), but it now says so, in the log and in the diagnostics. */
+  let _storageErrorReported = false;
   const st = {
-    get: k => new Promise(r => chrome.storage.local.get(k, d => r(d[k]))),
-    set: (k, v) => new Promise(r => chrome.storage.local.set({ [k]: v }, r)),
-    getMulti: keys => new Promise(r => chrome.storage.local.get(keys, d => r(d)))
+    get: k => new Promise(r => chrome.storage.local.get(k, d => { void chrome.runtime.lastError; r(d ? d[k] : undefined); })),
+    set: (k, v) => new Promise(r => chrome.storage.local.set({ [k]: v }, () => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        LOG(`Could not save ${k}: ${err.message || err}`);
+        if (!_storageErrorReported) {
+          _storageErrorReported = true;
+          try { DIAG('storage.error', String(err.message || err).slice(0, 160), { detail: { key: k } }); } catch (_) {}
+        }
+      }
+      r();
+    })),
+    getMulti: keys => new Promise(r => chrome.storage.local.get(keys, d => { void chrome.runtime.lastError; r(d || {}); }))
   };
   // Keep the Fully-Automated state authoritative across tabs/re-renders: whenever the
   // stored value changes (this tab, another tab, or a race), adopt it and repaint. This
@@ -756,6 +848,39 @@
     } catch (_) {}
   }
   async function saveQ() { reportTerminalJobs(); await st.set(SK.Q, queue); }
+
+  /* Move to the next job in a way the page cannot interrupt.
+
+     `location.href = next` is a navigation the page gets a vote on: any site
+     with a beforeunload handler answers it with "Leave site? Changes you made
+     may not be saved." and the run stops until a human clicks Leave — after
+     every single application.
+
+     The MAIN-world shield disarms those handlers, and it should be enough. But
+     it is a race by construction: it can only wrap listeners registered after
+     it installs, and anything that re-patches addEventListener afterwards — the
+     page, a framework, another extension — quietly undoes it. Having lost that
+     race in the field, the navigation itself is now done somewhere the page has
+     no say: the worker closes this tab and opens the next job in a fresh one.
+     chrome.tabs.remove() is not something beforeunload can veto.
+
+     If the worker does not answer — it can be asleep, or this can be running
+     outside the extension — fall back to the old way rather than stranding the
+     run. */
+  function goToNextJob(url) {
+    let done = false;
+    const fallback = () => { if (!done) { done = true; try { location.href = url; } catch (_) {} } };
+    // The reply is the signal; if it does not come, take the old road.
+    const t = setTimeout(fallback, 1500);
+    try {
+      chrome.runtime.sendMessage({ type: 'UA_NAV_NEXT', url }, (r) => {
+        void chrome.runtime.lastError;
+        if (r && r.ok) { done = true; clearTimeout(t); return; }   // the tab is about to close
+        clearTimeout(t);
+        fallback();
+      });
+    } catch (_) { clearTimeout(t); fallback(); }
+  }
   async function saveStats() { await st.set('ua_q_stats', qStats); }
 
   // ===================== ANSWER LEARNING SYSTEM =====================
@@ -1004,8 +1129,12 @@
     if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
     if (/why.*(compan|role|want|interest|position)/.test(l)) return DEFAULTS.why;
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
-    if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return DEFAULTS.years;
-    if (/availab|start.?date|notice|when.*start/.test(l)) return DEFAULTS.availability;
+    // The PROFILE first. These two returned the defaults outright and the rules
+    // further down that read the profile were never reached — a "1 month"
+    // notice period was answered "Immediately" on every form.
+    if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return yearsAnswer(p);
+    if (/notice.?period|days.?notice|period of notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
+    if (/availab|start.?date|notice|when.*start/.test(l)) return p.availability || p.start_date || DEFAULTS.availability;
     // Both directions from one decider — see workAuthorisationAnswer. The old
     // pair ran /authoriz/ (which never matched the British "authorised") and then
     // /sponsor|visa/, so every European eligibility question answered "No".
@@ -1208,7 +1337,12 @@
        not: the user answered that precise question themselves, and their word is
        final even on a knockout. See safeKnockoutAnswer. */
     const fromSaved = safeKnockoutAnswer(findSavedResponseMatch(questionText), questionText);
-    const raw = fromSaved || getLearnedAnswer(label, el, true) || guessValue(label, p) ||
+    /* An exact learned answer is final only when YOU gave it. Answers recorded
+       before v17.4 include the automation's own fills (see _userTouched), so
+       those go through the same knockout filter as everything else. */
+    const exact = getLearnedAnswer(label, el, true);
+    const exactOk = exact && (isManualAnswer(label, el) ? exact : safeKnockoutAnswer(exact, questionText));
+    const raw = fromSaved || exactOk || guessValue(label, p) ||
       safeKnockoutAnswer(getLearnedAnswer(label, el), questionText) || '';
     // Last step: make the answer fit the control it is going into.
     return refineAnswerForControl(raw, label, p, el);
@@ -1235,17 +1369,41 @@
     const qNorm = questionText.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
     const qWords = qNorm.split(' ').filter(w => w.length > 2);
     if (!qWords.length) return '';
-    let bestMatch = null, bestScore = 0;
+    const qAll = new Set(qNorm.split(' '));
+    /* Three rules, each learned from a wrong answer on a live form:
+       • One word of a two-word entry is not a match. "Location (City)" hit the
+         seeded "current location" entry on the word "location" alone and was
+         answered "Dublin, Ireland" whatever the profile said.
+       • A seeded (generic) entry must match completely — it is a guess about
+         the question, not the user's own words.
+       • On a tie the MORE SPECIFIC entry wins, then the user's own over a seed.
+         Strict first-wins let "visa status" beat "require sponsorship" on
+         "Will you require sponsorship for employment visa status?", and the
+         answer that came back was mapped onto "Yes". */
+    let bestMatch = null, bestKey = null;
     for (const entry of _savedResponses) {
       if (!entry.keywords || !entry.keywords.length || !entry.response) continue;
-      const matchCount = entry.keywords.filter(kw => qWords.includes(kw.toLowerCase())).length;
+      // Against EVERY word of the question: entries like ['at', 'least', '18']
+      // can never match if the short words were thrown away first.
+      const matchCount = entry.keywords.filter(kw => qAll.has(String(kw).toLowerCase())).length;
       const score = matchCount / entry.keywords.length;
-      if (score > bestScore && score >= 0.4) { bestScore = score; bestMatch = entry.response; }
+      if (score < 0.4 || matchCount < Math.min(2, entry.keywords.length)) continue;
+      if (entry.seeded && score < 1) continue;
+      if (entry.seeded && SEED_PROFILE_OWNED_RE.test(entry.keywords.join(' '))) continue;
+      const key = [score, matchCount, entry.seeded ? 0 : 1];
+      if (!bestKey || key[0] > bestKey[0] || (key[0] === bestKey[0] && (key[1] > bestKey[1] ||
+          (key[1] === bestKey[1] && key[2] > bestKey[2])))) { bestKey = key; bestMatch = entry.response; }
     }
     return bestMatch || '';
   }
+  /* Seeded entries that stand in for facts the PROFILE owns — where you live,
+     what you earn, your notice period, your degree. A generic stand-in must never
+     outrank the real value, so these seeds are not consulted at all; the profile
+     (and its defaults) answer these questions. "visa status" is here too: it is
+     a knockout, and the knockout decider answers it. */
+  const SEED_PROFILE_OWNED_RE = /^(current location|desired salary|expected salary|salary expectation|minimum salary|current salary|hourly rate|notice period|days notice required|highest degree|education level|field study|major|gpa|professional certifications|visa status)$/;
 
-  function addSavedResponse(keywords, response) {
+  function addSavedResponse(keywords, response, manual) {
     if (!keywords || !keywords.length || !response) return;
     // Check for duplicate
     const existing = _savedResponses.findIndex(r =>
@@ -1253,10 +1411,11 @@
     );
     if (existing >= 0) {
       _savedResponses[existing].response = response;
+      if (manual) { _savedResponses[existing].manual = true; delete _savedResponses[existing].seeded; }
       _savedResponses[existing].appearances = (_savedResponses[existing].appearances || 0) + 1;
       _savedResponses[existing].updatedAt = Date.now();
     } else {
-      _savedResponses.push({ keywords, response, appearances: 1, createdAt: Date.now(), updatedAt: Date.now() });
+      _savedResponses.push({ keywords, response, appearances: 1, createdAt: Date.now(), updatedAt: Date.now(), ...(manual ? { manual: true } : {}) });
     }
     saveSavedResponses();
   }
@@ -1291,6 +1450,35 @@
     } catch (_) { return getLabel(el); }
   }
 
+  /* Fields YOU actually typed in, picked from or clicked. The automation's own
+     fills must never be "learned": a learned answer outranks every guess, so one
+     wrong fill — "Yes" to a sponsorship question — was saved and then repeated
+     on every application after it. isTrusted alone does not tell them apart:
+     the automation focuses each field it fills, and the browser reports the
+     resulting focus change as a genuine event. Keys, pointer presses and real
+     typing cannot be produced by a script, so those are what count. */
+  const _userTouched = new WeakSet();
+  const _noteUserTouch = (e) => {
+    try {
+      if (!e.isTrusted) return;
+      const t = e.composedPath ? e.composedPath()[0] : e.target;
+      if (!t || !t.tagName) return;
+      const f = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ? t : (t.closest && t.closest('label') && t.closest('label').control) || null;
+      if (f) _userTouched.add(f);
+    } catch (_) {}
+  };
+  /* Not 'input' or 'change': when a script calls .click() on a checkbox or radio,
+     Chrome fires the input/change that follow as TRUSTED events — the consent box
+     the automation ticked was being "learned" as your answer that way. */
+  try { for (const ev of ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop']) window.addEventListener(ev, _noteUserTouch, true); } catch (_) {}
+  function userTouched(el) { try { return !!el && _userTouched.has(el); } catch (_) { return false; } }
+  // Questions whose learned answer came from you (kept across pages).
+  let _manualKeys = {};
+  try { st.get('ua_manual_answer_keys').then((m) => { if (m && typeof m === 'object') _manualKeys = m; }).catch(() => {}); } catch (_) {}
+  function isManualAnswer(label, el) {
+    for (const c of [label, el && el.name, el && el.id]) { const k = c && normalizeKey(c); if (k && _manualKeys[k]) return true; }
+    return false;
+  }
   // Persist one manually-given Q&A into BOTH stores the fill paths read from:
   // the answer bank (exact/fuzzy label match) and saved responses (keyword match,
   // which is what answerKnockoutRadioGroup / choice groups consult).
@@ -1300,16 +1488,17 @@
     if (!question || question.length < 3 || !answer || answer.length > 300) return;
     if (/ssn|social.?security|password|credit.?card|cvv|routing|iban|passport.?number/i.test(question)) return;
     // Already known with the same answer (change + focusout both fire for one edit) — skip.
-    if (_answerBank[normalizeKey(question)] === answer) return;
+    if (_answerBank[normalizeKey(question)] === answer && _manualKeys[normalizeKey(question)]) return;
     learnAnswer(question, answer);
+    try { _manualKeys[normalizeKey(question)] = Date.now(); st.set('ua_manual_answer_keys', _manualKeys); } catch (_) {}
     const keywords = question.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2).slice(0, 12);
-    if (keywords.length >= 2) addSavedResponse(keywords, answer);
+    if (keywords.length >= 2) addSavedResponse(keywords, answer, true);
     LOG(`Learned: "${question.slice(0, 70)}" → "${answer.slice(0, 40)}"`);
   }
 
   function learnFromFilledFields() {
     deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
-      .filter(el => isVisible(el) && hasFieldValue(el))
+      .filter(el => isVisible(el) && hasFieldValue(el) && userTouched(el))
       .forEach(el => {
         // Radio/checkbox: question is the GROUP's, answer is the checked option's label.
         if (el.type === 'radio' || el.type === 'checkbox') {
@@ -1429,10 +1618,22 @@
     if (!strong && !/\b(work|working|worked|employ\w*|job|jobs|role|position|hire[dsr]?|career|country|nationality)\b/.test(q)) return null;
     // And never hijack a different knockout that happens to share the vocabulary.
     if (/\b(criminal|convict\w*|felony|misdemean\w*|debarr\w*|excluded by|non.?compete|restrictive covenant|terminated|dismissed|discharged|disciplin\w*|pending charges|drug (test|screen)|background check)\b/.test(q)) return null;
+    /* "Do you have any restrictions on your right to work in the UK?" has no
+       sponsorship word in it, so it fell straight through to the plain
+       eligibility answer — Yes — which tells the employer you ARE restricted.
+       A restriction being asked about is the inverted question; one being
+       ruled out ("without restrictions", "unrestricted") is not. */
+    if (/\b(restriction|restrictions|limitation|limitations|conditions?)\s+(on|to|attached to|placed on)\b/.test(q) &&
+        !/\b(without|no|free of|free from|not subject to)\s+(any\s+)?(visa\s+)?(restriction|limitation|condition)/.test(q)) return 'no';
     // No sponsorship mentioned at all: a plain "are you allowed to work here?".
     if (!sponsorship) return 'yes';
     // Sponsorship IS mentioned — is it being ruled out, held, or asked for?
     if (SPONSORSHIP_NEGATED_RE.test(q)) return 'yes';
+    /* A need that governs sponsorship directly outranks "hold". "Do you hold a
+       visa that would require our sponsorship?" matched HOLDS first and came back
+       Yes — "I need you to sponsor me". The negated form ("a visa that does NOT
+       require sponsorship") is already answered by the line above. */
+    if (/\b(requir\w*|need\w*)\s+(our|your|the|an?|any|company|employer|continued|further)?\s*('?s\s+)?(visa\s+)?sponsor/.test(q)) return 'no';
     if (HOLDS_AUTHORISATION_RE.test(q)) return 'yes';
     if (SPONSORSHIP_NEED_RE.test(q)) return 'no';
     if (eligibility) return 'yes';
@@ -1470,7 +1671,14 @@
       /require.*(sponsor|visa|work.?permit)/, /need.*(sponsor|visa|work.?permit)/,
       /(require|requiring|need|needing).*sponsorship/, /sponsorship.*(required|needed)/,
       /previously.*worked.*for/, /former.*employee/, /current.*employee/,
+      // "Have you applied to this company in the last 6 months?" — the same
+      // question as "applied before", with a window on it.
+      /(applied|interviewed)\s+(to|with|for|at)\s+(this|our|the)\s+(company|organi[sz]ation|firm|business|role|position|team)/,
+      /(applied|interviewed)[^.?]{0,40}\b(in|within)\s+the\s+(last|past)\b/,
       /worked.*(here|for us|for this|for the company).*before/, /applied.*before/,
+      // Prior employment with the employer named on the page: "Have you ever
+      // worked for Acme before?", "previously been employed by Acme?".
+      /have you (ever )?(previously )?worked (for|at) (?!an? |any )[^?]*\bbefore\b/, /(previously|ever) been employed (by|at|with)/,
       /criminal|convicted|felony|misdemeanor/, /non.?compete|restrictive.*covenant/,
       /conflict.*interest/, /(family|relative).*work/, /ever.*(work|employ).*(for|with).*(us|this|company)/,
       /pending.*charges/, /terminated|fired|dismissed|discharged/, /debarred/
@@ -1598,11 +1806,18 @@
   function safeKnockoutAnswer(saved, questionText) {
     if (!saved) return saved;
     const s = String(saved).trim().toLowerCase();
-    if (!/^(yes|no|y|n|true|false)$/.test(s)) return saved;
     if (!KNOCKOUT_Q_RE.test(questionText)) return saved;
     let want = '';
     try { want = determineYesNo(String(questionText).toLowerCase()); } catch (_) {}
     if (want !== 'yes' && want !== 'no') return saved;
+    /* A sentence, not a yes/no, on a yes/no knockout: whatever it says, it is
+       then squeezed onto the form's Yes/No options by fuzzy matching, and that
+       is how "Authorized to work without sponsorship" became "Yes" to "Will you
+       require sponsorship?". The decider answers these directly instead. */
+    if (!/^(yes|no|y|n|true|false)$/.test(s)) {
+      LOG(`Ignoring a saved sentence on a knockout question — the safe answer (${want}) is used instead`);
+      return '';
+    }
     const says = /^(yes|y|true)$/.test(s) ? 'yes' : 'no';
     if (says === want) return saved;
     LOG(`Ignoring a saved "${s}" on a knockout question — it contradicts the safe answer (${want})`);
@@ -1792,6 +2007,20 @@
 
   // ===================== ENHANCED AUTOCOMPLETE DROPDOWN FINDER =====================
   function findAutocompleteDropdown(input) {
+    /* The listbox this input points at, first. A combobox names its own menu in
+       aria-controls / aria-owns — Greenhouse's location field does — and that is
+       the only unambiguous answer. Falling straight through to "the first
+       visible [class*=dropdown] or [class*=menu] on the page" could pick the
+       Country selector or the site navigation, and then click an item out of
+       the wrong list. */
+    try {
+      for (const attr of ['aria-controls', 'aria-owns', 'list']) {
+        const id = input.getAttribute && input.getAttribute(attr);
+        if (!id) continue;
+        const owned = deepOne('#' + CSS.escape(id));
+        if (owned && isVisible(owned)) return owned;
+      }
+    } catch (_) {}
     const selectors = [
       '[class*="autocomplete"]', '[class*="typeahead"]', '[class*="suggestion"]',
       '[class*="dropdown"]', '[class*="listbox"]', '[role="listbox"]',
@@ -1799,13 +2028,23 @@
       '.css-26l3qy-menu', '.Select-menu', '.react-select__menu',
       '[class*="dropdown-menu"]:not([style*="display: none"])'
     ];
-    for (const sel of selectors) {
-      const dd = $(sel);
-      if (dd && isVisible(dd)) return dd;
-    }
+    // Then the input's own field — before anything page-wide.
     const parent = input.closest('.form-group, .field, [class*="field"], [class*="FormField"]');
     if (parent) {
       for (const sel of selectors) { const dd = parent.querySelector(sel); if (dd && isVisible(dd)) return dd; }
+    }
+    // Last, a page-wide search — but only for something that appeared near
+    // this input, which is what a suggestion list does and a nav menu does not.
+    let r0 = null;
+    try { r0 = input.getBoundingClientRect(); } catch (_) {}
+    for (const sel of selectors) {
+      const dd = $(sel);
+      if (!dd || !isVisible(dd)) continue;
+      if (r0) {
+        const r = dd.getBoundingClientRect();
+        if (Math.abs(r.top - r0.bottom) > 400) continue;
+      }
+      return dd;
     }
     return null;
   }
@@ -1871,9 +2110,36 @@
   }
 
   // Commit an autocomplete field to a real, accepted value. Returns true on commit.
+  /* Did the widget actually accept a value? Typing leaves text in the box
+     whether or not a suggestion was chosen, so "the input is non-empty" proves
+     nothing. What counts is the input still holding a value once it has lost
+     focus AND no "required" / "please select" message beside it. */
+  function locationAccepted(el) {
+    try {
+      if (!(el.value || '').trim()) return false;
+      const box = el.closest('.form-group,.field,[class*="field"],[class*="Field"],li') || el.parentElement;
+      const t = (box && box.textContent) || '';
+      return !/is required|please (select|choose|enter)|select a (location|city)|invalid location/i.test(t);
+    } catch (_) { return !!(el.value || '').trim(); }
+  }
+
   async function commitAutocomplete(el, value) {
     if (!el || !value) return false;
+    /* Try the full query, then its first part. "Dublin, Leinster, Ireland" can
+       return no suggestions where "Dublin" returns several; and a profile with
+       only a country falls through to that. */
+    const parts = String(value).split(',').map(x => x.trim()).filter(Boolean);
+    const attempts = [...new Set([value, parts[0]].filter(Boolean))];
+    for (const q of attempts) {
+      if (await commitAutocompleteOnce(el, q) && locationAccepted(el)) return true;
+    }
+    return locationAccepted(el);
+  }
+
+  async function commitAutocompleteOnce(el, value) {
     try {
+      // Clear whatever a previous attempt left, or the new text is appended to it.
+      try { nativeSet(el, ''); } catch (_) {}
       await typeInto(el, value);
 
       // Poll for a suggestion list to appear (Google Places + generic widgets).
@@ -1897,9 +2163,15 @@
         scrollIfNeeded(best);
         realClick(best);
         await sleep(400);
-        // Google Places needs ArrowDown+Enter on some builds — do it as a reinforcement.
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, composed: true }));
+        /* Google Places needs ArrowDown+Enter on some builds — but only as a
+           fallback. Sending it after a click that DID take moves the highlight
+           to the next suggestion and commits that one instead. */
+        if (!findPacItems().length && locationAccepted(el)) {
+          // The list closed and the value stuck: the click worked.
+        } else {
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, composed: true }));
+        }
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
         LOG('Location committed via Google Places suggestion');
@@ -1933,12 +2205,34 @@
   }
 
   // Find every visible location-style input and commit it to a real selection.
+  /* What to type into a location box, most specific first.
+
+     This returned early — before touching the field — whenever the profile had
+     no city, and a required "Location (City)" was then left empty on every
+     Greenhouse form that asked for one. That was the only unanswered question in
+     an entire diagnostics export.
+
+     The chain never invents a city. It falls back to what the profile actually
+     holds, down to the country: a location autocomplete offers the country as a
+     suggestion, and a real place the candidate is in beats a blank required
+     field that blocks the submit. */
+  function locationQuery(p, cityOnly) {
+    const city = (p.city || '').trim();
+    const region = (p.state || p.region || '').trim();
+    const country = (p.country || DEFAULTS.country || '').trim();
+    if (city) return cityOnly ? [city, region].filter(Boolean).join(', ') : [city, region, country].filter(Boolean).join(', ');
+    const loc = (p.location || '').trim();
+    if (loc) return loc;
+    const addr = (p.address || '').trim();
+    if (addr) return addr;
+    return country;
+  }
+
   async function resolveLocationFields() {
     const p = await getProfile();
-    const cityVal = (p.city ? `${p.city}${p.state ? ', ' + p.state : ''}${p.country ? ', ' + p.country : ''}` : '').trim()
-      || p.location || p.city || '';
-    if (!cityVal) return 0;
-    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button])')
+    if (!locationQuery(p, false)) return 0;
+    // deepAll, not $$: the field can sit behind a shadow boundary.
+    const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button])', 300)
       .filter(el => isVisible(el) && isLocationField(el));
     let committed = 0;
     for (const inp of inputs) {
@@ -1952,8 +2246,10 @@
       }
       // Use the most specific label-appropriate value (city-only for pure "city" fields).
       const lbl = (getLabel(inp) || '').toLowerCase();
-      const val = /^.*\bcity\b.*$/.test(lbl) && p.city ? `${p.city}${p.state ? ', ' + p.state : ''}` : cityVal;
+      const val = locationQuery(p, /\bcity\b/.test(lbl));
+      if (!val) continue;
       if (await commitAutocomplete(inp, val)) committed++;
+      else DIAG('location.uncommitted', lbl || 'location', { detail: { tried: val.split(',')[0] } });
       await sleep(300);
     }
     if (committed) LOG(`Resolved ${committed} location field(s)`);
@@ -2005,6 +2301,29 @@
       if (tag.includes('-') && r.getAttribute) {
         out = (r.getAttribute('label') || r.getAttribute('aria-label') || '').trim();
       }
+      /* A native radio's OWN label next. getLabel() prefers the group's legend
+         for a radio — right for learning which question was answered, wrong
+         here: every option of <fieldset><legend>Have you worked for Acme?
+         </legend><label><input> Yes</label>… came back as the question, the
+         Yes/No matcher found neither, and a required question was left empty
+         on every form built that way. */
+      if (!out && r.labels && r.labels.length) {
+        out = Array.from(r.labels).map((l) => {
+          const c = l.cloneNode(true);
+          c.querySelectorAll('input,select,textarea').forEach((x) => x.remove());
+          return c.textContent || '';
+        }).join(' ').trim();
+      }
+      if (!out && r.getAttribute) out = (r.getAttribute('aria-label') || '').trim();
+      if (!out && r.getAttribute && r.getAttribute('aria-labelledby')) {
+        try {
+          const root = r.getRootNode ? r.getRootNode() : document;
+          out = r.getAttribute('aria-labelledby').split(/\s+/)
+            .map((id) => { const n = root.getElementById ? root.getElementById(id) : document.getElementById(id); return n ? n.textContent : ''; })
+            .join(' ').trim();
+        } catch (_) {}
+      }
+      if (!out && r.getAttribute && r.getAttribute('role') === 'radio') out = (r.textContent || '').trim();
       if (!out) out = getLabel(r) || '';
       if (!out) out = (r.getAttribute && (r.getAttribute('aria-label') || r.getAttribute('label'))) || '';
       if (!out && r.shadowRoot) out = (r.shadowRoot.textContent || '').trim();
@@ -2225,7 +2544,7 @@
       const lastTry = _choiceAnsweredAt.get(nq);
       if (lastTry && Date.now() - lastTry < CHOICE_RETRY_MS) continue;
       // An answer the user gave manually before (learned Q&A) wins over the defaults.
-      const learned = findSavedResponseMatch(q) || getLearnedAnswer(q);
+      const learned = safeKnockoutAnswer(findSavedResponseMatch(q) || getLearnedAnswer(q), q);
       if (learned) {
         const lnorm = learned.toLowerCase().trim();
         // Exact label match FIRST — a learned "No" must hit the "No" option, not
@@ -2817,6 +3136,112 @@
   // bug we fixed earlier) — so on the next render React reverts the select and the field
   // stays "required / must have a value" even though the option visibly shows selected.
   // Calling the PROTOTYPE value setter + dispatching input & change is what makes it stick.
+  /* ── MATCHING AN ANSWER TO A DROPDOWN'S OPTIONS ────────────────────────────
+     Ported from the OptimHire patch's bestSelectOption and extended. Text
+     matching alone cannot answer the dropdowns real forms use most:
+       "Years of experience"  0-2 / 3-5 / 6-10 / 10+         for "7"
+       "Expected salary"      €50,000 - €70,000 / €70,000+   for "85000"
+       "Notice period"        1 week / 2 weeks / 1 month     for "4 weeks"
+       "Education"            Bachelor's / Master's / PhD    for "Master of Science"
+     Left unanswered, each of those REQUIRED dropdowns blocked the submit. */
+  const PLACEHOLDER_OPT_RE = /^\s*(select|choose|please (select|choose)|--|—|-\s*select|pick one|none selected)\b|^\s*$/i;
+  const normMoney = (s) => String(s).toLowerCase()
+    .replace(/[$€£¥₹]|usd|eur|gbp|cad|aud/g, '')
+    .replace(/(\d),(\d{3})/g, '$1$2').replace(/(\d),(\d{3})/g, '$1$2')
+    .replace(/(\d+(?:\.\d+)?)\s*([km])\b/gi, (_, n, suf) => String(Math.round(parseFloat(n) * (/k/i.test(suf) ? 1e3 : 1e6))));
+  function toDays(s) {
+    const t = String(s || '').toLowerCase();
+    if (/immediate|right away|\basap\b|\bnow\b|no notice|\bnone\b|(^|[^\d])0 days?\b/.test(t)) return 0;
+    const m = t.match(/(\d+(?:\.\d+)?)\s*(day|week|wk|month|mo)/);
+    if (!m) { const w = t.match(/\b(one|two|three|four|six)\s*(week|month)/); if (!w) return NaN;
+      const n = { one: 1, two: 2, three: 3, four: 4, six: 6 }[w[1]]; return n * (/week/.test(w[2]) ? 7 : 30); }
+    const n = parseFloat(m[1]);
+    return n * (/day/.test(m[2]) ? 1 : /w/.test(m[2]) ? 7 : 30);
+  }
+  const EDU_RANKS = [
+    [/\b(ph\.?\s?d|doctor(ate|al)?|d\.?phil)\b/i, 5],
+    [/\b(master|m\.?sc|m\.?s\.?\b|m\.?a\.?\b|mba|m\.?eng|postgrad(uate)?)\b/i, 4],
+    [/\b(bachelor|b\.?sc|b\.?s\.?\b|b\.?a\.?\b|b\.?eng|undergrad(uate)?|honours|degree)\b/i, 3],
+    [/\b(associate|diploma|hnd|foundation)\b/i, 2],
+    [/\b(high school|secondary|ged|a.?levels?|leaving cert)\b/i, 1],
+  ];
+  const eduRank = (s) => { for (const [re, r] of EDU_RANKS) if (re.test(String(s || ''))) return r; return 0; };
+
+  /* Index of the best option for `target`, or -1. `texts` are the options'
+     visible texts, in order. */
+  function bestOptionIndex(texts, target, label) {
+    const opts = texts.map((t, i) => ({ i, t: String(t || '').replace(/\s+/g, ' ').trim(), l: String(t || '').replace(/\s+/g, ' ').trim().toLowerCase() }))
+      .filter((o) => !PLACEHOLDER_OPT_RE.test(o.t));
+    if (!opts.length || target == null || String(target).trim() === '') return -1;
+    const t = String(target).replace(/\s+/g, ' ').trim().toLowerCase();
+    const lbl = String(label || '').toLowerCase();
+    let o = opts.find((x) => x.l === t);
+    if (o) return o.i;
+    o = opts.find((x) => x.l.startsWith(t + ' ') || x.l.startsWith(t + ',') || x.l.startsWith(t + "'"));
+    if (o) return o.i;
+    if (t.length > 2) { o = opts.find((x) => x.l.includes(t)); if (o) return o.i; }
+    o = opts.find((x) => x.l.length > 2 && new RegExp('\\b' + x.l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t));
+    if (o) return o.i;
+
+    // Education: by level, never below what the profile says.
+    const tr = eduRank(t);
+    if (tr && (/educat|degree|qualif|diploma|study|school/.test(lbl) || opts.filter((x) => eduRank(x.l)).length >= 2)) {
+      const ranked = opts.map((x) => ({ x, r: eduRank(x.l) })).filter((y) => y.r);
+      const same = ranked.find((y) => y.r === tr);
+      if (same) return same.x.i;
+      const below = ranked.filter((y) => y.r < tr).sort((a, b) => b.r - a.r)[0];
+      if (below) return below.x.i;
+    }
+
+    // Notice period / availability by days: the closest option, ties to the longer.
+    const td = toDays(t);
+    if (!isNaN(td) && (/notice|availab|start|join/.test(lbl) || opts.filter((x) => !isNaN(toDays(x.l))).length >= 2)) {
+      let best = -1, bestD = Infinity;
+      for (const x of opts) {
+        const d = toDays(x.l);
+        if (isNaN(d)) continue;
+        const moreThan = /or more|\+|over|more than|longer/.test(x.l);
+        const dist = moreThan && td >= d ? 0 : Math.abs(d - td);
+        if (dist < bestD || (dist === bestD && d > (best >= 0 ? toDays(texts[best]) : -1))) { bestD = dist; best = x.i; }
+      }
+      if (best >= 0) return best;
+    }
+
+    // Numbers: the option whose range contains it.
+    const num = parseFloat(normMoney(t).replace(/[^\d.]/g, ''));
+    if (!isNaN(num) && /^\s*[$€£]?\s*\d[\d,.]*\s*[km]?\b/.test(t)) {
+      let best = -1, bestSpan = Infinity;
+      for (const x of opts) {
+        const txt = normMoney(x.l);
+        const range = txt.match(/(\d+(?:\.\d+)?)\s*(?:-|to|–|—|and)\s*(\d+(?:\.\d+)?)/);
+        if (range) {
+          const lo = parseFloat(range[1]), hi = parseFloat(range[2]);
+          if (num >= lo && num <= hi && hi - lo < bestSpan) { best = x.i; bestSpan = hi - lo; }
+          continue;
+        }
+        const over = txt.match(/(?:over|more\s*than|at\s*least|above|>=?)\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:\+|or more|and (?:above|over|up))/);
+        if (over) { const lo = parseFloat(over[1] || over[2]); if (num >= lo && num - lo + 1 < bestSpan) { best = x.i; bestSpan = num - lo + 1; } continue; }
+        const under = txt.match(/(?:less\s*than|under|below|up\s*to|<=?)\s*(\d+(?:\.\d+)?)/);
+        if (under) { const hi = parseFloat(under[1]); if (num <= hi && hi - num + 1 < bestSpan) { best = x.i; bestSpan = hi - num + 1; } continue; }
+        const single = txt.match(/^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)?\s*$/);
+        if (single) { const d = Math.abs(parseFloat(single[1]) - num); if (d < bestSpan) { best = x.i; bestSpan = d; } }
+      }
+      if (best >= 0) return best;
+    }
+    return -1;
+  }
+  /* What the question is about, when the guesser returned nothing usable for
+     a dropdown — the profile value to match against its options. */
+  function profileTargetFor(label, p) {
+    const l = String(label || '').toLowerCase();
+    if (/years?.{0,30}(experience|exp\b)|experience.{0,20}years?|how long/.test(l)) return yearsAnswer(p);
+    if (/salary|compensation|pay (expectation|range)|desired pay|remuneration/.test(l)) return p.expected_salary || p.desired_salary || DEFAULTS.salary;
+    if (/notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
+    if (/availab|start date|when can you start|earliest start/.test(l)) return p.availability || p.notice_period || DEFAULTS.availability;
+    if (/educat|degree|qualification/.test(l)) return p.education_level || p.highest_degree || p.degree || "Bachelor's";
+    if (/how did you (hear|find)|source|where did you (see|find)/.test(l)) return DEFAULTS.howHeard;
+    return '';
+  }
   function setSelectValue(sel, value) {
     if (!sel) return false;
     try {
@@ -3226,9 +3651,41 @@
   }
   /* Attach the CV on any ATS. Returns 'already' | 'attached' | 'no-resume' |
      'no-field' so the caller can report precisely instead of failing blind. */
+  /* A CV this tab has already uploaded on this page, which the ATS then
+     reloaded around.
+
+     iCIMS processes an upload by reloading the page with uploadResume=1. The
+     reloaded page shows the file in a form resumeAlreadyAttached did not
+     recognise, so the CV was attached again — another reload, and the URL grew
+     uploadResume=1&uploadResume=1. Two signals, either one enough: the ATS's own
+     parameter, and a note this tab keeps per page for ten minutes. A visible
+     "resume is required" still overrides both, because then the file really is
+     gone. */
+  const CV_NOTE_MS = 10 * 60 * 1000;
+  function cvUploadedHereRecently() {
+    try {
+      if (/[?&]uploadResume=1\b/i.test(location.search)) return true;
+      const t = Number(sessionStorage.getItem('ua_cv_up:' + location.pathname) || 0);
+      return !!t && Date.now() - t < CV_NOTE_MS;
+    } catch (_) { return false; }
+  }
+  function noteCvUploadedHere() {
+    try { sessionStorage.setItem('ua_cv_up:' + location.pathname, String(Date.now())); } catch (_) {}
+  }
+  function cvRequiredErrorShowing() {
+    try {
+      const t = (document.body && document.body.innerText || '').slice(0, 20000);
+      return /(resume|r[ée]sum[ée]|cv)[^.\n]{0,40}(is required|required field|must be (uploaded|attached)|please (upload|attach))|please (upload|attach) (a |your )?(resume|cv)/i.test(t);
+    } catch (_) { return false; }
+  }
+
   async function attachResume__impl() {
     if (resumeUploadInFlight()) { await waitForResumeUpload(20000); }
     if (resumeAlreadyAttached()) { LOG('CV already attached — leaving it alone'); return 'already'; }
+    if (cvUploadedHereRecently() && !cvRequiredErrorShowing()) {
+      LOG('CV was uploaded on this page already and the ATS reloaded around it — not uploading again');
+      return 'already';
+    }
     const inputs = resumeFileInputs();
     if (!inputs.length) return 'no-field';
     const file = await storedResumeFile();
@@ -3248,6 +3705,11 @@
            "struggled to attach" on SmartRecruiters. */
         fireOnHostChain(inp, ['input', 'change']);
         noteProgress('attaching CV');
+        /* Noted the moment the file goes in, not when attachment is confirmed —
+           on an ATS that reloads around the upload (iCIMS), confirmation is
+           exactly what never arrives, and the note is what stops the reloaded
+           page uploading it all over again. */
+        noteCvUploadedHere();
         await sleep(500);
         if (resumeUploadInFlight() || resumeAlreadyAttached()) {
           await waitForResumeUpload(25000);
@@ -3402,6 +3864,15 @@
       if (!pick && real.length) pick = real[real.length - 1];
     }
 
+    // Salary bands, notice periods, education levels — see bestOptionIndex.
+    if (!pick) {
+      const texts = real.map(o => comboText(o));
+      let bi = want ? bestOptionIndex(texts, want, qFull) : -1;
+      if (bi < 0 && !/gender|disability|veteran|race|ethnic|sex\b/i.test(qFull)) {
+        try { bi = bestOptionIndex(texts, profileTargetFor(qFull, await getProfile()), qFull); } catch (_) {}
+      }
+      if (bi >= 0) pick = real[bi];
+    }
     if (!pick && want) {
       pick = real.find(o => norm(comboText(o)) === want)
         || real.find(o => norm(comboText(o)).includes(want))
@@ -3909,6 +4380,42 @@
   function isWorkday() { return /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i.test(location.href); }
   function isJobright() { return /jobright\.ai/i.test(location.hostname); }
 
+  /* ── VALUES IN THE WRONG BOX (ported from the OptimHire patch's sanitizer) ──
+     Two engines fill these forms — Jobright's and ours — and either can put a
+     value in the wrong field: the LinkedIn URL in "Preferred name", the email
+     in "Phone", a name in the Email box. The form then rejects the submit, or
+     worse, accepts it. After each fill, every text box whose content clearly
+     does not belong to its label gets the right answer, or is cleared. Never a
+     box you typed in yourself. */
+  const URL_LABEL_RE = /url|link|web ?site|portfolio|linkedin|github|gitlab|profile|behance|dribbble|twitter|social|blog|homepage|http/i;
+  const EMAIL_LABEL_RE = /e-?mail|username|user name|login/i;
+  function sanitizeMisplacedValues(p) {
+    let fixed = 0;
+    const boxes = deepAll('input[type=text],input[type=email],input[type=tel],input[type=url],input:not([type]),textarea', 200)
+      .filter((el) => isVisible(el) && !el.readOnly && !el.disabled && (el.value || '').trim() && !userTouched(el));
+    for (const el of boxes) {
+      const v = String(el.value).trim();
+      const lbl = String(fieldName(el) || getLabel(el) || '');
+      const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(v);
+      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+      let why = '';
+      if (isUrl && !URL_LABEL_RE.test(lbl) && el.tagName !== 'TEXTAREA') why = 'a link';
+      else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
+      else if ((el.type === 'email' || (/e-?mail/i.test(lbl) && !/confirm|re-?enter|repeat|verify/i.test(lbl) && !/(recruiter|referr|reference|manager)/i.test(lbl))) && !isEmail && el.tagName !== 'TEXTAREA') why = 'not an email address';
+      else if ((el.type === 'tel' || /phone|mobile|telephone/i.test(lbl)) && !/code|ext/i.test(lbl) && !/\d{3}/.test(v)) why = 'not a phone number';
+      if (!why) continue;
+      let good = '';
+      try { good = String(guessFieldValue(lbl, p, el) || '').trim(); } catch (_) {}
+      if (good && good === v) continue;
+      const goodIsBad = !good || (why === 'a link' && /^(https?:\/\/|www\.)/i.test(good)) || (why === 'an email address' && /@/.test(good));
+      LOG(`"${lbl.slice(0, 50)}" held ${why} — ${goodIsBad ? 'cleared' : 'replaced with the right answer'}`);
+      try { el.focus({ preventScroll: true }); } catch (_) {}
+      nativeSet(el, goodIsBad ? '' : good);
+      fixed++;
+    }
+    return fixed;
+  }
+
   // ===================== FALLBACK FORM FILLER =====================
   // Fills fields that Jobright autofill missed
   async function fallbackFill__impl() {
@@ -3948,7 +4455,14 @@
       const val = guessFieldValue(lbl, p, sel);
       const opts = deepAll('option', sel).filter(o => o.value && o.index > 0);
       let opt = null;
-      if (val) {
+      // Ranges, notice periods, education levels — see bestOptionIndex.
+      {
+        const texts = Array.from(sel.options).map(o => o.text);
+        let bi = val ? bestOptionIndex(texts, val, lbl) : -1;
+        if (bi < 0 && !isEEO) bi = bestOptionIndex(texts, profileTargetFor(lbl, p), lbl);
+        if (bi >= 0 && sel.options[bi] && sel.options[bi].value) opt = sel.options[bi];
+      }
+      if (!opt && val) {
         const valLower = val.toLowerCase().trim();
         opt = opts.find(o => o.text.trim().toLowerCase() === valLower)
           || opts.find(o => o.text.trim().toLowerCase().includes(valLower))
@@ -4080,6 +4594,8 @@
     // is not clobbered by the verification re-fill above. This clears the common
     // "Please enter your location" stall that would otherwise require manual input.
     const locFixed = await resolveLocationFields();
+    // Values that landed in the wrong box — see sanitizeMisplacedValues.
+    try { refilled += sanitizeMisplacedValues(p); } catch (_) {}
 
     // Learn from all filled fields for future use
     learnFromFilledFields();
@@ -4170,8 +4686,10 @@
 
   // ===================== LEARN FROM PAGE (capture filled answers) =====================
   async function learnFromPage() {
+    // Only what you entered yourself — see _userTouched.
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea,select')
-      .filter(el => isVisible(el) && hasFieldValue(el));
+      .filter(el => isVisible(el) && hasFieldValue(el) && userTouched(el));
+    if (!inputs.length) return;
     for (const el of inputs) {
       const lbl = getLabel(el);
       if (!lbl) continue;
@@ -4288,13 +4806,14 @@
   // "no Submit control" usually means the form has another page or the button sits
   // in a frame we did not reach; "no confirmation" means it probably did send.
   function submitFailureReason(validationStuck) {
-    if (validationStuck) return 'Validation errors could not be resolved';
+    if (validationStuck) { const e = remainingErrorSummary(); return 'Validation errors could not be resolved' + (e ? ' — ' + e : ''); }
     if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
     return 'Submit was clicked but no confirmation appeared';
   }
   // A persistent inline validation error means a required field couldn't be satisfied.
   function pageHasValidationError() {
     try {
+      if (readFieldErrors().length) return true;
       const el = $('[aria-invalid="true"],.error,.is-invalid,[class*="field-error"],[class*="fieldError"],[role="alert"]');
       if (!el || !isVisible(el)) return false;
       // [role=alert] is also used for success toasts — only count it if the text looks like an error.
@@ -4327,33 +4846,75 @@
         ['iframe[src*="awswaf"],[id*="awswaf-captcha"]', 'AWS WAF'],
         ['[data-testid="challenge"],[class*="press-and-hold" i]', 'Press-and-hold challenge'],
       ];
+      /* A CAPTCHA only counts if a human could actually solve it right now.
+
+         This checked the element's OWN computed style and nothing else, and that
+         is not how these are hidden. Greenhouse — and most ATS — embed an
+         INVISIBLE reCAPTCHA that never asks the applicant anything: its iframe
+         is a normal size and is not itself display:none, it is parked off-screen
+         or inside a wrapper with opacity 0. So the run announced a CAPTCHA on a
+         perfectly ordinary form and parked, waiting for a human to solve
+         something that was never shown. That is the "randomly just stopped": a
+         Klaviyo Greenhouse embed with every field still empty.
+
+         Three things have to be true, and none of them was being asked. */
+      const vw = window.innerWidth || document.documentElement.clientWidth;
+      const vh = window.innerHeight || document.documentElement.clientHeight;
       for (const [sel, provider] of PROVIDERS) {
         // deepAll: a challenge rendered inside the application's own iframe, or in a
         // shadow root, was previously undetectable from the top document.
         for (const el of deepAll(sel, 40)) {
           const r = el.getBoundingClientRect();
           if (r.width < 60 || r.height < 50) continue; // v3 badge / hidden token frames
-          const cs = getComputedStyle(el);
-          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
+
+          // 1. On screen. An invisible reCAPTCHA is parked far outside the
+          //    viewport, which no style property reports as hidden.
+          if (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw) continue;
+
+          // 2. Visible all the way up. A wrapper with opacity:0 or
+          //    visibility:hidden hides the iframe without touching the iframe.
+          let hidden = false;
+          for (let node = el, up = 0; node && up < 8; node = node.parentElement, up++) {
+            const cs = getComputedStyle(node);
+            if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) { hidden = true; break; }
+          }
+          if (hidden) continue;
+
+          // 3. Not the badge. reCAPTCHA v3 and the invisible v2 both leave a
+          //    branding widget on the page that asks nothing of anyone.
+          try {
+            const title = (el.getAttribute('title') || '').toLowerCase();
+            if (/privacy|terms|recaptcha$/.test(title) && !/challenge|expires/.test(title)) continue;
+            if (el.className && /grecaptcha-badge/.test(String(el.className))) continue;
+            if (el.closest && el.closest('.grecaptcha-badge')) continue;
+          } catch (_) {}
+
           return { provider, el };
         }
       }
       return null;
     } catch (_) { return null; }
   }
+  /* There used to be a full-width bar pinned across the top of the page here,
+     and it was the wrong place for this. It covered the employer's own header on
+     every page it appeared on, it sat above the form you were trying to read,
+     and it was page-wide furniture for a piece of information about the RUN.
+
+     The run already has somewhere to say things: the control panel, which is on
+     screen for the whole run and out of the way of the page. So the state is
+     held here and the panel renders it — see updateCtrl. Nothing is lost; it
+     simply stopped shouting. */
+  let _captchaWaiting = '';
   function showCaptchaBanner(provider) {
-    try {
-      let b = document.getElementById('ua-captcha-banner');
-      if (!b) {
-        b = document.createElement('div');
-        b.id = 'ua-captcha-banner';
-        b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b45309;color:#fff;padding:10px 16px;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.35)';
-        (document.body || document.documentElement).appendChild(b);
-      }
-      b.textContent = `🧩 ${provider || 'Captcha'} detected — please solve it. Automation is paused and resumes automatically once solved.`;
-    } catch (_) {}
+    _captchaWaiting = provider || 'CAPTCHA';
+    try { updateCtrl(); } catch (_) {}
   }
-  function hideCaptchaBanner() { try { document.getElementById('ua-captcha-banner')?.remove(); } catch (_) {} }
+  function hideCaptchaBanner() {
+    _captchaWaiting = '';
+    // Clear any bar left over from a build that still drew one.
+    try { document.getElementById('ua-captcha-banner')?.remove(); } catch (_) {}
+    try { updateCtrl(); } catch (_) {}
+  }
   // Wait (bounded) for the visible captcha to be solved/dismissed. Returns true if clear.
   /* A CAPTCHA is a human check and this does not try to answer one. What it does
      is make the wait VISIBLE and bounded. A queue job runs in a background tab, so
@@ -4402,7 +4963,7 @@
         LOG(`CAPTCHA (${c.provider}) detected — automation paused, waiting for you to solve it`);
         try { c.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
       }
-      await sleep(2000);
+      await sleep(scaled(2000, 1000));
     }
     hideCaptchaBanner();
     const still = !!detectCaptcha();
@@ -4416,6 +4977,20 @@
      it was a flat 300ms however fast the run was set to go. Scaled now; the
      overall timeout is left alone, because that is a safety cap rather than a
      pace. */
+  /* Wait for something to become true, and return the moment it does. The
+     alternative — sleeping for however long the slowest case takes — is what
+     made 1x slow: the timer ran in full even when the page had settled in
+     200ms. The cap is the backstop, not the expected cost. */
+  async function waitUntil(cond, maxMs, stepMs) {
+    const deadline = Date.now() + (maxMs || 3000);
+    const step = stepMs || 150;
+    for (;;) {
+      try { if (cond()) return true; } catch (_) {}
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(step, Math.max(30, deadline - Date.now())));
+    }
+  }
+
   function waitForFormStable(timeout = 3000) {
     return new Promise(resolve => {
       let timer = null;
@@ -4604,7 +5179,7 @@
     if (missing.length) {
       // Third pass, after a longer wait: SPA forms mount fields after first paint,
       // so the earlier sweeps genuinely could not see them yet.
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
       await fallbackFill();
       await guaranteeRequiredFields();
       await sleep(300);
@@ -4613,6 +5188,16 @@
     // An upload still in flight is the difference between "resume attached" and
     // "resume required" on most ATS. Never submit through one.
     if (resumeUploadInFlight()) { LOG('Waiting for a file upload to finish before submitting'); await waitForResumeUpload(25000); }
+    /* What the FORM says is still wrong — including the browser's own checks,
+       which block a native submit without a word: the click lands, nothing
+       happens, and the job used to sit there until it timed out. */
+    try {
+      const p = await getProfile();
+      for (let pass = 0; pass < 2 && readFieldErrors().length; pass++) {
+        if (!(await fixFieldErrorsFromPage(p))) break;
+        await sleep(300);
+      }
+    } catch (_) {}
     logFillReport('Before submit');
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
@@ -4844,7 +5429,7 @@
     // Wait for Jobright sidebar to load (shadow-aware)
     const sidebar = await waitForSidebar(15000);
     if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow(); return; }
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
 
     // Step 1: Click "Generate Custom Resume" only if the user opted into tailoring
     // during the queue. By default we skip it for reliability (the resume-generator
@@ -4854,7 +5439,7 @@
     if (tailorBtn && isVisible(tailorBtn)) {
       LOG('Step 1: Clicking Generate Custom Resume');
       realClick(tailorBtn);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
 
       // Wait for tailoring to complete (watch for loading to finish)
       LOG('Waiting for resume tailoring to complete...');
@@ -4870,9 +5455,9 @@
           // If no loading and no button, don't spin forever
           if (!loading) { LOG('No loading indicator and no autofill button — moving on'); break; }
         }
-        await sleep(1500);
+        await sleep(scaled(1500, 750));
       }
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
     } else {
       LOG('Step 1: No tailor button found — skipping to autofill');
     }
@@ -4882,7 +5467,7 @@
     if (continueBtn && isVisible(continueBtn)) {
       LOG('Step 2: Clicking Continue button');
       realClick(continueBtn);
-      await sleep(2000);
+      await sleep(scaled(2000, 1000));
     }
 
     // Step 4: Click the Autofill button
@@ -4891,7 +5476,7 @@
 
     // Wait for Jobright autofill to complete (watch for "Filling" → "Autofill" text change)
     LOG('Waiting for Jobright autofill to complete...');
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     const fillStart = Date.now();
     while (Date.now() - fillStart < 15000) { // 15s max (reduced from 60s)
       const afBtn = sidebar.querySelector('.auto-fill-button');
@@ -4899,9 +5484,9 @@
         const txt = afBtn.textContent?.trim().toLowerCase() || '';
         if (txt === 'autofill' || txt === '' || txt === 'filled') break; // Done filling
       } else break; // Button gone — don't wait forever
-      await sleep(1000);
+      await sleep(scaled(1000, 500));
     }
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
 
     // Step 5: Try resume upload if needed
     await tryResumeUpload();
@@ -4909,7 +5494,7 @@
     // Step 6: Fallback fill to catch missed fields
     LOG('Step 4: Running fallback fill for missed fields');
     await fallbackFill();
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
     // Second pass
     await fallbackFill();
     await sleep(500);
@@ -4923,7 +5508,7 @@
     LOG('Step 5: Auto-submit/next');
     await autoSubmitOrNext();
     await learnFromPage();
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     // Remaining pages / review-confirm / account walls are driven to completion by
     // the dispatcher's universal multi-page driver after this returns.
   }
@@ -4936,6 +5521,9 @@
     const MAX_PAGES = 18;
     let prevPageHash = getPageHash();
     let samePageRetries = 0;
+    // Consecutive pages that were still a sign-in wall after we tried to sign in.
+    let authWallPasses = 0;
+    const MAX_AUTH_WALL_PASSES = 3;
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping multi-page loop'); break; }
       if (checkSuccess()) { LOG('Success detected — stopping multi-page loop'); break; }
@@ -4950,8 +5538,12 @@
       if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
       LOG(`Multi-page: processing page ${page}`);
 
-      // Wait for page content to change
-      await sleep(2000);
+      /* Every wait in this loop is now speed-scaled. They were flat numbers, so
+         the 1x/1.5x/2x/3x selector did nothing here at all — and this loop is
+         where a job spends most of its life. A page iteration carried close to
+         ten seconds of unconditional sleep, eighteen pages of budget, and the
+         selector could not touch a millisecond of it. */
+      await waitForFormStable(scaled(2000, 350));
 
       // Detect whether the page actually advanced. getPageHash is URL + visible-field
       // count + labels, which stays IDENTICAL when a Workday-style page rejects "Save
@@ -4963,7 +5555,7 @@
       // now know how to (e.g. the disclosure "No" defaults + the React select setter).
       const newHash = getPageHash();
       if (page > 1 && newHash === prevPageHash) {
-        await sleep(2000);
+        await waitForFormStable(scaled(2000, 350));
         const stillSame = getPageHash() === prevPageHash;
         const fixable = pageHasValidationError() || getMissingRequired().length > 0;
         if (stillSame) {
@@ -4984,28 +5576,56 @@
       await openApplicationForm();
       await handleAccountAuth();
 
+      /* Still a sign-in page after signing in? Then it is not an application
+         yet, and filling it as one is wrong: on careers-sig.icims.com the whole
+         pipeline ran against the login page — CV attached, dropdowns answered,
+         "0 of 0 required fields" — and then pressed its button as if submitting
+         an application. Give the sign-in a moment to land instead, and after a
+         few attempts say plainly that it did not, rather than burning the job's
+         time budget going round. */
+      if (looksLikeAuthPage()) {
+        authWallPasses++;
+        if (authWallPasses > MAX_AUTH_WALL_PASSES) {
+          LOG('Multi-page: still on the sign-in page after ' + MAX_AUTH_WALL_PASSES + ' attempts — stopping');
+          DIAG('auth.stuck', 'Sign-in did not complete after ' + MAX_AUTH_WALL_PASSES + ' attempts');
+          break;
+        }
+        LOG('Multi-page: waiting for the sign-in to go through (attempt ' + authWallPasses + ')');
+        await waitForStepChange(getPageHash(), scaled(8000, 2500));
+        continue;
+      }
+      authWallPasses = 0;
+
       // Try Jobright autofill again
       await triggerAutofill();
-      await sleep(3000);
+      await waitForFormStable(scaled(3000, 500));
 
-      // Fallback fill — two passes + validation fix
-      await fallbackFill();
-      await sleep(1000);
-      await fallbackFill();
-      await sleep(500);
+      /* Fallback fill. The second pass exists to catch fields that only appear
+         once the first pass answers something — so it is worth running when the
+         first pass DID something, and pure cost when it did not. It used to run
+         unconditionally, twice a page, eighteen pages deep. */
+      const firstPass = await fallbackFill();
+      if (firstPass) {
+        await waitForFormStable(scaled(1000, 200));
+        await fallbackFill();
+      }
+      await sleep(scaled(500, 120));
       // Conditional sub-questions, declaration boxes and anything still required —
       // this is also what re-scans after an answer reveals a follow-up question.
       await guaranteeRequiredFields();
       await handleValidationErrors();
-      await sleep(300);
+      await sleep(scaled(300, 100));
 
       // Submit or next
       const beforeAction = getPageHash();
       const action = await autoSubmitOrNext();
       if (action === 'submitted') {
         LOG('Submitted on page ' + page);
-        await sleep(3000);
-        if (confirmSubmitted()) { LOG('Success confirmed after submit'); break; }
+        // Leave the instant the confirmation appears rather than always paying
+        // for the slowest ATS.
+        if (await waitUntil(confirmSubmitted, scaled(3000, 600), 200)) {
+          LOG('Success confirmed after submit'); break;
+        }
         // Some ATS show a final review/confirm step after the first "submit" —
         // keep looping so we click it too instead of stopping prematurely.
         continue;
@@ -5019,13 +5639,13 @@
         continue;
       } else {
         // No submit/next found — re-fill once and retry; only stop if still nothing.
-        await sleep(1500);
+        await waitForFormStable(scaled(1500, 300));
         await openApplicationForm();
         await handleAccountAuth();
         await fallbackFill();
         await handleValidationErrors();
         const retry = await autoSubmitOrNext();
-        if (retry) { LOG('Retry result: ' + retry); await sleep(3000); continue; }
+        if (retry) { LOG('Retry result: ' + retry); await waitForFormStable(scaled(3000, 600)); continue; }
         LOG('Nothing left to click on page ' + page + ' — ending loop');
         break;
       }
@@ -5044,17 +5664,17 @@
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
   async function directAutofillFlow() {
     await triggerAutofill();
-    await sleep(5000);
+    await sleep(scaled(5000, 2500));
     await fixPhoneCountryCode();
     await fallbackFill();
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
     await fallbackFill();
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
     // Conditional sub-questions + declaration boxes + anything still required.
     await guaranteeRequiredFields();
     await handleValidationErrors();
     await autoSubmitOrNext();
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     // Remaining pages are driven by the dispatcher's universal multi-page driver.
   }
 
@@ -5063,7 +5683,7 @@
     LOG('Ashby automation starting...');
     const form = await waitFor('form,.ashby-application-form,[data-testid="application-form"]', 10000);
     if (!form) { LOG('No Ashby form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -5073,7 +5693,7 @@
     LOG('BambooHR automation starting...');
     const form = await waitFor('.RenderForm,form#applicationForm,.positionapply', 10000);
     if (!form) { LOG('No BambooHR form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -5260,7 +5880,7 @@
     // never "Autofill with Resume" or "Use My Last Application" — then fill ourselves.
     await waitForApplyTarget(8000);
     await clickApplyManually();
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // STEP 1 of 7 — Create Account / Sign In — handled fully by SpeedyApply during
     // the queue (fills email + password + verifyPassword + createAccountCheckbox and
@@ -5269,12 +5889,12 @@
     // Sign-up flow still works when you're not running the bulk queue.
     await waitForApplyTarget(6000);
     await fillWorkdayCreateAccount(true);
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Wait for form page
     const fp = await waitFor("[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']", 10000);
     if (!fp) { LOG('Workday form page not found'); return; }
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
 
     // STEP 2 of 7 — My Information — filled fully by SpeedyApply.
     await workdayFillName(p);
@@ -5289,7 +5909,7 @@
 
     // Jobright autofill as a BACKUP — catches any field SpeedyApply missed on this page.
     await triggerAutofill();
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     await fallbackFill();
 
     // Phase 3: continue (tailor + autofill) into the multi-page flow.
@@ -5433,7 +6053,7 @@
     const addEduBtn = $('button[data-automation-id="btnAddEducationHistory"],button[data-automation-id="add-button"]');
     const eduSection = $('[data-automation-id="educationSection"],[data-automation-id="formField-school"]');
     if (!eduSection && addEduBtn && isVisible(addEduBtn)) {
-      realClick(addEduBtn); await sleep(1500);
+      realClick(addEduBtn); await sleep(scaled(1500, 750));
     }
 
     const school = p.school || p.university || '';
@@ -5543,7 +6163,7 @@
     const addExpBtn = $('button[data-automation-id="btnAddWorkHistory"],button[data-automation-id="add-button"]');
     const expSection = $('[data-automation-id="workSection"],[data-automation-id="formField-jobTitle"]');
     if (!expSection && addExpBtn && isVisible(addExpBtn)) {
-      realClick(addExpBtn); await sleep(1500);
+      realClick(addExpBtn); await sleep(scaled(1500, 750));
     }
 
     const title = p.current_title || p.title || '';
@@ -5678,7 +6298,7 @@
       xpath("//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'add') and contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'language')]");
     const langSection = $('[data-automation-id="languageSection"],[data-automation-id="formField-language"]');
     if (!langSection && addLangBtn && isVisible(addLangBtn)) {
-      realClick(addLangBtn); await sleep(1500);
+      realClick(addLangBtn); await sleep(scaled(1500, 750));
     }
 
     // Strategy 1: data-automation-id based language dropdown
@@ -5856,7 +6476,7 @@
         fileInput.files = dt.files;
         fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         LOG(`Workday: resume injected via DataTransfer — ${resumeData.fileName}`);
-        await sleep(1500);
+        await sleep(scaled(1500, 750));
         return true;
       } catch (err) { LOG('Workday: resume injection failed — ' + err.message); }
     }
@@ -5961,7 +6581,7 @@
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping Workday flow'); break; }
       if (checkSuccess()) { LOG('Workday: success detected'); break; }
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
 
       // Detect current page type
       let currentPageType = 'unknown';
@@ -5975,7 +6595,7 @@
         LOG('Workday: stuck on same page — running validation fix');
         await handleValidationErrors();
         await fallbackFill();
-        await sleep(1000);
+        await sleep(scaled(1000, 500));
       }
       lastPageType = currentPageType;
 
@@ -6002,7 +6622,7 @@
           LOG('Workday: clicking Submit on review page');
           await sleep(500);
           realClick(submitBtn);
-          await sleep(3000);
+          await sleep(scaled(3000, 1500));
           break;
         }
       }
@@ -6016,8 +6636,8 @@
       // view, re-fills + fixes validation if "Continue to the next page" is disabled,
       // and submits on the final review page).
       const action = await autoSubmitOrNext();
-      if (action === 'submitted') { await sleep(2500); if (confirmSubmitted()) break; }
-      else if (action === 'next_page') { await sleep(2500); }
+      if (action === 'submitted') { await sleep(scaled(2500, 1250)); if (confirmSubmitted()) break; }
+      else if (action === 'next_page') { await sleep(scaled(2500, 1250)); }
       else { LOG('Workday: no next/submit button found'); break; }
     }
   }
@@ -6028,7 +6648,7 @@
     const p = await getProfile();
     const form = await waitFor('#application_form,#application,.application-form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Greenhouse-specific field selectors (from SpeedyApply)
     const ghFields = {
@@ -6055,12 +6675,12 @@
     if (applyLink && isVisible(applyLink) && !location.href.includes('/apply')) {
       LOG('Clicking Lever Apply button');
       realClick(applyLink);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
     }
     // Wait for form — Lever uses many different form selectors
     const form = await waitFor('.application-form,#application-form,.postings-form,form[action*="apply"],.application-page,.content form,.main-content form,form', 8000);
     if (!form) { LOG('No Lever form found'); await directAutofillFlow(); return; }
-    await sleep(1000);
+    await sleep(scaled(1000, 500));
 
     const p = await getProfile();
     await loadAnswerBank();
@@ -6147,7 +6767,7 @@
     await triggerAutofillQuick();
 
     // Phase 8: Final fallback pass
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
     await fallbackFill();
     await sleep(500);
     await handleValidationErrors();
@@ -6178,7 +6798,7 @@
     // Wait for Taleo form (various selectors)
     const form = await waitFor('#requisitionDescriptionInterface,form[name="submitAction"],.candidate-self-service,#contentContainer,.requisitionContent,form', 10000);
     if (!form) { LOG('No Taleo form found'); await directAutofillFlow(); return; }
-    await sleep(2000);
+    await sleep(scaled(2000, 1000));
 
     // Taleo uses numbered fieldsets and iframe-heavy layouts
     // Phase 1: Fill personal info fields
@@ -6226,12 +6846,12 @@
     const applyBtn = $('a.jv-button-apply,.jv-apply-button,a[href*="/apply"],button.apply-button');
     if (applyBtn && isVisible(applyBtn) && !/\/apply/i.test(location.pathname)) {
       realClick(applyBtn);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
     }
 
     const form = await waitFor('.jv-application-form,form[name="applicationForm"],.application-form,form', 10000);
     if (!form) { LOG('No Jobvite form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Jobvite field patterns
     const jvFields = {
@@ -6409,7 +7029,7 @@
     const applyBtn = $('button[id="indeedApplyButton"],#applyButtonLinkContainer a,button[class*="apply"],a[class*="apply"]');
     if (applyBtn && isVisible(applyBtn)) {
       realClick(applyBtn);
-      await sleep(3000);
+      await sleep(scaled(3000, 1500));
     }
 
     // Indeed uses an iframe for the application
@@ -6421,7 +7041,7 @@
     // Wait for form (Indeed sometimes uses inline forms)
     const form = await waitFor('form[id*="apply"],form[class*="apply"],.ia-Questions,form', 8000);
     if (!form) { LOG('No Indeed form found'); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Indeed multi-step flow
     const MAX_STEPS = 8;
@@ -6463,16 +7083,16 @@
         LOG('Indeed: clicking Submit');
         await sleep(500);
         realClick(submitBtn);
-        await sleep(3000);
+        await sleep(scaled(3000, 1500));
         break;
       }
       if (continueBtn && isVisible(continueBtn)) {
         realClick(continueBtn);
-        await sleep(2500);
+        await sleep(scaled(2500, 1250));
         continue;
       }
       const txtBtn = $$('button').filter(isVisible).find(b => /^(continue|next|submit|apply)\b/i.test((b.textContent || '').trim()));
-      if (txtBtn) { realClick(txtBtn); await sleep(2500); continue; }
+      if (txtBtn) { realClick(txtBtn); await sleep(scaled(2500, 1250)); continue; }
       break;
     }
     learnFromFilledFields();
@@ -6487,7 +7107,7 @@
 
     const form = await waitFor('.breezy-apply-form,form[id*="application"],.position-apply,form', 10000);
     if (!form) { LOG('No BreezyHR form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // BreezyHR field patterns
     const brFields = {
@@ -6520,7 +7140,7 @@
 
     const form = await waitFor('form,[class*="application-form"],[data-testid*="application"]', 10000);
     if (!form) { LOG('No Rippling form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Rippling uses React-based forms
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -6571,7 +7191,7 @@
 
     const form = await waitFor('.apply-form,form[id*="application"],form[class*="candidate"],form', 10000);
     if (!form) { LOG('No ADP form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     const adpFields = {
       'input[id*="firstName"],input[name*="firstName"]': p.first_name || p.firstName || '',
@@ -6604,7 +7224,7 @@
 
     const form = await waitFor('form[id*="application"],form,.applicationForm,[class*="applyForm"]', 10000);
     if (!form) { LOG('No SuccessFactors form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // SuccessFactors uses various field naming conventions
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -6651,7 +7271,7 @@
 
     const form = await waitFor('#jazzhr-apply,form[id*="apply"],form.resume-form,form', 10000);
     if (!form) { LOG('No JazzHR form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     const jzFields = {
       '#first_name,input[name="first_name"]': p.first_name || p.firstName || '',
@@ -6694,7 +7314,7 @@
 
     const form = await waitFor('form[class*="application"],form,.apply-form', 10000);
     if (!form) { LOG('No Handshake form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Fill all visible empty fields using generic approach
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -6773,7 +7393,7 @@
 
     const form = await waitFor('.apply-form,form[class*="application"],[class*="ApplicationForm"],form', 10000);
     if (!form) { LOG('No Eightfold form found'); await directAutofillFlow(); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // Eightfold uses React with custom components
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -6825,7 +7445,10 @@
     const applyBtn = deepAll('a.iCIMS_MainLink[href*="apply" i],a[title*="Apply" i],a.header-apply-button,' +
       '.iCIMS_ApplyLink,button.applyButton,a[href*="/apply" i],#quickApply,[id*="applyButton" i]', 20)
       .filter(isVisible)[0] || findApplyButton();
-    if (applyBtn && !/\/(apply|login|register)\b/i.test(location.pathname)) {
+    /* The guard that was here listed /apply, /login and /register and missed
+       /candidate — iCIMS's application page — so a signed-in run clicked Apply
+       again and went back to the job description. */
+    if (applyBtn && !pastTheApplyStep() && !/\/(apply|login|register)\b/i.test(location.pathname)) {
       LOG('Clicking iCIMS Apply');
       const before = stepSignature();
       if (applyBtn.tagName === 'A' && applyBtn.target === '_blank') applyBtn.target = '_self';
@@ -6879,18 +7502,18 @@
     if (easyApplyBtn && isVisible(easyApplyBtn)) {
       LOG('Clicking Easy Apply button');
       realClick(easyApplyBtn);
-      await sleep(2000);
+      await sleep(scaled(2000, 1000));
     }
     // Wait for the modal form
     const modal = await waitFor('.jobs-easy-apply-modal,.jobs-easy-apply-content,[class*="easy-apply"],.artdeco-modal', 8000);
     if (!modal) { LOG('LinkedIn Easy Apply modal not found'); return; }
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
 
     // LinkedIn Easy Apply has multiple pages — loop through them
     const MAX_STEPS = 8;
     for (let step = 1; step <= MAX_STEPS; step++) {
       LOG(`LinkedIn Easy Apply: step ${step}`);
-      await sleep(1000);
+      await sleep(scaled(1000, 500));
 
       // Fill visible fields
       const p = await getProfile();
@@ -6938,7 +7561,7 @@
         LOG('LinkedIn: clicking Submit');
         await sleep(500);
         realClick(submitBtn);
-        await sleep(2000);
+        await sleep(scaled(2000, 1000));
         // Check for success
         const dismiss = modal.querySelector('button[aria-label*="Dismiss" i],button[data-control-name="close_artdeco_modal"]');
         if (dismiss) { LOG('LinkedIn: Application submitted successfully!'); realClick(dismiss); }
@@ -6947,20 +7570,20 @@
       if (reviewBtn && isVisible(reviewBtn)) {
         LOG('LinkedIn: clicking Review');
         realClick(reviewBtn);
-        await sleep(2000);
+        await sleep(scaled(2000, 1000));
         continue;
       }
       if (nextBtn && isVisible(nextBtn)) {
         LOG('LinkedIn: clicking Next');
         realClick(nextBtn);
-        await sleep(2000);
+        await sleep(scaled(2000, 1000));
         continue;
       }
 
       // Fallback: text-based button search
       const allBtns = $$('button', modal).filter(isVisible);
       const txtBtn = allBtns.find(b => /^(submit|next|continue|review)\b/i.test((b.textContent || '').trim()));
-      if (txtBtn) { realClick(txtBtn); await sleep(2000); continue; }
+      if (txtBtn) { realClick(txtBtn); await sleep(scaled(2000, 1000)); continue; }
 
       LOG('LinkedIn: No next/submit button found — stopping');
       break;
@@ -6996,17 +7619,337 @@
     return false;
   }
 
+  /* ── READING THE FORM'S OWN ERROR MESSAGES ─────────────────────────────────
+     A form that is 100% filled can still refuse to submit: the phone is in the
+     wrong format, the salary has a comma in it, the city was typed but not
+     picked from the list, a required radio the browser itself is guarding.
+     Guessing from field state misses all of those. The site TELLS us what is
+     wrong — in its inline error text, in aria-invalid + aria-describedby, and
+     in the browser's own constraint validation — so read that, per field, and
+     fix what it says. */
+  const FIELD_ERROR_SEL = '.error,.field-error,.error-message,.errorMessage,.validation-error,.invalid-feedback,' +
+    '.help-block.with-errors,.field-validation-error,.form-error,.input-error,[class*="error-text" i],[class*="errorText" i],' +
+    '[class*="error-message" i],[class*="errorMessage" i],[class*="field-error" i],[class*="fieldError" i],' +
+    '[class*="helper-text" i][class*="error" i],[role="alert"],[aria-live="assertive"],[data-error],.Mui-error,.ant-form-item-explain-error';
+  const FIELD_ERROR_TEXT_RE = /required|can'?t be (blank|empty)|cannot be (blank|empty)|must|invalid|not valid|valid (e-?mail|phone|number|url|date|value|option|location|city)|please (enter|select|choose|provide|fill|complete|answer|upload|attach|check)|too (long|short)|at (least|most)|maximum|minimum|characters|digits|format|from the (list|dropdown|suggestions)|mandatory|missing|not allowed|only (numbers|digits|letters)|exceed/i;
+  const FIELD_CONTAINER_SEL = '.field,.form-group,.form-field,.form-item,.ant-form-item,.MuiFormControl-root,[class*="field" i],[class*="question" i],[class*="Question"],fieldset,li,[role="group"],[role="radiogroup"]';
+  let _lastFieldErrors = [];
+
+  function textOfIds(el, attr) {
+    try {
+      const ids = (el.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
+      if (!ids.length) return '';
+      const root = el.getRootNode ? el.getRootNode() : document;
+      return ids.map((id) => { const n = (root.getElementById ? root.getElementById(id) : null) || document.getElementById(id); return n && isVisible(n) ? n.textContent : ''; })
+        .join(' ').replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+  function nativeErrorKind(v) {
+    if (!v) return '';
+    if (v.valueMissing) return 'required';
+    if (v.typeMismatch) return 'type';
+    if (v.patternMismatch) return 'pattern';
+    if (v.tooLong) return 'tooLong';
+    if (v.tooShort) return 'tooShort';
+    if (v.rangeUnderflow || v.rangeOverflow || v.stepMismatch) return 'range';
+    if (v.badInput) return 'number';
+    return v.customError ? 'custom' : '';
+  }
+  function classifyFieldError(el, msg, nativeKind) {
+    const m = String(msg || '').toLowerCase();
+    const lbl = String(fieldName(el) || '').toLowerCase();
+    if (el.type === 'file') return 'file';
+    if (/from the (list|dropdown|suggestions)|select (a|an|one|your)? ?(valid )?(location|city|option|address)|valid (location|city|address)|choose .* from/.test(m)) return 'list';
+    if (nativeKind === 'type' && el.type === 'email' || /valid e-?mail|e-?mail (address )?(is )?(invalid|not valid)/.test(m)) return 'email';
+    if (nativeKind === 'type' && el.type === 'url' || /valid (url|link|web ?site)|must (start|begin) with http/.test(m)) return 'url';
+    if ((el.type === 'tel' || /phone|mobile|telephone/.test(lbl)) && (nativeKind === 'pattern' || /valid|invalid|format|digits|number|country code/.test(m))) return 'phone';
+    if (nativeKind === 'tooLong' || /(maximum|max\.?|at most|no more than|up to|exceed\w*) (of )?\d+ (characters|chars)|too long/.test(m)) return 'tooLong';
+    if (nativeKind === 'tooShort' || /(minimum|min\.?|at least) (of )?\d+ (characters|chars|words)|too short/.test(m)) return 'tooShort';
+    if (nativeKind === 'range' || /(greater|less|more|fewer) than|between -?\d[\d,.]* and -?\d|must be (at least|at most|no (more|less) than) -?\d/.test(m)) return 'range';
+    if (nativeKind === 'number' || /(must be|enter|only|should be) (a |an )?(valid )?(number|numeric|digits?|integer|whole number)|numbers? only|digits only|numeric value/.test(m)) return 'number';
+    if (/(valid|invalid|correct) date|mm\s*\/\s*dd|dd\s*\/\s*mm|yyyy/.test(m)) return 'date';
+    if (nativeKind === 'required' || /required|can'?t be (blank|empty)|cannot be (blank|empty)|mandatory|please (enter|select|choose|provide|fill|complete|answer|check)|missing/.test(m)) return 'required';
+    if (nativeKind === 'pattern' || /format|invalid|not valid/.test(m)) return 'pattern';
+    return 'other';
+  }
+
+  /* A field's own name: its <label>, aria-label or aria-labelledby. getLabel()
+     also reads aria-describedby — which is where the ERROR text lives, so a
+     phone box came back named "Please enter a valid phone number". */
+  function fieldName(el) {
+    try {
+      if (el.labels && el.labels.length) {
+        const t = Array.from(el.labels).map((l) => { const c = l.cloneNode(true); c.querySelectorAll('input,select,textarea').forEach((x) => x.remove()); return c.textContent; }).join(' ').replace(/\s+/g, ' ').trim();
+        if (t) return t;
+      }
+      const a = (el.getAttribute('aria-label') || '').trim() || textOfIds(el, 'aria-labelledby');
+      if (a) return a;
+      if (el.type === 'radio' || el.type === 'checkbox') { const q = getQuestionForInput(el); if (q) return q; }
+    } catch (_) {}
+    return String(getLabel(el) || el.name || el.id || '');
+  }
+  /* The smallest ancestor (up to four levels) that holds this one question and
+     an error message. Class names vary by ATS — "field", "form-group", or none
+     at all — so the structure decides, not the class. */
+  function errorTextNear(el) {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+      const ctrls = Array.from(node.querySelectorAll('input:not([type=hidden]),select,textarea'))
+        .filter((c) => c !== el && !(c.type === 'radio' && el.type === 'radio' && c.name === el.name));
+      if (ctrls.length) return '';        // grew past this question — stop
+      const cand = Array.from(node.querySelectorAll(FIELD_ERROR_SEL + ',small,span,p,div'))
+        .find((n) => n !== el && !n.contains(el) && isVisible(n) && !n.querySelector('input,select,textarea,label') &&
+          (n.matches(FIELD_ERROR_SEL) || /error|invalid|warn|danger|alert/i.test(safeClass(n) + ' ' + (n.id || ''))) &&
+          FIELD_ERROR_TEXT_RE.test(n.textContent || '') && (n.textContent || '').trim().length < 200);
+      if (cand) return cand.textContent;
+    }
+    return '';
+  }
+  /* Every field the page currently says is wrong, with the page's own words. */
+  function readFieldErrors() {
+    const out = [];
+    const seen = new Set();
+    const push = (el, msg, nativeKind, live) => {
+      const key = el.type === 'radio' && el.name ? 'radio:' + el.name : el;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const message = String(msg || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+      out.push({ el, message, live: !!live, kind: classifyFieldError(el, message, nativeKind), label: fieldName(el).replace(/\s+/g, ' ').trim().slice(0, 80) });
+    };
+    const controls = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=search]),select,textarea', 400)
+      /* Hidden radios and checkboxes count (styled controls hide the real
+         input). A hidden FILE input does not: upload widgets keep one that stays
+         "required and empty" even after they have uploaded the CV themselves. */
+      .filter((el) => !el.disabled && (isVisible(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && el.closest('label,' + FIELD_CONTAINER_SEL))));
+    for (const el of controls) {
+      try {
+        // 1. The browser's own verdict — this is what silently blocks a native submit.
+        if (el.willValidate && el.validity && !el.validity.valid) {
+          push(el, el.validationMessage || '', nativeErrorKind(el.validity), true);
+          continue;
+        }
+        // 2. The site marked it invalid and (usually) pointed at the message.
+        const ariaBad = el.getAttribute('aria-invalid') === 'true';
+        let msg = ariaBad ? (textOfIds(el, 'aria-errormessage') || textOfIds(el, 'aria-describedby')) : '';
+        // 3. Inline error text in the field's own container — only when that
+        //    container holds this one question, so a message is never pinned on
+        //    the wrong field.
+        if (!msg || !FIELD_ERROR_TEXT_RE.test(msg)) msg = errorTextNear(el) || msg;
+        if (msg && FIELD_ERROR_TEXT_RE.test(msg)) push(el, msg, ariaBad ? 'custom' : '');
+        else if (ariaBad && !hasFieldValue(el)) push(el, 'marked invalid', 'required');
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /* The profile phone in the other shapes forms accept. Always built from the
+     PROFILE number, never from whatever is in the box: building each retry from
+     the previous retry's output compounded — +44 7700 900123 became
+     353447700900123 in three steps. The number's own country code wins over
+     the default; the site's wording picks which shape goes first. */
+  const DIAL_CODES = ['1', '7', '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49', '51', '52', '54', '55', '56', '57', '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91', '92', '94', '234', '254', '351', '352', '353', '354', '356', '357', '358', '359', '370', '371', '372', '380', '385', '386', '420', '421', '852', '971', '972', '973', '974', '966'];
+  function phoneVariants(raw, p, message) {
+    const src = String((p && p.phone) || raw || '').trim();
+    let digits = src.replace(/[^\d+]/g, '').replace(/^00/, '+');
+    const defCc = (String((p && (p.phoneCountryCode || p.country_code)) || DEFAULTS.phoneCountryCode || '').match(/\d+/) || [''])[0];
+    let cc = '', rest = '';
+    if (digits.startsWith('+')) {
+      const d = digits.slice(1);
+      cc = (defCc && d.startsWith(defCc)) ? defCc : (DIAL_CODES.slice().sort((x, y) => y.length - x.length).find((c) => d.startsWith(c)) || '');
+      rest = d.slice(cc.length);
+    } else {
+      cc = defCc;
+      rest = digits.replace(/^0/, '');
+    }
+    if (!rest || rest.length < 6) return [];
+    const e164 = cc ? '+' + cc + rest : '+' + rest;
+    const national = '0' + rest;
+    const intlNoPlus = e164.slice(1);
+    const m = String(message || '').toLowerCase();
+    let order;
+    if (/international|country code|\+\d|e\.?g\.? ?\+|e164|with the \+/.test(m)) order = [e164, intlNoPlus, national];
+    else if (/digits only|numbers only|only (numbers|digits)|without (spaces|symbols|the \+)/.test(m)) order = [national, intlNoPlus, rest];
+    else if (/10.?digit/.test(m)) order = [rest.slice(-10), national, e164];
+    else order = [e164, national, intlNoPlus, rest];
+    return [...new Set(order.filter(Boolean))];
+  }
+  function patternAccepts(el, val) {
+    try {
+      if (!el.pattern) return null;
+      return new RegExp('^(?:' + el.pattern + ')$', 'u').test(val);
+    } catch (_) { return null; }
+  }
+  const _errFixTries = new WeakMap();
+
+  /* Fix one field the page complained about. Returns a short description of
+     what was done (for the log), or '' when nothing could be done. */
+  async function fixFieldError(item, p) {
+    const { el, kind, message } = item;
+    const n = (_errFixTries.get(el) || 0) + 1;
+    _errFixTries.set(el, n);
+    if (n > 4) return '';
+    const cur = el.tagName === 'SELECT' ? '' : String(el.value || '');
+    const label = item.label || getLabel(el) || '';
+    const numIn = (re) => { const m = String(message).match(re); return m ? Number(m[1].replace(/,/g, '')) : NaN; };
+    const setText = (v) => { try { el.focus({ preventScroll: true }); } catch (_) {} nativeSet(el, v); try { el.dispatchEvent(new Event('blur', { bubbles: true, composed: true })); } catch (_) {} return true; };
+
+    if (el.type === 'radio') {
+      const scope = (el.closest && el.closest('fieldset,[role="radiogroup"],' + FIELD_CONTAINER_SEL)) || el.form || document;
+      const radios = Array.from(scope.querySelectorAll('input[type=radio]')).filter((r) => r.name === el.name);
+      if (radios.some((r) => r.checked)) return '';
+      return answerKnockoutRadioGroup(radios, scope, p) ? 'answered the question' : '';
+    }
+    if (el.type === 'checkbox') {
+      if (el.checked || isMarketingCheckbox(el)) return '';
+      if (isVisible(el)) realClick(el); else el.click();
+      return el.checked ? 'ticked it' : '';
+    }
+    if (el.type === 'file') {
+      const r = await attachResume();
+      return r === 'attached' ? 'attached the CV' : '';
+    }
+    if (el.tagName === 'SELECT') {
+      const want = guessFieldValue(label, p, el);
+      const texts = Array.from(el.options).map((o) => o.text);
+      let bi = want ? bestOptionIndex(texts, want, label) : -1;
+      if (bi < 0) bi = bestOptionIndex(texts, profileTargetFor(label, p), label);
+      const real = Array.from(el.options).filter((o) => o.value !== '' && !PLACEHOLDER_OPT_RE.test(o.text));
+      // A required diversity question: decline, never a specific identity.
+      if (bi < 0 && /gender|race|ethnic|veteran|disabilit|sexual|pronoun/i.test(label)) {
+        const d = real.find((o) => /prefer not|decline|not to (say|disclose|answer)|do not wish|don.t wish/i.test(o.text));
+        if (d) bi = d.index;
+      }
+      const opt = bi >= 0 ? el.options[bi] : null;
+      if (opt && opt.value !== '') { setSelectValue(el, opt.value); return 'picked "' + opt.text.trim().slice(0, 30) + '"'; }
+      return '';
+    }
+    switch (kind) {
+      case 'email': {
+        const e = String(p.email || (await getAppEmail()) || '').trim();
+        return e && e !== cur ? setText(e) && 'used the profile email' : '';
+      }
+      case 'phone': {
+        const variants = phoneVariants(cur, p, message);
+        const fits = variants.filter((v) => (el.maxLength > 0 ? v.length <= el.maxLength : true) && patternAccepts(el, v) !== false);
+        const pick = fits[(n - 1) % Math.max(1, fits.length)] || variants[(n - 1) % Math.max(1, variants.length)];
+        return pick && pick !== cur ? setText(pick) && 'reformatted the number' : '';
+      }
+      case 'url': {
+        const u = cur.trim() || p.linkedin || p.linkedin_url || p.website || '';
+        if (!u) return '';
+        const fixed = /^https?:\/\//i.test(u) ? u : 'https://' + u.replace(/^\/+/, '');
+        return fixed !== cur ? setText(fixed) && 'made it a full https:// link' : '';
+      }
+      case 'number': case 'range': {
+        let v = cur.replace(/[, ]/g, '').match(/-?\d+(\.\d+)?/);
+        v = v ? v[0] : String(guessFieldValue(label, p, el) || '').replace(/[, ]/g, '').match(/-?\d+(\.\d+)?/)?.[0] || '';
+        if (!v) return '';
+        let num = Number(v);
+        const min = el.min !== '' && el.min != null ? Number(el.min) : numIn(/(?:at least|minimum(?: of)?|greater than|more than|between)\s*(-?[\d,.]+)/i);
+        const max = el.max !== '' && el.max != null ? Number(el.max) : numIn(/(?:at most|maximum(?: of)?|less than|no more than|and)\s*(-?[\d,.]+)/i);
+        if (!isNaN(min) && num < min) num = min;
+        if (!isNaN(max) && num > max) num = max;
+        const out = String(num);
+        return out !== cur ? setText(out) && 'entered a plain number' : '';
+      }
+      case 'tooLong': {
+        const lim = el.maxLength > 0 ? el.maxLength : numIn(/(\d+)\s*(?:characters|chars)/i);
+        if (!lim || cur.length <= lim) return '';
+        let t = cur.slice(0, lim);
+        const cut = t.lastIndexOf(' ');
+        if (cut > lim * 0.6) t = t.slice(0, cut);
+        return setText(t.trim()) && 'shortened it to ' + lim + ' characters';
+      }
+      case 'tooShort': {
+        const lim = el.minLength > 0 ? el.minLength : numIn(/(\d+)\s*(?:characters|chars)/i);
+        if (!lim || el.tagName !== 'TEXTAREA') return '';
+        let t = cur.trim();
+        // Each sentence at most once — padding by repeating one reads as a bot.
+        let co = '';
+        try { co = pageCompanyName() || ''; } catch (_) {}
+        const filler = [
+          (p.cover_letter || p.cover || '').trim(),
+          DEFAULTS.why,
+          `My experience maps closely to what this role needs, and I am confident I could contribute quickly${co ? ' at ' + co : ''}.`,
+          DEFAULTS.cover,
+          'I would welcome the chance to discuss how I can help the team.',
+        ].filter(Boolean);
+        for (const f of filler) if (t.length < lim && !t.includes(f)) t = (t ? t + ' ' : '') + f;
+        return t !== cur ? setText(t) && 'expanded the answer' : '';
+      }
+      case 'list': {
+        const q = /locat|city|town|address|where/i.test(label) ? locationQuery(p) : (cur || guessFieldValue(label, p, el));
+        if (!q) return '';
+        return (await commitAutocomplete(el, q)) ? 'picked it from the suggestions' : '';
+      }
+      case 'pattern': {
+        if (!cur) break;
+        const tries = [cur.trim(), cur.replace(/\s+/g, ''), cur.replace(/[^\d]/g, ''), cur.toUpperCase(), cur.toLowerCase()];
+        const ok = tries.find((t) => t && t !== cur && patternAccepts(el, t) === true);
+        return ok ? setText(ok) && 'changed it to the required format' : '';
+      }
+      default: break;
+    }
+    // Required / other: an empty field gets the best answer we have.
+    if (!hasFieldValue(el)) {
+      const v = guessFieldValue(label, p, el);
+      if (v) return setText(v) && 'filled it';
+    }
+    return '';
+  }
+
+  /* A site's error text stays on screen until IT re-checks the field — usually
+     on the next Submit. Re-reading that stale text after we have already fixed
+     the field "fixed" it again, and a correct +447700900123 was swapped for a
+     worse format before the site ever saw it. So once a field is fixed, its
+     message is ignored until a Submit has happened or the value changes. The
+     browser's own checks are live and are always believed. */
+  const _errFixStamp = new WeakMap();
+  const errFieldValue = (el) => { try { return el.type === 'radio' || el.type === 'checkbox' ? String(el.checked) : String(el.value || ''); } catch (_) { return ''; } };
+  /* Read the page's errors, fix each one, and say what was done. */
+  async function fixFieldErrorsFromPage(p) {
+    const errs = readFieldErrors();
+    _lastFieldErrors = errs;
+    if (!errs.length) return 0;
+    let fixed = 0;
+    for (const e of errs.slice(0, 25)) {
+      const stamp = _errFixStamp.get(e.el);
+      if (!e.live && stamp && stamp.round === _lastSubmitAt && stamp.value === errFieldValue(e.el)) continue;
+      let what = '';
+      try { what = await fixFieldError(e, p); } catch (_) {}
+      if (what) _errFixStamp.set(e.el, { round: _lastSubmitAt, value: errFieldValue(e.el) });
+      LOG(`Form says "${e.label || 'field'}": ${e.message || e.kind}` + (what ? ` → ${what}` : ' → no automatic fix'));
+      if (what) fixed++;
+      else DIAG('field.error', (e.label || 'field') + ' — ' + (e.message || e.kind), { kind: e.kind });
+      await sleep(60);
+    }
+    return fixed;
+  }
+  // The most useful sentence about what is still wrong, for the job's reason.
+  function remainingErrorSummary() {
+    try {
+      const errs = readFieldErrors();
+      _lastFieldErrors = errs;
+      if (!errs.length) return '';
+      const first = errs[0];
+      return `${first.label || 'a field'}: ${first.message || first.kind}` + (errs.length > 1 ? ` (+${errs.length - 1} more)` : '');
+    } catch (_) { return ''; }
+  }
+
   // ===================== FORM VALIDATION ERROR HANDLER =====================
   async function handleValidationErrors__impl() {
     // Wait a moment for validation to trigger
     await sleep(500);
+    // The page's own messages first — see readFieldErrors.
+    let fixedFromMessages = 0;
+    try { fixedFromMessages = await fixFieldErrorsFromPage(await getProfile()); } catch (e) { LOG('Field-error pass error:', e?.message || e); }
     const errors = deepAll('.error,.field-error,.error-message,.validation-error,[class*="error"],[class*="Error"],.invalid-feedback,.help-block.with-errors,.field-validation-error,[aria-invalid="true"],[data-error]')
       .filter(el => isVisible(el) && el.textContent?.trim());
 
-    if (!errors.length) return 0;
+    if (!errors.length) return fixedFromMessages;
     LOG(`Found ${errors.length} validation errors — attempting to fix`);
 
-    let fixed = 0;
+    let fixed = fixedFromMessages;
     const p = await getProfile();
     for (const errEl of errors) {
       // Find the associated input
@@ -7200,10 +8143,10 @@
   // ===================== RESUME TAILORING (on Jobright website) =====================
   async function resumeTailoringAutomation() {
     if (!isJobright() || (!location.href.includes('plugin_tailor=1') && !location.href.includes('/jobs/info/'))) return;
-    await sleep(3000);
-    let el = await findByText('button,a,div[role="button"]', /improve my resume/i, 8000); if (el) { clickEl(el); await sleep(2000); }
-    el = await findByText('button,a,div[role="button"],label,span', /full edit/i, 5000); if (el) { clickEl(el); await sleep(3000); }
-    el = await findByText('button,a,span,div[role="button"],label', /select all/i, 5000); if (el) { clickEl(el); await sleep(1000); }
+    await sleep(scaled(3000, 1500));
+    let el = await findByText('button,a,div[role="button"]', /improve my resume/i, 8000); if (el) { clickEl(el); await sleep(scaled(2000, 1000)); }
+    el = await findByText('button,a,div[role="button"],label,span', /full edit/i, 5000); if (el) { clickEl(el); await sleep(scaled(3000, 1500)); }
+    el = await findByText('button,a,span,div[role="button"],label', /select all/i, 5000); if (el) { clickEl(el); await sleep(scaled(1000, 500)); }
     el = await findByText('button,a,div[role="button"]', /generate (my new )?resume|generate$/i, 5000); if (el) clickEl(el);
   }
 
@@ -7212,7 +8155,7 @@
   // locate the button via getSidebar()/findAutofillButton() rather than document.
   async function triggerAutofill__impl() {
     await waitForSidebar(8000);
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     // Try several times — the button may still be mounting / disabled while the
     // sidebar hydrates. This is the click that was silently failing in 1.14.0.
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -7230,11 +8173,11 @@
   async function triggerAutofillQuick__impl() {
     let b = findAutofillButton();
     if (!b) { LOG('No sidebar/autofill button — skipping quick autofill'); return false; }
-    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered'); await sleep(3000); return true; }
+    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered'); await sleep(scaled(3000, 1500)); return true; }
     // One retry after 1.5s
-    await sleep(1500);
+    await sleep(scaled(1500, 750));
     b = findAutofillButton();
-    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered (retry)'); await sleep(3000); return true; }
+    if (b && !b.disabled) { realClick(b); LOG('Quick autofill triggered (retry)'); await sleep(scaled(3000, 1500)); return true; }
     return false;
   }
   // Stall watchdog stands down while this runs — see withBusy.
@@ -7830,7 +8773,7 @@
         }
         await withBusy('verifying submission', async () => {
           for (let check = 0; check < 6 && !finalized; check++) {
-            await sleep(1500);
+            await sleep(scaled(1500, 750));
             if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
             if (confirmSubmitted()) { success = true; break; }
             if (pageHasFailure()) break;
@@ -8028,7 +8971,7 @@
             // Verify submission (poll for a confirmation signal).
             await withBusy('verifying submission', async () => {
             for (let check = 0; check < 6; check++) {
-              await sleep(2000);
+              await sleep(scaled(2000, 1000));
               // A captcha popping up post-submit blocks confirmation — wait it out.
               if (detectCaptcha()) { await waitForCaptchaClear(); continue; }
               if (confirmSubmitted()) { success = true; break; }
@@ -8044,11 +8987,11 @@
               await fallbackFill();
               await guaranteeRequiredFields();
               const r = await autoSubmitOrNext();
-              if (r === 'next_page') { await sleep(2500); await multiPageLoop(); }
+              if (r === 'next_page') { await sleep(scaled(2500, 1250)); await multiPageLoop(); }
             } catch (e) { LOG('Retry pass error:', e?.message || e); }
             await withBusy('verifying submission', async () => {
               for (let check = 0; check < 5; check++) {
-                await sleep(2000);
+                await sleep(scaled(2000, 1000));
                 if (confirmSubmitted()) { success = true; break; }
                 // Validation error that persists across the whole poll → the form can't be
                 // satisfied automatically; stop retrying and mark failed.
@@ -8087,7 +9030,7 @@
 
           await learnFromPage();
           await saveQ(); await saveStats(); renderQ(); updateCtrl();
-          await sleep(2000);
+          await sleep(scaled(2000, 1000));
           goNext();
           return;
         }
@@ -8124,7 +9067,7 @@
         // Inter-job delay scales with speed (no hidden 3s floor unless the user
         // explicitly enabled rate limiting).
         const delay = Math.max(_rateLimitDelay || 0, QUEUE_DELAYS[qSpeed] || 1500);
-        setTimeout(() => { location.href = n.url; }, delay);
+        setTimeout(() => { goToNextJob(n.url); }, delay);
       });
     } else {
       qActive = false;
@@ -8256,6 +9199,7 @@
     await st.set('ua_app_history', _appHistory);
   }
 
+  const APP_HISTORY_CAP = 5000;
   async function recordApplication(url, title, status, atsName, duration) {
     await loadAppHistory();
     _appHistory.unshift({
@@ -8266,8 +9210,26 @@
       duration: duration || 0,
       company: extractCompanyFromUrl(url),
     });
-    // Keep last 500 applications
-    if (_appHistory.length > 500) _appHistory = _appHistory.slice(0, 500);
+    /* This history is what "Skip jobs already applied to" checks. It was capped
+       at 500 entries of ANY status, so on 685-job queues the oldest real
+       applications fell off the end within one run — and the next batch could
+       apply to the same job a second time, which is exactly what that option
+       exists to prevent.
+
+       Bigger now, and when it does overflow, failures and skips go first: they
+       are useless for de-duplication, while an "applied" entry is the one thing
+       that must not be forgotten. */
+    if (_appHistory.length > APP_HISTORY_CAP) {
+      const keep = [];
+      let excess = _appHistory.length - APP_HISTORY_CAP;
+      // Walk oldest-first (the array is newest-first) dropping non-applications.
+      for (let i = _appHistory.length - 1; i >= 0; i--) {
+        const e = _appHistory[i];
+        if (excess > 0 && e && e.status !== 'applied') { excess--; continue; }
+        keep.unshift(e);
+      }
+      _appHistory = keep.slice(0, APP_HISTORY_CAP);
+    }
     await saveAppHistory();
     // On a CONFIRMED submission, queue a LinkedIn recruiter follow-up for this company/
     // role. The LinkedIn module (below) sends it when you land on a matching profile.
@@ -9358,14 +10320,19 @@
       if (!filtered.length) {
         respList.innerHTML = `<div style="text-align:center;padding:12px;color:#9ca3af">${filt ? 'No matches' : 'No saved responses yet'}</div>`;
       } else {
+        /* Every value below is escaped. Saved responses are LEARNED from page
+           question text, so a keyword is page-controlled: a label carrying
+           <img src=x onerror=…> was stored as-is and then rendered into this
+           drawer on whatever site it was opened on next, where an inline
+           handler runs in that page. */
         respList.innerHTML = filtered.map((r, i) => {
           const idx = _savedResponses.indexOf(r);
           return `<div style="padding:6px 8px;border:1px solid #f3f4f6;border-radius:6px;margin-bottom:4px;background:#fafafa" data-resp-idx="${idx}">
             <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="color:#7c3aed;font-weight:600;font-size:9px">${(r.keywords || []).join(', ')}</span>
+              <span style="color:#7c3aed;font-weight:600;font-size:9px">${escHtml((r.keywords || []).join(', '))}</span>
               <span style="color:#d1d5db;font-size:8px">×${r.appearances || 1}</span>
             </div>
-            <div style="color:#374151;font-size:10px;margin-top:2px;word-break:break-word">${(r.response || '').slice(0, 120)}${(r.response || '').length > 120 ? '…' : ''}</div>
+            <div style="color:#374151;font-size:10px;margin-top:2px;word-break:break-word">${escHtml((r.response || '').slice(0, 120))}${(r.response || '').length > 120 ? '…' : ''}</div>
             <button class="ua-resp-del-one" data-idx="${idx}" style="font-size:8px;color:#ef4444;background:none;border:none;cursor:pointer;padding:2px 0;margin-top:2px">remove</button>
           </div>`;
         }).join('');
@@ -10319,7 +11286,14 @@
       }
       const proc = document.getElementById('uc-proc');
       if (proc) {
-        if (qPaused) { proc.textContent = 'Paused'; proc.classList.add('paused'); }
+        /* A run that is waiting on you must say so, or it reads as "Processing…"
+           forever and looks like a hang. This is the same information the
+           page-wide banner used to carry, in the one place already dedicated to
+           the state of the run. */
+        if (_captchaWaiting) {
+          proc.textContent = `Waiting — solve the ${_captchaWaiting} to continue`;
+          proc.classList.add('paused');
+        } else if (qPaused) { proc.textContent = 'Paused'; proc.classList.add('paused'); }
         else { proc.textContent = 'Processing…'; proc.classList.remove('paused'); }
       }
       // Reflect persisted speed on the selector.
@@ -10383,7 +11357,18 @@
     else { el.className = 'ua-stat off'; t.textContent = 'Inactive'; }
   }
 
-  function showATSBadge() { const a = detectATS(); if (a) { document.getElementById('ua-ats-n').textContent = a + ' Detected'; document.getElementById('ua-ats').classList.add('show'); } }
+  /* The "<ATS> Detected" pill in the top-right corner is gone for the same
+     reason the CAPTCHA bar is: it is furniture pinned over the employer's own
+     page, telling you something about the run rather than about the page it is
+     covering. The run panel already names the platform, the queue rows carry it,
+     and the diagnostics report is built around it — three places that are not
+     on top of the form.
+
+     The element and its styles are left in place so nothing that looks for them
+     breaks; it simply never mounts. */
+  function showATSBadge() {
+    try { document.getElementById('ua-ats')?.classList.remove('show'); } catch (_) {}
+  }
 
   // ===================== OBSERVER =====================
   let _sbInjectThrottle = 0;
@@ -10606,6 +11591,9 @@
   async function openApplicationForm__impl(maxClicks) {
     const limit = maxClicks || 3;
     let clicks = 0;
+    // Inside the application already: an Apply link here leads back to the job
+    // description, and from there round the login again. See pastTheApplyStep.
+    if (pastTheApplyStep()) return true;
     while (clicks < limit) {
       if (hasApplicationForm()) return true;
       // If a "Start Your Application" choice modal is up, pick Apply Manually and WAIT
@@ -10616,7 +11604,7 @@
         await clickApplyManually();
         if ((await waitForApplyTarget(9000)) === 'form' || hasApplicationForm()) return true;
         // Give the form a little more time instead of re-clicking Apply.
-        await sleep(1500);
+        await sleep(scaled(1500, 750));
         if (hasApplicationForm()) return true;
         // If the modal genuinely re-rendered, choose Apply Manually once more, then stop.
         if (findApplyManually()) { await clickApplyManually(); await waitForApplyTarget(9000); }
@@ -10747,10 +11735,39 @@
         (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '')));
     return labelled || byAttr[0] || null;
   }
+  /* Only a box that SAYS it wants an email — type, name, id, autocomplete or
+     label. authEmailField() falls back to "the first text box" for walls whose
+     only clue is the page copy; that fallback is wrong anywhere the question is
+     "is this an email step at all?", because on a short application section
+     the first text box is the e-signature or a name. */
+  function strictEmailField() {
+    return deepAll('input[type=email],input[autocomplete="email"],input[autocomplete="username"],input[name*="email" i],input[id*="email" i],input[type=text],input:not([type])', 80)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly)
+      .find((el) => el.type === 'email' || /e-?mail/i.test(
+        (el.name || '') + ' ' + (el.id || '') + ' ' + (el.autocomplete || '') + ' ' +
+        (getLabel(el) || '') + ' ' + (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || ''))) || null;
+  }
   function authPasswordFields() {
     return deepAll('input[type=password]', 12).filter((el) => isVisible(el) && !el.disabled);
   }
+  /* Already inside the application — past the job description AND past the
+     login. From here, "Apply" goes backwards and an email box is a profile
+     field, not a wall.
+
+     iCIMS says so in its own URLs: after a successful sign-in it lands on
+     /jobs/<id>/<slug>/candidate?from=login. A run was reaching exactly that page,
+     filling sixteen fields, and then going round again — clicking an Apply link
+     back to the job page, and "entering the account email" into the application
+     form — until the 150s cap. Kept to URL shapes that mean this unambiguously,
+     so no other ATS changes behaviour. */
+  const IN_APPLICATION_URL_RE = /[?&]from=login\b|\/jobs\/\d+\/[^/?#]+\/(candidate|questions|confirm|submit)\b/i;
+  function pastTheApplyStep() {
+    try { return IN_APPLICATION_URL_RE.test(location.pathname + location.search); } catch (_) { return false; }
+  }
+
   function looksLikeAuthPage() {
+    // The URL is the ATS telling us sign-in is done. It outranks any field.
+    if (pastTheApplyStep()) return false;
     if (authPasswordFields().length) return true;
     const email = authEmailField();
     if (!email) return false;
@@ -10760,7 +11777,9 @@
        wall at /jobs/<id>/login with width/height query params, so the path test
        has to cover that shape too. */
     const urlSaysAuth = /\/(auth|login|signin|sign-in|register|account|candidate-?login)\b/i.test(location.pathname) ||
-      /\/jobs\/\d+\/(login|register)\b/i.test(location.pathname);
+      /\/jobs\/\d+\/(login|register)\b/i.test(location.pathname) ||
+      // Oracle Recruiting's front door: /job/<id>/apply/email.
+      /\/apply\/email\b/i.test(location.pathname);
     if (!urlSaysAuth && !AUTH_COPY_RE.test(copy)) return false;
     // An email box on a page that is ALREADY the application is not a wall.
     return !hasApplicationForm();
@@ -10798,7 +11817,10 @@
      When a mailbox is connected (read-only — see ua-mailbox.js) we can get past
      these without you. When it is not, we say what is blocking the job and hand
      it to you rather than sitting there silently. */
-  const VERIFY_WALL_RE = /verify your (email|account|address)|verification (email|code|link)|check your (inbox|email)|we('ve| have)? sent (you )?(an? )?(email|code|link)|confirm your email|enter the code we sent|activation (email|link)|one.?time (code|passcode)/i;
+  /* Oracle Recruiting (JPMorgan, Dell, EY…) words its PIN screen as an
+     identity check — "Confirm your identity", "Enter the PIN we sent" — rather
+     than an email check, so those phrasings are here too. */
+  const VERIFY_WALL_RE = /verify your (email|account|address|identity)|verification (email|code|link|pin)|check your (inbox|email)|we('ve| have)? sent (you )?(an? )?(email|code|link|pin)|confirm your (email|identity)|enter the (verification |security |one.?time )?(code|pin)( we| that we)? sent|activation (email|link)|one.?time (code|passcode|pin)/i;
 
   function detectEmailVerificationWall() {
     try {
@@ -10819,16 +11841,41 @@
           (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.autocomplete || '');
         if (/password/i.test(hay)) return false;
         return /\b(code|otp|pin|one.?time|verification|passcode|token)\b/i.test(hay);
-      }) || null;
+      }) || codeBoxGroup()[0] || null;
+  }
+  /* A code split into one box per digit — Oracle's PIN screen, and most OTP
+     widgets. The boxes rarely carry a label of their own; four or more
+     single-character inputs side by side are the tell. */
+  function codeBoxGroup() {
+    return deepAll('input[type=text],input[type=tel],input[type=number],input[type=password],input:not([type])', 60)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && el.maxLength === 1)
+      .slice(0, 10)
+      .filter((el, _, all) => all.length >= 4);
+  }
+  /* Type a code into the box we found — or across the group, one digit each.
+     Putting "482913" into the first of six one-digit boxes kept "4" and left the
+     other five empty, so the Verify button never enabled. */
+  function typeVerificationCode(box, code) {
+    const digits = String(code || '').replace(/\s+/g, '');
+    const group = box && box.maxLength === 1 ? codeBoxGroup() : [];
+    if (group.length >= digits.length && group.length > 1) {
+      digits.split('').forEach((ch, i) => {
+        try { group[i].focus({ preventScroll: true }); } catch (_) {}
+        nativeSet(group[i], ch);
+      });
+      return;
+    }
+    try { box.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(box, digits);
   }
 
   /* Ask the service worker for the code or link. The worker's mailbox module is
      read-only and bounded to recent mail from THIS employer — see the header of
      ua-mailbox.js for why each of those limits is there. */
-  function askMailboxForVerification(hosts, companies) {
+  function askMailboxForVerification(hosts, companies, since) {
     return new Promise((res) => {
       try {
-        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies }, (r) => {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies, since: since || 0 }, (r) => {
           void chrome.runtime.lastError;
           res(r || { ok: false, reason: 'no-reply' });
         });
@@ -10843,26 +11890,40 @@
 
     const hosts = [];
     try { hosts.push(location.hostname); } catch (_) {}
+    /* Oracle Recruiting mails its PIN from Oracle's own senders
+       (…@…oraclecloud.com, …@workflow.mail.<region>.cloud.oracle.com), never from
+       the tenant host on screen, so the search has to name those too. */
+    if (isOracleCloud()) hosts.push('oraclecloud.com', 'oracle.com');
     // The employer's own domain too: the mail often comes from the company, not
     // from the ATS that rendered the page.
     const company = pageCompanyName();
     const deadline = Date.now() + (maxWaitMs || 90000);
+    // Only mail sent since this wall appeared (with slack for clock skew) — an
+    // older code belongs to a previous job and is rejected.
+    const since = Date.now() - 3 * 60000;
+    const tried = new Set();
 
     while (Date.now() < deadline) {
       if (autoStopped()) return false;
-      const r = await askMailboxForVerification(hosts, company ? [company] : []);
+      const r = await askMailboxForVerification(hosts, company ? [company] : [], since);
       if (r && r.ok) {
         // Prefer typing a code: it keeps us on the page we are already on.
         const box = verificationCodeField();
-        if (r.code && box) {
+        if (r.code && box && !tried.has(r.code)) {
+          tried.add(r.code);
           LOG('Entering the verification code from your mailbox');
-          box.focus({ preventScroll: true });
-          nativeSet(box, r.code);
+          const before = stepSignature();
+          typeVerificationCode(box, r.code);
           noteProgress('entered the verification code');
-          await sleep(400);
-          const go = findAuthSubmit() || findSubmitControl();
-          if (go) { realClick(go); await waitForStepChange(stepSignature(), 12000); }
-          return true;
+          await sleep(600);
+          // Many OTP widgets submit on the last digit by themselves.
+          if (!detectEmailVerificationWall() || stepSignature() !== before) return true;
+          const go = findVerifySubmit() || findAuthSubmit() || findSubmitControl();
+          if (go) { realClick(go); await waitForStepChange(before, 12000); }
+          if (!detectEmailVerificationWall()) return true;
+          LOG('The code was not accepted — waiting for a newer one');
+          await sleep(4000);
+          continue;
         }
         if (r.link) {
           /* The worker only ever returns a link whose host belongs to the ATS or
@@ -10884,9 +11945,50 @@
     try { reportNeedsHuman('verification email did not arrive'); } catch (_) {}
     return false;
   }
+  // The button under a code box: "Verify", "Confirm", "Submit code".
+  function findVerifySubmit() {
+    return deepAll('button,[role="button"],input[type=submit],input[type=button],oj-button', 150)
+      .filter((b) => isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+      .find((b) => /^(verify|confirm|submit( the)? code|validate)\b/i.test(normLabel(b.textContent || b.value || b.getAttribute('aria-label') || ''))) || null;
+  }
   // Stall watchdog stands down while this runs — see withBusy.
   async function resolveEmailVerification(...a) { return withBusy('waiting for the verification email', () => resolveEmailVerification__impl(...a)); }
 
+  /* A terms box drawn as a styled label over a visually-hidden <input> — Oracle
+     Recruiting's "I agree with the terms and conditions" is one. isVisible()
+     rightly says the input is not visible, so every visible-only sweep skipped
+     it and Next stayed disabled. Only boxes whose own label reads as terms or
+     consent, and never a marketing opt-in. A native .click() is used, not a
+     pointer click on the label: the label holds the "terms and conditions"
+     link, and a click landing on that opens the terms instead of ticking. */
+  function tickHiddenTermsBoxes() {
+    let n = 0;
+    for (const c of deepAll('input[type=checkbox]', 40)) {
+      try {
+        if (c.checked || c.disabled || isVisible(c) || isMarketingCheckbox(c)) continue;
+        const root = c.getRootNode ? c.getRootNode() : document;
+        const lab = (c.id && root.querySelector && root.querySelector('label[for="' + CSS.escape(c.id) + '"]')) || c.closest('label');
+        if (!lab || !isVisible(lab)) continue;
+        if (!/agree|accept|terms|conditions|disclaimer|privacy|consent|acknowledg|certify/i.test(lab.textContent || '')) continue;
+        c.click();
+        if (c.checked) n++;
+      } catch (_) {}
+    }
+    return n;
+  }
+  /* Some tenants make you open the terms and press "Agree" in a dialog. */
+  async function acceptTermsDialog() {
+    const dlg = deepAll('[role="dialog"],oj-dialog,dialog[open],.oj-dialog', 10).filter(isVisible).pop();
+    if (!dlg) return false;
+    const btn = deepAll('button,[role="button"],oj-button,input[type=button],input[type=submit]', 40)
+      .filter((b) => isVisible(b) && dlg.contains(b))
+      .find((b) => /^(i )?(agree|accept)\b/i.test(normLabel(b.textContent || b.value || '')));
+    if (!btn) return false;
+    LOG('Accepting the terms dialog');
+    realClick(btn);
+    await sleep(scaled(600, 300));
+    return true;
+  }
   async function handleAccountAuth__impl() {
     try {
       // Never auto-fill credentials on the user's personal job-board / social logins —
@@ -10908,7 +12010,7 @@
             // any English word, so both halves of the old test failed on it.
             return t.length < 44 && /(create (an )?account|sign ?up|register|new user|konto erstellen|erstellen sie ein konto|registrieren|cr[ée]er un compte|s'inscrire|crear una cuenta|reg[íi]strate|registrati|account aanmaken|skapa konto)/i.test(t);
           });
-        if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(1500); }
+        if (createLink) { LOG('Account: opening create-account form'); realClick(createLink); await sleep(scaled(1500, 750)); }
       }
       if (!looksLikeAuthPage()) return false;
 
@@ -10940,10 +12042,14 @@
           || /create (an )?(account|profile)|register|sign ?up/i.test((document.body && document.body.innerText || '').toLowerCase().slice(0, 4000));
 
         // Consent / "Agree to Privacy Notice" boxes keep the button disabled.
-        const tickConsents = () => deepAll('input[type=checkbox]', 40).filter(isVisible)
-          .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+        const tickConsents = () => {
+          deepAll('input[type=checkbox]', 40).filter(isVisible)
+            .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+          tickHiddenTermsBoxes();
+        };
         tickConsents();
         await sleep(300);
+        await acceptTermsDialog();
 
         // Wait for the button to actually ENABLE — several ATS keep it disabled
         // until every field validates. Re-fill and re-tick on each pass.
@@ -10974,7 +12080,7 @@
           LOG('Account exists — switching to sign-in');
           const toggle = deepAll('button,a,[role="button"]', 200).filter(isVisible)
             .find((b) => /^(sign ?in|log ?in|already have)/i.test(normLabel(b.textContent)));
-          if (toggle) { realClick(toggle); await sleep(1500); }
+          if (toggle) { realClick(toggle); await sleep(scaled(1500, 750)); }
         }
       }
       // Creating an account often lands straight on "check your inbox".
@@ -11189,6 +12295,8 @@
       firstName: p.first_name || p.firstName || '',
       lastName: p.last_name || p.lastName || '',
       email: p.email || '',
+      // The one-click form asks for the address twice.
+      confirmEmail: p.email || '',
       phoneNumber: p.phone || '',
       phone: p.phone || '',
       location: loc,
@@ -11221,7 +12329,12 @@
       // Location typeahead needs its suggestion committed, or SmartRecruiters
       // rejects the step with "Please select a location from the list".
       if (loc) {
-        const locCombo = deepQueryAll('[role="combobox"],spl-input[id="location"]').filter(isVisible)[0];
+        /* The location box, not simply the first combobox: the phone number's
+           country picker is a combobox too and usually comes first, so the city
+           was typed into a country list and the real location stayed empty. */
+        const combos = deepQueryAll('spl-input[id="location"],spl-autocomplete,[role="combobox"]').filter(isVisible);
+        const locCombo = combos.find(c => /locat|city|where.*(live|based)/i.test(
+          (c.id || '') + ' ' + (c.getAttribute('name') || '') + ' ' + (c.getAttribute('aria-label') || '') + ' ' + (getLabel(c) || ''))) || null;
         if (locCombo) await splPickOption(locCombo, p.city || loc);
       }
 
@@ -11236,16 +12349,17 @@
         await sleep(200);
       }
 
-      // spl-radio groups (Yes/No knockouts).
+      /* spl-radio groups (Yes/No knockouts). These go through the same answer
+         engine as every other ATS. The private version here fell back to "yes"
+         — and failing that, to the FIRST option — whenever the guesser was
+         unsure, which on "Will you now or in the future require sponsorship?"
+         is the answer that gets an application auto-rejected. */
       for (const group of deepQueryAll('fieldset[role="radiogroup"],[role="radiogroup"]').filter(isVisible)) {
-        const already = deepQueryAll('spl-radio[checked],input[type="radio"]:checked', group);
+        const already = deepQueryAll('spl-radio[checked],spl-radio[aria-checked="true"],input[type="radio"]:checked', group);
         if (already.length) continue;
-        const q = (group.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-        const want = String(guessFieldValue(q, p, group) || 'yes').toLowerCase();
         const radios = deepQueryAll('spl-radio,input[type="radio"]', group).filter(isVisible);
-        const labelOf = r => ((r.shadowRoot && r.shadowRoot.querySelector('label')?.textContent) || r.textContent || r.value || '').trim().toLowerCase();
-        const pick = radios.find(r => labelOf(r) === want) || radios.find(r => labelOf(r).includes(want)) || radios[0];
-        if (pick) { triggerMouse(pick); await sleep(150); }
+        if (!radios.length) continue;
+        try { if (answerKnockoutRadioGroup(radios, group, p)) await sleep(150); } catch (_) {}
       }
 
       // Consent boxes.
@@ -11280,7 +12394,7 @@
         LOG('SmartRecruiters: submitting via "' + controlLabel(submit) + '"');
         realClick(submit);
         markSubmitAttempt();
-        await sleep(3500);
+        await sleep(scaled(3500, 1750));
         await resolveBlockingDialog();
         break;
       }
@@ -11410,7 +12524,7 @@
 
       const action = await autoSubmitOrNext();
       if (action === 'submitted') {
-        await sleep(3000);
+        await sleep(scaled(3000, 1500));
         if (confirmSubmitted()) { LOG('Avature: success confirmed'); break; }
         continue;
       }
@@ -11444,6 +12558,55 @@
          an Oracle JET app (oj-* components, some in shadow roots).
        • Classic Taleo — *.taleo.net/careersection, server-rendered, frames, and
          numeric field ids that differ per tenant, so it has to be label-driven. */
+  async function oracleEmailAndPin() {
+    for (let pass = 0; pass < 3; pass++) {
+      if (autoStopped()) return;
+      await waitForFormStable(1500);
+      if (detectEmailVerificationWall()) {
+        LOG('Oracle: identity check — a PIN has been emailed');
+        await resolveEmailVerification(120000);
+        continue;
+      }
+      /* The email step and nothing else. An application section with one or
+         two fields (e-signature, supporting documents) is also "under /apply
+         with no full form", and treating it as the email step typed the email
+         into its first box and pressed its button. */
+      const onEmailStep = /\/apply\/email\b/i.test(location.pathname) ||
+        (/\/apply\b/i.test(location.pathname) && !hasApplicationForm() && !!strictEmailField() &&
+          !/\/apply\/section\b/i.test(location.pathname));
+      if (!onEmailStep) return;
+      const box = strictEmailField();
+      const email = await getAppEmail();
+      if (!box || !email) { LOG('Oracle: email step with no ' + (box ? 'saved email' : 'email box') + ' — leaving it for you'); return; }
+      const before = stepSignature();
+      if (!(box.value || '').trim()) {
+        try { box.focus({ preventScroll: true }); } catch (_) {}
+        nativeSet(box, email);
+        noteProgress('entering the application email');
+        await sleep(300);
+      }
+      deepAll('input[type=checkbox]', 20).filter(isVisible)
+        .forEach((c) => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+      tickHiddenTermsBoxes();
+      await sleep(300);
+      await acceptTermsDialog();
+      /* Next/Continue by name first. Oracle's page header carries a "Sign In"
+         link to the candidate profile, earlier in the DOM than the step's own
+         Next — the generic sign-in finder would take that and leave the job. */
+      const stepButton = () => deepAll('button,[role="button"],input[type=submit],oj-button', 120)
+        .filter((b) => isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+        .find((b) => /^(next|continue|submit)\b/i.test(normLabel(b.textContent || b.value || '')));
+      let next = null;
+      for (let i = 0; i < 8 && !next; i++) {
+        next = stepButton() || findAuthSubmit('create');
+        if (!next) { tickHiddenTermsBoxes(); await acceptTermsDialog(); await sleep(400); }
+      }
+      if (!next) { LOG('Oracle: the Next button never enabled on the email step'); DIAG('oracle.email-stuck'); return; }
+      LOG('Oracle: email step → "' + controlLabel(next).slice(0, 20) + '"');
+      realClick(next);
+      await waitForStepChange(before, 15000);
+    }
+  }
   async function oracleCloudAutomation() {
     LOG('Oracle Recruiting Cloud automation starting...');
     await loadAnswerBank();
@@ -11451,8 +12614,11 @@
 
     // Requisition page → application. Shared apply-label vocabulary, so Oracle
     // gets every wording (and every language) the other drivers understand.
+    /* "Any input on the page" was the test for being past the posting, and
+       Oracle job pages carry a search box and a job-alert email box — so the
+       driver often never pressed Apply Now at all. */
     for (let i = 0; i < 3; i++) {
-      if (/\/apply/i.test(location.href) || deepQuery('input,select,textarea,oj-input-text')) break;
+      if (/\/apply/i.test(location.href) || hasApplicationForm()) break;
       const apply = findApplyButton() || deepQueryAll('button,a,oj-button,[role="button"]').filter(isVisible)
         .find(b => isApplyLabel(b.textContent || b.getAttribute('title') || b.getAttribute('aria-label') || ''));
       if (!apply) break;
@@ -11463,8 +12629,12 @@
       await waitForStepChange(before, 12000);
     }
 
-    // Oracle asks for an account before the form on many tenants; the shared
-    // credential flow already knows how to satisfy that.
+    /* Oracle's "account" is the email itself: /apply/email takes an address,
+       a terms box and Next — there is no password to create. A returning
+       candidate is then asked to confirm their identity with an emailed PIN.
+       Both are walked here, explicitly, because each one used to stall a job. */
+    await oracleEmailAndPin();
+    // Some tenants also run a classic sign-in page; the shared flow covers that.
     await handleAccountAuth();
     await resolveBlockingDialog();
 
@@ -11483,17 +12653,17 @@
       await handleValidationErrors();
 
       const r = await autoSubmitOrNext();
-      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'submitted') { await sleep(scaled(3000, 1500)); break; }
       if (r === 'next_page') { await waitForStepChange(stepSig, 15000); continue; }
 
       // Oracle's own wording, when the generic pass found nothing to click.
       const sub = findSubmitControl();
-      if (sub) { LOG('Oracle: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
+      if (sub) { LOG('Oracle: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(scaled(3000, 1500)); continue; }
       const btn = deepQueryAll('button,oj-button,a[role="button"]').filter(isVisible)
         .find(b => /^\s*(continue|next|review|save and continue)\b/i.test((b.textContent || '').trim()));
       if (!btn) break;
       realClick(btn);
-      await sleep(2500);
+      await sleep(scaled(2500, 1250));
     }
     learnFromFilledFields();
     LOG('Oracle Recruiting Cloud automation complete');
@@ -11535,16 +12705,16 @@
       await handleValidationErrors();
 
       const r = await autoSubmitOrNext();
-      if (r === 'submitted') { await sleep(3000); break; }
+      if (r === 'submitted') { await sleep(scaled(3000, 1500)); break; }
       if (r === 'next_page') { await waitForStepChange(stepSig, 15000); continue; }
 
       const sub = findSubmitControl();
-      if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(3000); continue; }
+      if (sub) { LOG('ADP: submitting via "' + controlLabel(sub) + '"'); realClick(sub); markSubmitAttempt(); await sleep(scaled(3000, 1500)); continue; }
       const btn = deepQueryAll('button,a[role="button"]').filter(isVisible)
         .find(b => /^\s*(next|continue|review)\b/i.test((b.textContent || '').trim()));
       if (!btn) break;
       realClick(btn);
-      await sleep(2500);
+      await sleep(scaled(2500, 1250));
     }
     learnFromFilledFields();
     LOG('ADP myjobs automation complete');
@@ -11590,7 +12760,7 @@
     else if (/icims\.com/i.test(url) || platform === 'iCIMS') await icimsAutomation();
     else if (/linkedin\.com.*\/jobs/i.test(url)) await linkedinEasyApply();
     else if (/ashbyhq\.com/i.test(url) || platform === 'Ashby') await ashbyAutomation();
-    else if (/bamboohr\.com/i.test(url)) await bamboohrAutomation();
+    else if (/bamboohr\.com/i.test(url) || platform === 'BambooHR') await bamboohrAutomation();
     else if (isSmartRecruiters() || platform === 'SmartRecruiters') await smartRecruitersAutomation();
     // Avature — white-labelled onto the employer's domain, so this is routed by
     // its route names, not by host. Must come before the generic fallbacks.
@@ -11600,15 +12770,19 @@
     else if (isOracleCloud() || platform === 'Oracle Recruiting') await oracleCloudAutomation();
     else if (isTaleo() || platform === 'Taleo') await taleoAutomation();
     else if (isAdpMyJobs()) await adpMyJobsAutomation();
-    else if (/jobvite\.com/i.test(url)) await jobviteAutomation();
+    /* Every driver below also accepts the recogniser's answer, not just its own
+       domain. Host-only routing sent a board that EMBEDS the platform — found by
+       its page markers — to the generic path, which is how white-labelled
+       Workable boards were missed. */
+    else if (/jobvite\.com/i.test(url) || platform === 'Jobvite') await jobviteAutomation();
     else if (/workable\.com/i.test(url) || platform === 'Workable') await workableAutomation();
     else if (/indeed\.com/i.test(url)) await indeedEasyApply();
-    else if (/breezy\.hr|breezyhr\.com/i.test(url)) await breezyhrAutomation();
-    else if (/ats\.rippling\.com/i.test(url)) await ripplingAutomation();
+    else if (/breezy\.hr|breezyhr\.com/i.test(url) || platform === 'Breezy' || platform === 'BreezyHR') await breezyhrAutomation();
+    else if (/ats\.rippling\.com/i.test(url) || platform === 'Rippling') await ripplingAutomation();
     else if (/adp\.com|workforcenow\.adp/i.test(url)) await adpAutomation();
     else if (/successfactors\.com/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
-    else if (/jazz\.co|applytojob\.com/i.test(url)) await jazzhrAutomation();
-    else if (/joinhandshake\.com/i.test(url)) await handshakeAutomation();
+    else if (/jazz\.co|applytojob\.com/i.test(url) || platform === 'JazzHR') await jazzhrAutomation();
+    else if (/joinhandshake\.com/i.test(url) || platform === 'Handshake') await handshakeAutomation();
     else if (/governmentjobs\.com|usajobs\.gov/i.test(url)) await usajobsAutomation();
     else if (/eightfold\.ai/i.test(url) || platform === 'Eightfold') await eightfoldAutomation();
     else await tailorFirstFlow();
@@ -11681,7 +12855,7 @@
         await handleValidationErrors();
         logFillReport('Sub-frame pass ' + (pass + 1));
       } catch (e) { LOG('Sub-frame fill error:', e?.message || e); }
-      await sleep(4000);
+      await sleep(scaled(4000, 2000));
     }
   }
 
@@ -11747,7 +12921,7 @@
     // /apply, /jobs, /careers) would let Fully Automated fill non-job forms.
     if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday())) {
       LOG(`Fully Automated: starting full automation for ${ats || 'Workday'}`);
-      await sleep(1500);
+      await sleep(scaled(1500, 750));
       await dispatchATSAutomation();
     }
     if (runnerActive) {
@@ -11755,7 +12929,7 @@
       // across the navigation and ua_qa is in storage, so the job in flight is
       // picked straight back up rather than the run appearing to stop.
       LOG('Queue runner tab resumed' + (document.referrer ? ' (after navigation)' : ''));
-      await sleep(1000);
+      await sleep(scaled(1000, 500));
       processQ();
     }
     // Manager-driven tab: run this ONE job to a verified terminal status and report.
@@ -11774,7 +12948,7 @@
     // Jobright's native flow handle it, so the toggle is the single source of truth.
     if (isWorkday() && (autoApply || runnerActive || mgrJob)) startWorkdayAccountWatch();
     if (isJobright()) {
-      await sleep(2000); resumeTailoringAutomation();
+      await sleep(scaled(2000, 1000)); resumeTailoringAutomation();
       // Capture Jobright's Insider Connections (recruiter/hiring manager for this role) so a
       // follow-up can be aimed at the exact person. Re-capture as the panel loads/expands.
       const roleGuess = ((document.querySelector('h1, [class*="job-title"], [class*="jobTitle"]')?.textContent) || '').trim().slice(0, 80);
@@ -11791,6 +12965,8 @@
         if (!el || !el.tagName) return;
         const tag = el.tagName;
         if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+        // The automation's own focus() moves raise TRUSTED focusout events.
+        if (!userTouched(el)) return;
         if (/^(hidden|file|submit|button|password)$/.test(el.type || '')) return;
         if (el.type === 'radio' || el.type === 'checkbox') {
           // Question = the GROUP's question, answer = the option label you picked.
@@ -15804,6 +16980,13 @@ a[href*="/checkout" i],
     finally { _busy = false; }
   }
 
+  /* This scope renders company names, job titles and scraped contact names
+     into innerHTML on linkedin.com. All of them come from pages — job boards
+     and Jobright's Insider Connections — so none of them may reach the DOM as
+     markup. */
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (ch) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
   // ---------- on-page control panel ----------
   function renderPanel(c) {
     try {
@@ -15838,7 +17021,7 @@ a[href*="/checkout" i],
                                : ('https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(f.company + ' recruiter'));
               const label = top ? ((top.name ? top.name.split(/\s+/)[0] : 'contact') + ' →') : 'find →';
               const line = (f.company) + (f.role ? ' · ' + f.role : '');
-              return '<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid #eee"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (top && top.title ? String(top.title).replace(/"/g, '&quot;') : '') + '">' + line + '</span><a href="' + href + '" target="_self" style="color:#0a66c2;text-decoration:none;flex:0 0 auto">' + label + '</a></div>';
+              return '<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid #eee"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(top && top.title ? top.title : '') + '">' + esc(line) + '</span><a href="' + esc(href) + '" target="_self" style="color:#0a66c2;text-decoration:none;flex:0 0 auto">' + esc(label) + '</a></div>';
             }).join('') +
             '<textarea id="ua-li-tpl" style="width:100%;box-sizing:border-box;margin-top:8px;min-height:54px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;font:11px/1.4 inherit;resize:vertical" placeholder="Message template">' + (c.template).replace(/</g, '&lt;') + '</textarea>' +
             '<div style="font-size:9px;color:#888;margin-top:3px">Placeholders: {first} {role} {company}</div>' +

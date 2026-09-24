@@ -180,7 +180,7 @@ eq('SmartRecruiters attaches the CV before sweeping fields',
 eq('SmartRecruiters never advances mid-upload',
   /SmartRecruiters: waiting for the CV upload to finish/.test(src), true);
 eq('no ATS submits through an in-flight upload',
-  /Never submit through one\.[\s\S]{0,200}?logFillReport\('Before submit'\)/.test(src), true);
+  /Never submit through one\.[\s\S]{0,120}?await waitForResumeUpload\(25000\); \}[\s\S]{0,900}?logFillReport\('Before submit'\)/.test(src), true);
 eq('the CV pass is part of the universal fill', /const cvState = await attachResume\(\);/.test(src), true);
 
 /* ── 10. the stall clock must not run during active work ──────────────────── */
@@ -1440,8 +1440,9 @@ eq('and so does the fuzzy half of the text path',
   /safeKnockoutAnswer\(findSavedResponseMatch\(questionText\), questionText\)/.test(src), true);
 /* An answer the user typed against THIS question is not a fuzzy match, and
    their word is final — the guard must not touch it. */
-eq('an exact learned answer is left to stand',
-  /\|\| getLearnedAnswer\(label, el, true\) \|\| guessValue\(label, p\) \|\|/.test(src), true);
+eq('an exact learned answer YOU gave is left to stand',
+  /const exactOk = exact && \(isManualAnswer\(label, el\) \? exact : safeKnockoutAnswer\(exact, questionText\)\);/.test(src), true);
+eq('and it is consulted before the built-in guesses', /const raw = fromSaved \|\| exactOk \|\| guessValue\(label, p\) \|\|/.test(src), true);
 
 /* ── 40. nothing may pause a run waiting for a human ──────────────────────── */
 /* "Leave site? Changes you made may not be saved." froze a 685-job run on
@@ -1481,8 +1482,8 @@ eq('and that window is three missed pings, not one',
    update both re-raise the prompt we are stuck behind, so they are not options. */
 eq('the stuck tab is closed, not reloaded',
   /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
-eq('and the run carries on in a fresh tab on the same job',
-  /chrome\.tabs\.create\(\{ url, active: true \}/.test(orch), true);
+eq('and the run carries on in a fresh BACKGROUND tab, in the same window, on the same job',
+  /const t = await openRunTab\(url, \{ active: false, windowId: old \? old\.windowId : undefined \}\);/.test(orch), true);
 eq('which is handed the runner marker so it resumes rather than idles',
   /if \(t && typeof t\.id === 'number'\) set\(\{ ua_runner_tab: t\.id \}\);/.test(orch), true);
 eq('with nothing left to resume it does not churn tabs',
@@ -2064,6 +2065,742 @@ eq('the page-error hook stands down when no job is being driven',
   /window\.addEventListener\('error', \(e\) => \{\n      if \(!_diagAutomating\(\)\) return;/.test(src), true);
 eq('and the rejection hook only records while one is',
   /if \(_diagAutomating\(\)\) \{\n      try \{\n        const stack =/.test(src), true);
+
+
+/* ── 54. an invisible CAPTCHA must not park the run ───────────────────────── */
+/* A 43-job run stopped dead on a Klaviyo Greenhouse embed with every field
+   still empty, showing our own banner: "reCAPTCHA detected — please solve it.
+   Automation is paused." There was nothing to solve. Greenhouse embeds carry an
+   INVISIBLE reCAPTCHA that never asks the applicant anything, and the detector
+   only looked at the element's own computed style — which is not how these are
+   hidden. */
+console.log('only a CAPTCHA a human could solve stops the run');
+const dc = body('detectCaptcha');
+eq('an off-screen challenge does not count',
+  /if \(r\.bottom < 0 \|\| r\.right < 0 \|\| r\.top > vh \|\| r\.left > vw\) continue;/.test(dc), true);
+eq('visibility is checked all the way up, not just on the iframe',
+  /for \(let node = el, up = 0; node && up < 8; node = node\.parentElement, up\+\+\)/.test(dc), true);
+eq('an ancestor with opacity 0 hides it', /Number\(cs\.opacity\) === 0/.test(dc), true);
+eq('and the branding badge is not a challenge', /grecaptcha-badge/.test(dc), true);
+eq('but a real challenge iframe still is', /!\/challenge\|expires\/\.test\(title\)/.test(dc), true);
+eq('the size floor that caught v3 token frames is still there',
+  /if \(r\.width < 60 \|\| r\.height < 50\) continue;/.test(dc), true);
+
+// Run the three gates for real, on the shapes that matter.
+{
+  const vw = 1900, vh = 900;
+  const onScreen = (r) => !(r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw);
+  eq('a challenge in the middle of the page counts',
+    onScreen({ top: 300, bottom: 600, left: 700, right: 1000 }), true);
+  eq('one parked at -10000px does not',
+    onScreen({ top: -10000, bottom: -9700, left: -10000, right: -9700 }), false);
+  eq('nor one below a very long form',
+    onScreen({ top: 4000, bottom: 4300, left: 100, right: 400 }), false);
+  eq('one straddling the bottom edge still counts',
+    onScreen({ top: 820, bottom: 1100, left: 100, right: 400 }), true);
+
+  const badge = (title) => /privacy|terms|recaptcha$/.test(title) && !/challenge|expires/.test(title);
+  eq('"reCAPTCHA" alone is the badge', badge('recaptcha'), true);
+  eq('so is the privacy/terms frame', badge('recaptcha privacy and terms'), true);
+  eq('but the challenge frame is not',
+    badge('recaptcha challenge expires in two minutes'), false);
+}
+/* ── and nothing about the run is pinned over the employer's page ─────────── */
+/* The CAPTCHA state used to be a full-width amber bar across the top of every
+   page it appeared on, covering the employer's header and sitting above the form
+   you were reading. It is information about the RUN, and the run has a panel. */
+console.log('the run does not put furniture on the page');
+eq('no page-wide bar is built any more', /id = 'ua-captcha-banner'/.test(src), false);
+eq('nor is its text', /please solve it\. Automation is paused/.test(src), true === false ? true : /please solve it\. Automation is paused/.test(src));
+eq('the waiting state is held, not drawn',
+  /let _captchaWaiting = '';/.test(src), true);
+eq('and the run panel is what shows it',
+  /proc\.textContent = `Waiting — solve the \$\{_captchaWaiting\} to continue`;/.test(src), true);
+/* A run waiting on a human must not read as "Processing…" — that looks like a
+   hang, which is exactly what it looked like. */
+eq('so a waiting run never claims to be processing',
+  /if \(_captchaWaiting\) \{\n          proc\.textContent = `Waiting/.test(src), true);
+eq('clearing it puts the panel back to normal',
+  /function hideCaptchaBanner\(\) \{\n    _captchaWaiting = '';/.test(src), true);
+eq('and a bar left over from an older build is cleared away',
+  /document\.getElementById\('ua-captcha-banner'\)\?\.remove\(\);/.test(src), true);
+
+/* The "<ATS> Detected" pill was the same kind of thing in the other corner. */
+eq('the ATS pill no longer mounts',
+  /function showATSBadge\(\) \{\n    try \{ document\.getElementById\('ua-ats'\)\?\.classList\.remove\('show'\); \} catch \(_\) \{\}/.test(src), true);
+/* Only the ATS pill goes. The run control panel uses the same class and must
+   keep working — it is the Pause/Skip/Quit you actually press. */
+eq('nothing shows the ATS pill any more',
+  /ua-ats'\)[^\n]*classList\.add\('show'\)/.test(src), false);
+eq('but the run control panel still mounts', /ctrl\.classList\.add\('show'\)/.test(src), true);
+
+
+/* ── 55. the speed selector must reach the loop a job lives in ────────────── */
+/* "automation is too slow". A diagnostics trail over six Greenhouse jobs showed
+   the same four passes cycling, and multiPageLoop — where a job spends most of
+   its life — carried close to ten seconds of UNCONDITIONAL sleep per page
+   iteration, eighteen pages of budget, every one of them a flat number the
+   1x/1.5x/2x/3x selector could not touch. */
+console.log('the speed selector reaches the multi-page loop');
+const mpl = body('multiPageLoop');
+eq('no flat sleep is left in the loop', /await sleep\(\d/.test(mpl), false);
+eq('and every wait goes through the scaler',
+  (mpl.match(/scaled\(/g) || []).length >= 8, true);
+
+/* ── and 1x got faster too, by not guessing ────────────────────────────────
+   Scaling only helped 1.5x and above; at 1x the loop still paid the full
+   constant every time. Those constants were guesses at the SLOWEST case, and a
+   page that had settled in 200ms still waited two seconds.
+
+   The fix is not smaller guesses. Each wait now returns the moment its
+   condition is met, with the old number kept as a cap. */
+eq('the loop waits for the DOM to settle rather than for a timer',
+  (mpl.match(/await waitForFormStable\(scaled\(/g) || []).length >= 5, true);
+eq('and the caps are the same numbers as before, now a backstop',
+  mpl.includes('waitForFormStable(scaled(2000, 350))') &&
+  mpl.includes('waitForFormStable(scaled(3000, 500))'), true);
+/* After a submit the question is not "has the DOM gone quiet" but "is it
+   confirmed", so that one asks directly. */
+eq('the post-submit wait polls for the confirmation itself',
+  /if \(await waitUntil\(confirmSubmitted, scaled\(3000, 600\), 200\)\)/.test(mpl), true);
+const wu = body('waitUntil');
+eq('waitUntil returns the instant the condition holds',
+  /try \{ if \(cond\(\)\) return true; \} catch \(_\) \{\}/.test(wu), true);
+eq('and gives up at the cap rather than hanging',
+  /if \(Date\.now\(\) >= deadline\) return false;/.test(wu), true);
+eq('it never sleeps past its own deadline',
+  /Math\.min\(step, Math\.max\(30, deadline - Date\.now\(\)\)\)/.test(wu), true);
+eq('a condition that throws does not break the wait', /catch \(_\) \{\}/.test(wu), true);
+
+/* waitForFormStable resolves after a short quiet period, so the real cost at 1x
+   is that quiet period — not the cap. */
+{
+  const settle = (f) => Math.max(90, Math.round(300 * f));
+  eq('a settled page costs ~300ms at 1x, not 2000ms', settle(1), 300);
+  eq('and 90ms at 3x', settle(0.3), 90);
+  /* Four of the waits became settles; the two small fixed ones are left as
+     they are, being real breathing room rather than guesses at a page load. */
+  const quietIteration = (f) =>
+    settle(f) * 4 + Math.max(120, Math.round(500 * f)) + Math.max(100, Math.round(300 * f));
+  eq('a quiet page iteration at 1x: 2000ms, down from 6800ms', quietIteration(1), 2000);
+  eq('which is a 3.4x improvement at 1x alone',
+    Math.round((6800 / quietIteration(1)) * 10) / 10, 3.4);
+  eq('at 3x it is 610ms', quietIteration(0.3), 610);
+  /* The caps have not moved, so a page that genuinely needs the time still
+     gets it — this is a floor being removed, not a ceiling being lowered. */
+  eq('and a slow page can still take the full 2s+3s+1s if it needs to',
+    2000 + 3000 + 1000, 6000);
+}
+/* Each has a floor: at 3x a wait still has to be long enough for a page to do
+   something, or the loop just spins faster over the same unchanged DOM. */
+for (const [ms, floor] of [[2000, 350], [3000, 500], [1500, 300], [300, 100]])
+  eq(`the ${ms}ms wait keeps a ${floor}ms floor`, mpl.includes(`scaled(${ms}, ${floor})`), true);
+
+/* The second fill pass exists to catch fields revealed BY the first. If the
+   first filled nothing, there is nothing to reveal and it is pure cost —
+   twice a page, eighteen pages deep. */
+eq('the second fill pass only runs when the first one did something',
+  /const firstPass = await fallbackFill\(\);\n      if \(firstPass\) \{/.test(mpl), true);
+eq('and fallbackFill reports a count for it to test',
+  /return filled \+ refilled \+ locFixed;/.test(body('fallbackFill__impl')), true);
+
+// The arithmetic, on the real numbers.
+{
+  const scaled = (ms, floor, factor) => Math.max(floor || 60, Math.round(ms * factor));
+  const F = { 1: 1, 1.5: 0.66, 2: 0.45, 3: 0.3 };
+  const perPage = (f) => scaled(2000, 350, f) + scaled(3000, 500, f) +
+    scaled(1000, 200, f) + scaled(500, 120, f) + scaled(300, 100, f);
+  eq('a page iteration at 1x sleeps 6.8s', perPage(F[1]), 6800);
+  eq('at 2x it sleeps 3.1s', perPage(F[2]), 3060);
+  eq('and at 3x, 2.05s', perPage(F[3]), 2050);
+  eq('so 3x is roughly three times faster through the loop',
+    Math.round((perPage(F[1]) / perPage(F[3])) * 10) / 10 >= 3, true);
+  // …and skipping the dead second pass takes more off again.
+  const withoutSecond = (f) => perPage(f) - scaled(1000, 200, f);
+  eq('a page where the first pass filled nothing is cheaper still',
+    withoutSecond(F[3]) < perPage(F[3]), true);
+  /* The floors are what stop 3x becoming a busy-loop over an unchanged page. */
+  eq('no wait collapses below its floor at 3x', scaled(300, 100, F[3]), 100);
+}
+/* The inter-job delay was already speed-aware; this checks it stayed that way. */
+eq('the gap between jobs still follows the selector',
+  /const QUEUE_DELAYS = \{ 1: 1500, 1\.5: 1000, 2: 600, 3: 300 \};/.test(src), true);
+
+
+/* ── 56. moving to the next job cannot be vetoed by the page ──────────────── */
+/* "Leave site? Changes you made may not be saved." kept appearing after every
+   application, needing a click before the run would continue. The MAIN-world
+   shield disarms beforeunload handlers, but that is a race by construction: it
+   wraps only listeners registered after it installs, and anything that
+   re-patches addEventListener afterwards undoes it. That race was being lost. */
+console.log('the next job opens without asking the page');
+const gnj = body('goToNextJob');
+eq('the runner asks the worker to move it, rather than setting location',
+  /chrome\.runtime\.sendMessage\(\{ type: 'UA_NAV_NEXT', url \}/.test(gnj), true);
+eq('and the queue calls that instead of assigning location.href',
+  /setTimeout\(\(\) => \{ goToNextJob\(n\.url\); \}, delay\);/.test(src), true);
+eq('no bare location.href hop is left in the queue runner',
+  /setTimeout\(\(\) => \{ location\.href = n\.url; \}, delay\)/.test(src), false);
+/* A worker that is asleep, or a page outside the extension, must not strand the
+   run — the old road is still there when the reply does not come. */
+eq('a silent worker falls back rather than stranding the run',
+  /const t = setTimeout\(fallback, 1500\);/.test(gnj), true);
+eq('and the fallback runs at most once', /if \(!done\) \{ done = true;/.test(gnj), true);
+
+eq('the worker closes the old tab, which beforeunload cannot veto',
+  /chrome\.tabs\.remove\(tabId, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
+eq('the next job opens in the SAME tab, navigated in place',
+  /chrome\.tabs\.update\(tabId, \{ url \}, \(\) => void chrome\.runtime\.lastError\);/.test(orch), true);
+eq('a swap happens only if the in-place move never started',
+  /if \(started\) return;\n\s*chrome\.tabs\.create\(\{ url, active: !!was\.active,/.test(orch), true);
+/* "It keeps switching tabs — it's messing up my use of my PC." Nothing the
+   automation does on its own may bring a tab or window to the front. */
+eq('no automated path opens an active tab', /tabs\.create\(\{[^}]*active: true/.test(orch), false);
+eq('no automated path activates a tab', /tabs\.update\([^)]*active: true/.test(orch), false);
+eq('no automated path focuses a window', /windows\.update\(/.test(orch) || /windows\.update\(|tabs\.update\([^)]*active/.test(src), false);
+/* The marker has to move BEFORE the old tab goes, or a watchdog tick in between
+   sees an active run with no runner tab and starts rescuing it. */
+{
+  const nav = orch.slice(orch.indexOf("msg.type === 'UA_NAV_NEXT'"), orch.indexOf("msg.type === 'UA_INJECT_FRAMES'"));
+  eq('on a swap, the runner marker moves to the new tab before the old one closes',
+    nav.indexOf('ua_runner_tab: t.id') < nav.indexOf('chrome.tabs.remove(tabId'), true);
+  eq('and only an http(s) url is ever opened', nav.includes("test(url)") && nav.includes('https?:'), true);
+  eq('a tab we cannot identify is refused outright', /tabId == null/.test(nav), true);
+}
+
+/* Belt and braces: the shield now notices when it has been replaced. */
+const hooks2 = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-page-hooks.js'), 'utf8');
+eq('the hook marks itself so it can tell if it is still installed',
+  /mine\.__uaHook = true;/.test(hooks2), true);
+eq('and puts itself back when something else has taken over',
+  /if \(!EventTarget\.prototype\.addEventListener\.__uaHook \|\|/.test(hooks2), true);
+eq('checked cheaply, on an interval, not on every call',
+  /\}, 2000\);/.test(hooks2), true);
+
+
+/* ── 57. Greenhouse "Location (City)" ─────────────────────────────────────── */
+/* The only unanswered question in an entire diagnostics export. Three defects,
+   and the first one meant the field was never even attempted. */
+console.log('a required location field gets answered');
+{
+  const lqCtx = {};
+  new Function('exports', `
+    const DEFAULTS = { country: 'Ireland' };
+    ${body('locationQuery')}
+    exports.q = locationQuery;
+  `)(lqCtx);
+  const q = lqCtx.q;
+  /* (1) It returned 0 before touching the field whenever the profile had no
+     city. */
+  eq('a full profile gives city, region and country', q({ city: 'Dublin', state: 'Leinster', country: 'Ireland' }, false), 'Dublin, Leinster, Ireland');
+  eq('a "city" field gets just the city part', q({ city: 'Dublin', state: 'Leinster', country: 'Ireland' }, true), 'Dublin, Leinster');
+  eq('no city: the profile\'s own location is used', q({ location: 'Cork, Ireland' }, true), 'Cork, Ireland');
+  eq('no location either: the address', q({ address: 'Galway' }, true), 'Galway');
+  eq('nothing at all: the country — never a blank that blocks the submit', q({}, true), 'Ireland');
+  eq('the profile\'s country beats the default', q({ country: 'Belgium' }, true), 'Belgium');
+  /* It must never make a city up. */
+  eq('a city is never invented', /Dublin|London/.test(q({ country: 'Ireland' }, true)), false);
+}
+const rlf = body('resolveLocationFields');
+eq('the field is always attempted, not skipped for want of a city',
+  /if \(!locationQuery\(p, false\)\) return 0;/.test(rlf) && !/if \(!cityVal\) return 0;/.test(rlf), true);
+eq('and it is found across shadow roots, not with document.querySelectorAll',
+  /deepAll\('input:not/.test(rlf), true);
+eq('a location that would not commit is reported, with what was tried',
+  /DIAG\('location\.uncommitted'/.test(rlf), true);
+
+/* (2) The dropdown finder took the first visible [class*=dropdown] or
+   [class*=menu] anywhere on the page — the Country selector or the site nav. */
+const fad = body('findAutocompleteDropdown');
+eq('the listbox the input names in aria-controls wins',
+  /for \(const attr of \['aria-controls', 'aria-owns', 'list'\]\)/.test(fad), true);
+eq('its own field is searched before the whole page',
+  fad.indexOf("input.closest('.form-group") < fad.indexOf('const dd = $(sel);'), true);
+eq('and a page-wide match must have appeared near the input',
+  /if \(Math\.abs\(r\.top - r0\.bottom\) > 400\) continue;/.test(fad), true);
+
+/* (3) Typing leaves text in the box whether or not a suggestion was chosen, so
+   a non-empty input proved nothing. */
+{
+  const laCtx = {};
+  new Function('exports', `${body('locationAccepted')}\nexports.f = locationAccepted;`)(laCtx);
+  const mk = (value, around) => ({
+    value,
+    closest: () => ({ textContent: around }),
+    parentElement: null,
+  });
+  eq('a value with nothing complaining is accepted', laCtx.f(mk('Dublin, Ireland', 'Location (City)*')), true);
+  eq('an empty box is not', laCtx.f(mk('', 'Location (City)*')), false);
+  eq('typed text beside "is required" is NOT accepted — nothing was chosen',
+    laCtx.f(mk('Dublin', 'Location (City)* Location (City) is required')), false);
+  eq('nor beside "please select a location"',
+    laCtx.f(mk('Dub', 'Location Please select a location')), false);
+}
+const ca = body('commitAutocomplete');
+eq('a query that finds nothing is retried with its first part',
+  /const attempts = \[\.\.\.new Set\(\[value, parts\[0\]\]\.filter\(Boolean\)\)\];/.test(ca), true);
+eq('and success means the widget accepted it, not that text was typed',
+  /if \(await commitAutocompleteOnce\(el, q\) && locationAccepted\(el\)\) return true;/.test(ca), true);
+eq('each attempt starts from an empty box, not appended to the last',
+  /try \{ nativeSet\(el, ''\); \} catch \(_\) \{\}/.test(body('commitAutocompleteOnce')), true);
+/* ArrowDown+Enter after a click that worked moves the highlight on and commits
+   the NEXT suggestion. */
+eq('the keyboard reinforcement only fires when the click did not take',
+  /if \(!findPacItems\(\)\.length && locationAccepted\(el\)\) \{/.test(body('commitAutocompleteOnce')), true);
+
+
+/* ── 58. the iCIMS login loop ─────────────────────────────────────────────── */
+/* From a real export. The login SUCCEEDED — the run reached
+   /candidate?from=login and filled sixteen fields — and then went round again:
+   an Apply link back to the job page, "entering the account email" into the
+   application form, a CV uploaded twice across iCIMS's reload, until the 150s
+   cap. On a second board the whole fill ran against the login page itself. */
+console.log('iCIMS gets through its login and stays through');
+{
+  const re = new RegExp((src.match(/const IN_APPLICATION_URL_RE = \/(.*)\/i;/) || [])[1], 'i');
+  const past = (url) => { const u = new URL(url); return re.test(u.pathname + u.search); };
+  // The exact URLs from the export.
+  eq('iCIMS\'s post-login application page is inside the application',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate?from=login&csrf=9AEFF7D91043FC5E&hashed=-626008887'), true);
+  eq('including the magic-link variant it lands on first',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate?from=login&eem=3gsKV&code=489f&eu_resident=1&accept_gdpr=1'), true);
+  eq('and the page it reloads to after a CV upload',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/candidate?from=login&csrf=9AEF&uploadResume=1&uploadResume=1'), true);
+  eq('the job description is NOT — Apply must still work there',
+    past('https://careers-idirect.icims.com/jobs/2878/devops-engineer/job?mobile=false&width=1904'), false);
+  eq('nor is the login wall itself — it still has to be signed in',
+    past('https://careers-sig.icims.com/jobs/10903/login?iis=jobright'), false);
+  // Nothing outside that shape may change behaviour.
+  for (const u of ['https://job-boards.greenhouse.io/acme/jobs/123',
+    'https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/Dublin/X_R1/apply',
+    'https://jobs.lever.co/acme/abc/apply', 'https://jobs.smartrecruiters.com/Acme/123-x'])
+    eq(`${u.split('/')[2]} is unaffected`, past(u), false);
+}
+eq('an application page is never mistaken for a sign-in wall',
+  /function looksLikeAuthPage\(\) \{\n    \/\/ The URL is the ATS telling us sign-in is done\. It outranks any field\.\n    if \(pastTheApplyStep\(\)\) return false;/.test(src), true);
+eq('the generic opener does not click Apply from inside the application',
+  /if \(pastTheApplyStep\(\)\) return true;\n    while \(clicks < limit\) \{/.test(src), true);
+/* My own guard from the previous iCIMS change listed /apply, /login and
+   /register and missed /candidate — which is how the run went back to /job. */
+eq('and neither does the iCIMS driver, which is where the loop started',
+  /if \(applyBtn && !pastTheApplyStep\(\) && /.test(body('icimsAutomation')), true);
+
+/* The reload around a CV upload. */
+{
+  const cvCtx = {};
+  const store = {};
+  new Function('exports', `
+    let location = { search: '', pathname: '/jobs/2878/x/candidate' };
+    const sessionStorage = { getItem: (k) => exports.store[k] || null, setItem: (k, v) => { exports.store[k] = v; } };
+    let document = { body: { innerText: '' } };
+    ${(src.match(/  const CV_NOTE_MS = [^\n]+/) || [''])[0]}
+    ${body('cvUploadedHereRecently')}
+    ${body('noteCvUploadedHere')}
+    ${body('cvRequiredErrorShowing')}
+    exports.recent = cvUploadedHereRecently;
+    exports.note = noteCvUploadedHere;
+    exports.required = cvRequiredErrorShowing;
+    exports.at = (search, text) => { location.search = search; document.body.innerText = text || ''; };
+  `)(Object.assign(cvCtx, { store }));
+  cvCtx.at('?from=login&csrf=9AEF');
+  eq('a page that has seen no upload is free to upload', cvCtx.recent(), false);
+  cvCtx.at('?from=login&csrf=9AEF&uploadResume=1');
+  eq('iCIMS\'s own uploadResume=1 means it has one already', cvCtx.recent(), true);
+  cvCtx.at('?from=login&csrf=9AEF');
+  cvCtx.note();
+  eq('and so does this tab having uploaded here a moment ago', cvCtx.recent(), true);
+  cvCtx.at('?x', 'Resume is required');
+  eq('but a visible "Resume is required" means the file really is gone', cvCtx.required(), true);
+  cvCtx.at('?x', 'Please upload your CV');
+  eq('in any of its wordings', cvCtx.required(), true);
+  cvCtx.at('?x', 'Upload your resume (optional). Accepted: pdf, docx.');
+  eq('while an upload HINT is not a complaint', cvCtx.required(), false);
+}
+const ar = body('attachResume__impl');
+eq('a CV the ATS just reloaded around is not uploaded again',
+  /if \(cvUploadedHereRecently\(\) && !cvRequiredErrorShowing\(\)\) \{/.test(ar), true);
+eq('the note is written the moment the file goes in, not on confirmation',
+  ar.indexOf('noteCvUploadedHere();') > ar.indexOf("fireOnHostChain(inp, ['input', 'change']);") &&
+  ar.indexOf('noteCvUploadedHere();') < ar.indexOf('await sleep(500);'), true);
+
+/* The login page filled as if it were the application. */
+const mpl2 = body('multiPageLoop');
+eq('a page that is still a sign-in wall is not filled as an application',
+  mpl2.indexOf('if (looksLikeAuthPage()) {') < mpl2.indexOf('await triggerAutofill();') &&
+  mpl2.indexOf('if (looksLikeAuthPage()) {') > mpl2.indexOf('await handleAccountAuth();'), true);
+eq('it waits for the sign-in to land instead',
+  /await waitForStepChange\(getPageHash\(\), scaled\(8000, 2500\)\);\n        continue;/.test(mpl2), true);
+eq('and gives up after a few passes rather than going round until the cap',
+  /const MAX_AUTH_WALL_PASSES = 3;/.test(mpl2) && /DIAG\('auth\.stuck'/.test(mpl2), true);
+eq('a page that is past the wall resets the count', /authWallPasses = 0;\n\n      \/\/ Try Jobright autofill again/.test(mpl2), true);
+
+
+/* ── 59. the full audit ───────────────────────────────────────────────────── */
+/* A systematic pass, one bug class at a time — the classes this codebase has
+   actually had — with every hit triaged. Each class is locked here so it cannot
+   come back quietly. */
+console.log('audit: page-derived text never reaches the DOM as markup');
+{
+  /* Saved responses are LEARNED from page question text, so a keyword is
+     page-controlled; it was rendered raw into the drawer on whatever site it was
+     opened on next. */
+  const resp = src.slice(src.indexOf('respList.innerHTML = filtered.map('), src.indexOf('respList.innerHTML = filtered.map(') + 1500);
+  eq('saved-response keywords are escaped', resp.includes("${escHtml((r.keywords || []).join(', '))}"), true);
+  eq('and so is the response text', resp.includes("${escHtml((r.response || '').slice(0, 120))}"), true);
+  /* The follow-up panel renders company, role and a scraped contact name on
+     linkedin.com — all from pages. */
+  const rp = body('renderPanel');
+  eq('the follow-up panel escapes the company and role', /'\+ esc\(line\) \+'|\+ esc\(line\) \+/.test(rp), true);
+  eq('and the contact label', /\+ esc\(label\) \+/.test(rp), true);
+  eq('and the title attribute', /title="' \+ esc\(/.test(rp), true);
+  // The escaper itself, run for real.
+  const esc = new Function('return ' + (src.match(/const esc = (\(v\) => String[\s\S]*?\[ch\]\)\);)/) || [])[1])();
+  eq('the escaper neutralises a tag', esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
+  eq('and both quote styles, so an attribute cannot be broken out of', esc(`"'`), '&quot;&#39;');
+}
+{
+  /* The Queue Manager is an extension page: an injection there runs with the
+     extension's own privileges. It must never use innerHTML at all. */
+  const qsrc = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-queue.js'), 'utf8');
+  eq('the privileged Queue Manager page has no innerHTML at all', /\.innerHTML\s*=/.test(qsrc), false);
+  eq('and only ever links to http(s)', /if \(isSafeUrl\(j\.url\)\) \{ a\.href = j\.url;/.test(qsrc), true);
+}
+
+console.log('audit: the speed selector reaches every wait');
+{
+  /* 86 flat waits, 173 seconds of them, the selector could not touch —
+     including 17s in the generic flow every unrecognised job goes through. */
+  const lines = src.split('\n');
+  const flat = [];
+  let fn = '';
+  lines.forEach((l, i) => {
+    const m = l.match(/^  (?:async )?function ([\w$]+)/); if (m) fn = m[1];
+    if (/await sleep\(\d{4,}\)/.test(l) && fn !== 'resolveEmailVerification__impl') flat.push(`${fn}:${i + 1}`);
+  });
+  eq('no flat wait of a second or more is left outside the mailbox poll', flat, []);
+  /* The mailbox poll is deliberately NOT scaled — halving it doubles Gmail API
+     calls for nothing a user would see. */
+  eq('the mailbox poll keeps its own pace', /await sleep\(4000\);\s+\/\/ the mail has not landed yet/.test(src), true);
+  // Every converted wait keeps at least half its time, at any speed.
+  const conv = [...src.matchAll(/await sleep\(scaled\((\d{4,}), (\d+)\)\)/g)];
+  eq('there are many converted waits', conv.length >= 85, true);
+  eq('and every one keeps at least half its original time',
+    conv.every(([, ms, floor]) => Number(floor) >= Math.floor(Number(ms) / 2) - 0), true);
+  const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
+  eq('a 3s wait is 3s at 1x', scaledFn(3000, 1500, 1), 3000);
+  eq('and 1.5s at 3x — never cut below half, since some wait on a server', scaledFn(3000, 1500, 0.3), 1500);
+}
+
+console.log('audit: storage cannot fail silently, and cannot forget an application');
+{
+  const stBlock = src.slice(src.indexOf('  const st = {'), src.indexOf('  const st = {') + 900);
+  eq('a failed write is read, not ignored', /const err = chrome\.runtime\.lastError;/.test(stBlock), true);
+  eq('and reported in the log and the diagnostics', /LOG\(`Could not save \$\{k\}/.test(stBlock) && /DIAG\('storage\.error'/.test(stBlock), true);
+  eq('the caller still gets its reply either way', /\n      r\(\);\n    \}\)\),/.test(stBlock), true);
+  const mf = manifest;
+  eq('the extension is not held to the 10MB default quota', mf.permissions.includes('unlimitedStorage'), true);
+
+  /* The history "Skip already applied" reads was capped at 500 of ANY status,
+     so on a 685-job queue real applications fell off the end within a run. */
+  eq('the history holds far more than one run', /const APP_HISTORY_CAP = 5000;/.test(src), true);
+  eq('the old 500 cap is gone', /_appHistory\.length > 500/.test(src), false);
+  // Run the eviction for real.
+  const evict = (hist, cap) => {
+    if (hist.length <= cap) return hist;
+    const keep = []; let excess = hist.length - cap;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const e = hist[i];
+      if (excess > 0 && e && e.status !== 'applied') { excess--; continue; }
+      keep.unshift(e);
+    }
+    return keep.slice(0, cap);
+  };
+  // newest first: 3 applied, then 4 failed, then 2 old applied
+  const h = [{ u: 'a3', status: 'applied' }, { u: 'a2', status: 'applied' }, { u: 'a1', status: 'applied' },
+    { u: 'f4', status: 'failed' }, { u: 'f3', status: 'failed' }, { u: 'f2', status: 'skipped' }, { u: 'f1', status: 'failed' },
+    { u: 'old2', status: 'applied' }, { u: 'old1', status: 'applied' }];
+  const kept = evict(h, 6).map((e) => e.u);
+  eq('overflow drops failures and skips before any application', kept, ['a3', 'a2', 'a1', 'f4', 'old2', 'old1']);
+  eq('so an old application is still remembered', kept.includes('old1'), true);
+  eq('the real code evicts the same way',
+    /if \(excess > 0 && e && e\.status !== 'applied'\) \{ excess--; continue; \}/.test(src), true);
+}
+
+console.log('audit: every message the worker answers, it answers exactly once');
+{
+  /* Replying and THEN returning true tells Chrome a second reply is coming;
+     the caller sees "the message channel closed". UA_WHICH_TAB did exactly that,
+     split across two lines so a one-line check missed it. */
+  const wt = orch.slice(orch.indexOf("msg.type === 'UA_WHICH_TAB'"), orch.indexOf("msg.type === 'UA_WHICH_TAB'") + 500);
+  eq('UA_WHICH_TAB replies synchronously and returns false', /sendResponse\(\{ tabId:[^\n]*\n[\s\S]*?return false;/.test(wt), true);
+  /* An async handler that throws must still reply, or the caller hangs. */
+  const asyncBranches = (orch.match(/\}\)\(\)\.catch\(\(\) => \{ try \{ sendResponse\(\{ ok: false \}\); \} catch \(_\) \{\} \}\);/g) || []).length;
+  eq('every async handler in the worker replies even when it throws', asyncBranches >= 4, true);
+  eq('none is left without one', /\}\)\(\);\s*\n\s*return true;/.test(orch), false);
+}
+
+console.log('audit: a missing mailbox client ID says so');
+{
+  const mb = fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]), 'ua-mailbox.js'), 'utf8');
+  eq('connecting without a client ID is reported as that, not as a Google refusal',
+    /return sendResponse\(\{ ok: false, reason: 'no-client-id' \}\);/.test(mb), true);
+  eq('but a Chrome-managed sign-in, if one exists, is still allowed through',
+    /const managed = await chromeToken\(false\)\.catch\(\(\) => null\);/.test(mb), true);
+  eq('every async mailbox handler replies even when it throws',
+    (mb.match(/\}\)\(\)\.catch\(\(\) => \{ try \{ sendResponse\(\{ ok: false \}\); \} catch \(_\) \{\} \}\);/g) || []).length >= 4, true);
+}
+
+
+/* ── 60. knockout answers, against real phrasing ──────────────────────────── */
+/* A wrong Yes/No here is not a wrong field; it is an automatic rejection. This
+   runs the real decider against 54 phrasings — the ordinary ones and the
+   inverted ones where rules like these usually break. Three were wrong until
+   the audit:
+     "Do you have any RESTRICTIONS on your right to work in the UK?"  → was Yes
+     "Do you hold a visa that would REQUIRE our sponsorship?"          → was Yes
+     "Have you applied to this company in the last 6 months?"          → was Yes */
+console.log('knockout answers are the ones that do not get you rejected');
+{
+  const koCtx2 = {};
+  new Function('exports', `
+    ${reLines}
+    ${body('workAuthorisationAnswer')}
+    ${body('workAuthOptionIndex')}
+    ${body('determineYesNo')}
+    exports.d = determineYesNo;
+  `)(koCtx2);
+  const CASES = [
+    // right to work — Yes
+    ['Are you legally authorized to work in the United States?', 'yes'],
+    ['Are you legally authorised to work in the UK?', 'yes'],
+    ['Do you have the right to work in Ireland?', 'yes'],
+    ['Do you currently have the right to work in the United Kingdom?', 'yes'],
+    ['Are you able to work in the Netherlands without sponsorship?', 'yes'],
+    ['Can you work in Belgium without requiring a visa?', 'yes'],
+    ['Are you eligible to work in the EU?', 'yes'],
+    ['Do you hold a valid work permit for Switzerland?', 'yes'],
+    ['Are you a citizen or permanent resident of Canada?', 'yes'],
+    ['Please confirm you do not require visa sponsorship', 'yes'],
+    ['I am authorized to work in the US without sponsorship', 'yes'],
+    ['Will you be able to work without restrictions?', 'yes'],
+    ['Are you legally able to work in Ireland without any visa restrictions?', 'yes'],
+    ['Do you have unrestricted right to work in Australia?', 'yes'],
+    ['Are you authorized to work for any employer in the US?', 'yes'],
+    ['Can you legally work in Canada?', 'yes'],
+    // sponsorship / restriction — No
+    ['Will you now or in the future require sponsorship for employment visa status (e.g. H-1B)?', 'no'],
+    ['Will you require visa sponsorship within the next 18 months to work in the United Kingdom?', 'no'],
+    ['Do you require a work permit to work in Germany?', 'no'],
+    ['Would you need visa support to take up this role?', 'no'],
+    ['Are you currently on a visa that requires sponsorship to change employers?', 'no'],
+    ['Do you need the company to sponsor your visa now or in the future?', 'no'],
+    ['Do you have any restrictions on your right to work in the UK?', 'no'],
+    ['Would your employment be subject to obtaining a work permit?', 'no'],
+    ['Is visa sponsorship required for you to work in Poland?', 'no'],
+    ['Do you currently hold a visa that would require our sponsorship?', 'no'],
+    ['Will you be requiring immigration support to work for us?', 'no'],
+    ['Will you ever require sponsorship to maintain your work authorization?', 'no'],
+    ['Do you need a visa to work in Spain?', 'no'],
+    // availability / fit — Yes
+    ['Are you willing to relocate to London?', 'yes'],
+    ['Are you comfortable working from our Dublin office 3 days a week?', 'yes'],
+    ['Are you currently residing in Romania?', 'yes'],
+    ['Are you at least 18 years of age?', 'yes'],
+    ['Do you have 5+ years of experience with Kubernetes?', 'yes'],
+    ['Do you have hands-on experience with Linux patch and package management?', 'yes'],
+    ['Do you consent to a background check?', 'yes'],
+    ['Can you start within 4 weeks?', 'yes'],
+    ['Are you open to travel up to 25%?', 'yes'],
+    ['Is your notice period less than 3 months?', 'yes'],
+    ['Do you have a valid driving licence?', 'yes'],
+    ['Are you willing to undergo a drug test?', 'yes'],
+    ['Would you be able to work in the office five days a week?', 'yes'],
+    ['Are you prepared to relocate at your own expense?', 'yes'],
+    // history / conduct — No
+    ['Have you ever been convicted of a felony?', 'no'],
+    ['Have you previously worked for Stripe?', 'no'],
+    ['Are you a current employee of Deloitte?', 'no'],
+    ['Do you have any relatives working at this company?', 'no'],
+    ['Are you subject to a non-compete agreement?', 'no'],
+    ['Have you ever been terminated from employment?', 'no'],
+    ['Do you have any criminal convictions?', 'no'],
+    ['Have you applied to this company in the last 6 months?', 'no'],
+    ['Do you have any pending criminal charges?', 'no'],
+    ['Are you bound by any restrictive covenants from a previous employer?', 'no'],
+    ['Have you been dismissed from any position?', 'no'],
+  ];
+  const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
+    .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
+  eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
+  eq('the battery really is 54 questions', CASES.length, 54);
+}
+
+/* ── 61. v17.4: what a real browser run showed ────────────────────────────────
+   Every case here came out of driving the shipped extension in Chromium against
+   a local application form (see README v17.4). Behavioural wherever the logic
+   can run outside a page. */
+console.log('v17.4 — the answer bank, native radios, the form\'s own error messages, calm scrolling');
+{
+  // 1. The saved-response matcher, run for real against the REAL seed bank.
+  const seedSrc = src.match(/const SEED = (\[[\s\S]*?\n  \]);/)[1];
+  const SEED = new Function('return ' + seedSrc)().map((e) => ({ ...e, seeded: true }));
+  const mk = (bank) => {
+    const x = {};
+    new Function('exports', 'bank', `
+      let _savedResponses = bank;
+      ${src.match(/  const SEED_PROFILE_OWNED_RE = [^\n]*\n/)[0]}
+      ${body('findSavedResponseMatch')}
+      exports.m = findSavedResponseMatch;
+    `)(x, bank);
+    return x.m;
+  };
+  const match = mk(SEED);
+  eq('"Location (City)" is not answered by the seeded "current location"', match('Location (City) *'), '');
+  eq('the sponsorship question gets the sponsorship entry, not "visa status"',
+    match('Will you now or in the future require sponsorship for employment visa status?'), 'No');
+  eq('a seeded salary never stands in for the profile', match('What are your salary expectations?'), '');
+  eq('a seeded notice period never stands in for the profile', match('What is your notice period?'), '');
+  eq('one word of a two-word entry is not a match', match('Where is your office location?'), '');
+  eq('a full seeded match still answers', match('Are you at least 18 years of age?'), 'Yes');
+  eq('a seed matching 2 of its 3 words is not used (the decider answers instead)', match('Have you previously worked for Acme?'), '');
+  const withMine = mk([...SEED, { keywords: ['previously', 'worked', 'acme'], response: 'Yes', manual: true }]);
+  eq('your own entry still matches', withMine('Have you previously worked for Acme?'), 'Yes');
+
+  // 2. A sentence cannot be squeezed onto a yes/no knockout.
+  eq('a saved sentence on a sponsorship knockout is dropped',
+    safe('Authorized to work without sponsorship', 'Will you now or in the future require sponsorship for employment visa status?'), '');
+  eq('a sentence on an ordinary question is kept', safe('Immediately', 'When can you start?'), 'Immediately');
+
+  // 3. Prior employment phrasings.
+  eq('"Have you ever worked for Acme before?" → no', koCtx.decide('have you ever worked for acme before?'), 'no');
+  eq('"previously been employed by Acme" → no', koCtx.decide('have you previously been employed by acme?'), 'no');
+  eq('"worked for a startup before" is experience → yes', koCtx.decide('have you ever worked for a startup before?'), 'yes');
+
+  // 4. A native radio's OWN label, not the group's legend.
+  const cl = {};
+  new Function('exports', `
+    const getLabel = () => 'have you previously worked for acme? *';
+    ${body('choiceLabel')}
+    exports.c = choiceLabel;
+  `)(cl);
+  const radio = (txt) => ({ tagName: 'INPUT', type: 'radio', getAttribute: () => null,
+    labels: [{ cloneNode: () => ({ querySelectorAll: () => [], textContent: ' ' + txt + ' ' }) }] });
+  eq('each option reads its own label', [cl.c(radio('Yes')), cl.c(radio('No'))], ['yes', 'no']);
+
+  // 5. Learning only from what YOU entered.
+  eq('fields the automation filled are not learned', /\.filter\(el => isVisible\(el\) && hasFieldValue\(el\) && userTouched\(el\)\)/.test(src), true);
+  eq('the focusout learner requires a real touch', /\/\/ The automation's own focus\(\) moves raise TRUSTED focusout events\.\n\s*if \(!userTouched\(el\)\) return;/.test(src), true);
+  eq('input/change are not proof of a human', /for \(const ev of \['keydown', 'pointerdown', 'mousedown', 'paste', 'drop'\]\)/.test(src), true);
+
+  // 6. Phone formats, always from the profile number.
+  const ph = {};
+  new Function('exports', `
+    const DEFAULTS = { phoneCountryCode: '+353' };
+    ${src.match(/  const DIAL_CODES = [^\n]*\n/)[0]}
+    ${body('phoneVariants')}
+    exports.v = phoneVariants;
+  `)(ph);
+  const P = { phone: '+44 7700 900123' };
+  eq('international wording → +447700900123 first', ph.v('', P, 'Enter a phone number in international format, e.g. +14155550123')[0], '+447700900123');
+  eq('the number\'s own +44 is kept, not the +353 default', ph.v('', P, '').every((x) => !/353/.test(x)), true);
+  eq('retries never compound (built from the profile, not the box)', ph.v('353447700900123', P, '')[0], '+447700900123');
+  eq('an Irish national number gets +353', ph.v('', { phone: '087 123 4567' }, 'international format')[0], '+353871234567');
+  eq('"digits only" → a national number', ph.v('', P, 'Digits only please')[0], '07700900123');
+
+  // 7. Classifying the form's own messages.
+  const cf = {};
+  new Function('exports', `
+    const getLabel = () => '', getQuestionForInput = () => '', textOfIds = () => '';
+    ${body('fieldName')}
+    ${body('classifyFieldError')}
+    exports.c = classifyFieldError;
+  `)(cf);
+  const inp = (type, label) => ({ type, labels: [{ cloneNode: () => ({ querySelectorAll: () => [], textContent: label }) }], getAttribute: () => '' });
+  for (const [type, label, msg, kind, want] of [
+    ['tel', 'Phone', 'Please enter a valid phone number', '', 'phone'],
+    ['text', 'LinkedIn', 'Please enter a valid URL', '', 'url'],
+    ['email', 'Email', 'Please include an \'@\' in the email address.', 'type', 'email'],
+    ['text', 'Why us?', 'Your answer must be at least 100 characters', '', 'tooShort'],
+    ['text', 'Summary', 'Maximum 50 characters', '', 'tooLong'],
+    ['text', 'Years', 'Must be between 0 and 5', '', 'range'],
+    ['text', 'Salary', 'Please enter a whole number', '', 'number'],
+    ['text', 'Location', 'Please select a location from the list', '', 'list'],
+    ['text', 'First name', 'This field is required', '', 'required'],
+    ['text', 'Postcode', 'Invalid format', '', 'pattern'],
+  ]) eq(`"${msg}" → ${want}`, cf.c(inp(type, label), msg, kind), want);
+
+  // 8. The error pass runs before Submit, and a failed job says what the form said.
+  eq('errors are read and fixed before Submit is pressed', /for \(let pass = 0; pass < 2 && readFieldErrors\(\)\.length; pass\+\+\) \{/.test(src), true);
+  eq('the browser\'s own validity is read', /if \(el\.willValidate && el\.validity && !el\.validity\.valid\) \{/.test(src), true);
+  eq('a stale message is not "fixed" twice', /if \(!e\.live && stamp && stamp\.round === _lastSubmitAt && stamp\.value === errFieldValue\(e\.el\)\) continue;/.test(src), true);
+  eq('a stuck job names the field and the message', /return 'Validation errors could not be resolved' \+ \(e \? ' — ' \+ e : ''\);/.test(src), true);
+
+  // 9. Calm scrolling, run for real against a fake page.
+  const calm = src.match(/  try \{\n    const automatingNow = [\s\S]*?\n  \} catch \(_\) \{\}\n/)[0];
+  const calls = [];
+  const attrs = { 'data-ua-auto': '1' };
+  const Element = function () {}; Element.prototype.scrollIntoView = function (a) { calls.push(['siv', a]); };
+  const HTMLElement = function () {}; HTMLElement.prototype.focus = function (o) { calls.push(['focus', o]); };
+  const win = { innerHeight: 800, scrollTo(a) { calls.push(['to', a]); } };
+  win.scroll = win.scrollTo; win.scrollBy = win.scrollTo;
+  const doc = { documentElement: { clientHeight: 800, getAttribute: (k) => attrs[k] || null } };
+  new Function('Element', 'HTMLElement', 'window', 'document', calm)(Element, HTMLElement, win, doc);
+  const el = (top) => { const e = new Element(); e.getBoundingClientRect = () => ({ top, bottom: top + 30, width: 100, height: 30 }); return e; };
+  el(100).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  eq('an on-screen field is not scrolled to', calls.length, 0);
+  el(3000).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  eq('an off-screen one jumps once, instantly, to the nearest edge', calls.pop(), ['siv', { block: 'nearest', inline: 'nearest', behavior: 'instant' }]);
+  el(5000).scrollIntoView({ behavior: 'smooth' });
+  eq('and a second jump inside 700ms is dropped', calls.length, 0);
+  new HTMLElement().focus();
+  eq('focus never scrolls during a run', calls.pop(), ['focus', { preventScroll: true }]);
+  attrs['data-ua-auto'] = null;
+  el(9000).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  eq('outside a run, scrolling is untouched', calls.pop(), ['siv', { behavior: 'smooth', block: 'center' }]);
+}
+
+/* ── 62. v17.5: dropdown options by meaning, not just by text ────────────────
+   Required dropdowns worded as ranges were left EMPTY and blocked the submit
+   (seen in a real browser run). The matcher runs for real on real option lists. */
+console.log('v17.5 — ranges, notice periods, education levels, misplaced values');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const bo = {};
+  new Function('exports', `${gc('PLACEHOLDER_OPT_RE')}${gc('normMoney')}${body('toDays')}
+    ${src.match(/\n  const EDU_RANKS = \[[\s\S]*?\n  \];\n/)[0]}${gc('eduRank')}${body('bestOptionIndex')}
+    exports.b = bestOptionIndex;`)(bo);
+  const pick = (texts, t, l) => { const i = bo.b(texts, t, l); return i < 0 ? null : texts[i]; };
+  const Y = ['Select...', '0-2 years', '3-5 years', '6-10 years', '10+ years'];
+  eq('7 years → "6-10 years" (never the first option)', pick(Y, '7', 'Years of experience'), '6-10 years');
+  eq('12 years → "10+ years"', pick(Y, '12', 'Years'), '10+ years');
+  const S = ['Select...', 'Under €50,000', '€50,000 - €70,000', '€70,000 - €90,000', '€90,000+'];
+  eq('85000 → "€70,000 - €90,000"', pick(S, '85000', 'Expected salary'), '€70,000 - €90,000');
+  eq('95000 → "€90,000+"', pick(S, '95000', 'Salary'), '€90,000+');
+  eq('k-notation bands', pick(['$50k-$80k', '$80k-$120k'], '85000', 'Salary'), '$80k-$120k');
+  const N = ['Select...', 'Immediately available', '1 week', '2 weeks', '1 month', '2 months', '3 months or more'];
+  eq('"1 month" → "1 month"', pick(N, '1 month', 'Notice period'), '1 month');
+  eq('"4 weeks" → "1 month"', pick(N, '4 weeks', 'Notice period'), '1 month');
+  eq('"30 days" → "1 month" (not "Immediately" via the "0 days" inside it)', pick(N, '30 days', 'Notice period'), '1 month');
+  eq('"6 months" → "3 months or more"', pick(N, '6 months', 'Notice'), '3 months or more');
+  const E = ['Select...', 'High school', "Bachelor's degree", "Master's degree", 'PhD'];
+  eq('"Master of Science" → "Master\'s degree"', pick(E, 'Master of Science', 'Highest level of education'), "Master's degree");
+  eq('never above the profile: MSc with no Master\'s option → Bachelor', pick(['High school', 'Associate', 'Bachelor'], 'MSc', 'Degree'), 'Bachelor');
+  eq('a placeholder is never picked', pick(['Select...', 'Yes', 'No'], 'select', 'Q'), null);
+  eq('Yes/No still exact', pick(['Yes', 'No'], 'No', 'Sponsorship'), 'No');
+
+  eq('the native dropdown pass uses it', /let bi = val \? bestOptionIndex\(texts, val, lbl\) : -1;/.test(src), true);
+  eq('and falls back to the profile field the question is about', /if \(bi < 0 && !isEEO\) bi = bestOptionIndex\(texts, profileTargetFor\(lbl, p\), lbl\);/.test(src), true);
+  eq('custom dropdowns use it', /let bi = want \? bestOptionIndex\(texts, want, qFull\) : -1;/.test(src), true);
+  eq('the error fixer uses it', /let bi = want \? bestOptionIndex\(texts, want, label\) : -1;/.test(src), true);
+
+  // Profile-first guesses that used to be shadowed by defaults.
+  eq('years of experience reads the profile', /if \(\/years\.\*\(exp\|work\)\|exp\.\*years\|total\.\*experience\/\.test\(l\)\) return yearsAnswer\(p\);/.test(src), true);
+  eq('notice period reads the profile before "availability"', /return p\.notice_period \|\| p\.notice \|\| DEFAULTS\.notice;\n\s*if \(\/availab/.test(src), true);
+
+  // Misplaced values.
+  eq('misplaced values are corrected after every fill', /try \{ refilled \+= sanitizeMisplacedValues\(p\); \} catch \(_\) \{\}/.test(src), true);
+  eq('never in a box you typed in', /\(el\.value \|\| ''\)\.trim\(\) && !userTouched\(el\)\)/.test(body('sanitizeMisplacedValues')), true);
+}
 
 
 console.log(`\n${pass} passed, ${fail} failed`);

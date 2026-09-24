@@ -120,12 +120,18 @@ for (const [copy, want] of [
   ['Check your inbox for the code', true],
   ['Enter the code we sent to your email', true],
   ['One-time passcode', true],
+  // Oracle Recruiting (JPMorgan, Dell, EY…) — its PIN screen.
+  ['Confirm your identity. We sent a verification code to m***@gmail.com', true],
+  ['Enter the PIN we sent to your email address', true],
+  ['Verify your identity', true],
+  ['Please confirm your email address below', true],
   ['Tell us about your work experience', false],
   ['Upload your resume', false],
 ]) eq(`verification wall: "${copy.slice(0, 40)}" → ${want}`, WALL.test(copy), want);
 
 eq('a code is typed in preference to following a link',
-  /if \(r\.code && box\) \{/.test(enh), true);
+  /if \(r\.code && box && !tried\.has\(r\.code\)\) \{/.test(enh), true);
+eq('a code that was already rejected is not typed again', /tried\.add\(r\.code\);/.test(enh), true);
 eq('the wait is bounded', /Date\.now\(\) < deadline/.test(enh), true);
 eq('and turning the automation off stops it', /if \(autoStopped\(\)\) return false;/.test(enh), true);
 eq('with no mailbox connected the job is handed over, not failed silently',
@@ -135,6 +141,40 @@ eq('the stall watchdog stands down while waiting for the mail',
   /withBusy\('waiting for the verification email'/.test(enh), true);
 eq('a password box is never mistaken for a code box',
   /if \(\/password\/i\.test\(hay\)\) return false;/.test(enh), true);
+
+/* ── 7. a code only from mail sent for THIS wall ──────────────────────────── */
+console.log('only mail sent since the wall appeared is read');
+eq('the worker takes the caller\'s "since"', /since: Number\(msg\.since\) \|\| 0/.test(src), true);
+eq('and the cutoff is the later of the two', /const cutoff = Math\.max\(Date\.now\(\) - MAX_AGE_MIN \* 60000, since\);/.test(src), true);
+eq('the page sends when the wall appeared', /askMailboxForVerification\(hosts, company \? \[company\] : \[\], since\)/.test(enh), true);
+eq('Oracle\'s own senders are searched on Oracle pages', /if \(isOracleCloud\(\)\) hosts\.push\('oraclecloud\.com', 'oracle\.com'\);/.test(enh), true);
+
+/* ── 8. one box per digit ─────────────────────────────────────────────────── */
+console.log('a split PIN is typed one digit per box');
+{
+  const grab = (name) => {
+    const a = enh.search(new RegExp('^  function ' + name + '\\(', 'm'));
+    let d = 0, seen = false;
+    for (let i = a; i < enh.length; i++) {
+      if (enh[i] === '{') { d++; seen = true; } else if (enh[i] === '}') { d--; if (seen && !d) return enh.slice(a, i + 1); }
+    }
+  };
+  const mk = (n, max) => Array.from({ length: n }, () => ({ maxLength: max, value: '', disabled: false, readOnly: false, focus() {} }));
+  const run = (boxes, code) => {
+    new Function('boxes', 'code', `
+      const deepAll = () => boxes, isVisible = () => true;
+      const nativeSet = (el, v) => { el.value = v; };
+      ${grab('codeBoxGroup')}
+      ${grab('typeVerificationCode')}
+      typeVerificationCode(boxes[0], code);
+    `)(boxes, code);
+    return boxes.map((b) => b.value);
+  };
+  eq('six one-digit boxes get one digit each', run(mk(6, 1), '482913'), ['4', '8', '2', '9', '1', '3']);
+  eq('a single code box gets the whole code', run(mk(1, 6), '482913'), ['482913']);
+  eq('a normal-width box is not split', run(mk(1, -1), '4829'), ['4829']);
+  eq('three one-char inputs are not taken for a PIN', run(mk(3, 1), '482913'), ['482913', '', '']);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
