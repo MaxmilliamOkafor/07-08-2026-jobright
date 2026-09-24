@@ -1825,6 +1825,20 @@
 
   // ===================== ENHANCED AUTOCOMPLETE DROPDOWN FINDER =====================
   function findAutocompleteDropdown(input) {
+    /* The listbox this input points at, first. A combobox names its own menu in
+       aria-controls / aria-owns — Greenhouse's location field does — and that is
+       the only unambiguous answer. Falling straight through to "the first
+       visible [class*=dropdown] or [class*=menu] on the page" could pick the
+       Country selector or the site navigation, and then click an item out of
+       the wrong list. */
+    try {
+      for (const attr of ['aria-controls', 'aria-owns', 'list']) {
+        const id = input.getAttribute && input.getAttribute(attr);
+        if (!id) continue;
+        const owned = deepOne('#' + CSS.escape(id));
+        if (owned && isVisible(owned)) return owned;
+      }
+    } catch (_) {}
     const selectors = [
       '[class*="autocomplete"]', '[class*="typeahead"]', '[class*="suggestion"]',
       '[class*="dropdown"]', '[class*="listbox"]', '[role="listbox"]',
@@ -1832,13 +1846,23 @@
       '.css-26l3qy-menu', '.Select-menu', '.react-select__menu',
       '[class*="dropdown-menu"]:not([style*="display: none"])'
     ];
-    for (const sel of selectors) {
-      const dd = $(sel);
-      if (dd && isVisible(dd)) return dd;
-    }
+    // Then the input's own field — before anything page-wide.
     const parent = input.closest('.form-group, .field, [class*="field"], [class*="FormField"]');
     if (parent) {
       for (const sel of selectors) { const dd = parent.querySelector(sel); if (dd && isVisible(dd)) return dd; }
+    }
+    // Last, a page-wide search — but only for something that appeared near
+    // this input, which is what a suggestion list does and a nav menu does not.
+    let r0 = null;
+    try { r0 = input.getBoundingClientRect(); } catch (_) {}
+    for (const sel of selectors) {
+      const dd = $(sel);
+      if (!dd || !isVisible(dd)) continue;
+      if (r0) {
+        const r = dd.getBoundingClientRect();
+        if (Math.abs(r.top - r0.bottom) > 400) continue;
+      }
+      return dd;
     }
     return null;
   }
@@ -1904,9 +1928,36 @@
   }
 
   // Commit an autocomplete field to a real, accepted value. Returns true on commit.
+  /* Did the widget actually accept a value? Typing leaves text in the box
+     whether or not a suggestion was chosen, so "the input is non-empty" proves
+     nothing. What counts is the input still holding a value once it has lost
+     focus AND no "required" / "please select" message beside it. */
+  function locationAccepted(el) {
+    try {
+      if (!(el.value || '').trim()) return false;
+      const box = el.closest('.form-group,.field,[class*="field"],[class*="Field"],li') || el.parentElement;
+      const t = (box && box.textContent) || '';
+      return !/is required|please (select|choose|enter)|select a (location|city)|invalid location/i.test(t);
+    } catch (_) { return !!(el.value || '').trim(); }
+  }
+
   async function commitAutocomplete(el, value) {
     if (!el || !value) return false;
+    /* Try the full query, then its first part. "Dublin, Leinster, Ireland" can
+       return no suggestions where "Dublin" returns several; and a profile with
+       only a country falls through to that. */
+    const parts = String(value).split(',').map(x => x.trim()).filter(Boolean);
+    const attempts = [...new Set([value, parts[0]].filter(Boolean))];
+    for (const q of attempts) {
+      if (await commitAutocompleteOnce(el, q) && locationAccepted(el)) return true;
+    }
+    return locationAccepted(el);
+  }
+
+  async function commitAutocompleteOnce(el, value) {
     try {
+      // Clear whatever a previous attempt left, or the new text is appended to it.
+      try { nativeSet(el, ''); } catch (_) {}
       await typeInto(el, value);
 
       // Poll for a suggestion list to appear (Google Places + generic widgets).
@@ -1930,9 +1981,15 @@
         scrollIfNeeded(best);
         realClick(best);
         await sleep(400);
-        // Google Places needs ArrowDown+Enter on some builds — do it as a reinforcement.
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, composed: true }));
+        /* Google Places needs ArrowDown+Enter on some builds — but only as a
+           fallback. Sending it after a click that DID take moves the highlight
+           to the next suggestion and commits that one instead. */
+        if (!findPacItems().length && locationAccepted(el)) {
+          // The list closed and the value stuck: the click worked.
+        } else {
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, composed: true }));
+        }
         el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
         LOG('Location committed via Google Places suggestion');
@@ -1966,12 +2023,34 @@
   }
 
   // Find every visible location-style input and commit it to a real selection.
+  /* What to type into a location box, most specific first.
+
+     This returned early — before touching the field — whenever the profile had
+     no city, and a required "Location (City)" was then left empty on every
+     Greenhouse form that asked for one. That was the only unanswered question in
+     an entire diagnostics export.
+
+     The chain never invents a city. It falls back to what the profile actually
+     holds, down to the country: a location autocomplete offers the country as a
+     suggestion, and a real place the candidate is in beats a blank required
+     field that blocks the submit. */
+  function locationQuery(p, cityOnly) {
+    const city = (p.city || '').trim();
+    const region = (p.state || p.region || '').trim();
+    const country = (p.country || DEFAULTS.country || '').trim();
+    if (city) return cityOnly ? [city, region].filter(Boolean).join(', ') : [city, region, country].filter(Boolean).join(', ');
+    const loc = (p.location || '').trim();
+    if (loc) return loc;
+    const addr = (p.address || '').trim();
+    if (addr) return addr;
+    return country;
+  }
+
   async function resolveLocationFields() {
     const p = await getProfile();
-    const cityVal = (p.city ? `${p.city}${p.state ? ', ' + p.state : ''}${p.country ? ', ' + p.country : ''}` : '').trim()
-      || p.location || p.city || '';
-    if (!cityVal) return 0;
-    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button])')
+    if (!locationQuery(p, false)) return 0;
+    // deepAll, not $$: the field can sit behind a shadow boundary.
+    const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button])', 300)
       .filter(el => isVisible(el) && isLocationField(el));
     let committed = 0;
     for (const inp of inputs) {
@@ -1985,8 +2064,10 @@
       }
       // Use the most specific label-appropriate value (city-only for pure "city" fields).
       const lbl = (getLabel(inp) || '').toLowerCase();
-      const val = /^.*\bcity\b.*$/.test(lbl) && p.city ? `${p.city}${p.state ? ', ' + p.state : ''}` : cityVal;
+      const val = locationQuery(p, /\bcity\b/.test(lbl));
+      if (!val) continue;
       if (await commitAutocomplete(inp, val)) committed++;
+      else DIAG('location.uncommitted', lbl || 'location', { detail: { tried: val.split(',')[0] } });
       await sleep(300);
     }
     if (committed) LOG(`Resolved ${committed} location field(s)`);

@@ -2564,7 +2564,31 @@ Per page iteration:
 A three-page job on settled pages: **20.4s → 6.0s at 1x**, 1.8s at 3x. That is
 3.4x at 1x alone, before the selector does anything.
 
-Suite total: **1,432 assertions**, all green on Jobright 1.23.0.
+### Greenhouse "Location (City)"
+
+The only unanswered question in an entire diagnostics export, and three defects
+behind it.
+
+**It was never attempted.** `resolveLocationFields` returned before touching the
+field whenever the profile had no city. It now falls back through what the
+profile actually holds — city, then location, then address, then country — and
+never invents a city. A location autocomplete offers the country as a suggestion,
+and a real place beats a blank required field that blocks the submit.
+
+**It could pick from the wrong list.** `findAutocompleteDropdown` took the first
+visible `[class*="dropdown"]` or `[class*="menu"]` anywhere on the page, which on
+a Greenhouse form can be the Country selector or the site navigation. It now takes
+the listbox the input names in `aria-controls` first, then the input's own field,
+and only then something page-wide that appeared near the input.
+
+**"Typed" was taken for "chosen".** Typing leaves text in the box whether or not a
+suggestion was picked, so a non-empty input proved nothing. Success now means the
+input holds a value with no "is required" / "please select" beside it. A query
+that finds nothing is retried with its first part, and the ArrowDown+Enter
+reinforcement only fires when the click did not take — sending it after a click
+that worked moved the highlight on and committed the *next* suggestion.
+
+Suite total: **1,453 assertions**, all green on Jobright 1.23.0.
 
 ---
 

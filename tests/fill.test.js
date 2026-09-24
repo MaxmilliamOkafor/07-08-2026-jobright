@@ -2270,5 +2270,76 @@ eq('checked cheaply, on an interval, not on every call',
   /\}, 2000\);/.test(hooks2), true);
 
 
+/* ── 57. Greenhouse "Location (City)" ─────────────────────────────────────── */
+/* The only unanswered question in an entire diagnostics export. Three defects,
+   and the first one meant the field was never even attempted. */
+console.log('a required location field gets answered');
+{
+  const lqCtx = {};
+  new Function('exports', `
+    const DEFAULTS = { country: 'Ireland' };
+    ${body('locationQuery')}
+    exports.q = locationQuery;
+  `)(lqCtx);
+  const q = lqCtx.q;
+  /* (1) It returned 0 before touching the field whenever the profile had no
+     city. */
+  eq('a full profile gives city, region and country', q({ city: 'Dublin', state: 'Leinster', country: 'Ireland' }, false), 'Dublin, Leinster, Ireland');
+  eq('a "city" field gets just the city part', q({ city: 'Dublin', state: 'Leinster', country: 'Ireland' }, true), 'Dublin, Leinster');
+  eq('no city: the profile\'s own location is used', q({ location: 'Cork, Ireland' }, true), 'Cork, Ireland');
+  eq('no location either: the address', q({ address: 'Galway' }, true), 'Galway');
+  eq('nothing at all: the country — never a blank that blocks the submit', q({}, true), 'Ireland');
+  eq('the profile\'s country beats the default', q({ country: 'Belgium' }, true), 'Belgium');
+  /* It must never make a city up. */
+  eq('a city is never invented', /Dublin|London/.test(q({ country: 'Ireland' }, true)), false);
+}
+const rlf = body('resolveLocationFields');
+eq('the field is always attempted, not skipped for want of a city',
+  /if \(!locationQuery\(p, false\)\) return 0;/.test(rlf) && !/if \(!cityVal\) return 0;/.test(rlf), true);
+eq('and it is found across shadow roots, not with document.querySelectorAll',
+  /deepAll\('input:not/.test(rlf), true);
+eq('a location that would not commit is reported, with what was tried',
+  /DIAG\('location\.uncommitted'/.test(rlf), true);
+
+/* (2) The dropdown finder took the first visible [class*=dropdown] or
+   [class*=menu] anywhere on the page — the Country selector or the site nav. */
+const fad = body('findAutocompleteDropdown');
+eq('the listbox the input names in aria-controls wins',
+  /for \(const attr of \['aria-controls', 'aria-owns', 'list'\]\)/.test(fad), true);
+eq('its own field is searched before the whole page',
+  fad.indexOf("input.closest('.form-group") < fad.indexOf('const dd = $(sel);'), true);
+eq('and a page-wide match must have appeared near the input',
+  /if \(Math\.abs\(r\.top - r0\.bottom\) > 400\) continue;/.test(fad), true);
+
+/* (3) Typing leaves text in the box whether or not a suggestion was chosen, so
+   a non-empty input proved nothing. */
+{
+  const laCtx = {};
+  new Function('exports', `${body('locationAccepted')}\nexports.f = locationAccepted;`)(laCtx);
+  const mk = (value, around) => ({
+    value,
+    closest: () => ({ textContent: around }),
+    parentElement: null,
+  });
+  eq('a value with nothing complaining is accepted', laCtx.f(mk('Dublin, Ireland', 'Location (City)*')), true);
+  eq('an empty box is not', laCtx.f(mk('', 'Location (City)*')), false);
+  eq('typed text beside "is required" is NOT accepted — nothing was chosen',
+    laCtx.f(mk('Dublin', 'Location (City)* Location (City) is required')), false);
+  eq('nor beside "please select a location"',
+    laCtx.f(mk('Dub', 'Location Please select a location')), false);
+}
+const ca = body('commitAutocomplete');
+eq('a query that finds nothing is retried with its first part',
+  /const attempts = \[\.\.\.new Set\(\[value, parts\[0\]\]\.filter\(Boolean\)\)\];/.test(ca), true);
+eq('and success means the widget accepted it, not that text was typed',
+  /if \(await commitAutocompleteOnce\(el, q\) && locationAccepted\(el\)\) return true;/.test(ca), true);
+eq('each attempt starts from an empty box, not appended to the last',
+  /try \{ nativeSet\(el, ''\); \} catch \(_\) \{\}/.test(body('commitAutocompleteOnce')), true);
+/* ArrowDown+Enter after a click that worked moves the highlight on and commits
+   the NEXT suggestion. */
+eq('the keyboard reinforcement only fires when the click did not take',
+  /if \(!findPacItems\(\)\.length && locationAccepted\(el\)\) \{/.test(body('commitAutocompleteOnce')), true);
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
