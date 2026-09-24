@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer at Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto} .f{margin:14px 0} label{display:block;font-weight:600}
+input[type=text],input[type=email],input[type=tel],select,textarea{width:100%;padding:6px} .spacer{height:900px}</style>
+</head><body>
+<h1>Senior Data Engineer</h1><div class="company">Acme Corp</div>
+<p>London, United Kingdom</p>
+<div class="spacer">Job description… lorem ipsum.</div>
+<form id="application_form" novalidate onsubmit="return window.__validate(event)">
+  <h2>Apply for this job</h2>
+  <div class="f"><label for="first_name">First Name *</label><input type="text" id="first_name" name="first_name" required aria-required="true"></div>
+  <div class="f"><label for="last_name">Last Name *</label><input type="text" id="last_name" name="last_name" required aria-required="true"></div>
+  <div class="f"><label for="email">Email *</label><input type="email" id="email" name="email" required aria-required="true"></div>
+  <div class="f"><label for="phone">Phone *</label><input type="tel" id="phone" name="phone" required aria-required="true" aria-describedby="phone-err"><div class="field-error" id="phone-err" hidden></div></div>
+  <div class="f"><label for="loc">Location (City) *</label><input type="text" id="loc" name="loc" required aria-required="true"></div>
+  <div class="f"><label for="resume">Resume/CV *</label><input type="file" id="resume" name="resume" required></div>
+  <div class="f"><label for="linkedin">LinkedIn Profile URL *</label><input type="text" id="linkedin" name="linkedin" required aria-required="true"><div class="field-error" id="linkedin-err" hidden></div></div>
+  <div class="f"><label for="cover">Why do you want to work at Acme? *</label><textarea id="cover" name="cover" required></textarea><div class="field-error" id="cover-err" hidden></div></div>
+  <div class="f"><label for="q_auth">Are you legally authorized to work in the United Kingdom? *</label>
+    <select id="q_auth" name="q_auth" required><option value="">Select...</option><option>Yes</option><option>No</option></select></div>
+  <div class="f"><label for="q_spons">Will you now or in the future require sponsorship for employment visa status? *</label>
+    <select id="q_spons" name="q_spons" required><option value="">Select...</option><option>Yes</option><option>No</option></select></div>
+  <fieldset class="f"><legend>Have you previously worked for Acme? *</legend>
+    <label><input type="radio" name="q_prev" value="Yes" required> Yes</label>
+    <label><input type="radio" name="q_prev" value="No"> No</label></fieldset>
+  <div class="f"><label for="q_years">How many years of experience do you have with Python? (0-5) *</label><input type="text" id="q_years" name="q_years" required aria-required="true"><div class="field-error" id="q_years-err" hidden></div></div>
+  <div class="f"><label for="q_salary">What are your salary expectations? *</label><input type="text" id="q_salary" name="q_salary" required aria-required="true"></div>
+  <div class="f"><label for="q_notice">What is your notice period? *</label><input type="text" id="q_notice" name="q_notice" required aria-required="true"></div>
+  <div class="f"><label for="gender">Gender</label><select id="gender" name="gender"><option value="">Select...</option><option>Male</option><option>Female</option><option>Decline To Self Identify</option></select></div>
+  <div class="f"><label><input type="checkbox" id="consent" name="consent" required> I consent to Acme processing my personal data in accordance with the privacy policy *</label></div>
+  <div class="f"><label><input type="checkbox" id="mkt" name="mkt"> Send me marketing emails about future roles</label></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0, focus: 0 };
+  let lastY = scrollY, lastDir = 0;
+  addEventListener('scroll', () => {
+    __events.scroll++;
+    const d = Math.sign(scrollY - lastY); if (d && lastDir && d !== lastDir) __events.scrollDirChanges++; if (d) lastDir = d; lastY = scrollY;
+  }, true);
+  document.addEventListener('input', (e) => { const k = e.target.name || e.target.id; __events.input[k] = (__events.input[k] || 0) + 1; }, true);
+  window.__seq=[];document.addEventListener('change', (e) => { if (e.target.name==='gender') __seq.push(e.target.value + '@' + Math.round(performance.now())); const k = 'chg:' + (e.target.name || e.target.id); __events.input[k] = (__events.input[k] || 0) + 1; }, true);
+  window.__rounds = 0;
+  window.__validate = (e) => {
+    e.preventDefault(); __rounds++;
+    const err = (id, msg) => { const f = document.getElementById(id), d = document.getElementById(id + '-err'); f.setAttribute('aria-invalid', msg ? 'true' : 'false'); d.hidden = !msg; d.textContent = msg || ''; return !!msg; };
+    let bad = 0;
+    bad += err('phone', /^\+\d{10,14}$/.test(document.getElementById('phone').value) ? '' : 'Please enter a valid phone number in international format, e.g. +14155550123');
+    bad += err('cover', document.getElementById('cover').value.trim().length >= 100 ? '' : 'Your answer must be at least 100 characters');
+    const y = document.getElementById('q_years').value.trim();
+    bad += err('q_years', !/^\d+$/.test(y) ? 'Must be a whole number' : (+y > 5 ? 'Must be between 0 and 5' : ''));
+    bad += err('linkedin', /^https:\/\//.test(document.getElementById('linkedin').value) ? '' : 'Please enter a valid URL');
+    const radios = document.querySelectorAll('input[name=q_prev]');
+    if (![...radios].some(r => r.checked)) bad++;
+    window.__lastErrors = bad;
+    if (bad) return false;
+    return window.__submit(e);
+  };
+  window.__submit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(document.getElementById('application_form'));
+    const out = {}; for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name + ':' + v.size : '') : v;
+    window.__submitted = out;
+    try { localStorage.setItem('__submitted', JSON.stringify(out)); } catch (_) {}
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+    return false;
+  };
+</script>
+</body></html>

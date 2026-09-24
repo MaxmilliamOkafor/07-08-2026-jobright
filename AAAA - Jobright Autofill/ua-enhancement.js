@@ -1129,8 +1129,12 @@
     if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
     if (/why.*(compan|role|want|interest|position)/.test(l)) return DEFAULTS.why;
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
-    if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return DEFAULTS.years;
-    if (/availab|start.?date|notice|when.*start/.test(l)) return DEFAULTS.availability;
+    // The PROFILE first. These two returned the defaults outright and the rules
+    // further down that read the profile were never reached — a "1 month"
+    // notice period was answered "Immediately" on every form.
+    if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return yearsAnswer(p);
+    if (/notice.?period|days.?notice|period of notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
+    if (/availab|start.?date|notice|when.*start/.test(l)) return p.availability || p.start_date || DEFAULTS.availability;
     // Both directions from one decider — see workAuthorisationAnswer. The old
     // pair ran /authoriz/ (which never matched the British "authorised") and then
     // /sponsor|visa/, so every European eligibility question answered "No".
@@ -3132,6 +3136,112 @@
   // bug we fixed earlier) — so on the next render React reverts the select and the field
   // stays "required / must have a value" even though the option visibly shows selected.
   // Calling the PROTOTYPE value setter + dispatching input & change is what makes it stick.
+  /* ── MATCHING AN ANSWER TO A DROPDOWN'S OPTIONS ────────────────────────────
+     Ported from the OptimHire patch's bestSelectOption and extended. Text
+     matching alone cannot answer the dropdowns real forms use most:
+       "Years of experience"  0-2 / 3-5 / 6-10 / 10+         for "7"
+       "Expected salary"      €50,000 - €70,000 / €70,000+   for "85000"
+       "Notice period"        1 week / 2 weeks / 1 month     for "4 weeks"
+       "Education"            Bachelor's / Master's / PhD    for "Master of Science"
+     Left unanswered, each of those REQUIRED dropdowns blocked the submit. */
+  const PLACEHOLDER_OPT_RE = /^\s*(select|choose|please (select|choose)|--|—|-\s*select|pick one|none selected)\b|^\s*$/i;
+  const normMoney = (s) => String(s).toLowerCase()
+    .replace(/[$€£¥₹]|usd|eur|gbp|cad|aud/g, '')
+    .replace(/(\d),(\d{3})/g, '$1$2').replace(/(\d),(\d{3})/g, '$1$2')
+    .replace(/(\d+(?:\.\d+)?)\s*([km])\b/gi, (_, n, suf) => String(Math.round(parseFloat(n) * (/k/i.test(suf) ? 1e3 : 1e6))));
+  function toDays(s) {
+    const t = String(s || '').toLowerCase();
+    if (/immediate|right away|\basap\b|\bnow\b|no notice|\bnone\b|(^|[^\d])0 days?\b/.test(t)) return 0;
+    const m = t.match(/(\d+(?:\.\d+)?)\s*(day|week|wk|month|mo)/);
+    if (!m) { const w = t.match(/\b(one|two|three|four|six)\s*(week|month)/); if (!w) return NaN;
+      const n = { one: 1, two: 2, three: 3, four: 4, six: 6 }[w[1]]; return n * (/week/.test(w[2]) ? 7 : 30); }
+    const n = parseFloat(m[1]);
+    return n * (/day/.test(m[2]) ? 1 : /w/.test(m[2]) ? 7 : 30);
+  }
+  const EDU_RANKS = [
+    [/\b(ph\.?\s?d|doctor(ate|al)?|d\.?phil)\b/i, 5],
+    [/\b(master|m\.?sc|m\.?s\.?\b|m\.?a\.?\b|mba|m\.?eng|postgrad(uate)?)\b/i, 4],
+    [/\b(bachelor|b\.?sc|b\.?s\.?\b|b\.?a\.?\b|b\.?eng|undergrad(uate)?|honours|degree)\b/i, 3],
+    [/\b(associate|diploma|hnd|foundation)\b/i, 2],
+    [/\b(high school|secondary|ged|a.?levels?|leaving cert)\b/i, 1],
+  ];
+  const eduRank = (s) => { for (const [re, r] of EDU_RANKS) if (re.test(String(s || ''))) return r; return 0; };
+
+  /* Index of the best option for `target`, or -1. `texts` are the options'
+     visible texts, in order. */
+  function bestOptionIndex(texts, target, label) {
+    const opts = texts.map((t, i) => ({ i, t: String(t || '').replace(/\s+/g, ' ').trim(), l: String(t || '').replace(/\s+/g, ' ').trim().toLowerCase() }))
+      .filter((o) => !PLACEHOLDER_OPT_RE.test(o.t));
+    if (!opts.length || target == null || String(target).trim() === '') return -1;
+    const t = String(target).replace(/\s+/g, ' ').trim().toLowerCase();
+    const lbl = String(label || '').toLowerCase();
+    let o = opts.find((x) => x.l === t);
+    if (o) return o.i;
+    o = opts.find((x) => x.l.startsWith(t + ' ') || x.l.startsWith(t + ',') || x.l.startsWith(t + "'"));
+    if (o) return o.i;
+    if (t.length > 2) { o = opts.find((x) => x.l.includes(t)); if (o) return o.i; }
+    o = opts.find((x) => x.l.length > 2 && new RegExp('\\b' + x.l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t));
+    if (o) return o.i;
+
+    // Education: by level, never below what the profile says.
+    const tr = eduRank(t);
+    if (tr && (/educat|degree|qualif|diploma|study|school/.test(lbl) || opts.filter((x) => eduRank(x.l)).length >= 2)) {
+      const ranked = opts.map((x) => ({ x, r: eduRank(x.l) })).filter((y) => y.r);
+      const same = ranked.find((y) => y.r === tr);
+      if (same) return same.x.i;
+      const below = ranked.filter((y) => y.r < tr).sort((a, b) => b.r - a.r)[0];
+      if (below) return below.x.i;
+    }
+
+    // Notice period / availability by days: the closest option, ties to the longer.
+    const td = toDays(t);
+    if (!isNaN(td) && (/notice|availab|start|join/.test(lbl) || opts.filter((x) => !isNaN(toDays(x.l))).length >= 2)) {
+      let best = -1, bestD = Infinity;
+      for (const x of opts) {
+        const d = toDays(x.l);
+        if (isNaN(d)) continue;
+        const moreThan = /or more|\+|over|more than|longer/.test(x.l);
+        const dist = moreThan && td >= d ? 0 : Math.abs(d - td);
+        if (dist < bestD || (dist === bestD && d > (best >= 0 ? toDays(texts[best]) : -1))) { bestD = dist; best = x.i; }
+      }
+      if (best >= 0) return best;
+    }
+
+    // Numbers: the option whose range contains it.
+    const num = parseFloat(normMoney(t).replace(/[^\d.]/g, ''));
+    if (!isNaN(num) && /^\s*[$€£]?\s*\d[\d,.]*\s*[km]?\b/.test(t)) {
+      let best = -1, bestSpan = Infinity;
+      for (const x of opts) {
+        const txt = normMoney(x.l);
+        const range = txt.match(/(\d+(?:\.\d+)?)\s*(?:-|to|–|—|and)\s*(\d+(?:\.\d+)?)/);
+        if (range) {
+          const lo = parseFloat(range[1]), hi = parseFloat(range[2]);
+          if (num >= lo && num <= hi && hi - lo < bestSpan) { best = x.i; bestSpan = hi - lo; }
+          continue;
+        }
+        const over = txt.match(/(?:over|more\s*than|at\s*least|above|>=?)\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:\+|or more|and (?:above|over|up))/);
+        if (over) { const lo = parseFloat(over[1] || over[2]); if (num >= lo && num - lo + 1 < bestSpan) { best = x.i; bestSpan = num - lo + 1; } continue; }
+        const under = txt.match(/(?:less\s*than|under|below|up\s*to|<=?)\s*(\d+(?:\.\d+)?)/);
+        if (under) { const hi = parseFloat(under[1]); if (num <= hi && hi - num + 1 < bestSpan) { best = x.i; bestSpan = hi - num + 1; } continue; }
+        const single = txt.match(/^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)?\s*$/);
+        if (single) { const d = Math.abs(parseFloat(single[1]) - num); if (d < bestSpan) { best = x.i; bestSpan = d; } }
+      }
+      if (best >= 0) return best;
+    }
+    return -1;
+  }
+  /* What the question is about, when the guesser returned nothing usable for
+     a dropdown — the profile value to match against its options. */
+  function profileTargetFor(label, p) {
+    const l = String(label || '').toLowerCase();
+    if (/years?.{0,30}(experience|exp\b)|experience.{0,20}years?|how long/.test(l)) return yearsAnswer(p);
+    if (/salary|compensation|pay (expectation|range)|desired pay|remuneration/.test(l)) return p.expected_salary || p.desired_salary || DEFAULTS.salary;
+    if (/notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
+    if (/availab|start date|when can you start|earliest start/.test(l)) return p.availability || p.notice_period || DEFAULTS.availability;
+    if (/educat|degree|qualification/.test(l)) return p.education_level || p.highest_degree || p.degree || "Bachelor's";
+    if (/how did you (hear|find)|source|where did you (see|find)/.test(l)) return DEFAULTS.howHeard;
+    return '';
+  }
   function setSelectValue(sel, value) {
     if (!sel) return false;
     try {
@@ -3754,6 +3864,15 @@
       if (!pick && real.length) pick = real[real.length - 1];
     }
 
+    // Salary bands, notice periods, education levels — see bestOptionIndex.
+    if (!pick) {
+      const texts = real.map(o => comboText(o));
+      let bi = want ? bestOptionIndex(texts, want, qFull) : -1;
+      if (bi < 0 && !/gender|disability|veteran|race|ethnic|sex\b/i.test(qFull)) {
+        try { bi = bestOptionIndex(texts, profileTargetFor(qFull, await getProfile()), qFull); } catch (_) {}
+      }
+      if (bi >= 0) pick = real[bi];
+    }
     if (!pick && want) {
       pick = real.find(o => norm(comboText(o)) === want)
         || real.find(o => norm(comboText(o)).includes(want))
@@ -4261,6 +4380,42 @@
   function isWorkday() { return /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i.test(location.href); }
   function isJobright() { return /jobright\.ai/i.test(location.hostname); }
 
+  /* ── VALUES IN THE WRONG BOX (ported from the OptimHire patch's sanitizer) ──
+     Two engines fill these forms — Jobright's and ours — and either can put a
+     value in the wrong field: the LinkedIn URL in "Preferred name", the email
+     in "Phone", a name in the Email box. The form then rejects the submit, or
+     worse, accepts it. After each fill, every text box whose content clearly
+     does not belong to its label gets the right answer, or is cleared. Never a
+     box you typed in yourself. */
+  const URL_LABEL_RE = /url|link|web ?site|portfolio|linkedin|github|gitlab|profile|behance|dribbble|twitter|social|blog|homepage|http/i;
+  const EMAIL_LABEL_RE = /e-?mail|username|user name|login/i;
+  function sanitizeMisplacedValues(p) {
+    let fixed = 0;
+    const boxes = deepAll('input[type=text],input[type=email],input[type=tel],input[type=url],input:not([type]),textarea', 200)
+      .filter((el) => isVisible(el) && !el.readOnly && !el.disabled && (el.value || '').trim() && !userTouched(el));
+    for (const el of boxes) {
+      const v = String(el.value).trim();
+      const lbl = String(fieldName(el) || getLabel(el) || '');
+      const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(v);
+      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+      let why = '';
+      if (isUrl && !URL_LABEL_RE.test(lbl) && el.tagName !== 'TEXTAREA') why = 'a link';
+      else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
+      else if ((el.type === 'email' || (/e-?mail/i.test(lbl) && !/confirm|re-?enter|repeat|verify/i.test(lbl) && !/(recruiter|referr|reference|manager)/i.test(lbl))) && !isEmail && el.tagName !== 'TEXTAREA') why = 'not an email address';
+      else if ((el.type === 'tel' || /phone|mobile|telephone/i.test(lbl)) && !/code|ext/i.test(lbl) && !/\d{3}/.test(v)) why = 'not a phone number';
+      if (!why) continue;
+      let good = '';
+      try { good = String(guessFieldValue(lbl, p, el) || '').trim(); } catch (_) {}
+      if (good && good === v) continue;
+      const goodIsBad = !good || (why === 'a link' && /^(https?:\/\/|www\.)/i.test(good)) || (why === 'an email address' && /@/.test(good));
+      LOG(`"${lbl.slice(0, 50)}" held ${why} — ${goodIsBad ? 'cleared' : 'replaced with the right answer'}`);
+      try { el.focus({ preventScroll: true }); } catch (_) {}
+      nativeSet(el, goodIsBad ? '' : good);
+      fixed++;
+    }
+    return fixed;
+  }
+
   // ===================== FALLBACK FORM FILLER =====================
   // Fills fields that Jobright autofill missed
   async function fallbackFill__impl() {
@@ -4300,7 +4455,14 @@
       const val = guessFieldValue(lbl, p, sel);
       const opts = deepAll('option', sel).filter(o => o.value && o.index > 0);
       let opt = null;
-      if (val) {
+      // Ranges, notice periods, education levels — see bestOptionIndex.
+      {
+        const texts = Array.from(sel.options).map(o => o.text);
+        let bi = val ? bestOptionIndex(texts, val, lbl) : -1;
+        if (bi < 0 && !isEEO) bi = bestOptionIndex(texts, profileTargetFor(lbl, p), lbl);
+        if (bi >= 0 && sel.options[bi] && sel.options[bi].value) opt = sel.options[bi];
+      }
+      if (!opt && val) {
         const valLower = val.toLowerCase().trim();
         opt = opts.find(o => o.text.trim().toLowerCase() === valLower)
           || opts.find(o => o.text.trim().toLowerCase().includes(valLower))
@@ -4432,6 +4594,8 @@
     // is not clobbered by the verification re-fill above. This clears the common
     // "Please enter your location" stall that would otherwise require manual input.
     const locFixed = await resolveLocationFields();
+    // Values that landed in the wrong box — see sanitizeMisplacedValues.
+    try { refilled += sanitizeMisplacedValues(p); } catch (_) {}
 
     // Learn from all filled fields for future use
     learnFromFilledFields();
@@ -7646,9 +7810,17 @@
     }
     if (el.tagName === 'SELECT') {
       const want = guessFieldValue(label, p, el);
-      const opts = Array.from(el.options).filter((o) => o.value !== '' && !/^(select|choose|please|--)/i.test(o.text.trim()));
-      const opt = (want && (opts.find((o) => o.text.trim().toLowerCase() === want.toLowerCase()) || opts.find((o) => o.text.toLowerCase().includes(want.toLowerCase()))));
-      if (opt) { setSelectValue(el, opt.value); return 'picked "' + opt.text.trim().slice(0, 30) + '"'; }
+      const texts = Array.from(el.options).map((o) => o.text);
+      let bi = want ? bestOptionIndex(texts, want, label) : -1;
+      if (bi < 0) bi = bestOptionIndex(texts, profileTargetFor(label, p), label);
+      const real = Array.from(el.options).filter((o) => o.value !== '' && !PLACEHOLDER_OPT_RE.test(o.text));
+      // A required diversity question: decline, never a specific identity.
+      if (bi < 0 && /gender|race|ethnic|veteran|disabilit|sexual|pronoun/i.test(label)) {
+        const d = real.find((o) => /prefer not|decline|not to (say|disclose|answer)|do not wish|don.t wish/i.test(o.text));
+        if (d) bi = d.index;
+      }
+      const opt = bi >= 0 ? el.options[bi] : null;
+      if (opt && opt.value !== '') { setSelectValue(el, opt.value); return 'picked "' + opt.text.trim().slice(0, 30) + '"'; }
       return '';
     }
     switch (kind) {

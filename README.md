@@ -2827,6 +2827,49 @@ Suite total: **1,595 assertions**, all green.
 
 ---
 
+## v17.5 — dropdowns by meaning, and the OptimHire patch's best parts
+
+Reviewed the OptimHire patch (`optimhire-updates`, branch `claude/jolly-fermat-8VrR3`)
+for what it does better. OptimHire's own AI engine is server-side behind its
+login and cannot live inside this extension; the patch's fill logic can, and
+two of its ideas closed real failures here.
+
+### Required dropdowns left empty — the submit could never happen
+A real-browser run on a form with ordinary range dropdowns left **three required
+fields blank**: text matching cannot answer "0-2 / 3-5 / 6-10 / 10+" for "7".
+The option matcher (ported from OptimHire's `bestSelectOption`, extended) now
+reads options by meaning — on native selects, custom dropdowns, and in the
+error fixer:
+
+| Question | Profile | Picked |
+| --- | --- | --- |
+| Years of experience | 7 | 6-10 years |
+| Expected salary | 85000 | €70,000 - €90,000 (also `$80k-$120k`, `€90,000+`, `Under…`) |
+| Notice period | 1 month / 4 weeks / 30 days | 1 month |
+| Education | Master of Science | Master's degree (never above what you hold) |
+
+When the question gives nothing to match, the profile field it is about is used.
+
+### The profile was being ignored for two answers
+"Years of experience" returned the default 7, and "Notice period" returned
+"Immediately" from an availability rule placed above it — your profile's values
+were never reached. Both now read the profile first.
+
+### Values in the wrong box (from OptimHire's sanitizer)
+After each fill, a box holding something that clearly isn't its answer — a link
+in "Preferred name", an email in "Phone", a name in "Email" — gets the right
+answer or is cleared. Never a box you typed in.
+
+### A browser harness in the repo
+`tests/e2e/run.js` loads the extension in Chromium and runs one queued job
+against a local form served under a real ATS hostname, recording every field,
+every write, scroll direction changes and what was submitted. Four fixtures
+cover the cases above; all four submit with correct answers and no flicker.
+
+Suite total: **1,616 assertions**, all green.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

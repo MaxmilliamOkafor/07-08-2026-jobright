@@ -2752,6 +2752,49 @@ console.log('v17.4 — the answer bank, native radios, the form\'s own error mes
   eq('outside a run, scrolling is untouched', calls.pop(), ['siv', { behavior: 'smooth', block: 'center' }]);
 }
 
+/* ── 62. v17.5: dropdown options by meaning, not just by text ────────────────
+   Required dropdowns worded as ranges were left EMPTY and blocked the submit
+   (seen in a real browser run). The matcher runs for real on real option lists. */
+console.log('v17.5 — ranges, notice periods, education levels, misplaced values');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const bo = {};
+  new Function('exports', `${gc('PLACEHOLDER_OPT_RE')}${gc('normMoney')}${body('toDays')}
+    ${src.match(/\n  const EDU_RANKS = \[[\s\S]*?\n  \];\n/)[0]}${gc('eduRank')}${body('bestOptionIndex')}
+    exports.b = bestOptionIndex;`)(bo);
+  const pick = (texts, t, l) => { const i = bo.b(texts, t, l); return i < 0 ? null : texts[i]; };
+  const Y = ['Select...', '0-2 years', '3-5 years', '6-10 years', '10+ years'];
+  eq('7 years → "6-10 years" (never the first option)', pick(Y, '7', 'Years of experience'), '6-10 years');
+  eq('12 years → "10+ years"', pick(Y, '12', 'Years'), '10+ years');
+  const S = ['Select...', 'Under €50,000', '€50,000 - €70,000', '€70,000 - €90,000', '€90,000+'];
+  eq('85000 → "€70,000 - €90,000"', pick(S, '85000', 'Expected salary'), '€70,000 - €90,000');
+  eq('95000 → "€90,000+"', pick(S, '95000', 'Salary'), '€90,000+');
+  eq('k-notation bands', pick(['$50k-$80k', '$80k-$120k'], '85000', 'Salary'), '$80k-$120k');
+  const N = ['Select...', 'Immediately available', '1 week', '2 weeks', '1 month', '2 months', '3 months or more'];
+  eq('"1 month" → "1 month"', pick(N, '1 month', 'Notice period'), '1 month');
+  eq('"4 weeks" → "1 month"', pick(N, '4 weeks', 'Notice period'), '1 month');
+  eq('"30 days" → "1 month" (not "Immediately" via the "0 days" inside it)', pick(N, '30 days', 'Notice period'), '1 month');
+  eq('"6 months" → "3 months or more"', pick(N, '6 months', 'Notice'), '3 months or more');
+  const E = ['Select...', 'High school', "Bachelor's degree", "Master's degree", 'PhD'];
+  eq('"Master of Science" → "Master\'s degree"', pick(E, 'Master of Science', 'Highest level of education'), "Master's degree");
+  eq('never above the profile: MSc with no Master\'s option → Bachelor', pick(['High school', 'Associate', 'Bachelor'], 'MSc', 'Degree'), 'Bachelor');
+  eq('a placeholder is never picked', pick(['Select...', 'Yes', 'No'], 'select', 'Q'), null);
+  eq('Yes/No still exact', pick(['Yes', 'No'], 'No', 'Sponsorship'), 'No');
+
+  eq('the native dropdown pass uses it', /let bi = val \? bestOptionIndex\(texts, val, lbl\) : -1;/.test(src), true);
+  eq('and falls back to the profile field the question is about', /if \(bi < 0 && !isEEO\) bi = bestOptionIndex\(texts, profileTargetFor\(lbl, p\), lbl\);/.test(src), true);
+  eq('custom dropdowns use it', /let bi = want \? bestOptionIndex\(texts, want, qFull\) : -1;/.test(src), true);
+  eq('the error fixer uses it', /let bi = want \? bestOptionIndex\(texts, want, label\) : -1;/.test(src), true);
+
+  // Profile-first guesses that used to be shadowed by defaults.
+  eq('years of experience reads the profile', /if \(\/years\.\*\(exp\|work\)\|exp\.\*years\|total\.\*experience\/\.test\(l\)\) return yearsAnswer\(p\);/.test(src), true);
+  eq('notice period reads the profile before "availability"', /return p\.notice_period \|\| p\.notice \|\| DEFAULTS\.notice;\n\s*if \(\/availab/.test(src), true);
+
+  // Misplaced values.
+  eq('misplaced values are corrected after every fill', /try \{ refilled \+= sanitizeMisplacedValues\(p\); \} catch \(_\) \{\}/.test(src), true);
+  eq('never in a box you typed in', /\(el\.value \|\| ''\)\.trim\(\) && !userTouched\(el\)\)/.test(body('sanitizeMisplacedValues')), true);
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
