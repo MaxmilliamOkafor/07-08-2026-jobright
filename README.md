@@ -2592,6 +2592,31 @@ Suite total: **1,453 assertions**, all green on Jobright 1.23.0.
 
 ---
 
+## v17.0 — rebased onto Jobright 1.23.1
+
+A small patch: three files changed. `helper-app.41ea2652.js` and
+`static/background/index.js` are theirs, taken verbatim — the worker grew by
+235KB — with the three `importScripts` lines re-appended. On the manifest their
+only change was the version; their content scripts and resource list are
+byte-identical, so nothing of ours needed to move.
+
+The new worker was checked for collisions before accepting it: no side panel,
+no alarms, no `UA_` message types, no `beforeunload`, and the same single
+`tabs.remove` it has always had.
+
+`_metadata/verified_contents.json` shipped with the build and was deliberately
+not copied — it is Web Store signing data and has no place in an unpacked
+extension.
+
+The patch procedure in this README was also out of date: it predated
+`ua-page-hooks.js`, the mailbox and the recorder, so following it would have
+dropped two of the three worker lines and the MAIN-world script. It is current
+now.
+
+Suite total: **1,453 assertions**, all green on Jobright 1.23.1.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
@@ -2733,17 +2758,34 @@ the new bundle removed a file the manifest still points at, or if the appended
 
 ## Applying the next Jobright patch
 
-1. Copy the new `contents.*.js`, `helper-app.*.js`, `global.*.css`,
-   `static/background/index.js`, `inter.*.css`, `scroll-to-anchor.*.js` and icons over.
-2. Re-apply the manifest patch: `ua-enhancement.js` as the **first** content script
-   (`document_start`, `all_frames: false`); `ua-enhancement.js`, `ua-queue.html`,
-   `ua-queue.js` in `web_accessible_resources`; `side_panel.default_path` =
-   `ua-queue.html`; permissions `sidePanel`, `alarms`, `contextMenus`, `notifications`.
-3. Re-append to `static/background/index.js`:
+1. Diff the new build against this tree, ignoring `ua-*` files — patches are
+   often small (1.23.1 changed three files), and knowing which is half the job.
+2. Copy over whatever of **theirs** changed: `contents.*.js`, `helper-app.*.js`,
+   `global.*.css`, `inter.*.css`, `scroll-to-anchor.*.js`, icons, and
+   `static/background/index.js`.
+   **Do not copy `_metadata/`.** It is Chrome Web Store signing data and has no
+   place in an unpacked build.
+3. Re-append to `static/background/index.js` — all three, in this order:
    ```js
    try { importScripts("/ua-orchestrator.js"); } catch (e) { console.warn("[UA] orchestrator failed to load", e); }
+   try { importScripts("/ua-mailbox.js"); } catch (e) { console.warn("[UA] mailbox failed to load", e); }
+   try { importScripts("/ua-diagnostics.js"); } catch (e) { console.warn("[UA] diagnostics failed to load", e); }
    ```
-4. `./tests/run.sh`
+4. Merge the manifest by hand — never copy theirs over ours. Take their
+   `version` and any change to *their own* content scripts or resources, and keep
+   ours:
+   - `ua-page-hooks.js` as the **first** content script: `"world": "MAIN"`,
+     `document_start`, `all_frames: true`.
+   - `ua-enhancement.js` second: `document_start`, `all_frames: false`.
+   - `web_accessible_resources` += `ua-enhancement.js`, `ua-queue.html`,
+     `ua-queue.js`, `ua-page-hooks.js`, `ua-diagnostics.js` — and only entries
+     that exist on disk; Jobright's list names ~50 assets it does not ship.
+   - `side_panel.default_path` = `ua-queue.html`.
+   - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
+     `identity`.
+5. Check the new worker for anything that would collide with ours — side panel,
+   alarms, message types beginning `UA_`, `beforeunload`.
+6. `./tests/run.sh`. It fails if any of the three worker lines is missing.
 
 ## Notes
 
