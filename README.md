@@ -2893,6 +2893,47 @@ you pressed it.)
 
 ---
 
+## v17.7 — seven ideas from NextRaise
+
+Reviewed NextRaise 2.8.5 and LetMeApply 1.5.0. LetMeApply had nothing to take
+(its filling happens on its servers). NextRaise's filling is also server-side AI,
+but its local helpers encode real widget know-how; seven of them are now here,
+each proven on a test form in a real browser.
+
+1. **Honeypots are never filled.** A field meant for bots ("leave this blank",
+   `name="honeypot"`, the hidden no-tab-stop shape) gets an application binned as
+   spam if filled. Checked in the one setter every text write goes through, so no
+   path can fill one — a visible "Website (leave blank if you are human)" box stays
+   empty even though a Website box would otherwise get your URL.
+2. **Phone boxes that arrive holding "+353" / "+1"** count as unanswered. Only
+   empty boxes used to be filled, so the number was never typed. The full number
+   goes in, with the box's code when your number has none of its own.
+3. **select2 dropdowns.** The real `<select>` is hidden behind select2's box and
+   was skipped; it is answered directly now, and select2 redraws from it.
+4. **Lever location.** Typing the city is not an answer on Lever — only picking
+   from Lever's own list sets the hidden `selectedLocation`. It is picked now, and
+   success means that hidden field is set.
+5. **Diagnostics say what kind of control beat us** — `react-select · required ·
+   covered by a dialog`, `workday text · marked invalid`, `select2 · 1 options` —
+   beside every unanswered question and unfixable error. Never its text or value.
+6. **Whatever covers Submit is cleared first.** Right before Submit: a fresh
+   cookie-banner sweep (a banner that appears on first interaction was missed by
+   the start-of-job sweep), the button brought into view, and a dialog or banner
+   on top of it dismissed.
+7. **Workday: the account wall vs the application.** A visible password box means
+   the sign-in step, whatever else is mounted; the step bar naming two steps, a
+   step heading or several Workday fields mean the application. No filling happens
+   on the wall any more (the "keeps re-autofilling, never signs in" loop), the
+   account step is driven until the application really appears, and a tenant that
+   never lets go is reported rather than filled.
+
+Tests: unit checks for each, `tests/e2e/dom-units.js` (layout-dependent logic in
+real Chromium), and two new fixture forms (`form5`, `form6`: honeypot, seeded
+phone, select2, Lever picker, early and late cookie banners) — all six fixtures
+submit. Suite total: **1,639 assertions** + 12 real-DOM checks.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

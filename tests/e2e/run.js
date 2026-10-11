@@ -81,6 +81,10 @@ const WAIT = Number(process.argv[4] || 90000);
   fs.writeFileSync(path.join(require('os').tmpdir(), 'ua-e2e-out.json'), JSON.stringify({ snapshots, logs, q }, null, 1));
   console.log('last snapshot:', JSON.stringify(snapshots[snapshots.length - 1], null, 1));
   console.log('queue:', JSON.stringify(q.q));
+  // The tab can close on success before a 3s snapshot sees the thank-you page;
+  // the queue's own verdict is the authority.
+  const outcome = (q.q[0] && q.q[0].status) || 'unknown';
+  console.log('OUTCOME:', outcome === 'done' || (snapshots.at(-1) || {}).submitted ? 'submitted' : outcome);
   console.log('log lines:', logs.length);
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

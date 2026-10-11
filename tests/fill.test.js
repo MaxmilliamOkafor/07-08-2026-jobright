@@ -1770,7 +1770,7 @@ eq('the manager path reports its own outcomes too',
 
 /* The most useful thing it collects. */
 eq('every unanswered required question is reported, by its label',
-  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label\);/.test(src), true);
+  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label, \{ kind: describeControl\(_missingEls\.get\(label\)\) \}\);/.test(src), true);
 eq('with the fill progress alongside it',
   /DIAG\('stage\.fill', where, \{ detail: \{ done: r\.done, total: r\.total, pct: r\.pct \} \}\);/.test(src), true);
 
@@ -2035,7 +2035,7 @@ console.log('what the recorder found out about the recorder');
    which is most of them, contributed nothing. */
 const ruq = body('reportUnansweredQuestions');
 eq('unanswered questions are captured at the moment a job fails',
-  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label\);/.test(ruq), true);
+  /for \(const label of r\.missingLabels\) DIAG\('field\.unanswered', label, \{ kind: describeControl\(_missingEls\.get\(label\)\) \}\);/.test(ruq), true);
 eq('and nothing is emitted when there is nothing to say',
   /if \(!r \|\| !r\.missingLabels \|\| !r\.missingLabels\.length\) return;/.test(ruq), true);
 eq('the manager path captures on failure and timeout',
@@ -2800,6 +2800,65 @@ console.log('v17.5 — ranges, notice periods, education levels, misplaced value
   // Misplaced values.
   eq('misplaced values are corrected after every fill', /try \{ refilled \+= sanitizeMisplacedValues\(p\); \} catch \(_\) \{\}/.test(src), true);
   eq('never in a box you typed in', /\(el\.value \|\| ''\)\.trim\(\) && !userTouched\(el\)\)/.test(body('sanitizeMisplacedValues')), true);
+}
+
+/* ── 63. v17.7: ideas from NextRaise ─────────────────────────────────────── */
+console.log('v17.7 — honeypots, seeded phone boxes, select2, Lever location, control diagnostics, covered Submit, Workday wall');
+{
+  const nr = {};
+  new Function('exports', `
+    const DEFAULTS = { phoneCountryCode: '+353' };
+    ${src.match(/  const TRAP_FIELD_RE = [^\n]*\n/)[0]}
+    ${src.match(/  const DIAL_CODES = [^\n]*\n/)[0]}
+    ${body('isTrapField')}
+    ${body('isPhoneBox')}
+    ${body('dialCodeOnly')}
+    ${body('phoneVariants')}
+    ${body('phoneForSeededBox')}
+    Object.assign(exports, { isTrapField, dialCodeOnly, phoneForSeededBox });
+  `)(nr);
+  const inp = (attrs, extra) => Object.assign({ tagName: 'INPUT', type: attrs.type || 'text', name: attrs.name || '', id: attrs.id || '',
+    placeholder: attrs.placeholder || '', value: attrs.value || '', required: !!attrs.required,
+    labels: attrs.label ? [{ textContent: attrs.label }] : [],
+    getAttribute: (k) => (k in attrs ? attrs[k] : null) }, extra || {});
+  // 1. Honeypots
+  eq('name="honeypot" is a trap', nr.isTrapField(inp({ name: 'honeypot' })), true);
+  eq('"Leave this field blank" is a trap', nr.isTrapField(inp({ name: 'x', label: 'Leave this field blank' })), true);
+  eq('"…blank if you are human" is a trap', nr.isTrapField(inp({ name: 'website', label: 'Website (leave this field blank if you are human)' })), true);
+  eq('the hidden no-tab-stop shape is a trap', nr.isTrapField(inp({ name: 'company_url', tabindex: '-1', 'aria-hidden': 'true', autocomplete: 'off' })), true);
+  eq('an ordinary Website box is not', nr.isTrapField(inp({ name: 'website', label: 'Website' })), false);
+  eq('an ordinary required box with tabindex=-1 is not', nr.isTrapField(inp({ name: 'city', tabindex: '-1', required: true })), false);
+  eq('the main setter refuses traps', /if \(el\.tagName !== 'SELECT' && val !== '' && isTrapField\(el\)\) \{/.test(src), true);
+  eq('the essay module\'s own setter refuses them too', /Never a bot-trap field \(same rule as the main setter's isTrapField\)\./.test(src), true);
+  // 2. Seeded phone boxes
+  eq('"+353" alone in a phone box is a seed', nr.dialCodeOnly(inp({ type: 'tel', value: '+353' })), true);
+  eq('"+1" alone is a seed', nr.dialCodeOnly(inp({ type: 'tel', value: '+1' })), true);
+  eq('a real number is not', nr.dialCodeOnly(inp({ type: 'tel', value: '+353 87 123 4567' })), false);
+  eq('"353" in a non-phone box is not', nr.dialCodeOnly(inp({ type: 'text', name: 'zip', value: '353' })), false);
+  eq('an Irish national number goes in with the seeded code', nr.phoneForSeededBox(inp({ type: 'tel', value: '+353' }), '087 123 4567'), '+353871234567');
+  eq('a number with its own code keeps it', nr.phoneForSeededBox(inp({ type: 'tel', value: '+353' }), '+44 7700 900123'), '+447700900123');
+  eq('a seeded box counts as unanswered', /return !!el\.value\?\.trim\(\) && !dialCodeOnly\(el\);/.test(src), true);
+  eq('and the fill pass picks it up', /\(!el\.value\?\.trim\(\) \|\| dialCodeOnly\(el\)\) && !isTrapField\(el\)/.test(src), true);
+  // 3. select2
+  eq('hidden select2 selects are answered', /deepAll\('select'\)\.filter\(el => \(isVisible\(el\) \|\| isSelect2Native\(el\)\) && !hasFieldValue\(el\)\)/.test(src), true);
+  eq('and read by the error reader', /isVisible\(el\) \|\| isSelect2Native\(el\) \|\|/.test(src), true);
+  // 4. Lever location
+  eq('the Lever driver picks the location from Lever\'s list', /try \{ await leverLocation\(p\); \}/.test(body('leverAutomation')), true);
+  eq('so does the general location pass', /if \(await leverLocation\(p\)\) return 1;/.test(src), true);
+  eq('success means the hidden selectedLocation is set', /input\[type="hidden"\]\[name="selectedLocation"\]/.test(body('leverLocation')), true);
+  eq('and the general pass never retypes Lever\'s box', /!el\.matches\('input\.location-input\[name="location"\]'\)/.test(src), true);
+  // 5. Control diagnostics
+  eq('unanswered questions carry the control\'s structure', /DIAG\('field\.unanswered', label, \{ kind: describeControl\(_missingEls\.get\(label\)\) \}\)/.test(src), true);
+  eq('unfixable errors too', /\+ ' \[' \+ describeControl\(e\.el\) \+ '\]'/.test(src), true);
+  eq('never its text or value', /value|textContent|innerText/.test(body('describeControl').replace(/\/\*[\s\S]*?\*\//g, '').replace(/el\.options\.length/g, '')), false);
+  // 6. Covered Submit
+  eq('both Submit paths clear what covers the button first', (src.match(/await clearOverSubmit\(/g) || []).length, 2);
+  eq('a banner that appeared late is swept right before Submit', /try \{ await dismissCookieBanner\(\); \} catch \(_\) \{\}\n\s*try \{ scrollIfNeeded\(btn\); \} catch \(_\) \{\}/.test(body('clearOverSubmit')), true);
+  // 7. Workday wall
+  eq('no Workday filling while a password box is on screen',
+    /while \(workdayOnAccountWall\(\) && Date\.now\(\) < until && !autoStopped\(\)\)/.test(body('workdayAutomation')), true);
+  eq('a tenant still on the wall is reported, not filled', /DIAG\('workday\.auth\.stuck'/.test(body('workdayAutomation')), true);
+  eq('the account watcher stops on the broader "applying" test', /\|\| workdayApplicationReady\(\)\) \{/.test(src), true);
 }
 
 
