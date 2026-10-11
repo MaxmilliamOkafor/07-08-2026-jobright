@@ -702,6 +702,13 @@
     { n: 'iCIMS', p: /\/careers-home\/jobs\/\d+|\/main\/jobs\/\d+/i },
     // Radancy / TalentBrew path: /job/<city>/<title>/<client>/<job> (careers.arm.com).
     { n: 'Radancy', p: /\/job\/[^/?#]+\/[^/?#]+\/\d{3,}\/\d{5,}/i },
+    /* ── From NextRaise's list of recognised hosts: platforms missing here ── */
+    { n: 'Dayforce', p: /(^|\/\/|\.)dayforcehcm\.com/i },
+    { n: 'Keka', p: /(^|\/\/|\.)keka\.com\/careers/i },
+    { n: 'PeopleStrong', p: /(^|\/\/|\.)peoplestrong\.com/i },
+    { n: 'Zappyhire', p: /(^|\/\/|\.)zappyhire\.com/i },
+    { n: 'Collage', p: /(^|\/\/|\.)collage\.co\//i },
+    { n: 'CareerPuck', p: /(^|\/\/|\.)careerpuck\.com/i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.

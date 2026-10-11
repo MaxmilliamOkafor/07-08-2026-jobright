@@ -2927,6 +2927,12 @@ each proven on a test form in a real browser.
    account step is driven until the application really appears, and a tenant that
    never lets go is reported rather than filled.
 
+**Six more platforms recognised**, from NextRaise's own host list (about 50
+domains; its "80+ job boards" claim rests on its server AI reading any page):
+Dayforce, Keka, PeopleStrong, Zappyhire, Collage and CareerPuck. They are named
+in the log and the diagnostics and go through the generic flow, which handles
+their sign-in walls.
+
 Tests: unit checks for each, `tests/e2e/dom-units.js` (layout-dependent logic in
 real Chromium), and two new fixture forms (`form5`, `form6`: honeypot, seeded
 phone, select2, Lever picker, early and late cookie banners) — all six fixtures

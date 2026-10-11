@@ -400,6 +400,12 @@ for (const [href, name] of [
   ['https://kumaran.zohorecruit.in/jobs/Careers/31840000017690179/QA-Lead', 'Zoho'],
   ['https://careers.arm.com/job/galway/senior-software-ml-engineer/33099/93485591024', 'Radancy'],
   ['https://careers.sokin.com/jobs/8409552-senior-fullstack-engineer', 'Teamtailor'],
+  ['https://jobs.dayforcehcm.com/en-US/acme/CANDIDATEPORTAL/jobs/12345', 'Dayforce'],
+  ['https://acme.keka.com/careers/jobdetails/4567', 'Keka'],
+  ['https://acme.peoplestrong.com/job/detail/ABC123', 'PeopleStrong'],
+  ['https://acme.zappyhire.com/careers/job/123', 'Zappyhire'],
+  ['https://www.collage.co/jobs/acme/9876', 'Collage'],
+  ['https://app.careerpuck.com/job-board/acme/job/123', 'CareerPuck'],
 ]) eq(`${new URL(href).hostname} recognised as ${name}`, routeOf(href), [name, 'tailorFirstFlow']);
 
 /* ── 7. Oracle Recruiting's front door + SmartRecruiters knockouts ───────── */
