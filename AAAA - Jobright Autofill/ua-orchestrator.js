@@ -50,6 +50,60 @@
     WIN: 'ua_run_window',     // the one window a run's tabs live in
   };
 
+  /* ── NOTHING IN THIS WORKER TAKES THE FRONT DURING A RUN ────────────────────
+     We share the service worker with Jobright's own code, and Jobright 1.24.0
+     brings tabs to the front by itself in the middle of an application: its
+     resume tailor switches back to the job tab when it closes, and its JobScore
+     flow opens a new tab in front. During an automated run that is exactly the
+     "it keeps switching tabs, it's messing up my use of my PC" complaint. So
+     while a run is active, every tab this worker opens or updates stays in the
+     background — whoever asked for it. Outside a run nothing is changed, and
+     Jobright behaves exactly as shipped. Their files stay verbatim. */
+  let _runOn = false;
+  const refreshRunOn = () => {
+    try { chrome.storage.local.get([K.ACTIVE, K.OLD_RUNNER], (d) => { void chrome.runtime.lastError; _runOn = !!(d && (d[K.ACTIVE] === true || d[K.OLD_RUNNER] === true)); }); } catch (_) {}
+  };
+  refreshRunOn();
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && (changes[K.ACTIVE] || changes[K.OLD_RUNNER])) refreshRunOn();
+    });
+  } catch (_) {}
+  // Our own one exception: a swap may stay in front if the tab it replaces was.
+  const ALLOW_FRONT = '__uaAllowFront';
+  try {
+    const rawCreate = chrome.tabs.create.bind(chrome.tabs);
+    chrome.tabs.create = function (props, cb) {
+      let p = props;
+      if (p && typeof p === 'object') {
+        const allowed = p[ALLOW_FRONT] === true;
+        if (ALLOW_FRONT in p) { p = Object.assign({}, p); delete p[ALLOW_FRONT]; }
+        if (_runOn && !allowed && p.active !== false) p = Object.assign({}, p, { active: false });
+      }
+      return cb === undefined ? rawCreate(p) : rawCreate(p, cb);
+    };
+    const rawUpdate = chrome.tabs.update.bind(chrome.tabs);
+    chrome.tabs.update = function (a, b, c) {
+      // update(props, cb) or update(tabId, props, cb)
+      const idForm = typeof a === 'number';
+      let props = idForm ? b : a;
+      if (_runOn && props && typeof props === 'object' && (props.active === true || props.highlighted === true || props.selected === true)) {
+        props = Object.assign({}, props);
+        delete props.active; delete props.highlighted; delete props.selected;
+      }
+      if (idForm) return c === undefined ? rawUpdate(a, props) : rawUpdate(a, props, c);
+      return b === undefined ? rawUpdate(props) : rawUpdate(props, b);
+    };
+    if (chrome.windows && chrome.windows.update) {
+      const rawWinUpdate = chrome.windows.update.bind(chrome.windows);
+      chrome.windows.update = function (id, props, cb) {
+        let p = props;
+        if (_runOn && p && (p.focused === true || p.drawAttention === true)) { p = Object.assign({}, p); delete p.focused; delete p.drawAttention; }
+        return cb === undefined ? rawWinUpdate(id, p) : rawWinUpdate(id, p, cb);
+      };
+    }
+  } catch (_) {}
+
   /* ── ONE WINDOW PER RUN ─────────────────────────────────────────────────────
      "Stop switching the tab into a different window." chrome.tabs.create with
      no windowId puts the tab in whichever window you are using AT THAT MOMENT,
@@ -433,6 +487,7 @@
       }
       total = jobs.filter((j) => j.status === 'pending').length;
     });
+    _runOn = true;   // see the tab guard: from now on nothing in this worker takes the front
     await set({ [K.ACTIVE]: true, [K.PAUSED]: false, [K.ADVANCE]: null, [K.RUN]: { startedAt: Date.now(), total } });
     // The window you pressed Start in is the run's window from now on.
     await rememberRunWindow(sender && sender.tab ? sender.tab.windowId : null);
@@ -887,7 +942,7 @@
         setTimeout(() => {
           try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (_) {}
           if (started) return;
-          chrome.tabs.create({ url, active: !!was.active, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
+          chrome.tabs.create({ url, active: !!was.active, [ALLOW_FRONT]: !!was.active, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
             void chrome.runtime.lastError;
             // The new tab is the runner now; hand the marker over before the old
             // one goes, so no tick in between sees a run with no tab.

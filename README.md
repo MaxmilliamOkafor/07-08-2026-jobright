@@ -2940,6 +2940,38 @@ submit. Suite total: **1,639 assertions** + 12 real-DOM checks.
 
 ---
 
+## v17.8 — rebased onto Jobright 1.24.0
+
+A larger patch than usual: five of their files changed (`contents`, `helper-app`,
+`global.css`, the worker +195KB) and nine are new. All taken verbatim; our three
+`importScripts` lines re-appended; manifest merged by hand.
+
+**What 1.24.0 adds, and why none of it collides with ours**
+- **Per-ATS submission tracking** (Workday, Oracle, SuccessFactors, BrassRing,
+  ClearCompany, plus `ats-submission-resume` for ~20 more). It *watches* Submit
+  clicks to record applications in your Jobright tracker — it never clicks
+  anything itself. It ignores script-driven clicks except on Workday and
+  SmartRecruiters, so automated applications elsewhere may not appear in
+  Jobright's tracker; the Queue Manager's own record is unaffected.
+- **An "applied — rate it" popup**, shown only when their worker confirms an
+  application. No overlays, no dialogs, nothing that blocks a page.
+- **Workday password sync** — only on jobright.ai; copies Jobright's own Workday
+  sign-up password into their web app. It never touches the separate password the
+  automation uses.
+
+**One real conflict, handled without editing their files.** Their worker brings
+tabs to the front by itself mid-application: the resume tailor switches back to
+the job tab when it closes, and a new JobScore flow opens a tab in front. During
+an automated run that is the "it keeps switching tabs" problem again. Our scripts
+share that worker, so while a run is active every tab it opens or updates — and
+any window focus — stays in the background, whoever asked. Outside a run Jobright
+behaves exactly as shipped. Verified in the live worker, and tested.
+
+Checked: all six fixture forms submit on 1.24.0 with no page errors from the new
+scripts; the 12 real-DOM checks pass; suite **1,651 assertions**, all green.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
@@ -3106,9 +3138,14 @@ the new bundle removed a file the manifest still points at, or if the appended
    - `side_panel.default_path` = `ua-queue.html`.
    - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
      `identity`.
+   - Their new content scripts go after ours, in their order (1.24.0 added four).
 5. Check the new worker for anything that would collide with ours — side panel,
-   alarms, message types beginning `UA_`, `beforeunload`.
-6. `./tests/run.sh`. It fails if any of the three worker lines is missing.
+   alarms, message types beginning `UA_`, `beforeunload` — and for `active:!0`
+   (tabs brought to the front). Those are neutralised during runs by the tab
+   guard in `ua-orchestrator.js`, but a new one is worth knowing about.
+6. Run the six fixtures: `for f in tests/e2e/form*.html; do node tests/e2e/run.js "$(basename $f)"; done`
+   from `tests/e2e`, and `node tests/e2e/dom-units.js`.
+7. `./tests/run.sh`. It fails if any of the three worker lines is missing.
 
 ## Notes
 

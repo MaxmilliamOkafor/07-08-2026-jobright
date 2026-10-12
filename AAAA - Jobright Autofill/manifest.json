@@ -17,10 +17,10 @@
       "128": "icon128.plasmo.3c1ed2d2.png"
     }
   },
-  "version": "1.23.1",
+  "version": "1.24.0",
   "author": "Jobright.ai",
-  "name": "Jobright Autofill \u2013 Instant Job Applications, Job Match, AI Tailor Resume",
-  "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes \u2014 Trusted by 500K+ job seekers",
+  "name": "Jobright Autofill – Instant Job Applications, Job Match, AI Tailor Resume",
+  "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes — Trusted by 500K+ job seekers",
   "background": {
     "service_worker": "static/background/index.js"
   },
@@ -68,6 +68,39 @@
         "<all_urls>"
       ],
       "js": [
+        "applied-success-popup.beee901a.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start",
+      "css": []
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "ats-submission-resume.81fcb254.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "css": []
+    },
+    {
+      "matches": [
+        "https://*.clearcompany.com/careers/jobs/*"
+      ],
+      "js": [
+        "clearcompany-submission-attribution.d13048d5.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start",
+      "css": []
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
         "contents.d42e7fcf.js"
       ],
       "all_frames": true,
@@ -84,6 +117,19 @@
         "https://crcldu.com/*"
       ],
       "run_at": "document_start",
+      "css": []
+    },
+    {
+      "matches": [
+        "https://jobright.ai/*",
+        "https://preprod.jobright.ai/*",
+        "https://beta.jobright-internal.com/*"
+      ],
+      "js": [
+        "workday-password-sync.26980834.js"
+      ],
+      "all_frames": false,
+      "run_at": "document_idle",
       "css": []
     },
     {
