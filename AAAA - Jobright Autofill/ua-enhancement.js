@@ -648,7 +648,7 @@
     { n: 'AngelList', p: /angel\.co.*jobs|wellfound\.com.*jobs/i },
     // Simplify-supported ATS platforms
     { n: 'Myworkday', p: /myworkday\.com/i }, { n: 'GreenhouseEmbed', p: /greenhouse\.io.*embed/i },
-    { n: 'LeverEmbed', p: /lever\.co.*\/apply/i }, { n: 'Eightfold', p: /eightfold\.ai.*careers/i },
+    { n: 'LeverEmbed', p: /lever\.co.*\/apply/i }, { n: 'Eightfold', p: /eightfold\.ai.*careers|(^|\/\/)apply\.careers\.microsoft\.com\//i },
     { n: 'Gem', p: /gem\.com.*jobs/i }, { n: 'HireVue', p: /hirevue\.com/i },
     { n: 'Cornerstone', p: /csod\.com|cornerstoneondemand\.com/i },
     { n: 'TeamTailor', p: /teamtailor\.com|career\..*\.com/i },
@@ -7022,9 +7022,33 @@
   }
 
   // ===================== GREENHOUSE AUTOMATION (SpeedyApply-enhanced) =====================
+  /* Company careers pages (stripe.com, databricks.com, okta.com, mongodb.com…
+     ?gh_jid=…) embed the Greenhouse form in a CROSS-ORIGIN iframe — the hardest
+     place for an extension to fill and submit. The iframe's own address is an
+     ordinary Greenhouse form, so it is opened in this tab instead. */
+  async function openEmbeddedGreenhouseForm() {
+    if (/greenhouse\.io$/i.test(location.hostname)) return false;
+    const frameSel = 'iframe[src*="greenhouse.io/embed/job_app"],iframe[src*="greenhouse.io/embed/job_board"],iframe#grnhse_iframe,iframe[src*="greenhouse.io"][src*="token="]';
+    let fr = null;
+    await waitUntil(() => (fr = deepAll(frameSel, 4).find((f) => f.src)), 6000, 200);
+    if (!fr) {
+      // Some pages only mount it after "Apply" is pressed.
+      try { await openApplicationForm(); } catch (_) {}
+      await waitUntil(() => (fr = deepAll(frameSel, 4).find((f) => f.src)), 6000, 200);
+    }
+    if (!fr) return false;
+    let u = null;
+    try { u = new URL(fr.src, location.href); } catch (_) { return false; }
+    if (!/^https:$/.test(u.protocol) || !/(^|\.)greenhouse\.io$/i.test(u.hostname)) return false;
+    LOG('Greenhouse form is embedded from ' + u.hostname + ' — opening it directly in this tab');
+    DIAG('greenhouse.embedded', location.hostname);
+    location.assign(u.href);
+    return true;
+  }
   async function greenhouseAutomation() {
     LOG('Greenhouse automation starting...');
     const p = await getProfile();
+    if (!$('#application_form,#application,.application-form') && await openEmbeddedGreenhouseForm()) return;
     const form = await waitFor('#application_form,#application,.application-form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
@@ -7812,6 +7836,18 @@
   // ===================== EIGHTFOLD AUTOMATION =====================
   async function eightfoldAutomation() {
     LOG('Eightfold automation starting...');
+    /* Microsoft's careers site (Eightfold) requires signing in with a Microsoft
+       account. That is a personal login with its own second factor — never
+       automated. If the run is sent to Microsoft's sign-in, say so straight
+       away instead of letting the job time out silently. */
+    const msSignIn = () => /(^|\.)(login\.live\.com|login\.microsoftonline\.com|account\.microsoft\.com)$/i.test(location.hostname) ||
+      (/careers\.microsoft\.com$/i.test(location.hostname) && deepAll('a,button', 200).some((b) => isVisible(b) && /^sign in( with microsoft)?$/i.test(normLabel(b.textContent))) && !hasApplicationForm());
+    if (msSignIn()) {
+      LOG('Microsoft careers needs you signed in to your Microsoft account in this browser — sign in once, then retry these jobs');
+      DIAG('microsoft.signin', 'Microsoft account sign-in required');
+      try { reportNeedsHuman('Sign in to your Microsoft account in this browser once'); } catch (_) {}
+      return;
+    }
     const p = await getProfile();
     await loadAnswerBank();
 
@@ -8779,12 +8815,66 @@
   //    fresh tenant actually creates the account instead of failing a sign-in.
   //  • Defend the fields with the saved password so Create and future Sign-In always use
   //    the SAME credentials, then auto-click the matching submit button.
+  /* ── WORKDAY: WHICH PASSWORD, AND WHEN TO STOP ──────────────────────────────
+     An account can already exist on a tenant with a password that is not ours:
+     made by hand, or by Jobright's own Workday sign-up (which keeps its own
+     password). The old flow then ping-ponged — Create → "already exists" → Sign In
+     → "wrong password" → Create… — until its attempts ran out. Now:
+       • passwords are tried in order: your 🔐 site login for this employer, the
+         shared ATS password, then Jobright's own Workday sign-up password;
+       • once the tenant has said "account already exists", a wrong password means
+         "try the next one", never "go back and create an account";
+       • when every password has been refused, it stops at once and says so —
+         add the employer under 🔐 Site logins — instead of burning attempts. */
+  const _wdAuth = new Map();      // tenant → { exists, idx, tried }
+  function wdAuthState() {
+    const k = accountKeyFor(location.hostname);
+    if (!_wdAuth.has(k)) {
+      let saved = null;
+      try { saved = JSON.parse(sessionStorage.getItem('ua_wd_auth:' + k) || 'null'); } catch (_) {}
+      _wdAuth.set(k, saved || { exists: false, idx: 0, triedSignIn: false });
+    }
+    return _wdAuth.get(k);
+  }
+  function wdAuthSave() {
+    const k = accountKeyFor(location.hostname);
+    try { sessionStorage.setItem('ua_wd_auth:' + k, JSON.stringify(_wdAuth.get(k))); } catch (_) {}
+  }
+  async function workdayPasswordCandidates() {
+    const out = [];
+    try { const site = await siteLogin(); if (site && site.password) out.push(site.password); } catch (_) {}
+    try { const shared = await st.get('ua_app_password'); if (shared) out.push(shared); } catch (_) {}
+    try {
+      // Jobright's own Workday sign-up password ("Your Autofill information → Sign-up Information").
+      let jr = await st.get('WORKDAY_SIGNUP_INFORMATION');
+      if (typeof jr === 'string') { try { jr = JSON.parse(jr); } catch (_) { jr = null; } }
+      if (jr && typeof jr.password === 'string' && jr.password.trim()) out.push(jr.password);
+    } catch (_) {}
+    if (!out.length) out.push(await getAppPassword());
+    return [...new Set(out.filter(Boolean))];
+  }
+  // Workday's own error text on the account form — not the whole page, where a
+  // job description could say "incorrect" or "already registered".
+  function workdayAuthErrorText() {
+    try {
+      const nodes = deepAll('[data-automation-id="errorMessage"],[data-automation-id="errorBanner"],[data-automation-id*="error" i],[role="alert"],[aria-live="assertive"]', 20)
+        .filter(isVisible);
+      return nodes.map((n) => n.textContent || '').join(' ').toLowerCase().replace(/\s+/g, ' ');
+    } catch (_) { return ''; }
+  }
+
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
     let pwFields = $$('input[type=password]').filter(isVisible);
     if (!pwFields.length) return 'stop'; // not on a create-account / sign-in page
     const email = await getAppEmail();
-    const pw = await getAppPassword();
+    const auth = wdAuthState();
+    const candidates = await workdayPasswordCandidates();
+    // Which form are we on? (decided before the password, which depends on it)
+    const _createBtn0 = $('button[data-automation-id="createAccountSubmitButton"]');
+    const _onCreate0 = !!_createBtn0 && isVisible(_createBtn0);
+    // Creating an account uses the first choice; signing in walks the list.
+    const pw = _onCreate0 ? candidates[0] : candidates[Math.min(auth.idx, candidates.length - 1)];
     if (!email || !pw) return 'working';
 
     // Which form are we on?
@@ -8811,10 +8901,11 @@
     if (Date.now() - _wdLastSubmit < 3500) return 'working'; // let the previous submit settle
     if (_wdActions >= WD_MAX_ACTIONS) { LOG('Workday: account step exhausted attempts — stopping. Check the saved password under 🔑 ATS account login.'); return 'stop'; }
 
-    // Read Workday's visible error banner to decide whether to create or sign in.
-    const pageText = (document.body.innerText || '').toLowerCase();
-    const existsErr = /already (exists|registered|in use)|account.*already/i.test(pageText);
-    const wrongCredErr = /wrong email|wrong password|might be locked|incorrect|invalid (email|password)|couldn'?t find|no account/i.test(pageText);
+    // Workday's own error messages decide whether to create, sign in, or try the next password.
+    const errText = workdayAuthErrorText();
+    const existsErr = /already (exists|registered|in use)|account.*already|email address is already/i.test(errText);
+    const wrongCredErr = /wrong email|wrong password|might be locked|incorrect|invalid (email|password)|couldn'?t find|no account|not recognized/i.test(errText);
+    if (existsErr && !auth.exists) { auth.exists = true; wdAuthSave(); await markAccountCreated(location.hostname); }
     // In-form switch link finder (NEVER the page-header utilityButtonSignIn).
     const inFormLink = (re) => $$('a,button,[role="button"]').filter(isVisible).find(b => {
       const aid = (b.getAttribute('data-automation-id') || '');
@@ -8827,7 +8918,7 @@
     // default, but a first-time applicant has NO account yet — so trying to Sign In just
     // fails. Unless we have a record that this tenant already has an account, proactively
     // switch to Create Account BEFORE submitting anything (don't wait for a failed sign-in).
-    const known = await accountExistsFor(location.hostname);
+    const known = (await accountExistsFor(location.hostname)) || auth.exists;
     if (onSignIn && !known && !existsErr) {
       const toCreate = inFormLink(/create account|create my account|sign ?up|new user|don'?t have an account|register/i)
         || $('[data-automation-id="createAccountLink"],a[data-automation-id*="createAccount" i]');
@@ -8840,9 +8931,23 @@
       if (toSignIn && isVisible(toSignIn)) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: account already created here — switching to Sign In'); realClick(toSignIn); return 'working'; }
     }
 
+    /* A refused sign-in on a tenant that DOES have an account: the password is
+       not the one we tried. Next candidate — never back to Create Account. */
+    if (onSignIn && wrongCredErr && auth.exists && auth.triedSignIn) {
+      if (auth.idx + 1 < candidates.length) {
+        auth.idx++; auth.triedSignIn = false; wdAuthSave();
+        LOG(`Workday: that password was refused — trying saved password ${auth.idx + 1} of ${candidates.length}`);
+        for (const f of pwFields) reactTypeValue(f, candidates[auth.idx]);
+        return 'working';
+      }
+      LOG('Workday: an account exists here, and every saved password was refused — add this employer under 🔐 Site logins in the Queue Manager');
+      DIAG('workday.password-mismatch', 'account exists with a different password', { detail: { tried: candidates.length } });
+      try { reportNeedsHuman('Workday account exists with a different password — add it under Site logins'); } catch (_) {}
+      return 'stop';
+    }
     // Self-correct the form mode based on the error text (covers accounts created outside
     // the extension, or a stale record).
-    if (onSignIn && wrongCredErr) {
+    if (onSignIn && wrongCredErr && !auth.exists) {
       const toCreate = inFormLink(/create account|sign ?up|new user|don'?t have an account/i);
       if (toCreate) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: Sign In rejected (no account yet) — switching to Create Account'); realClick(toCreate); return 'working'; }
     }
@@ -8898,7 +9003,8 @@
     if (onSignIn) {
       if (!signInBtn.disabled && signInBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
-        LOG(`Workday: signing in with saved credentials (action ${_wdActions}/${WD_MAX_ACTIONS})`);
+        LOG(`Workday: signing in with saved password ${Math.min(auth.idx, candidates.length - 1) + 1} of ${candidates.length} (action ${_wdActions}/${WD_MAX_ACTIONS})`);
+        auth.triedSignIn = true; wdAuthSave();
         clickEl(signInBtn);
         await markAccountCreated(location.hostname);   // an account we can sign into exists
       }

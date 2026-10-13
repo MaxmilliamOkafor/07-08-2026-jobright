@@ -1,0 +1,51 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Senior Specialist Solution Engineer - Salesforce</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:20px auto} .f{margin:10px 0} label{display:block;font-weight:600} input{width:100%;padding:6px} .err{color:#c00}
+.cb{position:absolute;opacity:0;width:1px;height:1px}</style></head><body>
+<!-- A Workday tenant where an account ALREADY EXISTS, created with a different password
+     (Jobright's own Workday sign-up password), not the extension's shared one. -->
+<div id="app"></div>
+<script>
+  const ACCOUNT = { email: 'max.test@example.com', password: 'JobrightPass1!' };
+  const app = document.getElementById('app');
+  const signIn = (err) => { app.innerHTML = `
+    <div data-automation-id="authenticationContainer"><h2>Sign In</h2>
+    ${err ? `<div data-automation-id="errorMessage" class="err">${err}</div>` : ''}
+    <div class="f"><label for="em">Email Address *</label><input id="em" type="email" data-automation-id="email"></div>
+    <div class="f"><label for="pw">Password *</label><input id="pw" type="password" data-automation-id="password"></div>
+    <button type="button" data-automation-id="signInSubmitButton" id="go">Sign In</button>
+    <p>Don't have an account yet? <a href="#" data-automation-id="createAccountLink" id="toCreate">Create Account</a></p></div>`;
+    document.getElementById('toCreate').onclick = (e) => { e.preventDefault(); create(''); };
+    document.getElementById('go').onclick = () => {
+      const em = document.getElementById('em').value, pw = document.getElementById('pw').value;
+      window.__tries = (window.__tries || []).concat(['signin:' + pw]);
+      if (em === ACCOUNT.email && pw === ACCOUNT.password) return application();
+      signIn('Wrong email address or password. After 5 failed attempts your account will be locked.');
+    }; };
+  const create = (err) => { app.innerHTML = `
+    <div data-automation-id="authenticationContainer"><h2>Create Account</h2>
+    ${err ? `<div data-automation-id="errorMessage" class="err">${err}</div>` : ''}
+    <div class="f"><label for="em">Email Address *</label><input id="em" type="email" data-automation-id="email"></div>
+    <div class="f"><label for="pw">Password *</label><input id="pw" type="password" data-automation-id="password"></div>
+    <div class="f"><label for="vp">Verify New Password *</label><input id="vp" type="password" data-automation-id="verifyPassword"></div>
+    <div class="f"><input type="checkbox" class="cb" id="cab" data-automation-id="createAccountCheckbox"><label for="cab">I agree to the terms *</label></div>
+    <button type="button" data-automation-id="createAccountSubmitButton" id="go">Create Account</button>
+    <p>Already have an account? <a href="#" data-automation-id="signInLink" id="toSignIn">Sign In</a></p></div>`;
+    document.getElementById('toSignIn').onclick = (e) => { e.preventDefault(); signIn(''); };
+    document.getElementById('go').onclick = () => {
+      window.__tries = (window.__tries || []).concat(['create']);
+      if (!document.getElementById('cab').checked) return create('You must agree to the terms.');
+      if (document.getElementById('em').value === ACCOUNT.email) return create('An account with this email address already exists.');
+    }; };
+  const application = () => {
+    console.log('SIGNEDIN ' + JSON.stringify(window.__tries));
+    app.innerHTML = `<div data-automation-id="applyFlowMyInfoPage"><div data-automation-id="progressBar">My Information My Experience Review</div>
+      <h2 data-automation-id="pageHeaderTitle">My Information</h2>
+      <form id="wd" onsubmit="return false"><div class="f" data-automation-id="formField-firstName"><label for="fn">First Name *</label><input id="fn" name="fn" data-automation-id="infoFirstName"></div>
+      <button type="button" data-automation-id="btnSubmit" id="sub">Submit</button></form></div>`;
+    document.getElementById('sub').onclick = () => { if (!document.getElementById('fn').value) return;
+      console.log('SUBMITTED ' + JSON.stringify({ first: document.getElementById('fn').value, tries: window.__tries }));
+      document.body.innerHTML = '<h1>Application Submitted</h1><p>Thank you for applying!</p>'; };
+  };
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
+  signIn('');
+</script></body></html>

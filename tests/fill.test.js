@@ -1049,8 +1049,8 @@ eq('and the site saying "already exists" is treated as proof',
   /if \(onCreate && existsErr\) \{[\s\S]{0,320}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
 eq('a known employer opens Sign In instead of Create Account',
   /if \(onCreate && known && !wrongCredErr\)/.test(wd), true);
-eq('and a wrong-credentials error still flips back to Create Account',
-  /if \(onSignIn && wrongCredErr\)/.test(wd), true);
+eq('and a wrong-credentials error still flips back to Create Account (when no account is confirmed)',
+  /if \(onSignIn && wrongCredErr && !auth\.exists\)/.test(wd), true);
 eq('records written under the old raw-host key are still honoured',
   /Tolerate records written under a raw host/.test(body('accountExistsFor')), true);
 
@@ -2939,6 +2939,21 @@ console.log('v17.10 — site logins and the question bank');
     eq('other sites keep the shared account', await run(store, 'ciena.wd5.myworkdayjobs.com'), null);
   })();
   eq('the account steps use a site login first', /const site = await siteLogin\(\);\n\s*if \(site\) return site\.password;/.test(src) && /const site = await siteLogin\(\);\n\s*if \(site\) return site\.email;/.test(src), true);
+}
+
+/* ── 66. v17.11: what the 141-job run hit ─────────────────────────────────── */
+console.log('v17.11 — Workday existing accounts, embedded Greenhouse, Microsoft sign-in');
+{
+  const wd = body('fillWorkdayCreateAccount');
+  eq('Workday tries every saved password: site login, shared, Jobright\'s', /ua_app_password[\s\S]*WORKDAY_SIGNUP_INFORMATION/.test(body('workdayPasswordCandidates')), true);
+  eq('a refused sign-in on an existing account tries the next password, not Create', /if \(onSignIn && wrongCredErr && auth\.exists && auth\.triedSignIn\) \{/.test(wd), true);
+  eq('only an account the site has NOT confirmed is sent back to Create', /if \(onSignIn && wrongCredErr && !auth\.exists\) \{/.test(wd), true);
+  eq('when every password is refused it stops and says what to do', /DIAG\('workday\.password-mismatch'/.test(wd) && /return 'stop';/.test(wd), true);
+  eq('errors come from Workday\'s own messages, not the page text', /const errText = workdayAuthErrorText\(\);/.test(wd) && !/const pageText = \(document\.body\.innerText/.test(wd), true);
+  eq('an embedded Greenhouse form is opened in this tab', /if \(!\$\('#application_form,#application,\.application-form'\) && await openEmbeddedGreenhouseForm\(\)\) return;/.test(body('greenhouseAutomation')), true);
+  { const og = body('openEmbeddedGreenhouseForm');
+    eq('only a real https greenhouse.io address is followed', og.includes("!/^https:$/.test(u.protocol)") && og.includes('greenhouse\\.io$/i.test(u.hostname)'), true); }
+  eq('Microsoft\'s account sign-in is reported at once, not timed out', /DIAG\('microsoft\.signin'/.test(body('eightfoldAutomation')), true);
 }
 
 

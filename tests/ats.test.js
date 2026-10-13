@@ -396,6 +396,13 @@ for (const [href, want] of [
   ['https://job-boards.greenhouse.io/gitlab/jobs/8860273002', 'greenhouseAutomation'],
   ['https://www.pinterestcareers.com/jobs/?gh_jid=8209905', 'greenhouseAutomation'],
   ['https://jobs.lever.co/spotify/71eb64a0-ce99-4166-8462-bad3901a967c', 'leverAutomation'],
+  // From jobs_all_companies (141 jobs): Microsoft runs on Eightfold; company pages embed Greenhouse.
+  ['https://apply.careers.microsoft.com/careers/job/1970393556957128', 'eightfoldAutomation'],
+  ['https://stripe.com/jobs/search?gh_jid=8039948', 'greenhouseAutomation'],
+  ['https://databricks.com/company/careers/open-positions/job?gh_jid=8820652002', 'greenhouseAutomation'],
+  ['https://www.okta.com/company/careers/opportunity/8258366?gh_jid=8258366', 'greenhouseAutomation'],
+  ['https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/job/210674219', 'oracleCloudAutomation'],
+  ['https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Senior-Specialist_JR1', 'workdayAutomation'],
 ]) eq(`${new URL(href).hostname}${new URL(href).pathname.slice(0, 28)} → ${want}`, routeOf(href)[1], want);
 // The newly recognised boards are named (the generic flow logs and records them
 // by name), and still go through the generic flow that handles them.

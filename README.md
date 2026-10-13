@@ -3061,6 +3061,33 @@ kept entirely on your computer:
 
 ---
 
+## v17.11 — what the 141-job run hit
+
+`jobs_all_companies` (141 jobs): JPMorgan/Oracle 29 · Workday 50 (Salesforce 15,
+Mastercard 11, Citi 9, State Street 5, …) · Microsoft 15 · Greenhouse 26 (13 of them
+embedded on company sites) · Amazon 11 · SmartRecruiters 5 · Lever 3 · Ashby 2.
+
+- **Workday, an account that already exists with another password** (the Salesforce
+  screen): it ping-ponged Create → "already exists" → Sign In → "wrong password" →
+  Create… until it gave up. Now passwords are tried in order — your 🔐 site login,
+  the shared ATS password, then **Jobright's own Workday sign-up password** — and
+  once the tenant has said the account exists, a refused password means "next
+  password", never "create again". All refused → it stops at once and says to add
+  the employer under 🔐 Site logins. Errors are read from Workday's own messages,
+  not the page text. Tested: Create → exists → shared refused → Jobright's accepted
+  → submitted, in 5 actions.
+- **Greenhouse embedded on company sites** (Stripe, Databricks, Okta, MongoDB,
+  Fivetran, N26, Rubrik, Pinterest): the form sits in a cross-origin iframe; it is
+  now opened directly in the same tab and submits like any Greenhouse form. Tested.
+- **Microsoft careers** runs on Eightfold and was not recognised (generic flow,
+  timeouts). It now goes to the Eightfold driver, and Microsoft's own account
+  sign-in — never automated — is reported straight away instead of timing out.
+- **JPMorgan (Oracle)** asks returning candidates for an emailed PIN. Without the
+  Gmail reader connected those jobs are set aside; signing in once on one JPMorgan
+  job in the same browser usually carries the session to the rest.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
