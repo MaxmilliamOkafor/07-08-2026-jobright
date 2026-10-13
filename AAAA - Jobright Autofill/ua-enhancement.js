@@ -648,7 +648,7 @@
     { n: 'AngelList', p: /angel\.co.*jobs|wellfound\.com.*jobs/i },
     // Simplify-supported ATS platforms
     { n: 'Myworkday', p: /myworkday\.com/i }, { n: 'GreenhouseEmbed', p: /greenhouse\.io.*embed/i },
-    { n: 'LeverEmbed', p: /lever\.co.*\/apply/i }, { n: 'Eightfold', p: /eightfold\.ai.*careers/i },
+    { n: 'LeverEmbed', p: /lever\.co.*\/apply/i }, { n: 'Eightfold', p: /eightfold\.ai.*careers|(^|\/\/)apply\.careers\.microsoft\.com\//i },
     { n: 'Gem', p: /gem\.com.*jobs/i }, { n: 'HireVue', p: /hirevue\.com/i },
     { n: 'Cornerstone', p: /csod\.com|cornerstoneondemand\.com/i },
     { n: 'TeamTailor', p: /teamtailor\.com|career\..*\.com/i },
@@ -4920,6 +4920,23 @@
   }
   function stalledFor() { return Date.now() - _lastProgressAt; }
   function isStalled() { return stalledFor() > _stallLimitMs; }
+  /* The per-job cap is a wall clock, and a wall clock cannot tell a stuck job from
+     a slow one. A Workday tenant that needs an account plus five pages, or an
+     Oracle "Confirm Your Identity" PIN that takes a minute to reach the inbox, both
+     outlive 150s while doing everything right — and were being thrown away as
+     "Timed out after 150s". When the cap is reached, a job that is mid-operation
+     or made progress in the last 30s gets another 45s, up to a hard ceiling. A job
+     that is genuinely going nowhere still expires on the first check, as before. */
+  const JOB_EXTEND_MS = 45000;
+  const JOB_RECENT_PROGRESS_MS = 30000;
+  const JOB_HARD_CEIL_MS = 8 * 60 * 1000;
+  function jobTimeoutExtension(startedAt) {
+    const age = Date.now() - (startedAt || Date.now());
+    const ceil = Math.max(JOB_HARD_CEIL_MS, qTimeout);
+    if (age >= ceil) return 0;
+    if (!isBusy() && stalledFor() >= JOB_RECENT_PROGRESS_MS) return 0;
+    return Math.min(JOB_EXTEND_MS, ceil - age);
+  }
   // A page whose URL or field-set changed is making progress even if nothing we
   // did caused it, so watch for that too rather than only crediting our own work.
   let _progressSignature = '';
@@ -7022,9 +7039,33 @@
   }
 
   // ===================== GREENHOUSE AUTOMATION (SpeedyApply-enhanced) =====================
+  /* Company careers pages (stripe.com, databricks.com, okta.com, mongodb.com…
+     ?gh_jid=…) embed the Greenhouse form in a CROSS-ORIGIN iframe — the hardest
+     place for an extension to fill and submit. The iframe's own address is an
+     ordinary Greenhouse form, so it is opened in this tab instead. */
+  async function openEmbeddedGreenhouseForm() {
+    if (/greenhouse\.io$/i.test(location.hostname)) return false;
+    const frameSel = 'iframe[src*="greenhouse.io/embed/job_app"],iframe[src*="greenhouse.io/embed/job_board"],iframe#grnhse_iframe,iframe[src*="greenhouse.io"][src*="token="]';
+    let fr = null;
+    await waitUntil(() => (fr = deepAll(frameSel, 4).find((f) => f.src)), 6000, 200);
+    if (!fr) {
+      // Some pages only mount it after "Apply" is pressed.
+      try { await openApplicationForm(); } catch (_) {}
+      await waitUntil(() => (fr = deepAll(frameSel, 4).find((f) => f.src)), 6000, 200);
+    }
+    if (!fr) return false;
+    let u = null;
+    try { u = new URL(fr.src, location.href); } catch (_) { return false; }
+    if (!/^https:$/.test(u.protocol) || !/(^|\.)greenhouse\.io$/i.test(u.hostname)) return false;
+    LOG('Greenhouse form is embedded from ' + u.hostname + ' — opening it directly in this tab');
+    DIAG('greenhouse.embedded', location.hostname);
+    location.assign(u.href);
+    return true;
+  }
   async function greenhouseAutomation() {
     LOG('Greenhouse automation starting...');
     const p = await getProfile();
+    if (!$('#application_form,#application,.application-form') && await openEmbeddedGreenhouseForm()) return;
     const form = await waitFor('#application_form,#application,.application-form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
@@ -7812,6 +7853,18 @@
   // ===================== EIGHTFOLD AUTOMATION =====================
   async function eightfoldAutomation() {
     LOG('Eightfold automation starting...');
+    /* Microsoft's careers site (Eightfold) requires signing in with a Microsoft
+       account. That is a personal login with its own second factor — never
+       automated. If the run is sent to Microsoft's sign-in, say so straight
+       away instead of letting the job time out silently. */
+    const msSignIn = () => /(^|\.)(login\.live\.com|login\.microsoftonline\.com|account\.microsoft\.com)$/i.test(location.hostname) ||
+      (/careers\.microsoft\.com$/i.test(location.hostname) && deepAll('a,button', 200).some((b) => isVisible(b) && /^sign in( with microsoft)?$/i.test(normLabel(b.textContent))) && !hasApplicationForm());
+    if (msSignIn()) {
+      LOG('Microsoft careers needs you signed in to your Microsoft account in this browser — sign in once, then retry these jobs');
+      DIAG('microsoft.signin', 'Microsoft account sign-in required');
+      try { reportNeedsHuman('Sign in to your Microsoft account in this browser once'); } catch (_) {}
+      return;
+    }
     const p = await getProfile();
     await loadAnswerBank();
 
@@ -8779,12 +8832,66 @@
   //    fresh tenant actually creates the account instead of failing a sign-in.
   //  • Defend the fields with the saved password so Create and future Sign-In always use
   //    the SAME credentials, then auto-click the matching submit button.
+  /* ── WORKDAY: WHICH PASSWORD, AND WHEN TO STOP ──────────────────────────────
+     An account can already exist on a tenant with a password that is not ours:
+     made by hand, or by Jobright's own Workday sign-up (which keeps its own
+     password). The old flow then ping-ponged — Create → "already exists" → Sign In
+     → "wrong password" → Create… — until its attempts ran out. Now:
+       • passwords are tried in order: your 🔐 site login for this employer, the
+         shared ATS password, then Jobright's own Workday sign-up password;
+       • once the tenant has said "account already exists", a wrong password means
+         "try the next one", never "go back and create an account";
+       • when every password has been refused, it stops at once and says so —
+         add the employer under 🔐 Site logins — instead of burning attempts. */
+  const _wdAuth = new Map();      // tenant → { exists, idx, tried }
+  function wdAuthState() {
+    const k = accountKeyFor(location.hostname);
+    if (!_wdAuth.has(k)) {
+      let saved = null;
+      try { saved = JSON.parse(sessionStorage.getItem('ua_wd_auth:' + k) || 'null'); } catch (_) {}
+      _wdAuth.set(k, saved || { exists: false, idx: 0, triedSignIn: false });
+    }
+    return _wdAuth.get(k);
+  }
+  function wdAuthSave() {
+    const k = accountKeyFor(location.hostname);
+    try { sessionStorage.setItem('ua_wd_auth:' + k, JSON.stringify(_wdAuth.get(k))); } catch (_) {}
+  }
+  async function workdayPasswordCandidates() {
+    const out = [];
+    try { const site = await siteLogin(); if (site && site.password) out.push(site.password); } catch (_) {}
+    try { const shared = await st.get('ua_app_password'); if (shared) out.push(shared); } catch (_) {}
+    try {
+      // Jobright's own Workday sign-up password ("Your Autofill information → Sign-up Information").
+      let jr = await st.get('WORKDAY_SIGNUP_INFORMATION');
+      if (typeof jr === 'string') { try { jr = JSON.parse(jr); } catch (_) { jr = null; } }
+      if (jr && typeof jr.password === 'string' && jr.password.trim()) out.push(jr.password);
+    } catch (_) {}
+    if (!out.length) out.push(await getAppPassword());
+    return [...new Set(out.filter(Boolean))];
+  }
+  // Workday's own error text on the account form — not the whole page, where a
+  // job description could say "incorrect" or "already registered".
+  function workdayAuthErrorText() {
+    try {
+      const nodes = deepAll('[data-automation-id="errorMessage"],[data-automation-id="errorBanner"],[data-automation-id*="error" i],[role="alert"],[aria-live="assertive"]', 20)
+        .filter(isVisible);
+      return nodes.map((n) => n.textContent || '').join(' ').toLowerCase().replace(/\s+/g, ' ');
+    } catch (_) { return ''; }
+  }
+
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
     let pwFields = $$('input[type=password]').filter(isVisible);
     if (!pwFields.length) return 'stop'; // not on a create-account / sign-in page
     const email = await getAppEmail();
-    const pw = await getAppPassword();
+    const auth = wdAuthState();
+    const candidates = await workdayPasswordCandidates();
+    // Which form are we on? (decided before the password, which depends on it)
+    const _createBtn0 = $('button[data-automation-id="createAccountSubmitButton"]');
+    const _onCreate0 = !!_createBtn0 && isVisible(_createBtn0);
+    // Creating an account uses the first choice; signing in walks the list.
+    const pw = _onCreate0 ? candidates[0] : candidates[Math.min(auth.idx, candidates.length - 1)];
     if (!email || !pw) return 'working';
 
     // Which form are we on?
@@ -8811,10 +8918,11 @@
     if (Date.now() - _wdLastSubmit < 3500) return 'working'; // let the previous submit settle
     if (_wdActions >= WD_MAX_ACTIONS) { LOG('Workday: account step exhausted attempts — stopping. Check the saved password under 🔑 ATS account login.'); return 'stop'; }
 
-    // Read Workday's visible error banner to decide whether to create or sign in.
-    const pageText = (document.body.innerText || '').toLowerCase();
-    const existsErr = /already (exists|registered|in use)|account.*already/i.test(pageText);
-    const wrongCredErr = /wrong email|wrong password|might be locked|incorrect|invalid (email|password)|couldn'?t find|no account/i.test(pageText);
+    // Workday's own error messages decide whether to create, sign in, or try the next password.
+    const errText = workdayAuthErrorText();
+    const existsErr = /already (exists|registered|in use)|account.*already|email address is already/i.test(errText);
+    const wrongCredErr = /wrong email|wrong password|might be locked|incorrect|invalid (email|password)|couldn'?t find|no account|not recognized/i.test(errText);
+    if (existsErr && !auth.exists) { auth.exists = true; wdAuthSave(); await markAccountCreated(location.hostname); }
     // In-form switch link finder (NEVER the page-header utilityButtonSignIn).
     const inFormLink = (re) => $$('a,button,[role="button"]').filter(isVisible).find(b => {
       const aid = (b.getAttribute('data-automation-id') || '');
@@ -8827,7 +8935,7 @@
     // default, but a first-time applicant has NO account yet — so trying to Sign In just
     // fails. Unless we have a record that this tenant already has an account, proactively
     // switch to Create Account BEFORE submitting anything (don't wait for a failed sign-in).
-    const known = await accountExistsFor(location.hostname);
+    const known = (await accountExistsFor(location.hostname)) || auth.exists;
     if (onSignIn && !known && !existsErr) {
       const toCreate = inFormLink(/create account|create my account|sign ?up|new user|don'?t have an account|register/i)
         || $('[data-automation-id="createAccountLink"],a[data-automation-id*="createAccount" i]');
@@ -8840,9 +8948,23 @@
       if (toSignIn && isVisible(toSignIn)) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: account already created here — switching to Sign In'); realClick(toSignIn); return 'working'; }
     }
 
+    /* A refused sign-in on a tenant that DOES have an account: the password is
+       not the one we tried. Next candidate — never back to Create Account. */
+    if (onSignIn && wrongCredErr && auth.exists && auth.triedSignIn) {
+      if (auth.idx + 1 < candidates.length) {
+        auth.idx++; auth.triedSignIn = false; wdAuthSave();
+        LOG(`Workday: that password was refused — trying saved password ${auth.idx + 1} of ${candidates.length}`);
+        for (const f of pwFields) reactTypeValue(f, candidates[auth.idx]);
+        return 'working';
+      }
+      LOG('Workday: an account exists here, and every saved password was refused — add this employer under 🔐 Site logins in the Queue Manager');
+      DIAG('workday.password-mismatch', 'account exists with a different password', { detail: { tried: candidates.length } });
+      try { reportNeedsHuman('Workday account exists with a different password — add it under Site logins'); } catch (_) {}
+      return 'stop';
+    }
     // Self-correct the form mode based on the error text (covers accounts created outside
     // the extension, or a stale record).
-    if (onSignIn && wrongCredErr) {
+    if (onSignIn && wrongCredErr && !auth.exists) {
       const toCreate = inFormLink(/create account|sign ?up|new user|don'?t have an account/i);
       if (toCreate) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: Sign In rejected (no account yet) — switching to Create Account'); realClick(toCreate); return 'working'; }
     }
@@ -8898,7 +9020,8 @@
     if (onSignIn) {
       if (!signInBtn.disabled && signInBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
-        LOG(`Workday: signing in with saved credentials (action ${_wdActions}/${WD_MAX_ACTIONS})`);
+        LOG(`Workday: signing in with saved password ${Math.min(auth.idx, candidates.length - 1) + 1} of ${candidates.length} (action ${_wdActions}/${WD_MAX_ACTIONS})`);
+        auth.triedSignIn = true; wdAuthSave();
         clickEl(signInBtn);
         await markAccountCreated(location.hostname);   // an account we can sign into exists
       }
@@ -9068,6 +9191,8 @@
     // MAIN-world hooks answer them for the lifetime of this job (and only then).
     setAutomationFlag(true);
     noteProgress('job started');
+    // The worker's pick time, so the hard ceiling also holds across a reload of this tab.
+    const jobStart = (c.startedAt && Date.now() - c.startedAt < 30 * 60000) ? c.startedAt : Date.now();
     let finalized = false, tId = null, stallIv = null, beatIv = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
@@ -9107,7 +9232,15 @@
     const onTimeout = async () => {
       if (finalized) return;
       if (detectCaptcha()) { showCaptchaBanner(detectCaptcha()?.provider); tId = setTimeout(onTimeout, 60000); return; }
-      await finalize('timeout', `Timed out after ${qTimeout / 1000}s`);
+      const more = jobTimeoutExtension(jobStart);
+      if (more) {
+        LOG(`Job cap reached but still working (${isBusy() ? _busyWhat : _lastProgressWhat}) — extending ${Math.round(more / 1000)}s`);
+        DIAG('job.extended', isBusy() ? _busyWhat : _lastProgressWhat, { detail: { ms: Date.now() - jobStart } });
+        tId = setTimeout(onTimeout, more);
+        return;
+      }
+      const took = Math.round((Date.now() - jobStart) / 1000);
+      await finalize('timeout', `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`);
     };
     tId = setTimeout(onTimeout, qTimeout);
 
@@ -9138,23 +9271,13 @@
       try { pct = fillReport().pct; } catch (_) {}
       try {
         chrome.runtime.sendMessage({
-          type: 'UA_JOB_PROGRESS', id: c.id, stage: _lastProgressWhat,
-          idleMs: stalledFor(), pct,
+          type: 'UA_JOB_PROGRESS', id: c.id, stage: isBusy() ? _busyWhat : _lastProgressWhat,
+          idleMs: stalledFor(), busy: isBusy(), pct,
         }, () => void chrome.runtime.lastError);
       } catch (_) {}
     };
     beat();   // straight away: a page that just reloaded should not look silent
-    beatIv = setInterval(() => {
-      if (finalized) return;
-      let pct = null;
-      try { pct = fillReport().pct; } catch (_) {}
-      try {
-        chrome.runtime.sendMessage({
-          type: 'UA_JOB_PROGRESS', id: c.id, stage: _lastProgressWhat,
-          idleMs: stalledFor(), pct,
-        }, () => void chrome.runtime.lastError);
-      } catch (_) {}
-    }, 5000);
+    beatIv = setInterval(beat, 5000);
 
     try {
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
@@ -9371,9 +9494,16 @@
               _qTimeoutId = setTimeout(onJobTimeout, 60000);
               return;
             }
-            LOG(`Queue: job timed out after ${qTimeout / 1000}s — auto-skipping`);
+            const more = jobTimeoutExtension(c.startedAt);
+            if (more) {
+              LOG(`Queue: job cap reached but still working (${isBusy() ? _busyWhat : _lastProgressWhat}) — extending ${Math.round(more / 1000)}s`);
+              _qTimeoutId = setTimeout(onJobTimeout, more);
+              return;
+            }
+            const took = Math.round((Date.now() - (c.startedAt || Date.now())) / 1000) || Math.round(qTimeout / 1000);
+            LOG(`Queue: job timed out after ${took}s — auto-skipping`);
             c.status = 'timeout';
-            c.error = `Timed out after ${qTimeout / 1000}s`;
+            c.error = `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`;
             c.completedAt = Date.now();
             qStats.timedOut++;
             await saveQ(); await saveStats();
@@ -12335,17 +12465,19 @@
      widgets. The boxes rarely carry a label of their own; four or more
      single-character inputs side by side are the tell. */
   function codeBoxGroup() {
-    return deepAll('input[type=text],input[type=tel],input[type=number],input[type=password],input:not([type])', 60)
-      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && el.maxLength === 1)
-      .slice(0, 10)
-      .filter((el, _, all) => all.length >= 4);
+    // One character each — by the property, the attribute (number boxes ignore
+    // maxLength) or simply by being a narrow box in a row of four to eight.
+    const one = (el) => el.maxLength === 1 || el.getAttribute('maxlength') === '1' || (() => { try { return el.getBoundingClientRect().width < 70; } catch (_) { return false; } })();
+    const boxes = deepAll('input[type=text],input[type=tel],input[type=number],input[type=password],input:not([type])', 60)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && one(el));
+    return boxes.length >= 4 && boxes.length <= 8 ? boxes : [];
   }
   /* Type a code into the box we found — or across the group, one digit each.
      Putting "482913" into the first of six one-digit boxes kept "4" and left the
      other five empty, so the Verify button never enabled. */
   function typeVerificationCode(box, code) {
     const digits = String(code || '').replace(/\s+/g, '');
-    const group = box && box.maxLength === 1 ? codeBoxGroup() : [];
+    const group = codeBoxGroup().includes(box) ? codeBoxGroup() : [];
     if (group.length >= digits.length && group.length > 1) {
       digits.split('').forEach((ch, i) => {
         try { group[i].focus({ preventScroll: true }); } catch (_) {}
@@ -12392,6 +12524,8 @@
     // older code belongs to a previous job and is rejected.
     const since = Date.now() - 3 * 60000;
     const tried = new Set();
+    const startedAt = Date.now();
+    let resent = false;
 
     while (Date.now() < deadline) {
       if (autoStopped()) return false;
@@ -12424,10 +12558,19 @@
           try { location.assign(r.link); } catch (_) {}
           return true;
         }
+      } else if (r && r.reason === 'gmail-not-signed-in') {
+        LOG('Verification code needed, but Gmail is not signed in in this browser — sign in to Gmail in Chrome, or the job needs you');
+        try { reportNeedsHuman('verification code — sign in to Gmail in this browser'); } catch (_) {}
+        return false;
       } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
-        LOG('Email verification needed and no mailbox is connected — this job needs you. Connect one under 🔑 in the Queue Manager to clear these automatically.');
+        LOG('Email verification needed and no mailbox is connected — this job needs you. Tick "Read codes from my signed-in Gmail" in the Queue Manager to clear these automatically.');
         try { reportNeedsHuman('email verification'); } catch (_) {}
         return false;
+      }
+      // A code that never came (or expired): ask for a new one, once.
+      if (!resent && Date.now() - startedAt > 50000) {
+        const again = deepAll('a,button,[role="button"]', 120).find((b) => isVisible(b) && /^(send( a)? new code|resend( the)? code|resend|send code again|get a new code)$/i.test(normLabel(b.textContent)));
+        if (again) { resent = true; LOG('No code yet — asking for a new one'); realClick(again); }
       }
       await sleep(4000);   // the mail has not landed yet
     }
@@ -13151,6 +13294,7 @@
       if (!onEmailStep) return;
       const box = strictEmailField();
       const email = await getAppEmail();
+      if (!box && hasApplicationForm()) return;     // past the email step already (e.g. after the PIN)
       if (!box || !email) { LOG('Oracle: email step with no ' + (box ? 'saved email' : 'email box') + ' — leaving it for you'); return; }
       const before = stepSignature();
       if (!(box.value || '').trim()) {

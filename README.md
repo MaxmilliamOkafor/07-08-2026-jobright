@@ -3061,6 +3061,85 @@ kept entirely on your computer:
 
 ---
 
+## v17.11 — what the 141-job run hit
+
+`jobs_all_companies` (141 jobs): JPMorgan/Oracle 29 · Workday 50 (Salesforce 15,
+Mastercard 11, Citi 9, State Street 5, …) · Microsoft 15 · Greenhouse 26 (13 of them
+embedded on company sites) · Amazon 11 · SmartRecruiters 5 · Lever 3 · Ashby 2.
+
+- **Workday, an account that already exists with another password** (the Salesforce
+  screen): it ping-ponged Create → "already exists" → Sign In → "wrong password" →
+  Create… until it gave up. Now passwords are tried in order — your 🔐 site login,
+  the shared ATS password, then **Jobright's own Workday sign-up password** — and
+  once the tenant has said the account exists, a refused password means "next
+  password", never "create again". All refused → it stops at once and says to add
+  the employer under 🔐 Site logins. Errors are read from Workday's own messages,
+  not the page text. Tested: Create → exists → shared refused → Jobright's accepted
+  → submitted, in 5 actions.
+- **Greenhouse embedded on company sites** (Stripe, Databricks, Okta, MongoDB,
+  Fivetran, N26, Rubrik, Pinterest): the form sits in a cross-origin iframe; it is
+  now opened directly in the same tab and submits like any Greenhouse form. Tested.
+- **Microsoft careers** runs on Eightfold and was not recognised (generic flow,
+  timeouts). It now goes to the Eightfold driver, and Microsoft's own account
+  sign-in — never automated — is reported straight away instead of timing out.
+- **JPMorgan (Oracle)** asks returning candidates for an emailed PIN. Without the
+  Gmail reader connected those jobs are set aside; signing in once on one JPMorgan
+  job in the same browser usually carries the session to the rest.
+
+---
+
+## v17.12 — verification codes from the Gmail you are already signed in to
+
+JPMorgan's "Confirm Your Identity" (Oracle) emails a PIN on every visit, and the
+only way to read it was the Gmail API route — which needs a Google OAuth client ID,
+so in practice it was never connected and every such job was set aside.
+
+**Now:** tick **"Read codes from my signed-in Gmail"** in the Queue Manager. Gmail
+publishes your unread inbox as a small feed (`mail.google.com/mail/feed/atom`, what
+Gmail-notifier extensions read) carrying each email's subject, sender, time and
+opening text — and a verification email's opening text holds its code. The
+extension reads that feed with the Gmail sign-in already in this browser (every
+signed-in account, inbox and Updates tab), takes the code from the email that
+arrived after the PIN screen appeared, types it — one digit per box on Oracle's six
+round boxes, which are number fields — and presses VERIFY. No code after ~50s:
+it presses "Send New Code" once and keeps waiting.
+
+Same limits as the API route: opt-in, read-only, only emails from the last few
+minutes that read like a verification email, nothing stored. Works for every ATS
+that emails a code — Oracle/JPMorgan, Workday, Amazon, iCIMS…
+
+Tested in a real browser with a stand-in feed worded exactly like the JPMorgan
+email: the PIN page → code read (an order number in another email ignored) →
+typed into the six boxes → accepted → application submitted. **Not yet run
+against real Gmail** — the first JPMorgan job on your next run is the live check;
+if Chrome does not send the Gmail sign-in with the request, the log says "Gmail is
+not signed in in this browser" rather than failing silently.
+
+---
+
+## v17.13 — "Timed out after 150s" no longer kills jobs that are still working
+
+The per-job cap was a plain stopwatch: at 150s the job was thrown away whatever it
+was doing. The jobs that need longest are exactly the ones doing everything right —
+a JPMorgan PIN that takes a minute to reach the inbox, a Workday tenant that needs
+an account and then five pages — and they were the "timeout" failures in the run
+summary. A page that is genuinely stuck was already caught in ~15s by the stall
+check, so the stopwatch was only ever catching slow, working jobs.
+
+**Now:** when the cap is reached, a job that is mid-operation (filling, signing in,
+waiting for the verification email, submitting, verifying) or made progress in the
+last 30s gets another 45s, and is checked again — up to a hard ceiling of 8 minutes.
+A job that has done nothing for 30s still times out on the first check, as before.
+The worker's own watchdog follows the same rule from the tab's heartbeat, so it no
+longer kills a working tab at its 3-minute mark either. A timeout now also says what
+the job was doing: `Timed out after 312s (last activity: waiting for the verification email)`.
+
+Checked in a real browser: the JPMorgan PIN fixture with the code arriving 85s
+after the start and the cap set to 60s — before, "Watchdog: no result in 1 min";
+now the cap is extended once, the PIN is typed and the application is submitted.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

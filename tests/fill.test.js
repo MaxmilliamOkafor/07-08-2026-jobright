@@ -153,7 +153,7 @@ eq('the no-progress cut-off defaults to 15s', /stallMs: 15 \* 1000/.test(orch), 
 eq('the hard cap per job is 3 minutes', /jobTimeoutMs: 3 \* 60 \* 1000/.test(orch), true);
 // A 15s window is only meaningful if the beat is fast enough to fill it, and if
 // work in progress is credited AS it happens rather than at the end of a pass.
-eq('the heartbeat is fast enough for a 15s window (3 beats)', /\}, 5000\);/.test(src), true);
+eq('the heartbeat is fast enough for a 15s window (3 beats)', /beatIv = setInterval\(beat, 5000\);/.test(src), true);
 eq('the stall check polls every 3s', /\}, 3000\);/.test(src), true);
 eq('each filled field counts as progress, so a long form is not a stall',
   /noteProgress\('filling fields'\);   \/\/ per field/.test(src), true);
@@ -206,6 +206,29 @@ eq('post-submit verification counts as work, not a stall',
   (src.match(/withBusy\('verifying submission'/g) || []).length >= 3, true);
 eq('the hard cap is still the backstop if an operation hangs outright',
   /jobTimeoutMs: 3 \* 60 \* 1000/.test(orch), true);
+
+/* ── 10b. the per-job cap extends for a job that is still working ─────────── */
+console.log('per-job cap extends while working');
+{
+  const m = src.match(/const JOB_EXTEND_MS[\s\S]*?function jobTimeoutExtension\(startedAt\) \{[\s\S]*?\n  \}/);
+  eq('jobTimeoutExtension exists', !!m, true);
+  const mk = (busy, idle, qTimeout) => new Function('isBusy', 'stalledFor', 'qTimeout',
+    m[0] + '\nreturn jobTimeoutExtension;')(() => busy, () => idle, qTimeout);
+  const now = Date.now();
+  eq('busy at 150s → 45s more', mk(true, 0, 150000)(now - 150000), 45000);
+  eq('progressed 10s ago → 45s more', mk(false, 10000, 150000)(now - 150000), 45000);
+  eq('idle 40s, not busy → expire', mk(false, 40000, 150000)(now - 150000), 0);
+  eq('busy at the 8 min ceiling → expire', mk(true, 0, 150000)(now - 8 * 60000), 0);
+  const near = mk(true, 0, 150000)(now - (8 * 60000 - 10000));
+  eq('near the ceiling → only the time left', near > 0 && near <= 10000, true);
+  eq('both run modes use it',
+    (src.match(/jobTimeoutExtension\(/g) || []).length >= 3, true);
+  eq('the timeout reason names the last activity',
+    /Timed out after \$\{took\}s \(last activity:/.test(src), true);
+  eq('the heartbeat reports busy to the worker', /idleMs: stalledFor\(\), busy: isBusy\(\)/.test(src), true);
+  eq('the worker spares a working job up to the ceiling',
+    /j\.working && j\.beatAt && Date\.now\(\) - j\.beatAt < 15000/.test(orch), true);
+}
 
 /* ── 11. CSV import accepts a drop, not just the file picker ──────────────── */
 console.log('CSV drag and drop');
@@ -1049,8 +1072,8 @@ eq('and the site saying "already exists" is treated as proof',
   /if \(onCreate && existsErr\) \{[\s\S]{0,320}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
 eq('a known employer opens Sign In instead of Create Account',
   /if \(onCreate && known && !wrongCredErr\)/.test(wd), true);
-eq('and a wrong-credentials error still flips back to Create Account',
-  /if \(onSignIn && wrongCredErr\)/.test(wd), true);
+eq('and a wrong-credentials error still flips back to Create Account (when no account is confirmed)',
+  /if \(onSignIn && wrongCredErr && !auth\.exists\)/.test(wd), true);
 eq('records written under the old raw-host key are still honoured',
   /Tolerate records written under a raw host/.test(body('accountExistsFor')), true);
 
@@ -2939,6 +2962,21 @@ console.log('v17.10 — site logins and the question bank');
     eq('other sites keep the shared account', await run(store, 'ciena.wd5.myworkdayjobs.com'), null);
   })();
   eq('the account steps use a site login first', /const site = await siteLogin\(\);\n\s*if \(site\) return site\.password;/.test(src) && /const site = await siteLogin\(\);\n\s*if \(site\) return site\.email;/.test(src), true);
+}
+
+/* ── 66. v17.11: what the 141-job run hit ─────────────────────────────────── */
+console.log('v17.11 — Workday existing accounts, embedded Greenhouse, Microsoft sign-in');
+{
+  const wd = body('fillWorkdayCreateAccount');
+  eq('Workday tries every saved password: site login, shared, Jobright\'s', /ua_app_password[\s\S]*WORKDAY_SIGNUP_INFORMATION/.test(body('workdayPasswordCandidates')), true);
+  eq('a refused sign-in on an existing account tries the next password, not Create', /if \(onSignIn && wrongCredErr && auth\.exists && auth\.triedSignIn\) \{/.test(wd), true);
+  eq('only an account the site has NOT confirmed is sent back to Create', /if \(onSignIn && wrongCredErr && !auth\.exists\) \{/.test(wd), true);
+  eq('when every password is refused it stops and says what to do', /DIAG\('workday\.password-mismatch'/.test(wd) && /return 'stop';/.test(wd), true);
+  eq('errors come from Workday\'s own messages, not the page text', /const errText = workdayAuthErrorText\(\);/.test(wd) && !/const pageText = \(document\.body\.innerText/.test(wd), true);
+  eq('an embedded Greenhouse form is opened in this tab', /if \(!\$\('#application_form,#application,\.application-form'\) && await openEmbeddedGreenhouseForm\(\)\) return;/.test(body('greenhouseAutomation')), true);
+  { const og = body('openEmbeddedGreenhouseForm');
+    eq('only a real https greenhouse.io address is followed', og.includes("!/^https:$/.test(u.protocol)") && og.includes('greenhouse\\.io$/i.test(u.hostname)'), true); }
+  eq('Microsoft\'s account sign-in is reported at once, not timed out', /DIAG\('microsoft\.signin'/.test(body('eightfoldAutomation')), true);
 }
 
 

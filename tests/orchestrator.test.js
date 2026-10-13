@@ -246,6 +246,63 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('still one tab', env.tabs.size, 1);
   }
 
+  /* ── 4b. past the cap but still working → left alone, up to the hard ceiling ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    env.store.ua_mgr_settings = { jobTimeoutMs: 180000 };
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    const beat = (msg) => new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l(Object.assign({ type: 'UA_JOB_PROGRESS', stage: 'waiting for the verification email' }, msg), { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await beat({ busy: true, idleMs: 0 });
+    await tick(40);
+    eq('a busy heartbeat marks the job as working', env.store.ua_q[0].working, true);
+    env.store.ua_q[0].startedAt = Date.now() - 4 * 60 * 1000;   // past the 3 min cap
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(60);
+    eq('a working job past the cap is not killed', env.store.ua_q[0].status, 'applying');
+    // Same age, but the tab reports it has done nothing for a minute.
+    await beat({ busy: false, idleMs: 60000 });
+    await tick(40);
+    eq('an idle heartbeat clears working', env.store.ua_q[0].working, false);
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('an idle job past the cap is timed out', env.store.ua_q[0].status, 'timeout');
+  }
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1')];
+    env.store.ua_mgr_concurrency = 1;
+    env.store.ua_mgr_settings = { jobTimeoutMs: 180000 };
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    await new Promise((resolve) => {
+      for (const l of env.listeners.msg) {
+        const kept = l({ type: 'UA_JOB_PROGRESS', stage: 'filling fields', busy: true, idleMs: 0 }, { tab: { id: tabId } }, resolve);
+        if (kept === true) return;
+      }
+      resolve();
+    });
+    await tick(40);
+    env.store.ua_q[0].startedAt = Date.now() - 10 * 60 * 1000;   // past the 8 min ceiling
+    for (const l of env.listeners.alarm) l({ name: 'ua_mgr_watchdog' });
+    await tick(90);
+    eq('even a working job is timed out past the hard ceiling', env.store.ua_q[0].status, 'timeout');
+  }
+
   /* ── 5. pause holds new tabs; resume refills ── */
   {
     const env = makeChrome();

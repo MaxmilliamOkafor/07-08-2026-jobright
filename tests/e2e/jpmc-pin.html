@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta charset="utf-8"><title>AI Product Director - JPMC Candidate Experience page</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:20px auto;text-align:center} .pins input{width:44px;height:44px;border-radius:50%;text-align:center;font-size:20px;margin:4px}
+.err{color:#c00} form{text-align:left} .f{margin:10px 0} label{display:block;font-weight:600} input.t{width:100%;padding:6px}</style></head><body>
+<!-- From the screenshot: Oracle Recruiting's identity check on jpmc.fa.oraclecloud.com — six
+     round number boxes, VERIFY, Send New Code. The code is emailed (see gmail-feed.xml). -->
+<div id="app">
+  <h1>Confirm Your Identity</h1>
+  <p>The verification code was sent to this email address: max.test@example.com. When you get the code, type the code into the field to confirm your identity and complete your job application.</p>
+  <div class="pins">
+    <input type="number" maxlength="1" aria-label="PIN code digit 1"><input type="number" maxlength="1" aria-label="PIN code digit 2"><input type="number" maxlength="1" aria-label="PIN code digit 3"><input type="number" maxlength="1" aria-label="PIN code digit 4"><input type="number" maxlength="1" aria-label="PIN code digit 5"><input type="number" maxlength="1" aria-label="PIN code digit 6">
+  </div>
+  <p id="err" class="err"></p>
+  <button type="button" id="verify">VERIFY</button>
+  <p><a href="#" id="resend">Send New Code</a></p>
+</div>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
+  document.getElementById('resend').onclick = (e) => { e.preventDefault(); window.__resent = true; };
+  document.getElementById('verify').onclick = () => {
+    const code = [...document.querySelectorAll('.pins input')].map((i) => i.value).join('');
+    if (!code) return void (document.getElementById('err').textContent = 'The Verification Code field is required.');
+    if (code !== '968134') return void (document.getElementById('err').textContent = 'The code is not valid.');
+    console.log('PIN_ACCEPTED ' + code);
+    document.getElementById('app').innerHTML = `<form id="application_form" onsubmit="return false"><h2>Contact Information</h2>
+      <div class="f"><label for="fn">First Name *</label><input class="t" id="fn" name="first_name" required></div>
+      <div class="f"><label for="ln">Last Name *</label><input class="t" id="ln" name="last_name" required></div>
+      <div class="f"><label for="ph">Phone Number *</label><input class="t" id="ph" type="tel" name="phone" required></div>
+      <button type="submit" id="sub">Submit</button></form>`;
+    document.getElementById('application_form').addEventListener('submit', () => {
+      const out = Object.fromEntries(new FormData(document.getElementById('application_form')).entries());
+      if (!out.first_name || !out.last_name || !out.phone) return;
+      out.pin = code; console.log('SUBMITTED ' + JSON.stringify(out));
+      document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+    });
+  };
+</script></body></html>

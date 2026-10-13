@@ -24,14 +24,14 @@ const WAIT = Number(process.argv[4] || 90000);
     channel: 'chromium',
     headless: true,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, '--no-proxy-server', '--ignore-certificate-errors',
-      `--host-resolver-rules=MAP ${new URL(JOB_URL).hostname} 127.0.0.1:8443, MAP * ~NOTFOUND`],
+      `--host-resolver-rules=${[new URL(JOB_URL).hostname, ...(process.env.EXTRA_HOSTS || '').split(',').filter(Boolean)].map((h) => 'MAP ' + h + ' 127.0.0.1:8443').join(', ')}, MAP * ~NOTFOUND`],
   });
   process.env.FIXTURE = FIXTURE; require('./server.js');
   let sw = ctx.serviceWorkers()[0];
   if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const logs = [];
   ctx.on('page', (p) => {
-    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE/i.test(t)) logs.push(t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
+    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push(t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
 
@@ -40,7 +40,7 @@ const WAIT = Number(process.argv[4] || 90000);
   const panel = await ctx.newPage();
   await panel.goto(`chrome-extension://${extId}/ua-queue.html`);
   const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF').toString('base64');
-  await panel.evaluate(async ({ pdf }) => {
+  await panel.evaluate(async ({ pdf, extra }) => {
     await chrome.storage.local.set({
       ua_profile: {
         first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@example.com', phone: '+44 7700 900123',
@@ -50,8 +50,9 @@ const WAIT = Number(process.argv[4] || 90000);
       },
       ua_resume_data: { base64: 'data:application/pdf;base64,' + pdf, fileName: 'Maxmilliam_Okafor_CV.pdf', mimeType: 'application/pdf' },
       ua_aa: true,
+      ...(extra || {}),
     });
-  }, { pdf });
+  }, { pdf, extra: JSON.parse(process.env.EXTRA_STORAGE || '{}') });
 
   const send = (m) => panel.evaluate((m) => new Promise((r) => { chrome.runtime.sendMessage(m, r); setTimeout(() => r('timeout'), 4000); }), m);
   console.log('add:', JSON.stringify(await send({ type: 'UA_MGR_CMD', cmd: 'add', url: JOB_URL })));
@@ -61,7 +62,7 @@ const WAIT = Number(process.argv[4] || 90000);
   let jobPage = null, snapshots = [];
   while (Date.now() - t0 < WAIT) {
     await new Promise((r) => setTimeout(r, 3000));
-    jobPage = ctx.pages().find((p) => p.url().startsWith(JOB_URL.split('?')[0]));
+    jobPage = ctx.pages().find((p) => p.url().startsWith(JOB_URL.split('?')[0])) || ctx.pages().find((p) => /^https:/.test(p.url()) && !/chrome-extension/.test(p.url()));
     if (!jobPage) continue;
     const s = await jobPage.evaluate(() => {
       const vals = {};
