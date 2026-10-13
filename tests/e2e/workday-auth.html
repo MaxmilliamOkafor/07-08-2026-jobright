@@ -1,7 +1,9 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Senior Specialist Solution Engineer - Salesforce</title>
 <style>body{font-family:sans-serif;max-width:640px;margin:20px auto} .f{margin:10px 0} label{display:block;font-weight:600} input{width:100%;padding:6px} .err{color:#c00}
 .cb{position:absolute;opacity:0;width:1px;height:1px}</style></head><body>
-<!-- A Workday tenant where an account ALREADY EXISTS, created with a different password
+<!-- As on real Workday, each submit button is covered by a transparent click_filter div that owns
+     the click — pressing the <button> itself does nothing.
+     A Workday tenant where an account ALREADY EXISTS, created with a different password
      (Jobright's own Workday sign-up password), not the extension's shared one. -->
 <div id="app"></div>
 <script>
@@ -12,7 +14,7 @@
     ${err ? `<div data-automation-id="errorMessage" class="err">${err}</div>` : ''}
     <div class="f"><label for="em">Email Address *</label><input id="em" type="email" data-automation-id="email"></div>
     <div class="f"><label for="pw">Password *</label><input id="pw" type="password" data-automation-id="password"></div>
-    <button type="button" data-automation-id="signInSubmitButton" id="go">Sign In</button>
+    <div style="position:relative;display:inline-block"><button type="button" data-automation-id="signInSubmitButton" tabindex="-1" aria-hidden="true">Sign In</button><div data-automation-id="click_filter" role="button" tabindex="0" aria-label="Sign In" id="go" style="position:absolute;inset:0;cursor:pointer"></div></div>
     <p>Don't have an account yet? <a href="#" data-automation-id="createAccountLink" id="toCreate">Create Account</a></p></div>`;
     document.getElementById('toCreate').onclick = (e) => { e.preventDefault(); create(''); };
     document.getElementById('go').onclick = () => {
@@ -28,7 +30,7 @@
     <div class="f"><label for="pw">Password *</label><input id="pw" type="password" data-automation-id="password"></div>
     <div class="f"><label for="vp">Verify New Password *</label><input id="vp" type="password" data-automation-id="verifyPassword"></div>
     <div class="f"><input type="checkbox" class="cb" id="cab" data-automation-id="createAccountCheckbox"><label for="cab">I agree to the terms *</label></div>
-    <button type="button" data-automation-id="createAccountSubmitButton" id="go">Create Account</button>
+    <div style="position:relative;display:inline-block"><button type="button" data-automation-id="createAccountSubmitButton" tabindex="-1" aria-hidden="true">Create Account</button><div data-automation-id="click_filter" role="button" tabindex="0" aria-label="Create Account" id="go" style="position:absolute;inset:0;cursor:pointer"></div></div>
     <p>Already have an account? <a href="#" data-automation-id="signInLink" id="toSignIn">Sign In</a></p></div>`;
     document.getElementById('toSignIn').onclick = (e) => { e.preventDefault(); signIn(''); };
     document.getElementById('go').onclick = () => {

@@ -968,6 +968,7 @@
     // every ATS that asks, and a screening filter looking for a minimum never
     // prefers the smaller answer.
     years: '7', salary: '80000', notice: '2 weeks', availability: 'Immediately',
+    noDeadlines: 'No — I have no deadlines or timeline constraints at the moment.',
     country: 'Ireland', phoneCountryCode: '+353', countryCode: 'IE',
     cover: 'I am excited to apply for this role. My background and skills make me an excellent candidate and I look forward to contributing to your team.',
     why: 'I admire the company culture and the opportunity to make a meaningful impact.',
@@ -1004,6 +1005,48 @@
   const COVER_FIELD_RE = /cover.?letter|motivation|message to (the )?(hiring|recruit|team|us)|why (do you )?(want|are you)|additional.?info|anything else you.?d like/i;
   const ATS_HOST_LABEL_RE = /^(myworkdayjobs|myworkdaysite|smartrecruiters|greenhouse|job-boards|lever|icims|taleo|oraclecloud|adp|workable|ashbyhq|avature|jobvite|jazzhr|bamboohr|successfactors|phenom|eightfold)$/i;
 
+  // The candidate's OWN deadlines — never "can you work under tight deadlines?".
+  const DEADLINE_Q_RE = /^(?![^?]*\b(experience|work(ing)? (to|under|with)|meet(ing)?|manag\w*|handl\w*|tight|pressure)\b)[^?]*\b(any|your)\b[^?]{0,40}\b(deadlines?|timeline (considerations?|constraints?)|time.?sensitive|competing offers?|other offers?)\b/i;
+  /* A start date saved as a DATE goes stale: an availability of "2025-12-02" kept
+     being entered as the earliest start date long after it had passed, which reads
+     as a typo at best. A past date becomes today plus the notice period (two weeks
+     if none), written back in the same format. Words ("Immediately", "1 month")
+     and future dates pass through untouched. */
+  function freshStartDate(v, p) {
+    const s = String(v == null ? '' : v).trim();
+    let m, y, mo, d, fmt;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) { y = +m[1]; mo = +m[2]; d = +m[3]; fmt = 'iso'; }
+    else if ((m = s.match(/^(\d{1,2})([\/.])(\d{1,2})\2(\d{4})$/))) {
+      // Day-first unless that cannot be right; either reading must be in the past.
+      const a = +m[1], b = +m[3];
+      if (a > 12) { d = a; mo = b; fmt = 'dmy'; } else if (b > 12) { mo = a; d = b; fmt = 'mdy'; } else { d = a; mo = b; fmt = 'dmy'; }
+      y = +m[4];
+      fmt += m[2];
+    } else return s;
+    const when = new Date(y, mo - 1, d);
+    if (isNaN(when)) return s;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    // Ambiguous d/m: only rewrite if BOTH readings are past.
+    const alt = /^(dmy|mdy)/.test(fmt) && d <= 12 ? new Date(y, d - 1, mo) : when;
+    if (when >= today || alt >= today) return s;
+    let days = NaN;
+    try { days = toDays((p && (p.notice_period || p.notice)) || ''); } catch (_) {}
+    if (!(days >= 0)) days = 14;
+    const n = new Date(today.getTime() + Math.max(days, 1) * 86400000);
+    const p2 = (x) => String(x).padStart(2, '0');
+    if (fmt === 'iso') return `${n.getFullYear()}-${p2(n.getMonth() + 1)}-${p2(n.getDate())}`;
+    const sep = fmt.slice(3);
+    return fmt.startsWith('dmy') ? `${p2(n.getDate())}${sep}${p2(n.getMonth() + 1)}${sep}${n.getFullYear()}`
+      : `${p2(n.getMonth() + 1)}${sep}${p2(n.getDate())}${sep}${n.getFullYear()}`;
+  }
+  function isDateText(v) { return /^\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/.]\d{1,2}[\/.]\d{4})\s*$/.test(String(v || '')); }
+  // "Why <company>?" — named, not the one generic line every form gets.
+  function whyAnswer() {
+    let co = '';
+    try { co = String(pageCompanyName() || '').trim(); } catch (_) {}
+    if (!co || co.length > 40) return DEFAULTS.why;
+    return `I'm drawn to ${co}'s mission and the chance to work on problems that genuinely matter. My experience building and shipping production systems maps closely to this role, and I would welcome the opportunity to contribute to the team and grow with it.`;
+  }
   function pageCompanyName() {
     // The queue knows it when the CSV carried it.
     try {
@@ -1134,14 +1177,19 @@
     if (/today.?s date|date signed|signature date|current date|date of (signature|application)/.test(l)) return '__TODAY__';
     if (/cover.?letter|motivation|additional.?info|message.?to/.test(l)) return p.cover_letter || DEFAULTS.cover;
     if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
-    if (/why.*(compan|role|want|interest|position)/.test(l)) return DEFAULTS.why;
+    /* "Why Anthropic?" names the company and nothing else, so it matched none of
+       these words and a REQUIRED question went out as "N/A". */
+    if (/why.*(compan|role|want|interest|position|join|work (here|with us|for us|at))/.test(l) ||
+        /^\s*why\s+[\w&.' -]{2,40}\?\s*\*?\s*$/.test(l)) return whyAnswer();
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
     // The PROFILE first. These two returned the defaults outright and the rules
     // further down that read the profile were never reached — a "1 month"
     // notice period was answered "Immediately" on every form.
     if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return yearsAnswer(p);
     if (/notice.?period|days.?notice|period of notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
-    if (/availab|start.?date|notice|when.*start/.test(l)) return p.availability || p.start_date || DEFAULTS.availability;
+    // "Any deadlines or timeline considerations?" is not a start date — it got one.
+    if (DEADLINE_Q_RE.test(l)) return DEFAULTS.noDeadlines;
+    if (/availab|start.?date|notice|when.*start/.test(l)) return freshStartDate(p.availability || p.start_date || DEFAULTS.availability, p);
     // Both directions from one decider — see workAuthorisationAnswer. The old
     // pair ran /authoriz/ (which never matched the British "authorised") and then
     // /sponsor|visa/, so every European eligibility question answered "No".
@@ -1683,6 +1731,10 @@
       /(applied|interviewed)\s+(to|with|for|at)\s+(this|our|the)\s+(company|organi[sz]ation|firm|business|role|position|team)/,
       /(applied|interviewed)[^.?]{0,40}\b(in|within)\s+the\s+(last|past)\b/,
       /worked.*(here|for us|for this|for the company).*before/, /applied.*before/,
+      // "Have you ever interviewed at Anthropic before?" names the company, so the
+      // "this/our/the company" pattern above missed it and it fell through to the
+      // default Yes.
+      /\b(ever|previously)\b[^?]{0,30}\binterview(ed)?\b/, /\binterviewed\b[^?]*\bbefore\b/,
       // Prior employment with the employer named on the page: "Have you ever
       // worked for Acme before?", "previously been employed by Acme?".
       /have you (ever )?(previously )?worked (for|at) (?!an? |any )[^?]*\bbefore\b/, /(previously|ever) been employed (by|at|with)/,
@@ -2432,7 +2484,15 @@
     if (!texts || !texts.length || !decision) return -1;
     const norm = texts.map(t => (t || '').trim().toLowerCase());
     // Work authorisation / sponsorship gets its own matcher — see above.
-    if (question && workAuthorisationAnswer(question)) {
+    const waQ = question ? workAuthorisationAnswer(question) : null;
+    if (waQ) {
+      /* …except on a bare Yes / No. The stance matcher reads "Yes" as "I can work
+         here", which is right for "Are you authorised to work in the UK?" and exactly
+         wrong for "Do you require visa sponsorship?" — where "Yes" says you NEED it.
+         A bare answer only means something against the question, so answer the
+         question as asked. */
+      const yi = norm.findIndex(t => /^yes\.?$/.test(t)), ni = norm.findIndex(t => /^no\.?$/.test(t));
+      if (yi >= 0 && ni >= 0) return waQ === 'yes' ? yi : ni;
       const wi = workAuthOptionIndex(norm);
       if (wi >= 0) return wi;
     }
@@ -2870,14 +2930,35 @@
     return n;
   }
 
+  /* A styled checkbox hides its real <input> (opacity 0) under a drawn box and lets
+     the label take the click — Microsoft's careers site is built this way. Visible
+     means: the control, or the label you would actually click. */
+  function choiceShown(cb) {
+    if (isVisible(cb)) return true;
+    try {
+      if (cb.labels && Array.from(cb.labels).some(isVisible)) return true;
+      const wrap = cb.closest && cb.closest('label');
+      return !!(wrap && isVisible(wrap));
+    } catch (_) { return false; }
+  }
   async function tickConsentBoxes() {
     let n = 0;
-    for (const cb of deepAll(CONSENT_CONTROL_SEL, 150).filter(isVisible)) {
+    for (const cb of deepAll(CONSENT_CONTROL_SEL, 150).filter(choiceShown)) {
       if (checkboxChecked(cb)) continue;
       // One option of a multiple-choice question, not a declaration — leave it to
       // answerCheckboxGroups, which picks exactly one.
       if (checkboxGroup(cb).length) continue;
-      const txt = controlText(cb);
+      let txt = controlText(cb);
+      /* A box whose own label is only "Yes" / "I agree": the statement it agrees to
+         is the question ABOVE it. Microsoft's Acknowledgment step is three of these
+         ("By checking this you agree to the Microsoft Data Privacy Notice.*" over a
+         lone "Yes"), and read on their own they were neither consent nor required,
+         so Submit application stayed blocked. */
+      if (/^\s*(yes|i agree|agree|i accept|accept|i do|i confirm|confirm(ed)?|true|ok)\s*\.?\s*$/i.test(txt)) {
+        let q = '';
+        try { q = String(getFullQuestionText(cb) || ''); } catch (_) {}
+        if (q.trim() && q.trim().toLowerCase() !== txt.trim().toLowerCase()) txt = q + ' ' + txt;
+      }
       let required = false;
       try { required = isFieldRequired(cb); } catch (_) {}
       if (!required) required = REQUIRED_ERROR_RE.test(txt);
@@ -2977,6 +3058,15 @@
         continue;
       }
       if (isLocationField(el)) { continue; } // already handled by resolveLocationFields
+      /* A react-select's search box carries aria-required, so it lands here — and
+         typing "Yes" into it is what left Greenhouse questions showing "Yes" with
+         "This field is required." under them. Pick the option instead. */
+      if (isSelectSearchBox(el)) {
+        const ctrl = reactSelectControl(el);
+        if ((el.value || '').trim()) { try { nativeSet(el, ''); } catch (_) {} await sleep(120); }
+        if (await commitCustomDropdown(ctrl, guessFieldValue(getFullQuestionText(el) || lbl, p, el), true)) fixed++;
+        continue;
+      }
       let val = guessFieldValue(lbl, p, el);
       if (!val) {
         // Safe generic defaults so a required text box is never left empty.
@@ -2985,7 +3075,7 @@
         // extension duplication bug fixed above in guessValue().
         if (!/ext(ension)?\b/i.test(lbl || '') && (el.type === 'tel' || /phone/i.test(lbl || ''))) val = p.phone || '';
         else if (el.type === 'email' || /email/i.test(lbl || '')) val = p.email || '';
-        else if (el.tagName === 'TEXTAREA') val = 'N/A';
+        else if (el.tagName === 'TEXTAREA') val = /\bwhy\b|interest|motivat|excite|tell us|describe/i.test(lbl || '') ? whyAnswer() : 'N/A';
         else if (el.type === 'number') val = '0';
       }
       if (val) { el.focus({ preventScroll: true }); await sleep(60); nativeSet(el, val); el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); fixed++; await sleep(120); }
@@ -3393,7 +3483,8 @@
     if (/years?.{0,30}(experience|exp\b)|experience.{0,20}years?|how long/.test(l)) return yearsAnswer(p);
     if (/salary|compensation|pay (expectation|range)|desired pay|remuneration/.test(l)) return p.expected_salary || p.desired_salary || DEFAULTS.salary;
     if (/notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
-    if (/availab|start date|when can you start|earliest start/.test(l)) return p.availability || p.notice_period || DEFAULTS.availability;
+    if (DEADLINE_Q_RE.test(l)) return DEFAULTS.noDeadlines;
+    if (/availab|start date|when can you start|earliest start/.test(l)) return freshStartDate(p.availability || p.notice_period || DEFAULTS.availability, p);
     if (/educat|degree|qualification/.test(l)) return p.education_level || p.highest_degree || p.degree || "Bachelor's";
     if (/how did you (hear|find)|source|where did you (see|find)/.test(l)) return DEFAULTS.howHeard;
     return '';
@@ -3904,9 +3995,51 @@
     try { return (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim(); }
     catch (_) { return ''; }
   }
+  /* A react-select's <input> is its SEARCH box, not its value. Text typed into it
+     renders exactly where a chosen answer would — Greenhouse's new boards showed
+     "Yes" under three required questions that were never actually answered, each
+     with "This field is required." — and every "already answered?" check read the
+     search text as the answer, so nothing ever went back to pick the option. The
+     value is the single-value / multi-value node the control renders on a pick. */
+  const RS_CONTROL_SEL = '[class*="select__control" i],[class*="Select-control" i]';
+  function reactSelectControl(el) {
+    try { return (el && el.closest && el.closest(RS_CONTROL_SEL)) || null; } catch (_) { return null; }
+  }
+  function reactSelectHasValue(ctrl) {
+    try {
+      return !!ctrl.querySelector('[class*="single-value" i],[class*="singleValue" i],[class*="multi-value" i],[class*="multiValue" i],.Select-value');
+    } catch (_) { return false; }
+  }
+  function isSelectSearchBox(el) {
+    return !!(el && el.tagName === 'INPUT' && el.type !== 'hidden' && reactSelectControl(el));
+  }
+  /* The question a dropdown asks. A react-select's control <div> has no label of
+     its own — the <label for> points at the search <input> inside it — so reading
+     the div gave an empty question, and an empty question has no answer. */
+  function comboQuestion(combo) {
+    let el = combo;
+    try {
+      const rs = reactSelectControl(combo) || (combo.querySelector && combo.querySelector(RS_CONTROL_SEL));
+      if (rs) el = rs.querySelector('input') || combo;
+      // Its own <label for> / aria-labelledby first: the nearest text to a
+      // react-select is its "Select..." placeholder, and that is what the general
+      // question reader returned — so every question read as "Select...".
+      const byFor = el.id ? ownerScope(el).querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
+      const own = ((byFor && byFor.textContent) || textOfIds(el, 'aria-labelledby') || '').replace(/\s+/g, ' ').trim();
+      if (own) return own;
+    } catch (_) {}
+    const PLACEHOLDER = /^(select|choose|pick|search|start typing)\b[^?]{0,20}$/i;
+    for (const t of [getFullQuestionText(el), getLabel(el), getFullQuestionText(combo), getLabel(combo)]) {
+      const v = String(t || '').replace(/\s+/g, ' ').trim();
+      if (v && !PLACEHOLDER.test(v)) return v;
+    }
+    return '';
+  }
   // Does this combobox already hold an answer?
   function comboHasValue(el) {
     try {
+      const rs = reactSelectControl(el) || (el.querySelector && el.querySelector(RS_CONTROL_SEL));
+      if (rs) return reactSelectHasValue(rs);
       const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || el.querySelector?.('input');
       if (inner && (inner.value || '').trim()) return true;
       if ((el.value || '').trim()) return true;
@@ -4005,8 +4138,30 @@
        one. That is how a Greenhouse application went out saying "Less than 1
        year" of professional experience. Score the ranges instead, exactly as the
        radio path already does. */
-    const qFull = String(getFullQuestionText(combo) || getLabel(combo) || '');
-    const isYearsQ = YEARS_Q_RE.test(qFull);
+    const qFull = comboQuestion(combo);
+
+    /* A genuine Yes/No dropdown is a knockout, and is decided the way the radio path
+       decides one: a stored answer only if it IS a yes or no (saved answers have
+       already been through the knockout guard), otherwise determineYesNo, mapped onto
+       the real option wording. The general guesser hands these questions whatever
+       its keywords hit — "united kingdom" for a sponsorship question that mentions a
+       country, "london" for relocation, "advanced" for "have you written evals" —
+       and the fuzzy matchers below turned that into an arbitrary "Yes". Only on a
+       binary option set, exactly as selectOptionForQuestion gates native selects. */
+    if (qFull.trim()) {
+      const texts = real.map(o => comboText(o));
+      const pols = texts.map(optionPolarity);
+      const binary = texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) ||
+        (texts.some(t => /^yes$/i.test(t)) && texts.some(t => /^no$/i.test(t))));
+      if (binary) {
+        let decision = /^(yes|y|true)$/.test(want) ? 'yes' : /^(no|n|false)$/.test(want) ? 'no' : '';
+        if (!decision) { try { decision = determineYesNo(qFull.toLowerCase().replace(/\s+/g, ' ')); } catch (_) {} }
+        if (decision === 'eeo') decision = 'decline';
+        const i = optionIndexForDecision(texts, decision, qFull);
+        if (i >= 0) pick = real[i];
+      }
+    }
+    const isYearsQ = !pick && YEARS_Q_RE.test(qFull);
     if (isYearsQ) {
       const yrs = parseInt(String(want).match(/\d+/)?.[0], 10) || parseInt(DEFAULTS.years, 10);
       let best = 0;
@@ -4127,8 +4282,9 @@
     let filled = 0;
     for (const combo of combos.slice(0, 40)) {
       if (comboHasValue(combo)) continue;
-      const q = getFullQuestionText(combo) || getLabel(combo) || '';
-      const required = isFieldRequired(combo) || /\*/.test(q);
+      const q = comboQuestion(combo);
+      const rsInput = reactSelectControl(combo) ? (reactSelectControl(combo).querySelector('input') || combo) : combo;
+      const required = isFieldRequired(combo) || isFieldRequired(rsInput) || /\*/.test(q);
       const guess = q ? guessFieldValue(q, profile, combo) : '';
       try { if (await commitCustomDropdown(combo, guess, required)) filled++; } catch (_) {}
       await sleep(150);
@@ -4372,6 +4528,8 @@
       return true;
     }
     if (el.type === 'checkbox' || el.type === 'radio') return !!el.checked;
+    // A react-select's search text is not its value — see reactSelectControl.
+    if (isSelectSearchBox(el)) return reactSelectHasValue(reactSelectControl(el));
     // "+353" alone in a phone box is a seed, not an answer — see dialCodeOnly.
     return !!el.value?.trim() && !dialCodeOnly(el);
   }
@@ -4566,11 +4724,18 @@
       else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/e-?mail|username/.test(declares) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
       else if ((el.type === 'email' || (/e-?mail/i.test(lbl) && !/confirm|re-?enter|repeat|verify/i.test(lbl) && !/(recruiter|referr|reference|manager)/i.test(lbl))) && !isEmail && el.tagName !== 'TEXTAREA') why = 'not an email address';
       else if ((el.type === 'tel' || /phone|mobile|telephone/i.test(lbl)) && !/code|ext/i.test(lbl) && !/\d{3}/.test(v)) why = 'not a phone number';
+      /* Dates where they do not belong: the earliest-start date copied into "Do you
+         have any deadlines or timeline considerations?", and a start date that has
+         already passed (a profile date saved months ago, or Jobright's own fill). */
+      else if (isDateText(v) && DEADLINE_Q_RE.test(lbl)) why = 'a date';
+      else if (isDateText(v) && /availab|start|earliest|when.*(join|begin)/i.test(lbl) && freshStartDate(v, p) !== v) why = 'a date in the past';
       if (!why) continue;
       let good = '';
       try { good = String(guessFieldValue(lbl, p, el) || '').trim(); } catch (_) {}
       if (good && good === v) continue;
-      const goodIsBad = !good || (why === 'a link' && /^(https?:\/\/|www\.)/i.test(good)) || (why === 'an email address' && /@/.test(good));
+      if (why === 'a date in the past' && (!good || freshStartDate(good, p) !== good)) good = freshStartDate(v, p);
+      const goodIsBad = !good || (why === 'a link' && /^(https?:\/\/|www\.)/i.test(good)) || (why === 'an email address' && /@/.test(good)) ||
+        (why === 'a date' && isDateText(good));
       LOG(`"${lbl.slice(0, 50)}" held ${why} — ${goodIsBad ? 'cleared' : 'replaced with the right answer'}`);
       try { el.focus({ preventScroll: true }); } catch (_) {}
       nativeSet(el, goodIsBad ? '' : good);
@@ -4589,7 +4754,10 @@
 
     // Text inputs & textareas — only unfilled ones
     const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
-      .filter(el => isVisible(el) && (!el.value?.trim() || dialCodeOnly(el)) && !isTrapField(el));
+      .filter(el => isVisible(el) && (!el.value?.trim() || dialCodeOnly(el)) && !isTrapField(el) &&
+        // A dropdown's search box is answered by picking an option (the custom
+        // dropdown pass below), never by typing the answer into it.
+        !isSelectSearchBox(el));
 
     for (const inp of inputs) {
       const lbl = getLabel(inp);
@@ -5693,7 +5861,7 @@
 
     // Wait for Jobright sidebar to load (shadow-aware)
     const sidebar = await waitForSidebar(15000);
-    if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow(); return; }
+    if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow({ noJobright: true }); return; }
     await sleep(scaled(2000, 1000));
 
     // Step 1: Click "Generate Custom Resume" only if the user opted into tailoring
@@ -5927,9 +6095,12 @@
   function getPageHash() { return stepSignature(); }
 
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
-  async function directAutofillFlow() {
-    await triggerAutofill();
-    await sleep(scaled(5000, 2500));
+  async function directAutofillFlow(opts) {
+    // No sidebar means no Autofill button to press: looking for one cost ~20s a job.
+    if (!(opts && opts.noJobright)) {
+      await triggerAutofill();
+      await sleep(scaled(5000, 2500));
+    }
     await fixPhoneCountryCode();
     await fallbackFill();
     await sleep(scaled(1000, 500));
@@ -7065,8 +7236,9 @@
   async function greenhouseAutomation() {
     LOG('Greenhouse automation starting...');
     const p = await getProfile();
-    if (!$('#application_form,#application,.application-form') && await openEmbeddedGreenhouseForm()) return;
-    const form = await waitFor('#application_form,#application,.application-form,.main-content form', 10000);
+    // job-boards.greenhouse.io (the new boards) names it #application-form.
+    if (!$('#application_form,#application-form,#application,.application-form,.application--form') && await openEmbeddedGreenhouseForm()) return;
+    const form = await waitFor('#application_form,#application-form,#application,.application-form,.application--form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
 
@@ -7872,8 +8044,9 @@
     if (!form) { LOG('No Eightfold form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
 
-    // Eightfold uses React with custom components
-    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
+    // Eightfold uses React with custom components. Tick boxes are the consent
+    // pass's job (tickConsentBoxes), not something to type a guess into.
+    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=checkbox]):not([type=radio]),textarea,select')
       .filter(el => isVisible(el) && !hasFieldValue(el));
     for (const inp of inputs) {
       const lbl = getLabel(inp);
@@ -8312,6 +8485,15 @@
       const opt = bi >= 0 ? el.options[bi] : null;
       if (opt && opt.value !== '') { setSelectValue(el, opt.value); return 'picked "' + opt.text.trim().slice(0, 30) + '"'; }
       return '';
+    }
+    // A react-select flagged as required: typing the answer into its search box
+    // only LOOKS answered. Clear any such text and pick the option instead.
+    const rsCtrl = kind !== 'list' && isSelectSearchBox(el) ? reactSelectControl(el) : null;
+    if (rsCtrl) {
+      if (reactSelectHasValue(rsCtrl)) return '';
+      if (cur.trim()) { try { nativeSet(el, ''); } catch (_) {} await sleep(150); }
+      const want = guessFieldValue(label, p, el);
+      return (await commitCustomDropdown(rsCtrl, want, true)) ? 'picked an option from the list' : '';
     }
     switch (kind) {
       case 'email': {
@@ -8880,6 +9062,45 @@
     } catch (_) { return ''; }
   }
 
+  /* Workday's Sign In and Create Account buttons are covered by a transparent
+     div[data-automation-id="click_filter"] that owns the click; the <button>
+     underneath has no handler of its own (tabindex -1, often aria-hidden). Pressing
+     the button therefore did nothing at all: the fields were filled and the form
+     just sat there — "it forgot to click Sign In" — and a Create Account that was
+     never sent was recorded as created, so the next pass switched to a Sign In for
+     an account that does not exist. Press what Workday listens to. */
+  function workdaySubmitControl(aid) {
+    try { return deepAll(`[data-automation-id="${aid}"]`, 6).find((b) => workdayControlShown(b)) || deepOne(`[data-automation-id="${aid}"]`); }
+    catch (_) { return null; }
+  }
+  function workdayClickTarget(btn) {
+    if (!btn) return null;
+    try {
+      // The overlay sits beside the button, in the same wrapper.
+      for (let scope = btn.parentElement, up = 0; scope && up < 3; scope = scope.parentElement, up++) {
+        const f = Array.from(scope.querySelectorAll('[data-automation-id="click_filter"]')).find(isVisible);
+        if (f) return f;
+      }
+      // Or whatever is on top of the button's centre, if it is the overlay.
+      const r = btn.getBoundingClientRect();
+      const top = r.width ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+      if (top && top !== btn && !btn.contains(top) && /click_filter/i.test(top.getAttribute('data-automation-id') || '')) return top;
+    } catch (_) {}
+    return btn;
+  }
+  function workdayControlShown(btn) {
+    if (!btn) return false;
+    return isVisible(btn) || isVisible(workdayClickTarget(btn));
+  }
+  function pressWorkdayButton(btn) {
+    const target = workdayClickTarget(btn);
+    if (!target) return false;
+    if (target !== btn) LOG('Workday: pressing the button through its click overlay');
+    scrollIfNeeded(target);
+    realClick(target);
+    return true;
+  }
+
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
     let pwFields = $$('input[type=password]').filter(isVisible);
@@ -8888,18 +9109,18 @@
     const auth = wdAuthState();
     const candidates = await workdayPasswordCandidates();
     // Which form are we on? (decided before the password, which depends on it)
-    const _createBtn0 = $('button[data-automation-id="createAccountSubmitButton"]');
-    const _onCreate0 = !!_createBtn0 && isVisible(_createBtn0);
+    const _createBtn0 = workdaySubmitControl('createAccountSubmitButton');
+    const _onCreate0 = workdayControlShown(_createBtn0);
     // Creating an account uses the first choice; signing in walks the list.
     const pw = _onCreate0 ? candidates[0] : candidates[Math.min(auth.idx, candidates.length - 1)];
     if (!email || !pw) return 'working';
 
     // Which form are we on?
-    const createBtn = $('button[data-automation-id="createAccountSubmitButton"]');
-    const signInBtn = $('button[data-automation-id="signInSubmitButton"]');
+    const createBtn = workdaySubmitControl('createAccountSubmitButton');
+    const signInBtn = workdaySubmitControl('signInSubmitButton');
     const verifyField = pwFields.find(f => /verify|confirm|re-?enter|retype/i.test((getLabel(f) || '') + (f.name || '') + (f.id || '') + (f.getAttribute('data-automation-id') || '')));
-    const onCreate = !!createBtn && isVisible(createBtn);
-    const onSignIn = !onCreate && !!signInBtn && isVisible(signInBtn) && !verifyField;
+    const onCreate = workdayControlShown(createBtn);
+    const onSignIn = !onCreate && workdayControlShown(signInBtn) && !verifyField;
 
     // Defend email + password(s) with the saved credentials (React-committing setter).
     let emailField = $('input[data-automation-id="email"]') ||
@@ -9005,7 +9226,7 @@
       if (!createBtn.disabled && createBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
-        clickEl(createBtn);
+        pressWorkdayButton(createBtn);
         /* Record it NOW, not only if the watcher later happens to see the
            My Information page. The run frequently navigates on before that
            selector appears, and the account was then never written down — so the
@@ -9022,7 +9243,7 @@
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: signing in with saved password ${Math.min(auth.idx, candidates.length - 1) + 1} of ${candidates.length} (action ${_wdActions}/${WD_MAX_ACTIONS})`);
         auth.triedSignIn = true; wdAuthSave();
-        clickEl(signInBtn);
+        pressWorkdayButton(signInBtn);
         await markAccountCreated(location.hostname);   // an account we can sign into exists
       }
       return 'working';
@@ -11375,7 +11596,12 @@
   // Resolve a selector against the page first, then the sidebar shadow tree.
   function pageOrSidebar(sel) { return document.querySelector(sel) || sbQuery(sel); }
   // Wait until the Jobright sidebar exists (shadow-aware).
-  function waitForSidebar(ms) {
+  /* Inside the busy guard: the wait was up to 15s with nothing reporting progress,
+     and the stall watchdog's limit is 15s — so on any page where Jobright's sidebar
+     never mounted, the job was killed as "Stalled — no progress for 15s" a moment
+     before it would have fallen back to our own filler. */
+  function waitForSidebar(ms) { return withBusy('waiting for the Jobright sidebar', () => waitForSidebar__impl(ms)); }
+  function waitForSidebar__impl(ms) {
     return new Promise(res => {
       const dl = Date.now() + (ms || 10000);
       const tick = () => {
@@ -15881,9 +16107,16 @@ a[href*="/checkout" i],
     const KEEP_RE = /(your\s+autofill\s+information|upload\s+resume|tailor\s+resume|match\s+score|completion|add\s+this\s+job)/i;
     let cur = el; let best = el;
     const limit = hard ? 8 : 6;
+    /* Never climb into the page itself. A credits box or an "Upgrade" button in
+       the page DOM (not Jobright's shadow root) climbed eight levels to <html> and
+       hid the WHOLE application — every field zero-sized, "No submit button found",
+       and the job recorded as done. Stop at anything that holds form controls. */
+    const isPage = (n) => n === document.body || n === document.documentElement ||
+      !!(n.querySelector && n.querySelector('input:not([type=hidden]),textarea,select,form,[role="combobox"]'));
     for (let i = 0; i < limit && cur; i++) {
       const txt = (cur.textContent || '').trim();
       if (!txt) break;
+      if (i > 0 && isPage(cur)) break;
       if (hard) {
         // Hard mode: only stop climbing when the wrapper would also engulf
         // a clearly-different control (not just any element containing the
@@ -16824,7 +17057,32 @@ a[href*="/checkout" i],
   // div/span/p) on each DOM mutation + every 600ms. That is far too heavy to run on
   // unrelated websites — it was freezing/crashing normal browsing. The Jobright
   // out-of-credit popups only appear on jobright.ai, so run this ONLY there.
-  if (!/(^|\.)jobright(?:-internal)?\.(?:ai|com)$/i.test(location.hostname)) return;
+  if (!/(^|\.)jobright(?:-internal)?\.(?:ai|com)$/i.test(location.hostname)) {
+    /* …except that they don't: Jobright's helper opens the same "You have 0
+       remaining Autofill credits … Upgrade to Turbo" box on every ATS page once
+       the day's credits are gone, inside its plasmo-csui shadow root — and with
+       this whole suppressor switched off there, it stayed up job after job. The
+       cheap part only: look inside Jobright's own helper hosts (a handful of
+       class lookups, never a page sweep) and press the box's own Cancel. Never
+       Upgrade. */
+    const CREDIT_RE = /remaining\s+autofill\s+credits|credits?\s+will\s+be\s+refilled|credits?\s+refill\s+to/i;
+    setInterval(() => {
+      try {
+        for (const h of document.querySelectorAll('plasmo-csui,#jobright-helper-plugin')) {
+          const r = h.shadowRoot;
+          if (!r) continue;
+          for (const w of r.querySelectorAll('.popup-modal-wrap,.popup-modal')) {
+            if (!w.getClientRects().length || !CREDIT_RE.test(w.textContent || '')) continue;
+            const cancel = [...w.querySelectorAll('button')].find((b) => /^\s*cancel\s*$/i.test(b.textContent || ''));
+            try { if (cancel) cancel.click(); } catch (_) {}
+            if (w.getClientRects().length) w.style.setProperty('display', 'none', 'important');
+            log('closed Jobright\'s "0 remaining Autofill credits" box');
+          }
+        }
+      } catch (_) {}
+    }, 700);
+    return;
+  }
 
   // ---- 1. Intercept iframe → parent message that triggers the popup ----
   // Capture-phase listeners run before normal-phase ones. Because this

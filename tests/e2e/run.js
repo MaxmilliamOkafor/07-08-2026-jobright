@@ -18,6 +18,7 @@ const FIXTURE = process.argv[2] || path.join(__dirname, 'form.html');
 const JOB_URL = (process.argv[3] || 'https://job-boards.greenhouse.io/acme/jobs/4412392009');
 const WAIT = Number(process.argv[4] || 90000);
 
+const T0 = Date.now();
 (async () => {
   const userDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ua-e2e-'));
   const ctx = await chromium.launchPersistentContext(userDir, {
@@ -31,7 +32,7 @@ const WAIT = Number(process.argv[4] || 90000);
   if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const logs = [];
   ctx.on('page', (p) => {
-    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push(t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
+    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push((process.env.LOG_TIMES ? '+' + Math.round((Date.now() - T0) / 1000) + 's ' : '') + t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
 
@@ -40,19 +41,20 @@ const WAIT = Number(process.argv[4] || 90000);
   const panel = await ctx.newPage();
   await panel.goto(`chrome-extension://${extId}/ua-queue.html`);
   const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF').toString('base64');
-  await panel.evaluate(async ({ pdf, extra }) => {
+  await panel.evaluate(async ({ pdf, extra, profileExtra }) => {
     await chrome.storage.local.set({
       ua_profile: {
         first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@example.com', phone: '+44 7700 900123',
         city: 'London', country: 'United Kingdom', address: '1 Grand Canal Square', postal_code: 'D02 P820',
         current_company: 'Acme Cloud', current_title: 'Senior Solutions Architect', school: 'Trinity College Dublin', major: 'Computer Science', work_start_year: '2019', linkedin: 'linkedin.com/in/maxtest',
         years_experience: '7', expected_salary: '85000', notice_period: '1 month', degree: 'Master of Science', education_level: "Master's",
+        ...(profileExtra || {}),   // PROFILE_EXTRA='{"availability":"2025-12-02"}'
       },
       ua_resume_data: { base64: 'data:application/pdf;base64,' + pdf, fileName: 'Maxmilliam_Okafor_CV.pdf', mimeType: 'application/pdf' },
       ua_aa: true,
       ...(extra || {}),
     });
-  }, { pdf, extra: JSON.parse(process.env.EXTRA_STORAGE || '{}') });
+  }, { pdf, extra: JSON.parse(process.env.EXTRA_STORAGE || '{}'), profileExtra: JSON.parse(process.env.PROFILE_EXTRA || '{}') });
 
   const send = (m) => panel.evaluate((m) => new Promise((r) => { chrome.runtime.sendMessage(m, r); setTimeout(() => r('timeout'), 4000); }), m);
   console.log('add:', JSON.stringify(await send({ type: 'UA_MGR_CMD', cmd: 'add', url: JOB_URL })));
@@ -78,7 +80,10 @@ const WAIT = Number(process.argv[4] || 90000);
     snapshots.push(s);
     if (s.submitted || (s.body && /thank you/i.test(s.body))) break;
   }
-  const q = await panel.evaluate(async () => new Promise((r) => chrome.storage.local.get(null, (d) => r({ q: (d.ua_mgr_queue || d.ua_q || []).map((j) => ({ status: j.status, reason: j.reason || j.error || j.result })) , keys: Object.keys(d) }))));
+  // The page submits a few seconds before the job reports back — wait for the verdict.
+  const readQ = () => panel.evaluate(async () => new Promise((r) => chrome.storage.local.get(null, (d) => r({ q: (d.ua_mgr_queue || d.ua_q || []).map((j) => ({ status: j.status, reason: j.reason || j.error || j.result, stage: j.stage })) , keys: Object.keys(d) }))));
+  let q = await readQ();
+  for (let i = 0; i < 20 && q.q[0] && q.q[0].status === 'applying' && Date.now() - t0 < WAIT + 20000; i++) { await new Promise((r) => setTimeout(r, 1000)); q = await readQ(); }
   if (jobPage) await jobPage.screenshot({ path: path.join(require('os').tmpdir(), 'ua-e2e-shot.png'), fullPage: true }).catch(() => {});
   fs.writeFileSync(path.join(require('os').tmpdir(), 'ua-e2e-out.json'), JSON.stringify({ snapshots, logs, q }, null, 1));
   console.log('last snapshot:', JSON.stringify(snapshots[snapshots.length - 1], null, 1));

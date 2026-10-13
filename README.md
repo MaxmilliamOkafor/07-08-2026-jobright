@@ -2866,6 +2866,14 @@ against a local form served under a real ATS hostname, recording every field,
 every write, scroll direction changes and what was submitted. Four fixtures
 cover the cases above; all four submit with correct answers and no flicker.
 
+Options (environment variables): `FIXTURE_ROUTES` serves another page on a path,
+`EXTRA_HOSTS` maps more hostnames, `EXTRA_STORAGE` seeds storage keys,
+`PROFILE_EXTRA` overrides profile fields (e.g. `{"availability":"2025-12-02"}`),
+`FEED_DELAY_MS` holds the stand-in Gmail feed empty for a while, and `LOG_TIMES=1`
+timestamps the log. `greenhouse-remix.html` is built from
+`tests/e2e/src/greenhouse-remix.jsx` with the real react-select by
+`tests/e2e/src/build.sh` (needs npm) — edit the source and rebuild, never the page.
+
 Suite total: **1,616 assertions**, all green.
 
 ---
@@ -3137,6 +3145,46 @@ the job was doing: `Timed out after 312s (last activity: waiting for the verific
 Checked in a real browser: the JPMorgan PIN fixture with the code arriving 85s
 after the start and the cap set to 60s — before, "Watchdog: no result in 1 min";
 now the cap is extended once, the PIN is typed and the application is submitted.
+
+---
+
+## v17.14 — the Anthropic Greenhouse form, Workday's Sign In, Microsoft, the credits popup
+
+From your screenshots: an Anthropic application on Greenhouse's new boards showing
+"Yes" under three questions that still said **"This field is required."**, a start
+date of 2025-12-02, "Yes" to sponsorship and to "interviewed before"; Workday filling
+the Sign In form and never pressing **Sign In**; Microsoft's Acknowledgment boxes; and
+Jobright's "0 remaining Autofill credits" box on every page.
+
+**Greenhouse dropdowns (react-select).**
+- **The "Yes" was never chosen.** It was text typed into the dropdown's search box, which looks exactly like a chosen answer. The required-field pass typed it, and every "already answered?" check believed it. Now a dropdown only counts as answered when it shows a chosen option. Typed text is cleared and the option is picked, in the required-field pass and the error fixer.
+- **The question was read as "Select...", the placeholder.** It now comes from the dropdown's own label.
+- **Unknown Yes/No dropdowns got nothing.** They are now decided the way radio buttons already were.
+- **Sponsorship got "Yes".** A bare Yes/No on a work-authorisation question picked "Yes" as "I can work here". For "Do you require sponsorship?" that says the opposite. A bare Yes/No now answers the question as asked; worded options ("Does not require sponsorship") are unchanged. Radio buttons had the same problem and are fixed too.
+- **"Interviewed before" got "Yes".** "Have you ever interviewed at <company> before?" now answers No.
+
+**Dates and written answers.**
+- **Stale start date.** A start date stored as a date that has passed becomes today plus your notice period (two weeks if none), in the same format. A date already sitting in the box is corrected too.
+- **Deadlines question.** "Any deadlines or timeline considerations?" is answered in words, not with a date.
+- **"Why <company>?"** No longer gets "N/A".
+
+**The page.**
+- **Paywall remover could hide the whole page.** The old remover, finding a credits box or an "Upgrade" button in the page itself, climbed up to `<html>` and hid everything. The application then looked done with nothing filled. It now stops at anything containing form fields.
+- **Credits box.** Jobright's box is now closed on every site with its own **Cancel** (never Upgrade). Before, this only happened on jobright.ai.
+- **Waiting for Jobright's sidebar.** When the sidebar never appears, the job is no longer killed as "Stalled" after 15s, and the fallback skips a pointless ~20s hunt for Jobright's Autofill button.
+
+**Workday Sign In.**
+- **Clicks went to the wrong element.** Workday covers its Sign In and Create Account buttons with an invisible `click_filter` layer that receives the click; the button underneath does nothing. Both are now pressed through that layer.
+- **Create Account was recorded but never sent.** Because of the same layer, the next pass switched to signing in to an account that didn't exist. That no longer happens.
+
+**Microsoft acknowledgements.**
+- A box labelled only "Yes" is now read together with the statement above it.
+- A styled checkbox (invisible input under a drawn box) is now considered.
+
+**Checked in a real browser:**
+- **Anthropic-style form with the real react-select:** with availability set to 2025-12-02, it submits with every dropdown chosen, sponsorship No/No, interviewed No, start date moved forward, deadlines answered in words, and the credits box closed.
+- **Workday account fixture with the click layer:** it reproduced "never presses Sign In" before the fix; it now signs in and submits.
+- **Microsoft Acknowledgment fixture:** submits with all three boxes ticked. It passes on the old code too, so whatever stops your real page isn't reproduced here. If it still happens, send that section's HTML (right-click → Inspect → copy the element).
 
 ---
 
