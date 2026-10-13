@@ -361,7 +361,7 @@ const route = new Function('location', `
   const LOG = () => {};
   ${atsTable}
   ${avatureRouteRe}
-  ${['isWorkday', 'isSmartRecruiters', 'isOracleCloud', 'isTaleo', 'isAdpMyJobs', 'isAvature', 'detectATS'].map((n) => grabFn(enhSrc, n)).join('\n')}
+  ${['isWorkday', 'isAmazonJobs', 'isSmartRecruiters', 'isOracleCloud', 'isTaleo', 'isAdpMyJobs', 'isAvature', 'detectATS'].map((n) => grabFn(enhSrc, n)).join('\n')}
   const url = location.href;
   const platform = detectATS();
   for (const c of ${JSON.stringify(chain)}) if (eval(c.cond)) return [platform, c.drv];
@@ -390,6 +390,12 @@ for (const [href, want] of [
   ['https://acme.breezy.hr/p/abc123-engineer', 'breezyhrAutomation'],
   ['https://ats.rippling.com/acme/jobs/1234', 'ripplingAutomation'],
   ['https://acme.applytojob.com/apply/ABC123/Engineer', 'jazzhrAutomation'],
+  // From the daily CSV (fresh_jobs_7days): Amazon's own careers system is most of it.
+  ['https://www.amazon.jobs/en/jobs/10576816/systems-development-engineer-esc-managed-operations', 'amazonJobsAutomation'],
+  ['https://www.amazon.jobs/applicant/jobs/10576816/apply', 'amazonJobsAutomation'],
+  ['https://job-boards.greenhouse.io/gitlab/jobs/8860273002', 'greenhouseAutomation'],
+  ['https://www.pinterestcareers.com/jobs/?gh_jid=8209905', 'greenhouseAutomation'],
+  ['https://jobs.lever.co/spotify/71eb64a0-ce99-4166-8462-bad3901a967c', 'leverAutomation'],
 ]) eq(`${new URL(href).hostname}${new URL(href).pathname.slice(0, 28)} → ${want}`, routeOf(href)[1], want);
 // The newly recognised boards are named (the generic flow logs and records them
 // by name), and still go through the generic flow that handles them.
@@ -400,6 +406,12 @@ for (const [href, name] of [
   ['https://kumaran.zohorecruit.in/jobs/Careers/31840000017690179/QA-Lead', 'Zoho'],
   ['https://careers.arm.com/job/galway/senior-software-ml-engineer/33099/93485591024', 'Radancy'],
   ['https://careers.sokin.com/jobs/8409552-senior-fullstack-engineer', 'Teamtailor'],
+  ['https://jobs.dayforcehcm.com/en-US/acme/CANDIDATEPORTAL/jobs/12345', 'Dayforce'],
+  ['https://acme.keka.com/careers/jobdetails/4567', 'Keka'],
+  ['https://acme.peoplestrong.com/job/detail/ABC123', 'PeopleStrong'],
+  ['https://acme.zappyhire.com/careers/job/123', 'Zappyhire'],
+  ['https://www.collage.co/jobs/acme/9876', 'Collage'],
+  ['https://app.careerpuck.com/job-board/acme/job/123', 'CareerPuck'],
 ]) eq(`${new URL(href).hostname} recognised as ${name}`, routeOf(href), [name, 'tailorFirstFlow']);
 
 /* ── 7. Oracle Recruiting's front door + SmartRecruiters knockouts ───────── */

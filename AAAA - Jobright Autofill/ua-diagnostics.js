@@ -177,7 +177,9 @@
       if (code === 'field.unanswered' && reason) {
         const qs = (await get(K.QUESTIONS)) || {};
         const qk = `${ats}|${reason}`;
-        const q = qs[qk] || { n: 0, kind: clip(ev.kind, 20) };
+        // `kind` is the control's structure (describeControl) — never its text or value.
+        const q = qs[qk] || { n: 0, kind: clip(ev.kind, 90) };
+        if (ev.kind) q.kind = clip(ev.kind, 90);
         q.n++;
         q.lastUrl = clip(ev.url, 300);
         qs[qk] = q;

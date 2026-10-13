@@ -28,6 +28,7 @@ function makeChrome() {
       onStartup: { addListener: () => {} },
     },
     storage: {
+      onChanged: { addListener: (l) => listeners.changed.push(l) },
       local: {
         get(key, cb) {
           const out = {};
@@ -50,6 +51,7 @@ function makeChrome() {
         const id = nextTabId++;
         const windowId = opts.windowId != null ? opts.windowId : focusedWin();
         if (!windows.has(windowId)) { chrome.runtime.lastError = { message: 'No window' }; setTimeout(() => { cb && cb(undefined); chrome.runtime.lastError = undefined; }, 0); return; }
+        chrome.__lastCreate = { ...opts };
         const t = { id, url: opts.url, windowId, active: opts.active !== false };
         tabs.set(id, t);
         setTimeout(() => cb && cb({ ...t }), 0);
@@ -623,6 +625,37 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('a held page is swapped out', !!repl && !env.tabs.has(tab.id), true);
     eq('into the same window', repl && repl.windowId, 1);
     eq('without coming to the front', repl && repl.active, false);
+  }
+
+    /* ── N+2. Jobright's own worker code cannot pull a tab to the front mid-run ──
+     1.24.0's resume tailor and JobScore flow call tabs.create/update with
+     active:true from the same worker. */
+  console.log('during a run, nothing in the worker takes the front');
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    // Before any run: Jobright behaves exactly as shipped.
+    await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobright.ai/x', active: true }, r));
+    eq('outside a run, a foreign active:true tab opens in front', env.chrome.__lastCreate.active, true);
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(80);
+    await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobscore.com/resume', active: true }, r));
+    eq('during a run, it opens in the background', env.chrome.__lastCreate.active, false);
+    const jobTab = [...env.tabs.values()].find((t) => /a\.com\/1/.test(t.url));
+    jobTab.active = false;
+    await new Promise((r) => env.chrome.tabs.update(jobTab.id, { active: true }, r));
+    eq('and a foreign "switch to this tab" is ignored', env.tabs.get(jobTab.id).active, false);
+    // Our own marker never reaches Chrome, which rejects unknown properties.
+    await new Promise((r) => env.chrome.tabs.create({ url: 'https://a.com/z', active: true, __uaAllowFront: true }, r));
+    eq('our one exception may stay in front', env.chrome.__lastCreate.active, true);
+    eq('and the marker is stripped before Chrome sees it', '__uaAllowFront' in env.chrome.__lastCreate, false);
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'stop' });
+    await tick(80);
+    await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobright.ai/y', active: true }, r));
+    eq('after the run, behaviour is back to normal', env.chrome.__lastCreate.active, true);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

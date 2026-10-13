@@ -197,5 +197,14 @@ console.log('the diagnostics report can be read, not just exported');
 }
 
 
+
+// ── Questions to answer + Site logins (ideas from LazyApply) ──
+eq('an answer goes into all three stores a live answer does', /await set\(\{ ua_answers: bank, ua_manual_answer_keys: manual, ua_saved_responses: saved \}\);/.test(src), true);
+eq('an answered question leaves the list', /delete all\[r\.key\];/.test(src), true);
+eq('question text from web pages is never written as HTML', /qList[\s\S]{0,4000}innerHTML/.test(src), false);
+eq('site logins are keyed like the account record (Workday shards folded)', /h\.replace\(\/\\\.wd\\d\+\\\.\/, '\.'\)\.replace\(\/\\\.myworkdaysite\\\.com\$\/, '\.myworkdayjobs\.com'\)/.test(src), true);
+eq('a saved password is never shown back', /password saved/.test(src) && !/textContent = [^;]*\.password/.test(src), true);
+eq('the panel has no innerHTML anywhere', /\.innerHTML\s*=/.test(src), false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

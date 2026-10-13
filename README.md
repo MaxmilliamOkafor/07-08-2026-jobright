@@ -2893,6 +2893,174 @@ you pressed it.)
 
 ---
 
+## v17.7 — seven ideas from NextRaise
+
+Reviewed NextRaise 2.8.5 and LetMeApply 1.5.0. LetMeApply had nothing to take
+(its filling happens on its servers). NextRaise's filling is also server-side AI,
+but its local helpers encode real widget know-how; seven of them are now here,
+each proven on a test form in a real browser.
+
+1. **Honeypots are never filled.** A field meant for bots ("leave this blank",
+   `name="honeypot"`, the hidden no-tab-stop shape) gets an application binned as
+   spam if filled. Checked in the one setter every text write goes through, so no
+   path can fill one — a visible "Website (leave blank if you are human)" box stays
+   empty even though a Website box would otherwise get your URL.
+2. **Phone boxes that arrive holding "+353" / "+1"** count as unanswered. Only
+   empty boxes used to be filled, so the number was never typed. The full number
+   goes in, with the box's code when your number has none of its own.
+3. **select2 dropdowns.** The real `<select>` is hidden behind select2's box and
+   was skipped; it is answered directly now, and select2 redraws from it.
+4. **Lever location.** Typing the city is not an answer on Lever — only picking
+   from Lever's own list sets the hidden `selectedLocation`. It is picked now, and
+   success means that hidden field is set.
+5. **Diagnostics say what kind of control beat us** — `react-select · required ·
+   covered by a dialog`, `workday text · marked invalid`, `select2 · 1 options` —
+   beside every unanswered question and unfixable error. Never its text or value.
+6. **Whatever covers Submit is cleared first.** Right before Submit: a fresh
+   cookie-banner sweep (a banner that appears on first interaction was missed by
+   the start-of-job sweep), the button brought into view, and a dialog or banner
+   on top of it dismissed.
+7. **Workday: the account wall vs the application.** A visible password box means
+   the sign-in step, whatever else is mounted; the step bar naming two steps, a
+   step heading or several Workday fields mean the application. No filling happens
+   on the wall any more (the "keeps re-autofilling, never signs in" loop), the
+   account step is driven until the application really appears, and a tenant that
+   never lets go is reported rather than filled.
+
+**Six more platforms recognised**, from NextRaise's own host list (about 50
+domains; its "80+ job boards" claim rests on its server AI reading any page):
+Dayforce, Keka, PeopleStrong, Zappyhire, Collage and CareerPuck. They are named
+in the log and the diagnostics and go through the generic flow, which handles
+their sign-in walls.
+
+Tests: unit checks for each, `tests/e2e/dom-units.js` (layout-dependent logic in
+real Chromium), and two new fixture forms (`form5`, `form6`: honeypot, seeded
+phone, select2, Lever picker, early and late cookie banners) — all six fixtures
+submit. Suite total: **1,639 assertions** + 12 real-DOM checks.
+
+---
+
+## v17.8 — rebased onto Jobright 1.24.0
+
+A larger patch than usual: five of their files changed (`contents`, `helper-app`,
+`global.css`, the worker +195KB) and nine are new. All taken verbatim; our three
+`importScripts` lines re-appended; manifest merged by hand.
+
+**What 1.24.0 adds, and why none of it collides with ours**
+- **Per-ATS submission tracking** (Workday, Oracle, SuccessFactors, BrassRing,
+  ClearCompany, plus `ats-submission-resume` for ~20 more). It *watches* Submit
+  clicks to record applications in your Jobright tracker — it never clicks
+  anything itself. It ignores script-driven clicks except on Workday and
+  SmartRecruiters, so automated applications elsewhere may not appear in
+  Jobright's tracker; the Queue Manager's own record is unaffected.
+- **An "applied — rate it" popup**, shown only when their worker confirms an
+  application. No overlays, no dialogs, nothing that blocks a page.
+- **Workday password sync** — only on jobright.ai; copies Jobright's own Workday
+  sign-up password into their web app. It never touches the separate password the
+  automation uses.
+
+**One real conflict, handled without editing their files.** Their worker brings
+tabs to the front by itself mid-application: the resume tailor switches back to
+the job tab when it closes, and a new JobScore flow opens a tab in front. During
+an automated run that is the "it keeps switching tabs" problem again. Our scripts
+share that worker, so while a run is active every tab it opens or updates — and
+any window focus — stays in the background, whoever asked. Outside a run Jobright
+behaves exactly as shipped. Verified in the live worker, and tested.
+
+Checked: all six fixture forms submit on 1.24.0 with no page errors from the new
+scripts; the 12 real-DOM checks pass; suite **1,651 assertions**, all green.
+
+---
+
+## v17.9 — your daily CSV, Amazon Jobs, Workday and SmartRecruiters
+
+Sources: your `fresh_jobs_7days` CSV, SpeedyApply 2.28.0, OptimHire 9.0, and
+LazyApply 0.8.94. Every change was checked by running the extension in a real
+browser against a test form modelled on that platform.
+
+### Your daily CSV
+All 25 rows import (job title and company carried from your columns). 20 are
+**amazon.jobs**, 4 Greenhouse (one embedded on pinterestcareers.com), 1 Lever.
+
+### Amazon Jobs — a driver of its own
+Amazon runs its own careers system and had no handling here at all.
+- **Apply now is followed in the same tab.** Amazon opens it in a new one, which
+  would pull the run — and you — into another tab. Script-opened application tabs
+  (`window.open`) on any site are now kept in place during a run too.
+- **Sign-in / create account**, with the emailed code fetched from your connected
+  Gmail (Amazon's senders are searched).
+- **The multi-step application** — contact, questions, résumé, review — to
+  "Submit application". Already-applied and closed postings are skipped.
+- Tested: eligible Yes · sponsorship **No** · previously employed **No** ·
+  relocate Yes · CV attached · certification ticked → submitted.
+
+### Workday — SpeedyApply 2.28's newer layouts
+SpeedyApply knows 52 Workday element ids this driver had never seen. Added: the
+"info…" name/contact fields, the public-site **address component** (picked from
+its suggestions), the **numbered work/education history**, the **Self Identify**
+page (signature, **today's date via Workday's picker**, the disability checkbox
+group, language, ethnicity), the hidden create-account terms box, and Workday's
+own error messages into the error reader. Also fixed: the page detector took the
+first page marker in the document even when hidden, so a tenant that keeps
+earlier steps mounted was stuck "on My Information". Tested end to end: all five
+pages, every value right, submitted in 90s.
+
+### SmartRecruiters — the current one-click form
+Its fields are web components (`#first-name-input`, `#email-input`, …) with labels
+inside their shadow roots, a location autocomplete whose options live in ITS
+shadow root, and a phone widget with a country picker. All filled now, using
+SmartRecruiters' own `data-test` Next/Submit markers, its error toast (quoted in
+the log when a step is refused), its consent box and its success page.
+
+**A bug caught on the way:** the "values in the wrong box" sanitizer (v17.5)
+emptied SmartRecruiters' Email box — it could not read the label inside the
+component, saw an email in a "nameless" box, and cleared it. It now never acts
+on a box it cannot name or one that declares itself an email box, and labels
+inside shadow roots are read.
+
+### From OptimHire 9.0
+- **Phone boxes with their own country picker** get the local number — typing
+  "+353 87…" next to a 🇮🇪 +353 picker is rejected and cleared, over and over.
+- **No fill fights**: a value of ours still in place is not retyped, the site's
+  own reformat of it is left alone, and a value it keeps clearing is tried at most
+  three times — the flickering field.
+
+### LazyApply
+See v17.10 — two of its ideas were ported after a closer look.
+
+### Not verified live
+These test forms are built from each platform's real element ids, but this
+environment cannot reach the live sites. To test on real Workday / SmartRecruiters
+jobs, run a session on your own machine (Claude Desktop, or `claude remote-control`
+in this folder), which can drive your browser.
+
+---
+
+## v17.10 — two ideas from LazyApply's way of working
+
+A second, closer look at LazyApply. Its strength is not which sites it names but
+how it works: per-platform selector maps fetched from its server (fixes reach
+every user without an update), a shared question bank that keeps what it could not
+answer, server-side picking for awkward dropdowns, and saved logins per ATS. The
+server parts live behind LazyApply's login and cannot be reused; the dropdown
+picking is already done locally here (v17.5). Two of its ideas are now built in,
+kept entirely on your computer:
+
+- **❓ Questions to answer** (Queue Manager). Every required question the autofill
+  had no answer for is listed, most frequent first. Answer one once and every
+  future application that asks it is filled with your answer — saved exactly as an
+  answer typed on a live form is, so it counts as yours and is never second-guessed.
+  Proven end to end in a real browser: a job blocked on "What is the name of your
+  current manager?" → answered once in the panel → the next job with that question
+  submitted with the answer (`tests/e2e/questions-loop.js`).
+- **🔐 Site logins** (Queue Manager). Every ATS account normally uses one shared
+  email and password; where you already have an account with a different password
+  — common on Workday — sign-in failed and the job stalled. Save a login for that
+  employer's site and it is used there only (Workday's wd1/wd3/… shards are folded,
+  a parent domain covers its sign-in host). Stored locally; never shown again.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
@@ -3059,9 +3227,14 @@ the new bundle removed a file the manifest still points at, or if the appended
    - `side_panel.default_path` = `ua-queue.html`.
    - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
      `identity`.
+   - Their new content scripts go after ours, in their order (1.24.0 added four).
 5. Check the new worker for anything that would collide with ours — side panel,
-   alarms, message types beginning `UA_`, `beforeunload`.
-6. `./tests/run.sh`. It fails if any of the three worker lines is missing.
+   alarms, message types beginning `UA_`, `beforeunload` — and for `active:!0`
+   (tabs brought to the front). Those are neutralised during runs by the tab
+   guard in `ua-orchestrator.js`, but a new one is worth knowing about.
+6. Run the six fixtures: `for f in tests/e2e/form*.html; do node tests/e2e/run.js "$(basename $f)"; done`
+   from `tests/e2e`, and `node tests/e2e/dom-units.js`.
+7. `./tests/run.sh`. It fails if any of the three worker lines is missing.
 
 ## Notes
 

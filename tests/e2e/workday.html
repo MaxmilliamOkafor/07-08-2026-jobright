@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Engineer - Acme Careers</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:20px auto} .f{margin:10px 0} label{display:block;font-weight:600} input[type=text],input[type=email],input[type=tel]{width:100%;padding:6px}
+.cb{position:absolute;opacity:0;width:1px;height:1px} #ac{border:1px solid #ccc} #ac div{padding:4px;cursor:pointer}</style></head>
+<body>
+<!-- Built from the data-automation-id values SpeedyApply 2.28 targets (Workday's newer layouts). -->
+<div data-automation-id="applyFlowContainer">
+<div data-automation-id="progressBar">My Information My Experience Application Questions Self Identify Review</div>
+<form id="wd" onsubmit="return false">
+  <section data-automation-id="applyFlowMyInfoPage" data-page="1">
+    <h2 data-automation-id="pageHeaderTitle">My Information</h2>
+    <div class="f" data-automation-id="formField-firstName"><label for="ifn">First Name *</label><input id="ifn" name="infoFirstName" data-automation-id="infoFirstName" aria-required="true"></div>
+    <div class="f" data-automation-id="formField-lastName"><label for="iln">Last Name *</label><input id="iln" name="infoLastName" data-automation-id="infoLastName" aria-required="true"></div>
+    <div class="f" data-automation-id="formField-email"><label for="iem">Email *</label><input id="iem" name="infoEmail" data-automation-id="infoEmail" aria-required="true"></div>
+    <div class="f" data-automation-id="formField-cellPhone"><label for="icp">Mobile Phone *</label><input id="icp" name="infoCellPhone" data-automation-id="infoCellPhone" aria-required="true"></div>
+    <div class="f" data-automation-id="formField-address"><label for="a1">Address Line 1 *</label><input id="a1" name="address1" data-automation-id="public-site-address-address-1" aria-required="true" autocomplete="off"><div id="ac"></div></div>
+    <div class="f" data-automation-id="formField-city"><label for="ci">City *</label><input id="ci" name="city" data-automation-id="public-site-address-city" aria-required="true"></div>
+    <div class="f" data-automation-id="formField-postal"><label for="pc">Postal Code</label><input id="pc" name="postal" data-automation-id="public-site-address-postal-code"></div>
+    <button type="button" data-automation-id="pageFooterNextButton" class="next">Save and Continue</button>
+  </section>
+  <section data-automation-id="applyFlowMyExpPage" data-page="2" hidden>
+    <h2 data-automation-id="pageHeaderTitle">My Experience</h2>
+    <div class="work-history-group">
+      <div class="f"><label for="wc">Company *</label><input id="wc" name="company" data-automation-id="workHistoryCompanyName0" aria-required="true"></div>
+      <div class="f"><label for="wp">Job Title *</label><input id="wp" name="position" data-automation-id="workHistoryPosition0" aria-required="true"></div>
+      <div class="f"><label for="ws">From *</label><input id="ws" name="workStart" data-automation-id="txt-workHistory-startDate-0" placeholder="MM/YYYY" aria-required="true"></div>
+    </div>
+    <div class="f"><label for="es">School or University</label><input id="es" name="school" data-automation-id="educationHistoryName0"></div>
+    <div class="f"><label for="ea">Field of Study</label><input id="ea" name="study" data-automation-id="educationHistoryAreaOfStudy0"></div>
+    <div class="f" data-automation-id="formField-resume"><label for="cv">Resume/CV *</label><input type="file" id="cv" name="resume" data-automation-id="file-upload-input-ref" required></div>
+    <button type="button" data-automation-id="pageFooterNextButton" class="next">Save and Continue</button>
+  </section>
+  <section data-automation-id="applyFlowPrimaryQuestionsPage" data-page="3" hidden>
+    <h2 data-automation-id="pageHeaderTitle">Application Questions</h2>
+    <fieldset class="f" data-automation-id="formField-sponsor"><legend>Will you now or in the future require sponsorship for employment visa status? *</legend>
+      <label><input type="radio" name="sponsor" value="Yes" required> Yes</label><label><input type="radio" name="sponsor" value="No"> No</label></fieldset>
+    <fieldset class="f" data-automation-id="formField-auth"><legend>Are you legally authorized to work in Ireland? *</legend>
+      <label><input type="radio" name="auth" value="Yes" required> Yes</label><label><input type="radio" name="auth" value="No"> No</label></fieldset>
+    <button type="button" data-automation-id="pageFooterNextButton" class="next">Save and Continue</button>
+  </section>
+  <section data-automation-id="applyFlowSelfIdentifyPage" data-page="4" hidden>
+    <h2 data-automation-id="pageHeaderTitle">Self Identify</h2>
+    <div class="f" data-automation-id="formField-name"><label for="sig">Name *</label><input id="sig" name="signature" data-automation-id="name" aria-required="true"></div>
+    <div class="f" data-automation-id="formField-date"><label>Date *</label>
+      <input data-automation-id="dateSectionMonth-input" name="dm" size="2" aria-label="Month"> / <input data-automation-id="dateSectionDay-input" name="dd" size="2" aria-label="Day"> / <input data-automation-id="dateSectionYear-input" name="dy" size="4" aria-label="Year">
+      <button type="button" data-automation-id="dateIcon" aria-label="Calendar">📅</button>
+      <div id="picker" hidden><button type="button" data-automation-id="datePickerSelectedToday">Today</button></div></div>
+    <div class="f" data-automation-id="disabilityStatus-CheckboxGroup" role="group">
+      <div role="cell"><input type="checkbox" class="cb" id="d1" name="disability" value="yes"><label for="d1">Yes, I have a disability (or previously had a disability)</label></div>
+      <div role="cell"><input type="checkbox" class="cb" id="d2" name="disability" value="no"><label for="d2">No, I do not have a disability and have not had one in the past</label></div>
+      <div role="cell"><input type="checkbox" class="cb" id="d3" name="disability" value="decline"><label for="d3">I do not want to answer</label></div>
+    </div>
+    <button type="button" data-automation-id="pageFooterNextButton" class="next">Save and Continue</button>
+  </section>
+  <section data-automation-id="applyFlowReviewPage" data-page="5" hidden>
+    <h2 data-automation-id="pageHeaderTitle">Review</h2>
+    <button type="button" data-automation-id="btnSubmit" id="submitBtn">Submit</button>
+  </section>
+</form>
+</div>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
+  const $ = (s) => document.querySelector(s);
+  const page = (n) => document.querySelectorAll('[data-page]').forEach((s) => { s.hidden = Number(s.dataset.page) !== n; });
+  // The address component offers a suggestion that must be picked.
+  const a1 = $('#a1'), ac = $('#ac');
+  a1.addEventListener('input', () => { ac.innerHTML = ''; if (a1.value.length < 3) return;
+    const d = document.createElement('div'); d.id = 'public-site-address-address-1-autocomplete-item-0'; d.textContent = a1.value + ', Dublin';
+    d.addEventListener('click', () => { a1.dataset.picked = '1'; ac.innerHTML = ''; }); ac.appendChild(d); });
+  $('[data-automation-id="dateIcon"]').addEventListener('click', () => { $('#picker').hidden = false; });
+  $('[data-automation-id="datePickerSelectedToday"]').addEventListener('click', () => {
+    const t = new Date(); $('[name=dm]').value = t.getMonth() + 1; $('[name=dd]').value = t.getDate(); $('[name=dy]').value = t.getFullYear(); $('#picker').hidden = true; });
+  const filled = (sec) => [...sec.querySelectorAll('[aria-required=true],[required]')].every((el) =>
+    el.type === 'radio' ? sec.querySelector('[name="' + el.name + '"]:checked') : el.type === 'file' ? el.files.length : el.value.trim());
+  document.querySelectorAll('.next').forEach((b) => b.addEventListener('click', () => {
+    const sec = b.closest('section'); const n = Number(sec.dataset.page);
+    if (!filled(sec)) return;
+    if (n === 4 && (!$('[name=dy]').value || !sec.querySelector('[name=disability]:checked'))) return;
+    page(n + 1);
+  }));
+  $('#submitBtn').addEventListener('click', () => {
+    const out = {}; for (const [k, v] of new FormData($('#wd')).entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    out.addressPicked = a1.dataset.picked === '1';
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Application Submitted</h1><p>Thank you for applying!</p>';
+  });
+</script>
+</body></html>

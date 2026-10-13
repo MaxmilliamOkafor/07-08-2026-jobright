@@ -702,6 +702,13 @@
     { n: 'iCIMS', p: /\/careers-home\/jobs\/\d+|\/main\/jobs\/\d+/i },
     // Radancy / TalentBrew path: /job/<city>/<title>/<client>/<job> (careers.arm.com).
     { n: 'Radancy', p: /\/job\/[^/?#]+\/[^/?#]+\/\d{3,}\/\d{5,}/i },
+    /* ── From NextRaise's list of recognised hosts: platforms missing here ── */
+    { n: 'Dayforce', p: /(^|\/\/|\.)dayforcehcm\.com/i },
+    { n: 'Keka', p: /(^|\/\/|\.)keka\.com\/careers/i },
+    { n: 'PeopleStrong', p: /(^|\/\/|\.)peoplestrong\.com/i },
+    { n: 'Zappyhire', p: /(^|\/\/|\.)zappyhire\.com/i },
+    { n: 'Collage', p: /(^|\/\/|\.)collage\.co\//i },
+    { n: 'CareerPuck', p: /(^|\/\/|\.)careerpuck\.com/i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.
@@ -2231,9 +2238,12 @@
   async function resolveLocationFields() {
     const p = await getProfile();
     if (!locationQuery(p, false)) return 0;
+    // Lever's picker first — it is Lever's own list, not an ARIA listbox.
+    try { if (await leverLocation(p)) return 1; } catch (_) {}
     // deepAll, not $$: the field can sit behind a shadow boundary.
     const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button])', 300)
-      .filter(el => isVisible(el) && isLocationField(el));
+      // Lever's box belongs to leverLocation: retyping it here would clear the pick.
+      .filter(el => isVisible(el) && isLocationField(el) && !el.matches('input.location-input[name="location"]'));
     let committed = 0;
     for (const inp of inputs) {
       // Skip fields the site already accepts (value present AND no nearby validation error).
@@ -3093,8 +3103,154 @@
      The run recorder found it in a single batch: "nativeSet is not defined",
      ten jobs. references.test.js is now scope-aware so a declaration in one
      IIFE can never again satisfy a call in another. */
+  /* ── HONEYPOTS (ported from NextRaise) ──────────────────────────────────────
+     Some forms carry a field no human is meant to fill — "leave this blank",
+     name="honeypot", a bot trap — and quietly bin any application that fills
+     it. Writing anything into one throws the application away as spam, with
+     no error on screen. Checked here, at the one place every text write goes
+     through, so no path in the automation can ever fill one. */
+  const TRAP_FIELD_RE = /\bhoney[\s_-]*pot\b|\bbot[\s_-]*(?:field|trap|check)\b|\bspam[\s_-]*(?:trap|check)\b|\brobots?\s+only\b|\bdo\s+not\s+(?:enter|fill|complete|change)[^.!?]{0,80}\b(?:human|person)\b|\bleave\s+(?:this\s+)?(?:field|input|box)?\s*(?:blank|empty)\b|\bif\s+you\s+are\s+(?:a\s+)?human\b/i;
+  function isTrapField(el) {
+    try {
+      if (!el || !el.getAttribute) return false;
+      const corpus = [
+        el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('aria-label'),
+        el.getAttribute('data-testid'), el.getAttribute('data-qa'), el.getAttribute('placeholder'),
+        el.labels && el.labels.length ? Array.from(el.labels).map((l) => l.textContent).join(' ') : '',
+      ].filter(Boolean).join(' ');
+      if (TRAP_FIELD_RE.test(corpus)) return true;
+      // The classic shape: kept out of reach of people on purpose — no tab stop,
+      // hidden from assistive tech, and not something the form says is required.
+      if (el.getAttribute('tabindex') === '-1' && el.getAttribute('aria-hidden') === 'true' && !el.required &&
+          el.getAttribute('autocomplete') === 'off') return true;
+    } catch (_) {}
+    return false;
+  }
+  const _trapLogged = new WeakSet();
+
+  /* ── A PHONE BOX THAT ARRIVES HOLDING ONLY "+1" (ported from NextRaise) ─────
+     International phone widgets pre-fill the box with the country's dialling
+     code. The box is not answered — but it is not empty either, and every
+     pass here filled only empty boxes, so the number was never typed and the
+     required phone failed the submit. A box holding nothing but a dialling
+     code counts as empty. */
+  /* ── select2 (ported from NextRaise) ────────────────────────────────────────
+     select2 hides the real <select> (class select2-hidden-accessible) and draws
+     its own box beside it. Every dropdown pass here skipped hidden selects, so
+     a select2 question was answered only if the generic picker happened to
+     find select2's popup. The hidden select IS the answer: set it, and select2
+     redraws from its change event. */
+  function isSelect2Native(el) {
+    try {
+      if (!el || el.tagName !== 'SELECT' || !el.classList.contains('select2-hidden-accessible')) return false;
+      const box = el.nextElementSibling;
+      return !!(box && box.classList && box.classList.contains('select2-container') && isVisible(box));
+    } catch (_) { return false; }
+  }
+  function isPhoneBox(el) {
+    try {
+      if (!el || (el.tagName !== 'INPUT')) return false;
+      if (el.type === 'tel') return true;
+      const hay = (el.name || '') + ' ' + (el.id || '') + ' ' + (el.getAttribute('autocomplete') || '') + ' ' +
+        (el.labels && el.labels.length ? Array.from(el.labels).map((l) => l.textContent).join(' ') : (el.getAttribute('aria-label') || el.placeholder || ''));
+      return /phone|mobile|telephone|\btel\b/i.test(hay) && !/code|ext(ension)?\b/i.test(el.name || el.id || '');
+    } catch (_) { return false; }
+  }
+  function dialCodeOnly(el) {
+    try {
+      const v = String(el && el.value || '').trim();
+      return !!v && isPhoneBox(el) && /^\+?\s*\(?\+?\d{1,4}\)?$/.test(v) && v.replace(/\D/g, '').length <= 4;
+    } catch (_) { return false; }
+  }
+  // The full number, using the code the box was seeded with when the profile
+  // number has none of its own.
+  function phoneForSeededBox(el, val) {
+    const seed = String(el.value || '').replace(/[^\d+]/g, '');
+    const v = phoneVariants(val, { phone: val, phoneCountryCode: seed.replace(/^\+?/, '+') }, 'international');
+    return v[0] || val;
+  }
+
+  /* ── Phone boxes with their own country picker (ported from OptimHire 9.0) ──
+     Workday, Workable, intl-tel-input and react-phone-number-input draw the
+     dialling code (🇮🇪 +353) in a picker beside the number box. The full
+     "+353 87 426 1508" typed into that box is rejected — the site clears it, our
+     fillers type it again, and the field flickers forever. When a picker beside
+     the box shows a code, the box gets the local number. */
+  function dialCodeBeside(el) {
+    try {
+      let box = el.parentElement;
+      for (let i = 0; i < 4 && box && box !== document.body; i++, box = box.parentElement) {
+        const others = Array.from(box.querySelectorAll('input:not([type=hidden]),textarea'))
+          .filter((f) => f !== el && !/country|dial|code|flag|search/i.test((f.name || '') + ' ' + (f.id || '') + ' ' + (f.placeholder || '') + ' ' + (f.getAttribute('aria-label') || '')));
+        if (others.length) return '';                  // left the phone widget
+        for (const x of box.querySelectorAll('select,button,[role="combobox"],[aria-haspopup],[class*="country" i],[class*="dial" i],[class*="flag" i],[class*="iti" i],[class*="prefix" i]')) {
+          if (x === el || x.contains(el)) continue;
+          const t = x.tagName === 'SELECT'
+            ? ((x.selectedOptions && x.selectedOptions[0] && (x.selectedOptions[0].text + ' ' + x.selectedOptions[0].value)) || '')
+            : (x.textContent || '') + ' ' + (x.getAttribute('aria-label') || '') + ' ' + (x.getAttribute('title') || '');
+          const m = t.match(/\+\s?(\d{1,4})\b/);
+          if (m) return m[1];
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+  function phoneForPickerBox(el, val) {
+    try {
+      if (!isPhoneBox(el) || !/^\s*(\+|00)\s?\d/.test(String(val))) return val;
+      const code = dialCodeBeside(el);
+      if (!code) return val;
+      const digits = String(val).replace(/\D/g, '').replace(/^00/, '');
+      if (digits.startsWith(code) && digits.length - code.length >= 6) return digits.slice(code.length);
+    } catch (_) {}
+    return val;
+  }
+
+  /* ── No fill fights (ported from OptimHire 9.0) ─────────────────────────────
+     Several passes each re-typed a field whenever it looked wrong. When the SITE
+     changes the value — reformats it, picks a suggestion, clears what it rejects —
+     that became an endless write/clear loop: the flickering field. Per field and
+     value: a value of ours still in place is not typed again, the site's own edit
+     of our value is not overwritten with the same value, and a value the site
+     keeps clearing is typed at most three times. */
+  const FIGHT_MAX = 3;
+  const _ourWrites = new WeakMap();
+  function mayWrite(el, val) {
+    try {
+      if (!val || el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete')) return true;
+      const m = _ourWrites.get(el);
+      const n = (m && m.get(val)) || 0;
+      if (!n) return true;
+      const cur = String(el.value || '').trim();
+      if (cur === String(val).trim()) return 'same';            // ours, still there
+      if (cur) return false;                                    // the site changed it — leave its edit
+      if (n >= FIGHT_MAX) {
+        if (!m.get('\u0000gaveUp')) { m.set('\u0000gaveUp', 1); LOG(`Fill: "${String(getLabel(el) || el.name || el.id || 'field').slice(0, 40)}" keeps rejecting that value — leaving it`); }
+        return false;
+      }
+    } catch (_) {}
+    return true;
+  }
+  function noteWrite(el, val) {
+    if (!val) return;
+    let m = _ourWrites.get(el);
+    if (!m) { m = new Map(); _ourWrites.set(el, m); }
+    m.set(val, (m.get(val) || 0) + 1);
+  }
+
   function nativeSet(el, val) {
     if (!el || el.disabled || el.readOnly) return false;
+    if (el.tagName !== 'SELECT' && val !== '' && isTrapField(el)) {
+      if (!_trapLogged.has(el)) { _trapLogged.add(el); LOG(`Left a bot-trap field empty ("${(el.name || el.id || 'unnamed').slice(0, 40)}") — filling it would get the application binned as spam`); }
+      return false;
+    }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      val = phoneForPickerBox(el, val == null ? '' : String(val));
+      const ok = mayWrite(el, String(val));
+      if (ok === 'same') return true;
+      if (!ok) return false;
+      noteWrite(el, String(val));
+    }
     // On Workday, plain .value assignment leaves fields "unregistered" (validation
     // fails, Continue/Create stays disabled). Use real-typing there so React commits.
     if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
@@ -4216,7 +4372,8 @@
       return true;
     }
     if (el.type === 'checkbox' || el.type === 'radio') return !!el.checked;
-    return !!el.value?.trim();
+    // "+353" alone in a phone box is a seed, not an answer — see dialCodeOnly.
+    return !!el.value?.trim() && !dialCodeOnly(el);
   }
 
   // ===================== QUEUE OPS =====================
@@ -4396,11 +4553,17 @@
     for (const el of boxes) {
       const v = String(el.value).trim();
       const lbl = String(fieldName(el) || getLabel(el) || '');
+      /* Only a box whose name CLEARLY says something else. A box with no name we
+         can read is not evidence of anything: SmartRecruiters keeps its labels
+         inside each component's shadow root, and its Email box was emptied as
+         "an email in a nameless box". */
+      if (!lbl.trim()) continue;
+      const declares = ((el.type || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' + (el.getAttribute('autocomplete') || '')).toLowerCase();
       const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(v);
       const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
       let why = '';
       if (isUrl && !URL_LABEL_RE.test(lbl) && el.tagName !== 'TEXTAREA') why = 'a link';
-      else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
+      else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/e-?mail|username/.test(declares) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
       else if ((el.type === 'email' || (/e-?mail/i.test(lbl) && !/confirm|re-?enter|repeat|verify/i.test(lbl) && !/(recruiter|referr|reference|manager)/i.test(lbl))) && !isEmail && el.tagName !== 'TEXTAREA') why = 'not an email address';
       else if ((el.type === 'tel' || /phone|mobile|telephone/i.test(lbl)) && !/code|ext/i.test(lbl) && !/\d{3}/.test(v)) why = 'not a phone number';
       if (!why) continue;
@@ -4426,7 +4589,7 @@
 
     // Text inputs & textareas — only unfilled ones
     const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
-      .filter(el => isVisible(el) && !el.value?.trim());
+      .filter(el => isVisible(el) && (!el.value?.trim() || dialCodeOnly(el)) && !isTrapField(el));
 
     for (const inp of inputs) {
       const lbl = getLabel(inp);
@@ -4435,8 +4598,9 @@
       // open and risks committing junk dates. Required ones are handled by the per-ATS
       // education/experience fillers with real dates.
       if (!isFieldRequired(inp) && (inp.type === 'date' || /MM\s*\/\s*YYYY|DD\s*\/\s*MM/i.test(inp.placeholder || '') || /\b(start|end)\s+date\b/i.test(lbl))) continue;
-      const val = guessFieldValue(lbl, p, inp);
+      let val = guessFieldValue(lbl, p, inp);
       if (!val) continue;
+      if (dialCodeOnly(inp)) val = phoneForSeededBox(inp, val);
       if (!writeAllowed(inp, val)) continue;   // it has already refused this value
       inp.focus({ preventScroll: true });
       await sleep(100); // Stabilize focus before setting value
@@ -4447,7 +4611,7 @@
     }
 
     // Select dropdowns — only unselected ones
-    const selects = deepAll('select').filter(el => isVisible(el) && !hasFieldValue(el));
+    const selects = deepAll('select').filter(el => (isVisible(el) || isSelect2Native(el)) && !hasFieldValue(el));
     for (const sel of selects) {
       const lbl = getLabel(sel);
       const lblLower = (lbl || '').toLowerCase();
@@ -5044,6 +5208,7 @@
     if ($('#post_application_page,.application-submitted')) return true;      // Greenhouse
     if ($('.application-complete')) return true;                              // Lever
     if ($('.iCIMS_ConfirmMessage,.iCIMS_SuccessMessage')) return true;        // iCIMS
+    if ($('oc-success-page-content,[data-test="success-page"]')) return true; // SmartRecruiters (marker from SpeedyApply 2.28)
     // A status region, but only with confirmation-grade wording. The old test
     // accepted /submit|success|thank|received|complete/, so the validation error
     // "Please complete all required fields" counted as a successful submission.
@@ -5226,7 +5391,7 @@
     const submitEnabled = el => el && isVisible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
     for (const sel of submitSels) {
       const btn = $(sel);
-      if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
+      if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await clearOverSubmit(btn); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
     }
     // Fallback: button by text
     {
@@ -5238,6 +5403,7 @@
       if (submitBtn) {
         LOG('Clicking submit: "' + controlLabel(submitBtn) + '"');
         scrollIfNeeded(submitBtn);
+        await clearOverSubmit(submitBtn);
         await sleep(500);
         realClick(submitBtn);
         markSubmitAttempt();
@@ -5335,12 +5501,93 @@
 
      Called at the moment of failure instead, where the answer is always
      available and always relevant. */
+  /* ── WHAT KIND OF CONTROL BEAT US (idea from NextRaise's diagnostics) ──────
+     "Phone — could not fill" says which field; it does not say why. The fix for
+     a react-select is not the fix for a select2, a Workday prompt, a shadow-DOM
+     web component or a field sitting under a cookie banner. This describes the
+     CONTROL — never its text or value — so a diagnostics export says exactly
+     what needs handling. */
+  let _missingEls = new Map();
+  function coveredBy(el) {
+    try {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return '';
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return '';
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return '';
+      if (el.labels && Array.from(el.labels).some((l) => l.contains(hit))) return '';
+      // The same widget drawing over its own input is not an obstruction.
+      const own = el.closest('[class*="select" i],[class*="Select"],[class*="picker" i],[class*="combobox" i],.iti,.PhoneInput,label,[role="combobox"]');
+      if (own && own.contains(hit)) return '';
+      const cls = (safeClass(hit) + ' ' + safeClass(hit.parentElement) + ' ' + (hit.id || '')).toLowerCase();
+      if (/cookie|consent|onetrust|gdpr|cc-window|truste/.test(cls)) return 'a cookie banner';
+      if (hit.closest('[role="dialog"],[aria-modal="true"],dialog,.modal,[class*="modal" i],[class*="overlay" i]')) return 'a dialog';
+      const pos = getComputedStyle(hit).position;
+      if (pos === 'fixed' || pos === 'sticky') return 'a fixed bar';
+      return 'another element';
+    } catch (_) { return ''; }
+  }
+  function describeControl(el) {
+    try {
+      if (!el || !el.tagName) return '';
+      const cls = (safeClass(el) + ' ' + safeClass(el.parentElement) + ' ' + safeClass(el.closest('[class]'))).toLowerCase();
+      const tag = el.tagName.toLowerCase();
+      let kind;
+      if (isSelect2Native(el) || /select2/.test(cls)) kind = 'select2';
+      else if (/select__|select-control|react-select/.test(cls) || el.closest('[class*="select__control"],[class*="Select-control"]')) kind = 'react-select';
+      else if (el.closest('[data-automation-id]')) kind = 'workday ' + (tag === 'input' ? (el.type || 'text') : tag);
+      else if (/muiautocomplete|muiselect/.test(cls)) kind = 'MUI select';
+      else if (/ant-select/.test(cls)) kind = 'ant select';
+      else if (/^oj-|^spl-/.test(tag) || el.getRootNode() !== document) kind = 'web component';
+      else if (el.closest('.iti,.PhoneInput,.react-tel-input')) kind = 'intl-tel widget';
+      else if (tag === 'select') kind = 'native select';
+      else if (tag === 'textarea') kind = 'textarea';
+      else if (tag === 'input') kind = (el.type === 'radio' ? 'radio group' : el.type === 'checkbox' ? 'checkbox' : el.type === 'file' ? 'file upload' : (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete')) ? 'autocomplete' : (el.type || 'text') + ' box');
+      else if (el.getAttribute('role')) kind = el.getAttribute('role');
+      else kind = 'custom ' + tag;
+      const bits = [kind];
+      if (el.required || el.getAttribute('aria-required') === 'true') bits.push('required');
+      if (el.getAttribute('aria-invalid') === 'true') bits.push('marked invalid');
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') bits.push('disabled');
+      if (el.readOnly) bits.push('read-only');
+      if (el.getRootNode && el.getRootNode() !== document) bits.push('in shadow DOM');
+      if (tag === 'select') bits.push(el.options.length + ' options');
+      const r = el.getBoundingClientRect();
+      if (!r.width && !r.height) bits.push('zero-size');
+      const cov = coveredBy(el);
+      if (cov) bits.push('covered by ' + cov);
+      return bits.join(' · ');
+    } catch (_) { return ''; }
+  }
+
+  /* Something on top of the Submit button — a cookie banner, a modal, a chat
+     widget — is the page telling us it is not ready: a click "lands" while the
+     app behind it ignores it, or a consent wall keeps the form inert. Clear it
+     first (idea from NextRaise's pointer-blocked check). Bounded: two tries. */
+  async function clearOverSubmit(btn) {
+    /* A banner that appeared AFTER the start-of-job sweep (several open one on
+       the first interaction) was missed, and an off-screen button cannot be
+       hit-tested — so sweep again here, and bring the button into view before
+       asking what is on top of it. Both are no-ops when there is nothing to do. */
+    try { await dismissCookieBanner(); } catch (_) {}
+    try { scrollIfNeeded(btn); } catch (_) {}
+    for (let i = 0; i < 2; i++) {
+      const cov = coveredBy(btn);
+      if (!cov || cov === 'another element') return;
+      LOG(`Submit is covered by ${cov} — clearing it first`);
+      try { await dismissCookieBanner(); } catch (_) {}
+      try { await resolveBlockingDialog(); } catch (_) {}
+      await sleep(scaled(400, 200));
+    }
+    if (coveredBy(btn)) DIAG('submit.covered', 'Submit still covered by ' + coveredBy(btn));
+  }
   function reportUnansweredQuestions(why) {
     try {
       const r = fillReport();
       if (!r || !r.missingLabels || !r.missingLabels.length) return;
       DIAG('stage.fill', why || 'at failure', { detail: { done: r.done, total: r.total, pct: r.pct } });
-      for (const label of r.missingLabels) DIAG('field.unanswered', label);
+      for (const label of r.missingLabels) DIAG('field.unanswered', label, { kind: describeControl(_missingEls.get(label)) });
     } catch (_) {}
   }
 
@@ -5355,7 +5602,7 @@
          would not submit" into a list of the exact questions the filler has no
          answer for, counted across every ATS. The LABEL only — never what was
          or would have been typed into it. */
-      for (const label of r.missingLabels) DIAG('field.unanswered', label);
+      for (const label of r.missingLabels) DIAG('field.unanswered', label, { kind: describeControl(_missingEls.get(label)) });
       return r;
     } catch (_) { return null; }
   }
@@ -5363,6 +5610,7 @@
   function getMissingRequired() {
     const required = deepAll('input:not([type=hidden]),textarea,select').filter(el => isVisible(el) && isFieldRequired(el));
     const missing = [];
+    _missingEls = new Map();   // label → element, for describeControl in the diagnostics
     // Dedupe named radio groups — without this, an unanswered Yes/No question reported
     // BOTH of its radio options as separate "missing" entries (inflating the count and,
     // via getMissingRequired's use elsewhere, misleading the UI's missing-fields list).
@@ -5379,7 +5627,7 @@
         if (el.checked) continue;
       } else if (hasFieldValue(el)) continue;
       const lbl = getLabel(el) || el.name || el.id || 'Required field';
-      if (!missing.includes(lbl)) missing.push(lbl);
+      if (!missing.includes(lbl)) { missing.push(lbl); _missingEls.set(lbl, el); }
     }
     // Web-component questions (Spark spl-radio, Oracle oj-radioset, Material,
     // role="radio"/role="checkbox" widgets) are not <input>s, so none of the above
@@ -5398,7 +5646,7 @@
         const options = group ? deepQueryAll(CHOICE_CONTROL_SEL, group) : [r];
         if (options.some(choiceChecked)) continue;
         const lbl = (getFullQuestionText(r) || getLabel(r) || 'Required question').replace(/\s+/g, ' ').trim().slice(0, 120);
-        if (lbl && !missing.includes(lbl)) missing.push(lbl);
+        if (lbl && !missing.includes(lbl)) { missing.push(lbl); _missingEls.set(lbl, r); }
       }
       for (const cb of deepAll(CONSENT_CONTROL_SEL, 100).filter(isVisible)) {
         if (cb.tagName === 'INPUT') continue;
@@ -5407,7 +5655,7 @@
         if (!isFieldRequired(cb) && !REQUIRED_ERROR_RE.test(txt)) continue;
         if (MARKETING_TEXT_RE.test(txt)) continue;
         const lbl = txt.slice(0, 120) || 'Required declaration';
-        if (!missing.includes(lbl)) missing.push(lbl);
+        if (!missing.includes(lbl)) { missing.push(lbl); _missingEls.set(lbl, cb); }
       }
     } catch (_) {}
     return missing;
@@ -5891,8 +6139,29 @@
     await fillWorkdayCreateAccount(true);
     await sleep(scaled(1500, 750));
 
+    /* Through the wall before anything is filled. While a password box is on
+       screen this is the sign-in page, whatever else is mounted — keep driving
+       the account step (fillWorkdayCreateAccount bounds its own attempts) and
+       clear an emailed code if one is asked for. */
+    {
+      const until = Date.now() + 45000;
+      while (workdayOnAccountWall() && Date.now() < until && !autoStopped()) {
+        if (detectEmailVerificationWall()) await resolveEmailVerification(60000);
+        if ((await fillWorkdayCreateAccount(true)) === 'stop' && workdayOnAccountWall()) break;
+        await waitUntil(() => !workdayOnAccountWall() || workdayApplicationReady(), scaled(4000, 2000), 250);
+      }
+      if (workdayOnAccountWall()) {
+        LOG('Workday: still on the sign-in / create-account step — not filling the account page as if it were the application');
+        DIAG('workday.auth.stuck', 'still on the account step after signing in');
+        try { reportNeedsHuman('Workday sign-in'); } catch (_) {}
+        return;
+      }
+    }
+
     // Wait for form page
-    const fp = await waitFor("[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']", 10000);
+    const fp = workdayApplicationReady() ||
+      await waitFor("[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']", 15000) ||
+      (await waitUntil(workdayApplicationReady, 5000, 250));
     if (!fp) { LOG('Workday form page not found'); return; }
     await sleep(scaled(1000, 500));
 
@@ -5900,9 +6169,11 @@
     await workdayFillName(p);
     await workdayFillContact(p);
     await workdayFillAddress(p);
+    await workdayFillModernInfo(p);
     await workdayFillSource();
     await workdayFillEducation(p);
     await workdayFillExperience(p);
+    await workdayFillModernHistory(p);
     await workdayFillLanguage(p);
     await workdayResumeUpload();
     await fixPhoneCountryCode();
@@ -6561,6 +6832,106 @@
     LOG('Workday: links/skills filled');
   }
 
+  /* ── Workday's newer layouts (from SpeedyApply 2.28) ────────────────────────
+     Workday ships several generations of the same pages side by side. These are
+     the field families SpeedyApply 2.28 handles that this driver did not:
+       • "info…" name/contact fields (infoFirstName, infoCellPhone, …)
+       • the public-site address component (public-site-address-*)
+       • the work/education history layout with numbered ids
+         (workHistoryCompanyName0, txt-workHistory-startDate-0, …)
+       • Self Identify: the disability checkbox group, the signature name, the
+         "today" date picker, the language and the ethnicity dropdown
+     Each fill only touches an EMPTY field, so it is safe to run on every page. */
+  function wdInput(sel) { return deepAll(sel, 6).map((el) => (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? el : el.querySelector && el.querySelector('input,textarea')).find((el) => el && isVisible(el)) || null; }
+  function wdSet(sel, val) {
+    if (val == null || String(val).trim() === '') return false;
+    const el = wdInput(sel);
+    if (!el || (el.value || '').trim()) return false;
+    try { el.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(el, String(val));
+    return true;
+  }
+  const wdMonthYear = (y, m) => (y ? String(m || '01').padStart(2, '0') + '/' + String(y) : '');
+  async function workdayFillModernInfo(p) {
+    const first = p.first_name || p.firstName || '', last = p.last_name || p.lastName || '';
+    let n = 0;
+    n += wdSet('[data-automation-id="infoFirstName"]', first);
+    n += wdSet('[data-automation-id="infoLastName"]', last);
+    if (p.preferred_name) n += wdSet('[data-automation-id="infoPreferredName"]', p.preferred_name);
+    n += wdSet('[data-automation-id="infoEmail"]', p.email);
+    n += wdSet('[data-automation-id="infoCellPhone"]', p.phone);
+    n += wdSet('[data-automation-id="infoPhone"]', p.phone);
+    n += wdSet('[data-automation-id="infoLinkedIn"]', p.linkedin_profile_url || p.linkedin);
+    // The public-site address component.
+    const line1 = wdInput('[data-automation-id="public-site-address-address-1"]');
+    if (line1 && !(line1.value || '').trim() && p.address) {
+      try { line1.focus({ preventScroll: true }); } catch (_) {}
+      nativeSet(line1, p.address);
+      // It offers suggestions; the first is the address typed.
+      let item = null;
+      await waitUntil(() => (item = document.querySelector('#public-site-address-address-1-autocomplete-item-0')), 2500, 150);
+      if (item) { triggerMouse(item); realClick(item); await sleep(scaled(600, 300)); }
+      n++;
+    }
+    if (p.address2) n += wdSet('[data-automation-id="public-site-address-address-2"]', p.address2);
+    n += wdSet('[data-automation-id="public-site-address-city"],[data-automation-id="public-site-address-locality"]', p.city);
+    n += wdSet('[data-automation-id="public-site-address-zip"],[data-automation-id="public-site-address-postal-code"]', p.postal_code || p.zip);
+    const stateBox = deepAll('[data-automation-id="public-site-address-us-state-input-base"]', 2).find(isVisible);
+    if (stateBox && p.state && /select/i.test(normLabel(stateBox.textContent))) {
+      try { await selectFromWorkdayDropdown(stateBox.querySelector('button,[role="button"],[role="combobox"]') || stateBox, p.state); n++; } catch (_) {}
+    }
+    if (n) LOG('Workday: newer-layout contact/address fields filled (' + n + ')');
+    return n;
+  }
+  async function workdayFillModernHistory(p) {
+    let n = 0;
+    // Work history, numbered layout: first entry from the profile.
+    // (workdayFillExperience has already pressed "Add" when the section was empty.)
+    const title = p.current_title || p.title || '', company = p.current_company || p.company || '';
+    await waitUntil(() => wdInput('[data-automation-id="workHistoryCompanyName0"]') || !deepAll('[data-automation-id="btnAddWorkHistory"]', 1).length, 1500, 150);
+    n += wdSet('[data-automation-id="workHistoryCompanyName0"]', company);
+    n += wdSet('[data-automation-id="workHistoryPosition0"]', title);
+    n += wdSet('[data-automation-id="txt-workHistory-startDate-0"]', wdMonthYear(p.work_start_year || (new Date().getFullYear() - 2), p.work_start_month));
+    if (!p.currently_working && p.work_end_year) n += wdSet('[data-automation-id="txt-workHistory-endDate-0"]', wdMonthYear(p.work_end_year, p.work_end_month));
+    // Education, numbered layout.
+    n += wdSet('[data-automation-id="educationHistoryName0"]', p.school || p.university);
+    n += wdSet('[data-automation-id="educationHistoryAreaOfStudy0"]', p.major || p.field_of_study);
+    n += wdSet('[data-automation-id="educationHistoryGpa0"]', p.gpa);
+    n += wdSet('[data-automation-id="txt-educationHistory-graduationDate-0"]', wdMonthYear(p.graduation_year || p.grad_year, p.graduation_month || '06'));
+    if (n) LOG('Workday: numbered work/education history filled (' + n + ')');
+    return n;
+  }
+  async function workdayFillSelfIdentify(p) {
+    let n = 0;
+    // Signature: the full name.
+    n += wdSet('[data-automation-id="name"],input[name="name"]', [p.first_name || p.firstName, p.last_name || p.lastName].filter(Boolean).join(' '));
+    // Today's date via Workday's own picker — typing into its three-part date is unreliable.
+    const dateEmpty = deepAll('[data-automation-id="dateSectionMonth-input"],[data-automation-id="dateSectionYear-input"]', 4).some((el) => isVisible(el) && !(el.value || '').trim());
+    const icon = deepAll('[data-automation-id="dateIcon"]', 2).find(isVisible);
+    if (dateEmpty && icon) {
+      realClick(icon);
+      let today = null;
+      await waitUntil(() => (today = document.querySelector('button[data-automation-id="datePickerSelectedToday"]')), 2500, 120);
+      if (today) { realClick(today); n++; await sleep(scaled(400, 200)); }
+    }
+    // Disability, as a checkbox group: the profile's answer, else "do not want to answer".
+    const group = deepAll('[data-automation-id="disabilityStatus-CheckboxGroup"],[data-automation-id="disability"]', 2).find(isVisible);
+    if (group && !group.querySelector('input[type=checkbox]:checked')) {
+      const want = String(p.disability || DEFAULTS.disability || '').toLowerCase();
+      const opts = Array.from(group.querySelectorAll('input[type=checkbox]')).map((cb) => ({ cb, t: normLabel((cb.labels && cb.labels[0] && cb.labels[0].textContent) || cb.closest('[role="cell"],div')?.textContent || '').toLowerCase() }));
+      const pick = (/do not have|^no\b/.test(want) && opts.find((o) => /^no\b|do not have/.test(o.t))) ||
+        opts.find((o) => /do not want|prefer not|decline|choose not/.test(o.t));
+      if (pick) { (isVisible(pick.cb) ? realClick : (el) => el.click())(pick.cb); n++; }
+    }
+    // Language and ethnicity dropdowns where present.
+    const lang = deepAll('button[data-automation-id="language"]', 2).find((b) => isVisible(b) && !b.disabled);
+    if (lang && /select/i.test(normLabel(lang.textContent))) { try { await selectFromWorkdayDropdown(lang, 'English'); n++; } catch (_) {} }
+    const eth = deepAll('button[data-automation-id="ethnicityDropdown"]', 2).find((b) => isVisible(b) && !b.disabled);
+    if (eth && /select/i.test(normLabel(eth.textContent))) { try { await selectFromWorkdayDropdown(eth, p.ethnicity || p.race || 'I do not wish to answer'); n++; } catch (_) {} }
+    if (n) LOG('Workday: self-identify page filled (' + n + ')');
+    return n;
+  }
+
   // SpeedyApply Workday: multi-page navigation with page type detection (enhanced)
   async function workdayMultiPageFlow() {
     const MAX_PAGES = 12;
@@ -6584,9 +6955,14 @@
       await sleep(scaled(1500, 750));
 
       // Detect current page type
+      // The page on SCREEN. Some tenants keep earlier steps mounted but hidden,
+      // and the first marker in the document then named a page long since left.
       let currentPageType = 'unknown';
       for (const pt of pageTypes) {
-        if ($(`[data-automation-id="${pt}"]`)) { currentPageType = pt; break; }
+        if (deepAll(`[data-automation-id="${pt}"]`, 4).some(isVisible)) { currentPageType = pt; break; }
+      }
+      if (currentPageType === 'unknown') {
+        for (const pt of pageTypes) { if ($(`[data-automation-id="${pt}"]`)) { currentPageType = pt; break; } }
       }
       LOG(`Workday multi-page: page ${page} — ${currentPageType}`);
 
@@ -6606,16 +6982,19 @@
         await workdayFillAddress(p);
         await workdayFillSource();
         await workdayFillLinks(p);
+        await workdayFillModernInfo(p);
         await fixPhoneCountryCode();
       } else if (/MyExp/.test(currentPageType)) {
         await workdayFillEducation(p);
         await workdayFillExperience(p);
+        await workdayFillModernHistory(p);
         await workdayFillLanguage(p);
       } else if (/Questions|Supplementary/.test(currentPageType)) {
         await workdayFillQuestions(p);
         await workdayFillLinks(p);
-      } else if (/SelfIdentify|VoluntaryDisclosure/.test(currentPageType)) {
+      } else if (/SelfIdentify|VoluntaryDisclosure|selfIdentification|voluntaryDisclosures/.test(currentPageType)) {
         await workdayFillEEO();
+        await workdayFillSelfIdentify(p);
       } else if (/Review/.test(currentPageType)) {
         const submitBtn = $('button[data-automation-id="btnSubmit"]');
         if (submitBtn && isVisible(submitBtn)) {
@@ -6668,6 +7047,50 @@
   }
 
   // ===================== LEVER AUTOMATION =====================
+  /* ── Lever's location picker (shape ported from NextRaise) ─────────────────
+     Typing the city is not an answer on Lever. The box queries Lever's own
+     location service, and only picking a suggestion writes the hidden
+     selectedLocation field the server checks — without it the application is
+     rejected as "location required" even though the city is plainly typed in.
+     Lever's list carries no ARIA roles, so the generic autocomplete picker
+     never found it. */
+  async function leverLocation(p) {
+    const el = deepAll('input.location-input[name="location"]', 4).find(isVisible);
+    if (!el) return false;
+    const scope = el.closest('.application-field,.application-question,li') || el.parentElement;
+    const hidden = scope && scope.querySelector('input[type="hidden"][name="selectedLocation"]');
+    const picked = () => {
+      if (!hidden) return false;
+      try { const v = JSON.parse(hidden.value || 'null'); return !!(v && (v.name || v.id)); } catch (_) { return !!String(hidden.value || '').trim(); }
+    };
+    if (picked()) return false;
+    const city = String(p.city || '').trim();
+    const queries = [...new Set([locationQuery(p, true), city, locationQuery(p)].filter(Boolean))];
+    for (const q of queries) {
+      try { el.focus({ preventScroll: true }); } catch (_) {}
+      nativeSet(el, q);
+      // Lever searches on key events, not on the value alone.
+      for (const t of ['keydown', 'keyup']) { try { el.dispatchEvent(new KeyboardEvent(t, { key: q.slice(-1), bubbles: true, composed: true })); } catch (_) {} }
+      let rows = [];
+      await waitUntil(() => {
+        const list = scope && scope.querySelector('.dropdown-results');
+        rows = list ? Array.from(list.children).filter((n) => isVisible(n) && /\w/.test(n.textContent || '') && !/no results|searching|loading/i.test(n.textContent || '')) : [];
+        return rows.length > 0;
+      }, 5000, 150);
+      if (!rows.length) continue;
+      const want = (city || q).toLowerCase();
+      const row = rows.find((r) => (r.textContent || '').toLowerCase().startsWith(want)) ||
+        rows.find((r) => (r.textContent || '').toLowerCase().includes(want)) || rows[0];
+      triggerMouse(row);
+      realClick(row);
+      await sleep(scaled(500, 250));
+      if (picked()) { LOG('Lever: location picked from Lever\'s list — "' + normLabel(row.textContent).slice(0, 40) + '"'); return true; }
+    }
+    LOG('Lever: the location could not be picked from Lever\'s list');
+    DIAG('lever.location', 'location not picked from the suggestion list');
+    return false;
+  }
+
   async function leverAutomation() {
     LOG('Lever automation starting...');
     // Lever uses a simple form at /apply
@@ -6702,6 +7125,7 @@
       const inp = $(`input[name="${name}"],textarea[name="${name}"]`);
       if (inp && !inp.value?.trim()) { inp.focus({ preventScroll: true }); nativeSet(inp, val); await sleep(50); }
     }
+    try { await leverLocation(p); } catch (e) { LOG('Lever location error:', e?.message || e); }
 
     // Phase 2: Fill by label matching for custom Lever fields
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -7627,7 +8051,8 @@
      wrong — in its inline error text, in aria-invalid + aria-describedby, and
      in the browser's own constraint validation — so read that, per field, and
      fix what it says. */
-  const FIELD_ERROR_SEL = '.error,.field-error,.error-message,.errorMessage,.validation-error,.invalid-feedback,' +
+  const FIELD_ERROR_SEL = '[data-automation-id="inputError"],[data-automation-id="errorMessage"],' +
+    '.error,.field-error,.error-message,.errorMessage,.validation-error,.invalid-feedback,' +
     '.help-block.with-errors,.field-validation-error,.form-error,.input-error,[class*="error-text" i],[class*="errorText" i],' +
     '[class*="error-message" i],[class*="errorMessage" i],[class*="field-error" i],[class*="fieldError" i],' +
     '[class*="helper-text" i][class*="error" i],[role="alert"],[aria-live="assertive"],[data-error],.Mui-error,.ant-form-item-explain-error';
@@ -7678,12 +8103,21 @@
      phone box came back named "Please enter a valid phone number". */
   function fieldName(el) {
     try {
+      // A radio's own label is its OPTION ("Yes"); the question is the group's.
+      if (el.type === 'radio') { const q = getQuestionForInput(el); if (q && !/^(yes|no)$/i.test(q.trim())) return q; }
       if (el.labels && el.labels.length) {
         const t = Array.from(el.labels).map((l) => { const c = l.cloneNode(true); c.querySelectorAll('input,select,textarea').forEach((x) => x.remove()); return c.textContent; }).join(' ').replace(/\s+/g, ' ').trim();
         if (t) return t;
       }
       const a = (el.getAttribute('aria-label') || '').trim() || textOfIds(el, 'aria-labelledby');
       if (a) return a;
+      // Inside a web component: the label lives in the same shadow root, or on the host.
+      const root = el.getRootNode && el.getRootNode();
+      if (root && root.host) {
+        const l = root.querySelector && root.querySelector('label');
+        const t = (l && l.textContent.trim()) || root.host.getAttribute('label') || root.host.getAttribute('aria-label') || '';
+        if (t) return t;
+      }
       if (el.type === 'radio' || el.type === 'checkbox') { const q = getQuestionForInput(el); if (q) return q; }
     } catch (_) {}
     return String(getLabel(el) || el.name || el.id || '');
@@ -7720,7 +8154,10 @@
       /* Hidden radios and checkboxes count (styled controls hide the real
          input). A hidden FILE input does not: upload widgets keep one that stays
          "required and empty" even after they have uploaded the CV themselves. */
-      .filter((el) => !el.disabled && (isVisible(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && el.closest('label,' + FIELD_CONTAINER_SEL))));
+      // A styled radio/checkbox hides its input, so its LABEL must be what is
+      // visible — not merely present: a later step of the form, still hidden,
+      // is not something to answer yet.
+      .filter((el) => !el.disabled && !isTrapField(el) && (isVisible(el) || isSelect2Native(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && isVisible(el.closest('label') || el.closest(FIELD_CONTAINER_SEL)))));
     for (const el of controls) {
       try {
         // 1. The browser's own verdict — this is what silently blocks a native submit.
@@ -7920,7 +8357,7 @@
       if (what) _errFixStamp.set(e.el, { round: _lastSubmitAt, value: errFieldValue(e.el) });
       LOG(`Form says "${e.label || 'field'}": ${e.message || e.kind}` + (what ? ` → ${what}` : ' → no automatic fix'));
       if (what) fixed++;
-      else DIAG('field.error', (e.label || 'field') + ' — ' + (e.message || e.kind), { kind: e.kind });
+      else DIAG('field.error', (e.label || 'field') + ' — ' + (e.message || e.kind) + ' [' + describeControl(e.el) + ']', { kind: e.kind });
       await sleep(60);
     }
     return fixed;
@@ -8300,6 +8737,34 @@
     }
   }
 
+  /* ── Is this the APPLICATION yet, or still the account wall? (from NextRaise) ──
+     Workday leaves its sign-in dialog mounted after signing in, and some tenants
+     use none of the page ids the account watcher looked for — so "still on the
+     wall" and "applying" were confused both ways: the watcher kept running on
+     the application, and the profile fill ran against the sign-in page (the
+     "keeps re-autofilling, never clicks Sign in" loop). Workday's own markers
+     settle it: a VISIBLE password box means the wall; the step bar naming two
+     or more steps, a step heading, or several Workday form fields mean the
+     application. */
+  const WD_STEP_LABELS = ['my information', 'my experience', 'application questions', 'voluntary disclosures', 'self identify', 'review'];
+  function workdayOnAccountWall() {
+    try { return deepAll('input[type=password]', 6).some(isVisible); } catch (_) { return false; }
+  }
+  function workdayApplicationReady() {
+    try {
+      if (workdayOnAccountWall()) return false;
+      const heads = deepAll('[data-automation-id="pageHeaderTitle"],[data-automation-id="applicationPage"],h1,h2', 30).filter(isVisible);
+      const stepRe = new RegExp('^(' + WD_STEP_LABELS.join('|') + ')$', 'i');
+      if (heads.some((el) => el.getAttribute('data-automation-id') === 'applicationPage' || stepRe.test(normLabel(el.textContent)))) return true;
+      const bar = deepAll('[data-automation-id="progressBar"]', 2).find(isVisible);
+      if (bar) {
+        const t = normLabel(bar.textContent).toLowerCase();
+        if (WD_STEP_LABELS.filter((x) => t.includes(x)).length >= 2) return true;
+      }
+      return deepAll('[data-automation-id^="formField-"]', 20).filter(isVisible).length >= 3;
+    } catch (_) { return false; }
+  }
+
   let _wdLastSubmit = 0;
   let _wdActions = 0;          // total submit/switch actions taken (bounded)
   const WD_MAX_ACTIONS = 10;
@@ -8336,6 +8801,8 @@
     if (emailField && emailField.value !== email) reactTypeValue(emailField, email);
     for (const f of pwFields) if (f.value !== pw) reactTypeValue(f, pw);
     if (onCreate) $$('input[type=checkbox]').filter(isVisible).forEach(c => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+    // Workday's terms box is often a hidden input under a styled label (SpeedyApply ticks it by id).
+    if (onCreate) { const cab = document.querySelector('input[data-automation-id="createAccountCheckbox"]'); if (cab && !cab.checked) { try { cab.click(); } catch (_) {} } }
     if (!submit) return 'working';
 
     const pwOK = pwFields.every(f => f.value === pw) && pw.length >= 8;
@@ -8473,7 +8940,7 @@
       try {
         const pwFields = (typeof $$ === 'function' ? $$('input[type=password]').filter(isVisible) : []);
         // Stop once we're past the account step (My Information / apply flow page shown).
-        if (document.querySelector("[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='contactInformationPage'],[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage']")) {
+        if (document.querySelector("[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='contactInformationPage'],[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage']") || workdayApplicationReady()) {
           markAccountCreated(location.hostname); // confirmed: this tenant now has an account
           clearInterval(iv); LOG('Workday account watcher: account step passed ✓'); return;
         }
@@ -11640,7 +12107,22 @@
     // Guarantee complexity (upper/lower/digit/special, 12+ chars) for ATS rules.
     return 'Jb' + pick(up) + core + pick(dg) + pick(sp);
   }
+  /* A login you saved for THIS site in the Queue Manager (🔐 Site logins) — for
+     an account you made yourself with a different password. Matched on the
+     employer's site, Workday shards folded (accountKeyFor), or a parent domain
+     ("amazon.jobs" covers passport.amazon.jobs). */
+  async function siteLogin() {
+    try {
+      const all = (await st.get('ua_ats_logins')) || {};
+      const k = accountKeyFor(location.hostname);
+      if (all[k] && all[k].email && all[k].password) return all[k];
+      const hit = Object.keys(all).find((key) => key && (k === key || k.endsWith('.' + key)));
+      return hit && all[hit].email && all[hit].password ? all[hit] : null;
+    } catch (_) { return null; }
+  }
   async function getAppPassword() {
+    const site = await siteLogin();
+    if (site) return site.password;
     let pw = await st.get('ua_app_password');
     if (!pw) { pw = generateStrongPassword(); await st.set('ua_app_password', pw); LOG('Generated & saved a reusable ATS account password'); }
     return pw;
@@ -11648,6 +12130,8 @@
   // Lock the email after first use so the SAME credentials are reused for every
   // future account/application (even if the profile email later changes).
   async function getAppEmail() {
+    const site = await siteLogin();
+    if (site) return site.email;
     let e = await st.get('ua_app_email');
     if (!e) { e = ((await getProfile()).email || '').trim(); if (e) await st.set('ua_app_email', e); }
     return e;
@@ -11762,7 +12246,11 @@
      so no other ATS changes behaviour. */
   const IN_APPLICATION_URL_RE = /[?&]from=login\b|\/jobs\/\d+\/[^/?#]+\/(candidate|questions|confirm|submit)\b/i;
   function pastTheApplyStep() {
-    try { return IN_APPLICATION_URL_RE.test(location.pathname + location.search); } catch (_) { return false; }
+    try {
+      if (IN_APPLICATION_URL_RE.test(location.pathname + location.search)) return true;
+      // Amazon: /applicant/… is only ever served to a signed-in candidate.
+      return /(^|\.)amazon\.jobs$/i.test(location.hostname) && /\/applicant\/(jobs\/\d+\/apply|application)/i.test(location.pathname);
+    } catch (_) { return false; }
   }
 
   function looksLikeAuthPage() {
@@ -11894,6 +12382,8 @@
        (…@…oraclecloud.com, …@workflow.mail.<region>.cloud.oracle.com), never from
        the tenant host on screen, so the search has to name those too. */
     if (isOracleCloud()) hosts.push('oraclecloud.com', 'oracle.com');
+    // Amazon's sign-in codes come from amazon.jobs / amazon.com senders.
+    if (/(^|\.)amazon\.jobs$/i.test(location.hostname)) hosts.push('amazon.jobs', 'amazon.com');
     // The employer's own domain too: the mail often comes from the company, not
     // from the ATS that rendered the page.
     const company = pageCompanyName();
@@ -12259,6 +12749,70 @@
     await sleep(300);
     return true;
   }
+  /* ── SmartRecruiters' current one-click form (markers from SpeedyApply 2.28) ──
+     The Spark form's fields are web components with their own shadow roots and
+     ids like #first-name-input; the location is an spl-autocomplete whose
+     options live in ITS shadow root; the phone is an spl-phone-field with a
+     country picker; the actions carry data-test="footer-next" / "footer-submit";
+     a rejected step shows spl-toast[variant="error"]. */
+  function srShadowInput(hostSel) {
+    const host = deepAll(hostSel, 2)[0];
+    if (!host) return null;
+    const sr = host.shadowRoot;
+    return (sr && (sr.querySelector('input,textarea') ||
+      (sr.querySelector('spl-input') && sr.querySelector('spl-input').shadowRoot && sr.querySelector('spl-input').shadowRoot.querySelector('input')))) || host.querySelector && host.querySelector('input,textarea') || null;
+  }
+  function srSet(hostSel, val) {
+    if (!val) return false;
+    const inp = srShadowInput(hostSel);
+    if (!inp || (inp.value || '').trim()) return false;
+    try { inp.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(inp, String(val));
+    return true;
+  }
+  async function srLocation(p) {
+    const host = deepAll("[data-test='personal-info-location'] spl-autocomplete", 2)[0];
+    if (!host || !host.shadowRoot) return false;
+    const field = host.shadowRoot.querySelector('spl-internal-form-field spl-input');
+    const inp = field && field.shadowRoot && field.shadowRoot.querySelector('input');
+    if (!inp || (inp.value || '').trim()) return false;
+    const q = locationQuery(p, true) || p.city;
+    if (!q) return false;
+    nativeSet(inp, q);
+    let opt = null, manual = null;
+    await waitUntil(() => {
+      manual = host.shadowRoot.querySelector("div[slot='menu'] spl-select-option[value='goToManualLocationMode']");
+      opt = host.shadowRoot.querySelector("div[slot='menu'] spl-select-option:not([value='goToManualLocationMode']) .c-spl-autocomplete-default-option, div[slot='menu'] spl-select-option:not([value='goToManualLocationMode']) spl-typography-body");
+      return !!(opt || manual);
+    }, 5000, 150);
+    if (!opt) { LOG('SmartRecruiters: no location suggestion for "' + q + '"'); return false; }
+    triggerMouse(opt); realClick(opt);
+    await sleep(scaled(400, 200));
+    LOG('SmartRecruiters: location picked from the suggestions');
+    return true;
+  }
+  async function srPhone(p) {
+    const host = deepAll('spl-phone-field', 2)[0];
+    if (!host || !host.shadowRoot || !p.phone) return false;
+    const country = p.country || DEFAULTS.country;
+    const opt = host.shadowRoot.querySelector(`spl-select-option[label='${CSS.escape(country)}'] div`) ||
+      Array.from(host.shadowRoot.querySelectorAll('spl-select-option')).find((o) => (o.getAttribute('label') || '').toLowerCase() === country.toLowerCase());
+    if (opt) { triggerMouse(opt); realClick(opt); await sleep(200); }
+    const si = host.shadowRoot.querySelector('spl-input');
+    const inp = si && si.shadowRoot && si.shadowRoot.querySelector('input');
+    if (!inp || (inp.value || '').trim()) return false;
+    // The picker carries the code; the box takes the local number.
+    // (inside the shadow root the picker is not a DOM neighbour, so strip the code here)
+    const v = phoneVariants(p.phone, p, '');
+    const local = (v.find((x) => /^0/.test(x)) || String(p.phone)).replace(/^0/, '');
+    nativeSet(inp, local);
+    return true;
+  }
+  function srErrorToast() {
+    const t = deepAll("spl-toast[variant='error']", 3).find(isVisible);
+    return t ? normLabel((t.shadowRoot && t.shadowRoot.textContent) || t.textContent || '').slice(0, 160) : '';
+  }
+
   async function smartRecruitersAutomation() {
     LOG('SmartRecruiters automation starting (shadow-aware)...');
     const p = await getProfile();
@@ -12326,6 +12880,21 @@
         }
       }
 
+      // The current one-click form's ids (SpeedyApply 2.28).
+      srSet('#first-name-input', byName.firstName);
+      srSet('#last-name-input', byName.lastName);
+      srSet('#email-input', byName.email);
+      srSet('#confirm-email-input', byName.email);
+      srSet('#linkedin-input', p.linkedin_profile_url || p.linkedin);
+      srSet('#website-input', p.website_url || p.website);
+      try { await srLocation(p); } catch (_) {}
+      try { await srPhone(p); } catch (_) {}
+      // The consent box on the screening step.
+      for (const box of deepAll("[data-test='consent-box'] spl-checkbox", 4)) {
+        const cb = box.shadowRoot && box.shadowRoot.querySelector('input[type=checkbox]');
+        if (cb && !cb.checked) { cb.click(); await sleep(120); }
+      }
+
       // Location typeahead needs its suggestion committed, or SmartRecruiters
       // rejects the step with "Please select a location from the list".
       if (loc) {
@@ -12386,10 +12955,13 @@
       // résumé attached, or drops the one that was in flight.
       if (resumeUploadInFlight()) { LOG('SmartRecruiters: waiting for the CV upload to finish'); await waitForResumeUpload(25000); }
 
-      // Advance. Text-matched so it survives SmartRecruiters renaming its test ids.
+      // Advance. SmartRecruiters' own data-test markers first, text as the fallback.
       const buttons = deepQueryAll('button,spl-button,[role="button"]').filter(isVisible);
       const nameOf = b => (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-      const submit = findSubmitControl() || buttons.find(b => isSubmitLabel(nameOf(b)));
+      const enabledEl = (el) => el && isVisible(el) && !el.disabled && !el.hasAttribute('disabled') && el.getAttribute('aria-disabled') !== 'true';
+      const dtSubmit = deepAll("[data-test='footer-submit']", 2).find(enabledEl);
+      const dtNext = deepAll("[data-test='footer-next']", 2).find(enabledEl);
+      const submit = dtSubmit || findSubmitControl() || buttons.find(b => isSubmitLabel(nameOf(b)));
       if (submit) {
         LOG('SmartRecruiters: submitting via "' + controlLabel(submit) + '"');
         realClick(submit);
@@ -12398,7 +12970,7 @@
         await resolveBlockingDialog();
         break;
       }
-      const next = buttons.find(b => /^\s*(next|continue|save (and|&) continue|proceed|review)\b/i.test(nameOf(b)));
+      const next = dtNext || buttons.find(b => /^\s*(next|continue|save (and|&) continue|proceed|review)\b/i.test(nameOf(b)));
       if (next) {
         LOG('SmartRecruiters: next step');
         realClick(next);
@@ -12412,7 +12984,9 @@
           LOG('SmartRecruiters: the step will not advance after two attempts — handing over instead of re-filling it');
           break;
         }
-        LOG('SmartRecruiters: step did not advance — fixing what is blocking it');
+        const toast = srErrorToast();
+        LOG('SmartRecruiters: step did not advance — ' + (toast ? 'the form says: "' + toast + '"' : 'fixing what is blocking it'));
+        if (toast) DIAG('sr.step-error', toast);
         await resolveBlockingDialog();
         await handleValidationErrors();
         await guaranteeRequiredFields();
@@ -12720,6 +13294,90 @@
     LOG('ADP myjobs automation complete');
   }
 
+  /* ── Amazon Jobs (amazon.jobs) ──────────────────────────────────────────────
+     Amazon runs its own careers system, and most of a daily CSV can be amazon.jobs
+     links, so it gets its own driver instead of the generic path:
+       www.amazon.jobs/<lang>/jobs/<id>/<slug>     the posting — "Apply now"
+       passport.amazon.jobs / account sign-in      email → password or emailed code
+       www.amazon.jobs/applicant/jobs/<id>/apply   the application, several steps
+     "Apply now" opens a NEW tab on Amazon's page; that would pull the run (and
+     you) into another tab, so the link is followed in this one. Already-applied
+     and closed postings are caught before this runs (FAILURE_TEXT_RE). */
+  const AMAZON_APPLY_PATH_RE = /\/applicant\/(jobs\/\d+\/apply|application)/i;
+  function isAmazonJobs() { try { return /(^|\.)amazon\.jobs$/i.test(location.hostname); } catch (_) { return false; } }
+  async function amazonJobsAutomation() {
+    LOG('Amazon Jobs automation starting (' + location.hostname + location.pathname.slice(0, 40) + ')');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+    await dismissCookieBanner();
+
+    // The posting → the application, in this tab.
+    if (!AMAZON_APPLY_PATH_RE.test(location.pathname) && !looksLikeAuthPage() && !hasApplicationForm()) {
+      const link = deepAll('a#apply-button,a.apply-button,a[href*="/applicant/jobs/"],button#apply-button', 10).find(isVisible) ||
+        deepAll('a,button,[role="button"]', 200).filter(isVisible).find((b) => /^(apply now|apply)$/i.test(normLabel(b.textContent)));
+      if (!link) { LOG('Amazon: no "Apply now" on this page'); return; }
+      const href = link.tagName === 'A' ? link.getAttribute('href') : '';
+      LOG('Amazon: opening the application in this tab');
+      const before = stepSignature();
+      if (href && !/^javascript:/i.test(href)) {
+        try { location.assign(new URL(href, location.href).href); } catch (_) { realClick(link); }
+      } else {
+        if (link.target === '_blank') link.target = '_self';
+        realClick(link);
+      }
+      noteProgress('clicked Apply');
+      await waitForStepChange(before, 15000);
+      if (!AMAZON_APPLY_PATH_RE.test(location.pathname) && !looksLikeAuthPage()) return;   // navigating; the next page picks up
+    }
+
+    // Sign-in / create account (email-first; a code may be emailed).
+    for (let i = 0; i < 3 && looksLikeAuthPage(); i++) {
+      await handleAccountAuth();
+      if (detectEmailVerificationWall()) await resolveEmailVerification(120000);
+      await waitForFormStable(2000);
+    }
+    if (looksLikeAuthPage()) { LOG('Amazon: still on the sign-in step'); DIAG('amazon.auth.stuck', 'still signing in'); return; }
+
+    // The application: a train of steps with one primary action each.
+    let stuck = 0;
+    for (let step = 1; step <= 15; step++) {
+      if (autoStopped()) break;
+      if (checkSuccess()) { LOG('Amazon: application submitted'); break; }
+      await resolveBlockingDialog();
+      if (detectCaptcha()) await waitForCaptchaClear();
+      await waitForFormStable(2500);
+      const sig = stepSignature();
+      LOG('Amazon: step ' + step);
+      const cv = await attachResume();
+      if (cv === 'no-resume') LOG('Amazon: no résumé saved — a résumé step will not pass');
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+      if (resumeUploadInFlight()) await waitForResumeUpload(25000);
+      const action = await autoSubmitOrNext();
+      if (action === 'submitted') {
+        await sleep(scaled(3000, 1500));
+        if (confirmSubmitted() || checkSuccess()) { LOG('Amazon: submission confirmed'); break; }
+        continue;
+      }
+      if (action === 'next_page' && await waitForStepChange(sig, 15000)) { stuck = 0; continue; }
+      // Amazon's own wording, when the shared finder found nothing to press.
+      const btn = deepAll('button,[role="button"],input[type=submit]', 150).filter((b) => isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+        .find((b) => /^(continue|save and continue|next|review|submit application|submit)\b/i.test(normLabel(b.textContent || b.value || '')));
+      if (btn) {
+        LOG('Amazon: "' + controlLabel(btn).slice(0, 30) + '"');
+        await clearOverSubmit(btn);
+        realClick(btn);
+        if (isSubmitLabel(controlLabel(btn))) markSubmitAttempt();
+        if (await waitForStepChange(sig, 15000)) { stuck = 0; continue; }
+      }
+      if (++stuck >= 2) { LOG('Amazon: the step will not advance — ' + (remainingErrorSummary() || 'no message on the page')); break; }
+    }
+    learnFromFilledFields();
+    LOG('Amazon Jobs automation complete');
+  }
+
   // ===================== ATS DISPATCHER =====================
   async function dispatchATSAutomation() {
     if (autoStopped()) { LOG(`dispatchATSAutomation: not running (${window.__uaAutoReason ? window.__uaAutoReason() : 'automation off'})`); return; }
@@ -12755,6 +13413,7 @@
        confident evidence; the fingerprint fills in the rest. */
     const platform = detectATS();
     if (isWorkday() || platform === 'Workday') await workdayAutomation();
+    else if (isAmazonJobs() || platform === 'Amazon Jobs') await amazonJobsAutomation();
     else if (/greenhouse\.io|boards\.greenhouse/i.test(url) || platform === 'Greenhouse' || platform === 'Greenhouse EU') await greenhouseAutomation();
     else if (/lever\.co|jobs\.lever/i.test(url) || platform === 'Lever') await leverAutomation();
     else if (/icims\.com/i.test(url) || platform === 'iCIMS') await icimsAutomation();
@@ -13546,6 +14205,12 @@ Result: Shipped my first production change in week three and my notes doc became
      its hundred callers, and nothing here can see it. */
   function nativeSet(el, val) {
     if (!el || el.disabled || el.readOnly) return false;
+    // Never a bot-trap field (same rule as the main setter's isTrapField).
+    try {
+      const corpus = [el.name, el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+        el.labels && el.labels.length ? Array.from(el.labels).map((l) => l.textContent).join(' ') : ''].filter(Boolean).join(' ');
+      if (/\bhoney[\s_-]*pot\b|\bbot[\s_-]*(?:field|trap|check)\b|\bspam[\s_-]*(?:trap|check)\b|\bleave\s+(?:this\s+)?(?:field|input|box)?\s*(?:blank|empty)\b|\bif\s+you\s+are\s+(?:a\s+)?human\b/i.test(corpus)) return false;
+    } catch (_) {}
     try {
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;

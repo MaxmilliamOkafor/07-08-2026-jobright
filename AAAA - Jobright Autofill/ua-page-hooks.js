@@ -316,4 +316,29 @@
       },
     });
   } catch (_) {}
+
+  /* ── A script-opened tab into the APPLICATION stays in this tab ─────────────
+     Some "Apply now" buttons call window.open() instead of being a link (so the
+     content script's target="_self" fix never sees them). During an automated
+     run that would open the application in a second tab — the run loses it, and
+     you get pulled into a tab you did not open. Only routes that ARE the
+     application or its sign-in are kept in place; anything else (a privacy
+     policy, a help page) opens as the site intended, because following it here
+     would navigate away from a half-filled form. Outside a run: untouched. */
+  try {
+    const origOpen = window.open;
+    const APPLY_ROUTE_RE = /\/(apply|applicant|application|candidate|careers?\/apply|jobs?\/[^?#]*\/apply|signin|sign-in|login|register|account\/(login|create))\b|[?&](apply|gh_jid)=/i;
+    window.open = function (url, target, features) {
+      try {
+        if (automating() && url && (!target || target === '_blank')) {
+          const u = new URL(String(url), location.href);
+          if (/^https?:$/.test(u.protocol) && APPLY_ROUTE_RE.test(u.pathname + u.search)) {
+            location.assign(u.href);
+            return window;
+          }
+        }
+      } catch (_) {}
+      return origOpen.apply(this, arguments);
+    };
+  } catch (_) {}
 })();

@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Platform Engineer at Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto 260px} .f,.application-field{margin:14px 0} label{display:block;font-weight:600}
+input[type=text],input[type=email],input[type=tel],select,textarea{width:100%;padding:6px}
+.select2-hidden-accessible{border:0!important;clip:rect(0 0 0 0)!important;height:1px!important;margin:-1px!important;overflow:hidden!important;padding:0!important;position:absolute!important;width:1px!important}
+.select2-container{display:block;border:1px solid #aaa;padding:6px;cursor:pointer}
+.dropdown-results div{padding:4px;cursor:pointer} .dropdown-results div:hover{background:#eee}
+.hp{position:absolute;left:-5000px}
+#onetrust-banner-sdk{position:fixed;left:0;right:0;bottom:0;height:220px;background:#222;color:#fff;padding:20px;z-index:99}
+</style></head><body>
+<h1>Platform Engineer</h1><div class="company">Acme Corp</div>
+<form id="application_form" novalidate onsubmit="return window.__validate(event)">
+  <div class="f"><label for="first_name">First Name *</label><input type="text" id="first_name" name="first_name" required></div>
+  <div class="f"><label for="last_name">Last Name *</label><input type="text" id="last_name" name="last_name" required></div>
+  <div class="f"><label for="email">Email *</label><input type="email" id="email" name="email" required></div>
+  <!-- An international phone widget that arrives holding only the dialling code. -->
+  <div class="f"><label for="phone">Phone *</label><input type="tel" id="phone" name="phone" value="+353" required></div>
+  <!-- A honeypot: no human should fill this. -->
+  <div class="f"><label for="website_url_hp">Website (leave this field blank if you are human)</label><input type="text" id="website_url_hp" name="website_url_hp" tabindex="-1" autocomplete="off"></div>
+  <!-- select2: the real select is hidden; a styled box sits beside it. -->
+  <div class="f"><label for="s2_country">Country of residence *</label>
+    <select id="s2_country" name="s2_country" class="select2-hidden-accessible" required tabindex="-1" aria-hidden="true">
+      <option value=""></option><option value="IE">Ireland</option><option value="GB">United Kingdom</option><option value="US">United States</option></select>
+    <span class="select2 select2-container" id="s2_box"><span class="select2-selection" role="combobox"><span class="select2-selection__rendered" id="s2_rendered">Select a country</span></span></span></div>
+  <!-- Lever's location picker: typing is not enough, a suggestion must be picked. -->
+  <div class="application-field"><label for="loc">Current location *</label>
+    <input type="text" class="location-input" name="location" id="loc" autocomplete="off" required>
+    <input type="hidden" name="selectedLocation" id="selLoc" value="">
+    <div class="dropdown-container"><div class="dropdown-results" id="locResults"></div></div></div>
+  <div class="f"><label for="resume">Resume/CV *</label><input type="file" id="resume" name="resume" required></div>
+  <div class="f"><label><input type="checkbox" id="consent" name="consent" required> I consent to Acme processing my personal data in accordance with the privacy policy *</label></div>
+  <div style="height:500px"></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<div id="onetrust-banner-sdk" hidden>We use cookies to improve your experience. <button type="button" id="onetrust-accept-btn-handler" onclick="document.getElementById('onetrust-banner-sdk').remove()">Accept All Cookies</button></div>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
+  // select2 redraws from the hidden select's change event, as the real library does.
+  const s2 = document.getElementById('s2_country');
+  s2.addEventListener('change', () => { document.getElementById('s2_rendered').textContent = s2.value ? s2.options[s2.selectedIndex].text : 'Select a country'; });
+  // Lever: suggestions appear after typing; only a click sets selectedLocation.
+  const loc = document.getElementById('loc'), res = document.getElementById('locResults');
+  let t = null;
+  const search = () => { clearTimeout(t); t = setTimeout(() => {
+    const q = loc.value.trim().toLowerCase(); res.innerHTML = '';
+    if (q.length < 2) return;
+    for (const name of ['London, England, United Kingdom', 'Londonderry, Northern Ireland', 'London, Ontario, Canada', 'Dublin, Ireland']) {
+      if (!name.toLowerCase().includes(q.split(',')[0])) continue;
+      const d = document.createElement('div'); d.className = 'dropdown-location'; d.textContent = name;
+      d.addEventListener('click', () => { loc.value = name; document.getElementById('selLoc').value = JSON.stringify({ name }); res.innerHTML = ''; });
+      res.appendChild(d);
+    }
+  }, 300); };
+  loc.addEventListener('keyup', search);
+  loc.addEventListener('input', () => { document.getElementById('selLoc').value = ''; });
+  document.getElementById('consent').addEventListener('change', () => { const b = document.getElementById('onetrust-banner-sdk'); if (b) setTimeout(() => { b.hidden = false; }, 1500); });
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('application_form');
+    window.__spam = !!document.getElementById('website_url_hp').value;
+    const _b = document.getElementById('onetrust-banner-sdk'); window.__blockedByBanner = !!(_b && !_b.hidden);
+    const ok = !window.__spam && !window.__blockedByBanner && document.getElementById('phone').value.replace(/\D/g, '').length >= 9 &&
+      s2.value && document.getElementById('selLoc').value && document.getElementById('consent').checked;
+    if (!ok) return false;
+    const fd = new FormData(f); const out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+    return false;
+  };
+</script>
+</body></html>
