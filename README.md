@@ -3188,6 +3188,20 @@ Jobright's "0 remaining Autofill credits" box on every page.
 
 ---
 
+## v17.15 — LinkedIn recruiter follow-up removed
+
+The "📨 Recruiter Follow-up" box that appeared on LinkedIn job and profile pages is
+gone. It queued every submitted application and, with Auto-send ticked, messaged a
+recruiter or hiring manager on LinkedIn — against LinkedIn's terms, and it named
+Greenhouse's new boards as the company "Job Boards". It was never part of applying.
+
+Removed with it: the follow-up queue written after each application, and the
+capture of Jobright's "Insider Connections" that only fed it. The service worker
+clears the data it left behind (queue, sent log, template, settings) on the next
+extension update/reload. Nothing else changes; applying works exactly as before.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

@@ -2470,16 +2470,11 @@ console.log('audit: page-derived text never reaches the DOM as markup');
   const resp = src.slice(src.indexOf('respList.innerHTML = filtered.map('), src.indexOf('respList.innerHTML = filtered.map(') + 1500);
   eq('saved-response keywords are escaped', resp.includes("${escHtml((r.keywords || []).join(', '))}"), true);
   eq('and so is the response text', resp.includes("${escHtml((r.response || '').slice(0, 120))}"), true);
-  /* The follow-up panel renders company, role and a scraped contact name on
-     linkedin.com — all from pages. */
-  const rp = body('renderPanel');
-  eq('the follow-up panel escapes the company and role', /'\+ esc\(line\) \+'|\+ esc\(line\) \+/.test(rp), true);
-  eq('and the contact label', /\+ esc\(label\) \+/.test(rp), true);
-  eq('and the title attribute', /title="' \+ esc\(/.test(rp), true);
-  // The escaper itself, run for real.
-  const esc = new Function('return ' + (src.match(/const esc = (\(v\) => String[\s\S]*?\[ch\]\)\);)/) || [])[1])();
-  eq('the escaper neutralises a tag', esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
-  eq('and both quote styles, so an attribute cannot be broken out of', esc(`"'`), '&quot;&#39;');
+  /* The LinkedIn recruiter follow-up (which auto-messaged people on linkedin.com)
+     was removed in v17.15 — nothing of it may come back. */
+  eq('the LinkedIn follow-up module is gone', /UA-LinkedIn|Recruiter Follow-up|ua-li-followup/.test(src), false);
+  eq('applications no longer queue LinkedIn follow-ups', /enqueueFollowUp|stashInsidersFromJobright|ua_followup_queue/.test(src), false);
+  eq('and the worker clears what it left in storage', /dropRemovedLinkedInFollowUp/.test(orch) && /'ua_followup_queue'/.test(orch), true);
 }
 {
   /* The Queue Manager is an extension page: an injection there runs with the
