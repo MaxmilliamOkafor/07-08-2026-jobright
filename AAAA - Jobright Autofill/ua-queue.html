@@ -72,6 +72,12 @@
   .dlg-bar{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
   .row-count{font-size:10px;color:#64748b;padding:0 14px 8px}
   #diagDlg{max-width:min(920px,96vw)}
+  #qDlg,#loginDlg{max-width:min(760px,96vw)}
+  .dlg-list{max-height:min(55vh,460px);overflow:auto;margin:8px 0}
+  .dlg-row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
+  .dlg-row .q{flex:1 1 100%;font-size:12px;color:#e2e8f0}
+  .dlg-row .meta{font-size:10.5px;color:#94a3b8}
+  .dlg-row input[type=text],.dlg-row input[type=email],.dlg-row input[type=password]{flex:1;min-width:120px}
   #diagDlg textarea{min-height:min(60vh,520px);font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;overflow-wrap:normal;overflow-x:auto}
   .dlg-note{font-size:11px;color:#94a3b8;margin:0 0 9px;line-height:1.45}
 </style>
@@ -107,6 +113,8 @@
     <button id="btnExport">⬇ Export</button>
     <button id="btnCopyFails" title="Copy every failure, with its reason, to the clipboard">⚠ Copy failures</button>
     <button id="btnDiag" title="Everything the recorder has seen across every ATS — outcomes, reasons, and the questions that could not be answered">🩺 Diagnostics</button>
+    <button id="btnQuestions" title="Required questions the autofill had no answer for. Answer each once — every future application that asks it is filled automatically.">❓ Questions to answer</button>
+    <button id="btnLogins" title="A login for a particular employer's site — for a Workday (or other) account you created yourself with a different password">🔐 Site logins</button>
     <button id="btnRetry">↻ Retry failed</button>
     <button id="btnClearDone">Clear done</button>
     <button id="btnClearAll">Clear all</button>
@@ -179,6 +187,30 @@
       <button class="b-accent" id="diagCopy">Copy all</button>
       <button id="diagClose">Close</button>
     </div>
+  </dialog>
+
+  <dialog id="qDlg">
+    <h2>❓ Questions to answer</h2>
+    <p class="dlg-note">Required questions the autofill had no answer for, most frequent first.
+      Answer one once and every future application that asks it is filled with your answer —
+      it counts as your own, so it is never second-guessed. Answers stay on this computer.</p>
+    <div id="qList" class="dlg-list"></div>
+    <div class="dlg-bar"><button id="qClose">Close</button></div>
+  </dialog>
+
+  <dialog id="loginDlg">
+    <h2>🔐 Site logins</h2>
+    <p class="dlg-note">Every ATS account is normally created and signed into with one shared email and password.
+      If you already have an account on an employer's site with a different password — common on Workday —
+      add it here and the automation uses it on that site only. Stored on this computer only; passwords are never shown again.</p>
+    <div id="loginList" class="dlg-list"></div>
+    <div class="dlg-row">
+      <input type="text" id="loginSite" placeholder="Site, e.g. nxp.wd3.myworkdayjobs.com" style="flex:2">
+      <input type="email" id="loginEmail" placeholder="Email" style="flex:2">
+      <input type="password" id="loginPass" placeholder="Password" autocomplete="new-password" style="flex:1.5">
+      <button class="b-accent" id="loginAdd">Save</button>
+    </div>
+    <div class="dlg-bar"><button id="loginClose">Close</button></div>
   </dialog>
 
   <script src="ua-queue.js"></script>

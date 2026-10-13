@@ -553,6 +553,125 @@
   $('btnExport').addEventListener('click', exportCsv);
   $('btnCopyFails').addEventListener('click', copyFailures);
   $('btnDiag').addEventListener('click', extractDiagnostics);
+  /* ── QUESTIONS TO ANSWER (the idea behind LazyApply's question bank) ───────
+     The recorder keeps every required question the autofill had no answer for
+     (ua_diag_q). Answering one here writes it into the same three stores a
+     question you answer on a live form goes into — the saved-response bank, the
+     exact answer bank, and the "you gave this one" list — so the next application
+     that asks it is filled with your answer and the knockout guard leaves it be.
+     Built with DOM nodes, never innerHTML: question text comes from web pages. */
+  const normKey = (q) => String(q || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const qKeywords = (q) => String(q || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter((w) => w.length > 2).slice(0, 12);
+  async function saveQuestionAnswer(question, answer) {
+    question = String(question || '').replace(/\s+/g, ' ').trim();
+    answer = String(answer || '').trim();
+    if (!question || !answer) return false;
+    const key = normKey(question);
+    const bank = (await get('ua_answers')) || {};
+    bank[key] = answer;
+    const manual = (await get('ua_manual_answer_keys')) || {};
+    manual[key] = Date.now();
+    const saved = (await get('ua_saved_responses')) || [];
+    const kws = qKeywords(question);
+    if (kws.length >= 2) {
+      const sig = kws.slice().sort().join('|');
+      const hit = saved.find((r) => (r.keywords || []).slice().sort().join('|') === sig);
+      if (hit) { hit.response = answer; hit.manual = true; delete hit.seeded; hit.updatedAt = Date.now(); }
+      else saved.push({ keywords: kws, response: answer, manual: true, appearances: 1, createdAt: Date.now(), updatedAt: Date.now() });
+    }
+    await set({ ua_answers: bank, ua_manual_answer_keys: manual, ua_saved_responses: saved });
+    return true;
+  }
+  async function renderQuestions() {
+    const list = $('qList');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    const qs = (await get('ua_diag_q')) || {};
+    const rows = Object.keys(qs).map((k) => {
+      const i = k.indexOf('|');
+      return { key: k, ats: k.slice(0, i), label: k.slice(i + 1), n: qs[k].n || 0, kind: qs[k].kind || '' };
+    }).sort((a, b) => b.n - a.n);
+    if (!rows.length) {
+      const p = document.createElement('p'); p.className = 'dlg-note';
+      p.textContent = 'Nothing waiting — no unanswered required questions recorded yet. Run a batch and come back.';
+      list.appendChild(p); return;
+    }
+    for (const r of rows.slice(0, 80)) {
+      const row = document.createElement('div'); row.className = 'dlg-row';
+      const q = document.createElement('div'); q.className = 'q'; q.textContent = r.label;
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = `${r.n}× · ${r.ats}${r.kind ? ' · ' + r.kind : ''}`;
+      const input = document.createElement('input'); input.type = 'text'; input.placeholder = 'Your answer (e.g. Yes, No, 5, Dublin…)';
+      const save = document.createElement('button'); save.className = 'b-accent'; save.textContent = 'Save';
+      const skip = document.createElement('button'); skip.textContent = 'Dismiss'; skip.title = 'Remove from this list without answering';
+      const done = async (answered) => {
+        const all = (await get('ua_diag_q')) || {};
+        delete all[r.key];
+        await set({ ua_diag_q: all });
+        row.remove();
+        log(answered ? `Saved your answer to "${r.label.slice(0, 60)}" — it will be used from now on` : `Dismissed "${r.label.slice(0, 60)}"`, answered ? 'ok' : '');
+      };
+      save.addEventListener('click', async () => { if (await saveQuestionAnswer(r.label, input.value)) await done(true); else input.focus(); });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save.click(); });
+      skip.addEventListener('click', () => done(false));
+      row.append(q, meta, input, save, skip);
+      list.appendChild(row);
+    }
+  }
+  $('btnQuestions').addEventListener('click', async () => {
+    await renderQuestions();
+    try { $('qDlg').showModal(); } catch (_) { $('qDlg').setAttribute('open', ''); }
+  });
+  $('qClose').addEventListener('click', () => $('qDlg').close());
+
+  /* ── SITE LOGINS (the idea behind LazyApply's per-ATS credentials) ─────────
+     One shared email/password creates and signs into every ATS account. Where
+     you already have an account with a different password — common on Workday —
+     that sign-in fails and the job stalls. A login saved here is used on that
+     site only. The key is the employer's site with Workday's wd1/wd3/… shard and
+     myworkdaysite/myworkdayjobs differences folded, as the account record is. */
+  const siteKey = (input) => {
+    let h = String(input || '').trim().toLowerCase();
+    try { if (/^https?:\/\//.test(h)) h = new URL(h).hostname; } catch (_) {}
+    h = h.replace(/^www\./, '').replace(/\/.*$/, '');
+    h = h.replace(/\.wd\d+\./, '.').replace(/\.myworkdaysite\.com$/, '.myworkdayjobs.com');
+    return h;
+  };
+  async function renderLogins() {
+    const list = $('loginList');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    const logins = (await get('ua_ats_logins')) || {};
+    const keys = Object.keys(logins).sort();
+    if (!keys.length) {
+      const p = document.createElement('p'); p.className = 'dlg-note'; p.textContent = 'No site logins saved — the shared account details are used everywhere.';
+      list.appendChild(p); return;
+    }
+    for (const k of keys) {
+      const row = document.createElement('div'); row.className = 'dlg-row';
+      const q = document.createElement('div'); q.className = 'q'; q.textContent = k;
+      const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = (logins[k].email || '') + ' · password saved';
+      const del = document.createElement('button'); del.textContent = 'Remove';
+      del.addEventListener('click', async () => {
+        const all = (await get('ua_ats_logins')) || {}; delete all[k]; await set({ ua_ats_logins: all }); renderLogins();
+      });
+      row.append(q, meta, del); list.appendChild(row);
+    }
+  }
+  $('btnLogins').addEventListener('click', async () => {
+    await renderLogins();
+    try { $('loginDlg').showModal(); } catch (_) { $('loginDlg').setAttribute('open', ''); }
+  });
+  $('loginAdd').addEventListener('click', async () => {
+    const k = siteKey($('loginSite').value), email = $('loginEmail').value.trim(), pw = $('loginPass').value;
+    if (!k || !/\./.test(k) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !pw) { log('Site login needs a site, a valid email and a password', 'err'); return; }
+    const all = (await get('ua_ats_logins')) || {};
+    all[k] = { email, password: pw, savedAt: Date.now() };
+    await set({ ua_ats_logins: all });
+    $('loginSite').value = ''; $('loginEmail').value = ''; $('loginPass').value = '';
+    log(`Login saved for ${k}`, 'ok');
+    renderLogins();
+  });
+  $('loginClose').addEventListener('click', () => $('loginDlg').close());
+
   $('diagDownload').addEventListener('click', downloadDiagnostics);
   $('diagClose').addEventListener('click', () => { try { $('diagDlg').close(); } catch (_) { $('diagDlg').removeAttribute('open'); } });
   $('diagCopy').addEventListener('click', () => {

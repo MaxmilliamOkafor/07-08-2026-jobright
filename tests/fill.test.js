@@ -2921,6 +2921,28 @@ console.log('v17.9 — Amazon Jobs, Workday newer layouts, SmartRecruiters marke
   eq('Amazon\'s sign-in codes are searched for in Amazon\'s mail', /hosts\.push\('amazon\.jobs', 'amazon\.com'\)/.test(src), true);
 }
 
+/* ── 65. v17.10: LazyApply's ideas — answer a question once, logins per site ── */
+console.log('v17.10 — site logins and the question bank');
+{
+  const sl = {};
+  const run = (store, host) => new Function('store', 'host', `
+    const location = { hostname: host };
+    const st = { get: async (k) => store[k] };
+    ${body('accountKeyFor')}
+    ${body('siteLogin')}
+    return siteLogin();
+  `)(store, host);
+  (async () => {
+    const store = { ua_ats_logins: { 'nxp.myworkdayjobs.com': { email: 'me@x.com', password: 'p1' }, 'amazon.jobs': { email: 'a@x.com', password: 'p2' } } };
+    eq('a login saved for a Workday tenant is used on any of its shards', (await run(store, 'nxp.wd3.myworkdayjobs.com') || {}).password, 'p1');
+    eq('a parent-domain login covers its sign-in host', (await run(store, 'passport.amazon.jobs') || {}).password, 'p2');
+    eq('other sites keep the shared account', await run(store, 'ciena.wd5.myworkdayjobs.com'), null);
+  })();
+  eq('the account steps use a site login first', /const site = await siteLogin\(\);\n\s*if \(site\) return site\.password;/.test(src) && /const site = await siteLogin\(\);\n\s*if \(site\) return site\.email;/.test(src), true);
+}
 
+
+setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+}, 50);

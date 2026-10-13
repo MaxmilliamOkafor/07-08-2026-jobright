@@ -12107,7 +12107,22 @@
     // Guarantee complexity (upper/lower/digit/special, 12+ chars) for ATS rules.
     return 'Jb' + pick(up) + core + pick(dg) + pick(sp);
   }
+  /* A login you saved for THIS site in the Queue Manager (🔐 Site logins) — for
+     an account you made yourself with a different password. Matched on the
+     employer's site, Workday shards folded (accountKeyFor), or a parent domain
+     ("amazon.jobs" covers passport.amazon.jobs). */
+  async function siteLogin() {
+    try {
+      const all = (await st.get('ua_ats_logins')) || {};
+      const k = accountKeyFor(location.hostname);
+      if (all[k] && all[k].email && all[k].password) return all[k];
+      const hit = Object.keys(all).find((key) => key && (k === key || k.endsWith('.' + key)));
+      return hit && all[hit].email && all[hit].password ? all[hit] : null;
+    } catch (_) { return null; }
+  }
   async function getAppPassword() {
+    const site = await siteLogin();
+    if (site) return site.password;
     let pw = await st.get('ua_app_password');
     if (!pw) { pw = generateStrongPassword(); await st.set('ua_app_password', pw); LOG('Generated & saved a reusable ATS account password'); }
     return pw;
@@ -12115,6 +12130,8 @@
   // Lock the email after first use so the SAME credentials are reused for every
   // future account/application (even if the profile email later changes).
   async function getAppEmail() {
+    const site = await siteLogin();
+    if (site) return site.email;
     let e = await st.get('ua_app_email');
     if (!e) { e = ((await getProfile()).email || '').trim(); if (e) await st.set('ua_app_email', e); }
     return e;

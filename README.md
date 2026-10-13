@@ -3026,14 +3026,38 @@ inside shadow roots are read.
   three times — the flickering field.
 
 ### LazyApply
-Its ATS script covers Greenhouse, Lever, Workday, iCIMS and Ashby, each handled
-in more depth here; nothing ported.
+See v17.10 — two of its ideas were ported after a closer look.
 
 ### Not verified live
 These test forms are built from each platform's real element ids, but this
 environment cannot reach the live sites. To test on real Workday / SmartRecruiters
 jobs, run a session on your own machine (Claude Desktop, or `claude remote-control`
 in this folder), which can drive your browser.
+
+---
+
+## v17.10 — two ideas from LazyApply's way of working
+
+A second, closer look at LazyApply. Its strength is not which sites it names but
+how it works: per-platform selector maps fetched from its server (fixes reach
+every user without an update), a shared question bank that keeps what it could not
+answer, server-side picking for awkward dropdowns, and saved logins per ATS. The
+server parts live behind LazyApply's login and cannot be reused; the dropdown
+picking is already done locally here (v17.5). Two of its ideas are now built in,
+kept entirely on your computer:
+
+- **❓ Questions to answer** (Queue Manager). Every required question the autofill
+  had no answer for is listed, most frequent first. Answer one once and every
+  future application that asks it is filled with your answer — saved exactly as an
+  answer typed on a live form is, so it counts as yours and is never second-guessed.
+  Proven end to end in a real browser: a job blocked on "What is the name of your
+  current manager?" → answered once in the panel → the next job with that question
+  submitted with the answer (`tests/e2e/questions-loop.js`).
+- **🔐 Site logins** (Queue Manager). Every ATS account normally uses one shared
+  email and password; where you already have an account with a different password
+  — common on Workday — sign-in failed and the job stalled. Save a login for that
+  employer's site and it is used there only (Workday's wd1/wd3/… shards are folded,
+  a parent domain covers its sign-in host). Stored locally; never shown again.
 
 ---
 
