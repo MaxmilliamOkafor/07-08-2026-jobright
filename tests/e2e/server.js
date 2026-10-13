@@ -7,7 +7,14 @@ if (!fs.existsSync(path.join(certDir, 'key.pem'))) {
 }
 // Serves any path with the fixture named in FIXTURE (re-read per request).
 https.createServer({ key: fs.readFileSync(path.join(certDir, 'key.pem')), cert: fs.readFileSync(path.join(certDir, 'cert.pem')) }, (req, res) => {
-  const f = process.env.FIXTURE || path.join(__dirname, 'form.html');
+  // FIXTURE_ROUTES='[["/applicant/","amazon-apply.html"]]' picks a page by path;
+  // FIXTURE is the default for everything else.
+  let f = process.env.FIXTURE || path.join(__dirname, 'form.html');
+  try {
+    for (const [re, file] of JSON.parse(process.env.FIXTURE_ROUTES || '[]')) {
+      if (new RegExp(re).test(req.url)) { f = path.isAbsolute(file) ? file : path.join(__dirname, file); break; }
+    }
+  } catch (_) {}
   if (/\.(ico|png|js|css)$/.test(req.url)) { res.writeHead(204); return res.end(); }
   res.writeHead(200, { 'content-type': 'text/html' }); res.end(fs.readFileSync(f));
 }).listen(8443, '127.0.0.1');

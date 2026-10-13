@@ -217,5 +217,10 @@ console.log('the page is stopped from asking, which costs it its handler');
   eq('other event types are not wrapped', clicks, 1);
 }
 
+// A script-opened application tab stays in this tab during a run.
+eq('window.open is guarded during a run', /window\.open = function \(url, target, features\)/.test(src), true);
+eq('only application / sign-in routes are kept in place', /APPLY_ROUTE_RE\.test\(u\.pathname \+ u\.search\)/.test(src), true);
+eq('and only while automating', /if \(automating\(\) && url && \(!target \|\| target === '_blank'\)\)/.test(src), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

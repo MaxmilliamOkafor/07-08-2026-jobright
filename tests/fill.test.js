@@ -249,7 +249,7 @@ eq('SmartRecruiters waits for the next step instead of sleeping 2.8s',
 eq('the old flat sleep after Next is gone',
   /realClick\(next\); await sleep\(2800\)/.test(src), false);
 eq('a step that refuses to advance is diagnosed, not re-filled blindly',
-  /step did not advance — fixing what is blocking it/.test(srcSR), true);
+  /step did not advance — ' \+ \(toast \? 'the form says: "' \+ toast \+ '"' : 'fixing what is blocking it'\)/.test(srcSR), true);
 eq('the multi-page loop waits for the next step too',
   /await waitForStepChange\(beforeAction, 15000\)/.test(body('multiPageLoop')), true);
 
@@ -2852,13 +2852,73 @@ console.log('v17.7 — honeypots, seeded phone boxes, select2, Lever location, c
   eq('unfixable errors too', /\+ ' \[' \+ describeControl\(e\.el\) \+ '\]'/.test(src), true);
   eq('never its text or value', /value|textContent|innerText/.test(body('describeControl').replace(/\/\*[\s\S]*?\*\//g, '').replace(/el\.options\.length/g, '')), false);
   // 6. Covered Submit
-  eq('both Submit paths clear what covers the button first', (src.match(/await clearOverSubmit\(/g) || []).length, 2);
+  eq('every Submit path clears what covers the button first (shared submit ×2, Amazon)', (src.match(/await clearOverSubmit\(/g) || []).length, 3);
   eq('a banner that appeared late is swept right before Submit', /try \{ await dismissCookieBanner\(\); \} catch \(_\) \{\}\n\s*try \{ scrollIfNeeded\(btn\); \} catch \(_\) \{\}/.test(body('clearOverSubmit')), true);
   // 7. Workday wall
   eq('no Workday filling while a password box is on screen',
     /while \(workdayOnAccountWall\(\) && Date\.now\(\) < until && !autoStopped\(\)\)/.test(body('workdayAutomation')), true);
   eq('a tenant still on the wall is reported, not filled', /DIAG\('workday\.auth\.stuck'/.test(body('workdayAutomation')), true);
   eq('the account watcher stops on the broader "applying" test', /\|\| workdayApplicationReady\(\)\) \{/.test(src), true);
+}
+
+/* ── 64. v17.9: Amazon, Workday (SpeedyApply 2.28), SmartRecruiters, OptimHire 9.0 ── */
+console.log('v17.9 — Amazon Jobs, Workday newer layouts, SmartRecruiters markers, no fill fights');
+{
+  // No fill fights, run for real.
+  const nf = {};
+  new Function('exports', `
+    const LOG = () => {}, getLabel = () => 'Phone';
+    ${src.match(/  const FIGHT_MAX = \d+;\n/)[0]}
+    const _ourWrites = new WeakMap();
+    ${body('mayWrite')}
+    ${body('noteWrite')}
+    Object.assign(exports, { mayWrite, noteWrite });
+  `)(nf);
+  const box = { value: '', getAttribute: () => null };
+  eq('a first write is allowed', nf.mayWrite(box, '+447700900123'), true);
+  nf.noteWrite(box, '+447700900123'); box.value = '+447700900123';
+  eq('our value still in place is not typed again', nf.mayWrite(box, '+447700900123'), 'same');
+  box.value = '+44 7700 900123';
+  eq('the site\'s own reformat of our value is left alone', nf.mayWrite(box, '+447700900123'), false);
+  const rej = { value: '', getAttribute: () => null };
+  for (let i = 0; i < 3; i++) { nf.noteWrite(rej, 'x'); }
+  eq('a value the site keeps clearing is given up after three tries', nf.mayWrite(rej, 'x'), false);
+  eq('a different value is still allowed', nf.mayWrite(rej, 'y'), true);
+  eq('the main setter applies it', /const ok = mayWrite\(el, String\(val\)\);\n\s*if \(ok === 'same'\) return true;\n\s*if \(!ok\) return false;/.test(src), true);
+  eq('and the picker-aware phone value', /val = phoneForPickerBox\(el, val == null \? '' : String\(val\)\);/.test(src), true);
+
+  // The sanitizer never acts on a box it cannot name.
+  const san = body('sanitizeMisplacedValues');
+  eq('a nameless box is not "misplaced"', /if \(!lbl\.trim\(\)\) continue;/.test(san), true);
+  eq('a box that declares itself an email box keeps its email', /!\/e-\?mail\|username\/\.test\(declares\)/.test(san), true);
+  eq('labels inside a component\'s shadow root are read', /if \(root && root\.host\) \{/.test(body('fieldName')), true);
+
+  // Workday newer layouts.
+  const wd = body('workdayMultiPageFlow');
+  eq('the page on screen is the one detected', /deepAll\(`\[data-automation-id="\$\{pt\}"\]`, 4\)\.some\(isVisible\)/.test(wd), true);
+  eq('My Information also fills the newer layouts', /await workdayFillModernInfo\(p\);/.test(wd), true);
+  eq('My Experience also fills numbered history', /await workdayFillModernHistory\(p\);/.test(wd), true);
+  eq('Self Identify is filled', /await workdayFillSelfIdentify\(p\);/.test(wd), true);
+  for (const id of ['infoFirstName', 'infoCellPhone', 'public-site-address-address-1', 'public-site-address-postal-code', 'workHistoryCompanyName0', 'txt-workHistory-startDate-0', 'educationHistoryName0', 'disabilityStatus-CheckboxGroup', 'datePickerSelectedToday', 'ethnicityDropdown'])
+    eq(`Workday field "${id}" is handled`, src.includes(id), true);
+  eq('Workday\'s own error messages feed the error reader', /'\[data-automation-id="inputError"\],\[data-automation-id="errorMessage"\],'/.test(src), true);
+  eq('the hidden create-account terms box is ticked', /input\[data-automation-id="createAccountCheckbox"\]/.test(src), true);
+
+  // SmartRecruiters current form.
+  const sr = body('smartRecruitersAutomation');
+  for (const id of ['#first-name-input', '#last-name-input', '#email-input', '#confirm-email-input', '#linkedin-input'])
+    eq(`SmartRecruiters field ${id} is filled`, sr.includes(`srSet('${id}'`), true);
+  eq('its location is picked from the autocomplete\'s own list', /await srLocation\(p\);/.test(sr), true);
+  eq('its phone widget gets the country and the local number', /await srPhone\(p\);/.test(sr), true);
+  eq('its data-test Next/Submit come first', /const dtSubmit = deepAll\("\[data-test='footer-submit'\]"/.test(sr), true);
+  eq('a refused step reports the error toast', /const toast = srErrorToast\(\);/.test(sr), true);
+  eq('its success page counts as success', /oc-success-page-content/.test(body('hardSuccessSignal')), true);
+
+  // Amazon Jobs.
+  eq('amazon.jobs has its own driver', /else if \(isAmazonJobs\(\) \|\| platform === 'Amazon Jobs'\) await amazonJobsAutomation\(\);/.test(src), true);
+  eq('"Apply now" is followed in THIS tab', /location\.assign\(new URL\(href, location\.href\)\.href\)/.test(body('amazonJobsAutomation')), true);
+  eq('Amazon\'s signed-in application pages are not mistaken for a wall', /\/applicant\\\/\(jobs\\\/\\d\+\\\/apply\|application\)\/i\.test\(location\.pathname\)/.test(body('pastTheApplyStep')), true);
+  eq('Amazon\'s sign-in codes are searched for in Amazon\'s mail', /hosts\.push\('amazon\.jobs', 'amazon\.com'\)/.test(src), true);
 }
 
 

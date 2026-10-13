@@ -3170,11 +3170,86 @@
     return v[0] || val;
   }
 
+  /* ── Phone boxes with their own country picker (ported from OptimHire 9.0) ──
+     Workday, Workable, intl-tel-input and react-phone-number-input draw the
+     dialling code (🇮🇪 +353) in a picker beside the number box. The full
+     "+353 87 426 1508" typed into that box is rejected — the site clears it, our
+     fillers type it again, and the field flickers forever. When a picker beside
+     the box shows a code, the box gets the local number. */
+  function dialCodeBeside(el) {
+    try {
+      let box = el.parentElement;
+      for (let i = 0; i < 4 && box && box !== document.body; i++, box = box.parentElement) {
+        const others = Array.from(box.querySelectorAll('input:not([type=hidden]),textarea'))
+          .filter((f) => f !== el && !/country|dial|code|flag|search/i.test((f.name || '') + ' ' + (f.id || '') + ' ' + (f.placeholder || '') + ' ' + (f.getAttribute('aria-label') || '')));
+        if (others.length) return '';                  // left the phone widget
+        for (const x of box.querySelectorAll('select,button,[role="combobox"],[aria-haspopup],[class*="country" i],[class*="dial" i],[class*="flag" i],[class*="iti" i],[class*="prefix" i]')) {
+          if (x === el || x.contains(el)) continue;
+          const t = x.tagName === 'SELECT'
+            ? ((x.selectedOptions && x.selectedOptions[0] && (x.selectedOptions[0].text + ' ' + x.selectedOptions[0].value)) || '')
+            : (x.textContent || '') + ' ' + (x.getAttribute('aria-label') || '') + ' ' + (x.getAttribute('title') || '');
+          const m = t.match(/\+\s?(\d{1,4})\b/);
+          if (m) return m[1];
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+  function phoneForPickerBox(el, val) {
+    try {
+      if (!isPhoneBox(el) || !/^\s*(\+|00)\s?\d/.test(String(val))) return val;
+      const code = dialCodeBeside(el);
+      if (!code) return val;
+      const digits = String(val).replace(/\D/g, '').replace(/^00/, '');
+      if (digits.startsWith(code) && digits.length - code.length >= 6) return digits.slice(code.length);
+    } catch (_) {}
+    return val;
+  }
+
+  /* ── No fill fights (ported from OptimHire 9.0) ─────────────────────────────
+     Several passes each re-typed a field whenever it looked wrong. When the SITE
+     changes the value — reformats it, picks a suggestion, clears what it rejects —
+     that became an endless write/clear loop: the flickering field. Per field and
+     value: a value of ours still in place is not typed again, the site's own edit
+     of our value is not overwritten with the same value, and a value the site
+     keeps clearing is typed at most three times. */
+  const FIGHT_MAX = 3;
+  const _ourWrites = new WeakMap();
+  function mayWrite(el, val) {
+    try {
+      if (!val || el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete')) return true;
+      const m = _ourWrites.get(el);
+      const n = (m && m.get(val)) || 0;
+      if (!n) return true;
+      const cur = String(el.value || '').trim();
+      if (cur === String(val).trim()) return 'same';            // ours, still there
+      if (cur) return false;                                    // the site changed it — leave its edit
+      if (n >= FIGHT_MAX) {
+        if (!m.get('\u0000gaveUp')) { m.set('\u0000gaveUp', 1); LOG(`Fill: "${String(getLabel(el) || el.name || el.id || 'field').slice(0, 40)}" keeps rejecting that value — leaving it`); }
+        return false;
+      }
+    } catch (_) {}
+    return true;
+  }
+  function noteWrite(el, val) {
+    if (!val) return;
+    let m = _ourWrites.get(el);
+    if (!m) { m = new Map(); _ourWrites.set(el, m); }
+    m.set(val, (m.get(val) || 0) + 1);
+  }
+
   function nativeSet(el, val) {
     if (!el || el.disabled || el.readOnly) return false;
     if (el.tagName !== 'SELECT' && val !== '' && isTrapField(el)) {
       if (!_trapLogged.has(el)) { _trapLogged.add(el); LOG(`Left a bot-trap field empty ("${(el.name || el.id || 'unnamed').slice(0, 40)}") — filling it would get the application binned as spam`); }
       return false;
+    }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      val = phoneForPickerBox(el, val == null ? '' : String(val));
+      const ok = mayWrite(el, String(val));
+      if (ok === 'same') return true;
+      if (!ok) return false;
+      noteWrite(el, String(val));
     }
     // On Workday, plain .value assignment leaves fields "unregistered" (validation
     // fails, Continue/Create stays disabled). Use real-typing there so React commits.
@@ -4478,11 +4553,17 @@
     for (const el of boxes) {
       const v = String(el.value).trim();
       const lbl = String(fieldName(el) || getLabel(el) || '');
+      /* Only a box whose name CLEARLY says something else. A box with no name we
+         can read is not evidence of anything: SmartRecruiters keeps its labels
+         inside each component's shadow root, and its Email box was emptied as
+         "an email in a nameless box". */
+      if (!lbl.trim()) continue;
+      const declares = ((el.type || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' + (el.getAttribute('autocomplete') || '')).toLowerCase();
       const isUrl = /^(https?:\/\/|www\.)\S+$/i.test(v);
       const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
       let why = '';
       if (isUrl && !URL_LABEL_RE.test(lbl) && el.tagName !== 'TEXTAREA') why = 'a link';
-      else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
+      else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/e-?mail|username/.test(declares) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
       else if ((el.type === 'email' || (/e-?mail/i.test(lbl) && !/confirm|re-?enter|repeat|verify/i.test(lbl) && !/(recruiter|referr|reference|manager)/i.test(lbl))) && !isEmail && el.tagName !== 'TEXTAREA') why = 'not an email address';
       else if ((el.type === 'tel' || /phone|mobile|telephone/i.test(lbl)) && !/code|ext/i.test(lbl) && !/\d{3}/.test(v)) why = 'not a phone number';
       if (!why) continue;
@@ -5127,6 +5208,7 @@
     if ($('#post_application_page,.application-submitted')) return true;      // Greenhouse
     if ($('.application-complete')) return true;                              // Lever
     if ($('.iCIMS_ConfirmMessage,.iCIMS_SuccessMessage')) return true;        // iCIMS
+    if ($('oc-success-page-content,[data-test="success-page"]')) return true; // SmartRecruiters (marker from SpeedyApply 2.28)
     // A status region, but only with confirmation-grade wording. The old test
     // accepted /submit|success|thank|received|complete/, so the validation error
     // "Please complete all required fields" counted as a successful submission.
@@ -6087,9 +6169,11 @@
     await workdayFillName(p);
     await workdayFillContact(p);
     await workdayFillAddress(p);
+    await workdayFillModernInfo(p);
     await workdayFillSource();
     await workdayFillEducation(p);
     await workdayFillExperience(p);
+    await workdayFillModernHistory(p);
     await workdayFillLanguage(p);
     await workdayResumeUpload();
     await fixPhoneCountryCode();
@@ -6748,6 +6832,106 @@
     LOG('Workday: links/skills filled');
   }
 
+  /* ── Workday's newer layouts (from SpeedyApply 2.28) ────────────────────────
+     Workday ships several generations of the same pages side by side. These are
+     the field families SpeedyApply 2.28 handles that this driver did not:
+       • "info…" name/contact fields (infoFirstName, infoCellPhone, …)
+       • the public-site address component (public-site-address-*)
+       • the work/education history layout with numbered ids
+         (workHistoryCompanyName0, txt-workHistory-startDate-0, …)
+       • Self Identify: the disability checkbox group, the signature name, the
+         "today" date picker, the language and the ethnicity dropdown
+     Each fill only touches an EMPTY field, so it is safe to run on every page. */
+  function wdInput(sel) { return deepAll(sel, 6).map((el) => (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? el : el.querySelector && el.querySelector('input,textarea')).find((el) => el && isVisible(el)) || null; }
+  function wdSet(sel, val) {
+    if (val == null || String(val).trim() === '') return false;
+    const el = wdInput(sel);
+    if (!el || (el.value || '').trim()) return false;
+    try { el.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(el, String(val));
+    return true;
+  }
+  const wdMonthYear = (y, m) => (y ? String(m || '01').padStart(2, '0') + '/' + String(y) : '');
+  async function workdayFillModernInfo(p) {
+    const first = p.first_name || p.firstName || '', last = p.last_name || p.lastName || '';
+    let n = 0;
+    n += wdSet('[data-automation-id="infoFirstName"]', first);
+    n += wdSet('[data-automation-id="infoLastName"]', last);
+    if (p.preferred_name) n += wdSet('[data-automation-id="infoPreferredName"]', p.preferred_name);
+    n += wdSet('[data-automation-id="infoEmail"]', p.email);
+    n += wdSet('[data-automation-id="infoCellPhone"]', p.phone);
+    n += wdSet('[data-automation-id="infoPhone"]', p.phone);
+    n += wdSet('[data-automation-id="infoLinkedIn"]', p.linkedin_profile_url || p.linkedin);
+    // The public-site address component.
+    const line1 = wdInput('[data-automation-id="public-site-address-address-1"]');
+    if (line1 && !(line1.value || '').trim() && p.address) {
+      try { line1.focus({ preventScroll: true }); } catch (_) {}
+      nativeSet(line1, p.address);
+      // It offers suggestions; the first is the address typed.
+      let item = null;
+      await waitUntil(() => (item = document.querySelector('#public-site-address-address-1-autocomplete-item-0')), 2500, 150);
+      if (item) { triggerMouse(item); realClick(item); await sleep(scaled(600, 300)); }
+      n++;
+    }
+    if (p.address2) n += wdSet('[data-automation-id="public-site-address-address-2"]', p.address2);
+    n += wdSet('[data-automation-id="public-site-address-city"],[data-automation-id="public-site-address-locality"]', p.city);
+    n += wdSet('[data-automation-id="public-site-address-zip"],[data-automation-id="public-site-address-postal-code"]', p.postal_code || p.zip);
+    const stateBox = deepAll('[data-automation-id="public-site-address-us-state-input-base"]', 2).find(isVisible);
+    if (stateBox && p.state && /select/i.test(normLabel(stateBox.textContent))) {
+      try { await selectFromWorkdayDropdown(stateBox.querySelector('button,[role="button"],[role="combobox"]') || stateBox, p.state); n++; } catch (_) {}
+    }
+    if (n) LOG('Workday: newer-layout contact/address fields filled (' + n + ')');
+    return n;
+  }
+  async function workdayFillModernHistory(p) {
+    let n = 0;
+    // Work history, numbered layout: first entry from the profile.
+    // (workdayFillExperience has already pressed "Add" when the section was empty.)
+    const title = p.current_title || p.title || '', company = p.current_company || p.company || '';
+    await waitUntil(() => wdInput('[data-automation-id="workHistoryCompanyName0"]') || !deepAll('[data-automation-id="btnAddWorkHistory"]', 1).length, 1500, 150);
+    n += wdSet('[data-automation-id="workHistoryCompanyName0"]', company);
+    n += wdSet('[data-automation-id="workHistoryPosition0"]', title);
+    n += wdSet('[data-automation-id="txt-workHistory-startDate-0"]', wdMonthYear(p.work_start_year || (new Date().getFullYear() - 2), p.work_start_month));
+    if (!p.currently_working && p.work_end_year) n += wdSet('[data-automation-id="txt-workHistory-endDate-0"]', wdMonthYear(p.work_end_year, p.work_end_month));
+    // Education, numbered layout.
+    n += wdSet('[data-automation-id="educationHistoryName0"]', p.school || p.university);
+    n += wdSet('[data-automation-id="educationHistoryAreaOfStudy0"]', p.major || p.field_of_study);
+    n += wdSet('[data-automation-id="educationHistoryGpa0"]', p.gpa);
+    n += wdSet('[data-automation-id="txt-educationHistory-graduationDate-0"]', wdMonthYear(p.graduation_year || p.grad_year, p.graduation_month || '06'));
+    if (n) LOG('Workday: numbered work/education history filled (' + n + ')');
+    return n;
+  }
+  async function workdayFillSelfIdentify(p) {
+    let n = 0;
+    // Signature: the full name.
+    n += wdSet('[data-automation-id="name"],input[name="name"]', [p.first_name || p.firstName, p.last_name || p.lastName].filter(Boolean).join(' '));
+    // Today's date via Workday's own picker — typing into its three-part date is unreliable.
+    const dateEmpty = deepAll('[data-automation-id="dateSectionMonth-input"],[data-automation-id="dateSectionYear-input"]', 4).some((el) => isVisible(el) && !(el.value || '').trim());
+    const icon = deepAll('[data-automation-id="dateIcon"]', 2).find(isVisible);
+    if (dateEmpty && icon) {
+      realClick(icon);
+      let today = null;
+      await waitUntil(() => (today = document.querySelector('button[data-automation-id="datePickerSelectedToday"]')), 2500, 120);
+      if (today) { realClick(today); n++; await sleep(scaled(400, 200)); }
+    }
+    // Disability, as a checkbox group: the profile's answer, else "do not want to answer".
+    const group = deepAll('[data-automation-id="disabilityStatus-CheckboxGroup"],[data-automation-id="disability"]', 2).find(isVisible);
+    if (group && !group.querySelector('input[type=checkbox]:checked')) {
+      const want = String(p.disability || DEFAULTS.disability || '').toLowerCase();
+      const opts = Array.from(group.querySelectorAll('input[type=checkbox]')).map((cb) => ({ cb, t: normLabel((cb.labels && cb.labels[0] && cb.labels[0].textContent) || cb.closest('[role="cell"],div')?.textContent || '').toLowerCase() }));
+      const pick = (/do not have|^no\b/.test(want) && opts.find((o) => /^no\b|do not have/.test(o.t))) ||
+        opts.find((o) => /do not want|prefer not|decline|choose not/.test(o.t));
+      if (pick) { (isVisible(pick.cb) ? realClick : (el) => el.click())(pick.cb); n++; }
+    }
+    // Language and ethnicity dropdowns where present.
+    const lang = deepAll('button[data-automation-id="language"]', 2).find((b) => isVisible(b) && !b.disabled);
+    if (lang && /select/i.test(normLabel(lang.textContent))) { try { await selectFromWorkdayDropdown(lang, 'English'); n++; } catch (_) {} }
+    const eth = deepAll('button[data-automation-id="ethnicityDropdown"]', 2).find((b) => isVisible(b) && !b.disabled);
+    if (eth && /select/i.test(normLabel(eth.textContent))) { try { await selectFromWorkdayDropdown(eth, p.ethnicity || p.race || 'I do not wish to answer'); n++; } catch (_) {} }
+    if (n) LOG('Workday: self-identify page filled (' + n + ')');
+    return n;
+  }
+
   // SpeedyApply Workday: multi-page navigation with page type detection (enhanced)
   async function workdayMultiPageFlow() {
     const MAX_PAGES = 12;
@@ -6771,9 +6955,14 @@
       await sleep(scaled(1500, 750));
 
       // Detect current page type
+      // The page on SCREEN. Some tenants keep earlier steps mounted but hidden,
+      // and the first marker in the document then named a page long since left.
       let currentPageType = 'unknown';
       for (const pt of pageTypes) {
-        if ($(`[data-automation-id="${pt}"]`)) { currentPageType = pt; break; }
+        if (deepAll(`[data-automation-id="${pt}"]`, 4).some(isVisible)) { currentPageType = pt; break; }
+      }
+      if (currentPageType === 'unknown') {
+        for (const pt of pageTypes) { if ($(`[data-automation-id="${pt}"]`)) { currentPageType = pt; break; } }
       }
       LOG(`Workday multi-page: page ${page} — ${currentPageType}`);
 
@@ -6793,16 +6982,19 @@
         await workdayFillAddress(p);
         await workdayFillSource();
         await workdayFillLinks(p);
+        await workdayFillModernInfo(p);
         await fixPhoneCountryCode();
       } else if (/MyExp/.test(currentPageType)) {
         await workdayFillEducation(p);
         await workdayFillExperience(p);
+        await workdayFillModernHistory(p);
         await workdayFillLanguage(p);
       } else if (/Questions|Supplementary/.test(currentPageType)) {
         await workdayFillQuestions(p);
         await workdayFillLinks(p);
-      } else if (/SelfIdentify|VoluntaryDisclosure/.test(currentPageType)) {
+      } else if (/SelfIdentify|VoluntaryDisclosure|selfIdentification|voluntaryDisclosures/.test(currentPageType)) {
         await workdayFillEEO();
+        await workdayFillSelfIdentify(p);
       } else if (/Review/.test(currentPageType)) {
         const submitBtn = $('button[data-automation-id="btnSubmit"]');
         if (submitBtn && isVisible(submitBtn)) {
@@ -7859,7 +8051,8 @@
      wrong — in its inline error text, in aria-invalid + aria-describedby, and
      in the browser's own constraint validation — so read that, per field, and
      fix what it says. */
-  const FIELD_ERROR_SEL = '.error,.field-error,.error-message,.errorMessage,.validation-error,.invalid-feedback,' +
+  const FIELD_ERROR_SEL = '[data-automation-id="inputError"],[data-automation-id="errorMessage"],' +
+    '.error,.field-error,.error-message,.errorMessage,.validation-error,.invalid-feedback,' +
     '.help-block.with-errors,.field-validation-error,.form-error,.input-error,[class*="error-text" i],[class*="errorText" i],' +
     '[class*="error-message" i],[class*="errorMessage" i],[class*="field-error" i],[class*="fieldError" i],' +
     '[class*="helper-text" i][class*="error" i],[role="alert"],[aria-live="assertive"],[data-error],.Mui-error,.ant-form-item-explain-error';
@@ -7910,12 +8103,21 @@
      phone box came back named "Please enter a valid phone number". */
   function fieldName(el) {
     try {
+      // A radio's own label is its OPTION ("Yes"); the question is the group's.
+      if (el.type === 'radio') { const q = getQuestionForInput(el); if (q && !/^(yes|no)$/i.test(q.trim())) return q; }
       if (el.labels && el.labels.length) {
         const t = Array.from(el.labels).map((l) => { const c = l.cloneNode(true); c.querySelectorAll('input,select,textarea').forEach((x) => x.remove()); return c.textContent; }).join(' ').replace(/\s+/g, ' ').trim();
         if (t) return t;
       }
       const a = (el.getAttribute('aria-label') || '').trim() || textOfIds(el, 'aria-labelledby');
       if (a) return a;
+      // Inside a web component: the label lives in the same shadow root, or on the host.
+      const root = el.getRootNode && el.getRootNode();
+      if (root && root.host) {
+        const l = root.querySelector && root.querySelector('label');
+        const t = (l && l.textContent.trim()) || root.host.getAttribute('label') || root.host.getAttribute('aria-label') || '';
+        if (t) return t;
+      }
       if (el.type === 'radio' || el.type === 'checkbox') { const q = getQuestionForInput(el); if (q) return q; }
     } catch (_) {}
     return String(getLabel(el) || el.name || el.id || '');
@@ -7952,7 +8154,10 @@
       /* Hidden radios and checkboxes count (styled controls hide the real
          input). A hidden FILE input does not: upload widgets keep one that stays
          "required and empty" even after they have uploaded the CV themselves. */
-      .filter((el) => !el.disabled && !isTrapField(el) && (isVisible(el) || isSelect2Native(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && el.closest('label,' + FIELD_CONTAINER_SEL))));
+      // A styled radio/checkbox hides its input, so its LABEL must be what is
+      // visible — not merely present: a later step of the form, still hidden,
+      // is not something to answer yet.
+      .filter((el) => !el.disabled && !isTrapField(el) && (isVisible(el) || isSelect2Native(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && isVisible(el.closest('label') || el.closest(FIELD_CONTAINER_SEL)))));
     for (const el of controls) {
       try {
         // 1. The browser's own verdict — this is what silently blocks a native submit.
@@ -8596,6 +8801,8 @@
     if (emailField && emailField.value !== email) reactTypeValue(emailField, email);
     for (const f of pwFields) if (f.value !== pw) reactTypeValue(f, pw);
     if (onCreate) $$('input[type=checkbox]').filter(isVisible).forEach(c => { if (!c.checked && !isMarketingCheckbox(c)) realClick(c); });
+    // Workday's terms box is often a hidden input under a styled label (SpeedyApply ticks it by id).
+    if (onCreate) { const cab = document.querySelector('input[data-automation-id="createAccountCheckbox"]'); if (cab && !cab.checked) { try { cab.click(); } catch (_) {} } }
     if (!submit) return 'working';
 
     const pwOK = pwFields.every(f => f.value === pw) && pw.length >= 8;
@@ -12022,7 +12229,11 @@
      so no other ATS changes behaviour. */
   const IN_APPLICATION_URL_RE = /[?&]from=login\b|\/jobs\/\d+\/[^/?#]+\/(candidate|questions|confirm|submit)\b/i;
   function pastTheApplyStep() {
-    try { return IN_APPLICATION_URL_RE.test(location.pathname + location.search); } catch (_) { return false; }
+    try {
+      if (IN_APPLICATION_URL_RE.test(location.pathname + location.search)) return true;
+      // Amazon: /applicant/… is only ever served to a signed-in candidate.
+      return /(^|\.)amazon\.jobs$/i.test(location.hostname) && /\/applicant\/(jobs\/\d+\/apply|application)/i.test(location.pathname);
+    } catch (_) { return false; }
   }
 
   function looksLikeAuthPage() {
@@ -12154,6 +12365,8 @@
        (…@…oraclecloud.com, …@workflow.mail.<region>.cloud.oracle.com), never from
        the tenant host on screen, so the search has to name those too. */
     if (isOracleCloud()) hosts.push('oraclecloud.com', 'oracle.com');
+    // Amazon's sign-in codes come from amazon.jobs / amazon.com senders.
+    if (/(^|\.)amazon\.jobs$/i.test(location.hostname)) hosts.push('amazon.jobs', 'amazon.com');
     // The employer's own domain too: the mail often comes from the company, not
     // from the ATS that rendered the page.
     const company = pageCompanyName();
@@ -12519,6 +12732,70 @@
     await sleep(300);
     return true;
   }
+  /* ── SmartRecruiters' current one-click form (markers from SpeedyApply 2.28) ──
+     The Spark form's fields are web components with their own shadow roots and
+     ids like #first-name-input; the location is an spl-autocomplete whose
+     options live in ITS shadow root; the phone is an spl-phone-field with a
+     country picker; the actions carry data-test="footer-next" / "footer-submit";
+     a rejected step shows spl-toast[variant="error"]. */
+  function srShadowInput(hostSel) {
+    const host = deepAll(hostSel, 2)[0];
+    if (!host) return null;
+    const sr = host.shadowRoot;
+    return (sr && (sr.querySelector('input,textarea') ||
+      (sr.querySelector('spl-input') && sr.querySelector('spl-input').shadowRoot && sr.querySelector('spl-input').shadowRoot.querySelector('input')))) || host.querySelector && host.querySelector('input,textarea') || null;
+  }
+  function srSet(hostSel, val) {
+    if (!val) return false;
+    const inp = srShadowInput(hostSel);
+    if (!inp || (inp.value || '').trim()) return false;
+    try { inp.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(inp, String(val));
+    return true;
+  }
+  async function srLocation(p) {
+    const host = deepAll("[data-test='personal-info-location'] spl-autocomplete", 2)[0];
+    if (!host || !host.shadowRoot) return false;
+    const field = host.shadowRoot.querySelector('spl-internal-form-field spl-input');
+    const inp = field && field.shadowRoot && field.shadowRoot.querySelector('input');
+    if (!inp || (inp.value || '').trim()) return false;
+    const q = locationQuery(p, true) || p.city;
+    if (!q) return false;
+    nativeSet(inp, q);
+    let opt = null, manual = null;
+    await waitUntil(() => {
+      manual = host.shadowRoot.querySelector("div[slot='menu'] spl-select-option[value='goToManualLocationMode']");
+      opt = host.shadowRoot.querySelector("div[slot='menu'] spl-select-option:not([value='goToManualLocationMode']) .c-spl-autocomplete-default-option, div[slot='menu'] spl-select-option:not([value='goToManualLocationMode']) spl-typography-body");
+      return !!(opt || manual);
+    }, 5000, 150);
+    if (!opt) { LOG('SmartRecruiters: no location suggestion for "' + q + '"'); return false; }
+    triggerMouse(opt); realClick(opt);
+    await sleep(scaled(400, 200));
+    LOG('SmartRecruiters: location picked from the suggestions');
+    return true;
+  }
+  async function srPhone(p) {
+    const host = deepAll('spl-phone-field', 2)[0];
+    if (!host || !host.shadowRoot || !p.phone) return false;
+    const country = p.country || DEFAULTS.country;
+    const opt = host.shadowRoot.querySelector(`spl-select-option[label='${CSS.escape(country)}'] div`) ||
+      Array.from(host.shadowRoot.querySelectorAll('spl-select-option')).find((o) => (o.getAttribute('label') || '').toLowerCase() === country.toLowerCase());
+    if (opt) { triggerMouse(opt); realClick(opt); await sleep(200); }
+    const si = host.shadowRoot.querySelector('spl-input');
+    const inp = si && si.shadowRoot && si.shadowRoot.querySelector('input');
+    if (!inp || (inp.value || '').trim()) return false;
+    // The picker carries the code; the box takes the local number.
+    // (inside the shadow root the picker is not a DOM neighbour, so strip the code here)
+    const v = phoneVariants(p.phone, p, '');
+    const local = (v.find((x) => /^0/.test(x)) || String(p.phone)).replace(/^0/, '');
+    nativeSet(inp, local);
+    return true;
+  }
+  function srErrorToast() {
+    const t = deepAll("spl-toast[variant='error']", 3).find(isVisible);
+    return t ? normLabel((t.shadowRoot && t.shadowRoot.textContent) || t.textContent || '').slice(0, 160) : '';
+  }
+
   async function smartRecruitersAutomation() {
     LOG('SmartRecruiters automation starting (shadow-aware)...');
     const p = await getProfile();
@@ -12586,6 +12863,21 @@
         }
       }
 
+      // The current one-click form's ids (SpeedyApply 2.28).
+      srSet('#first-name-input', byName.firstName);
+      srSet('#last-name-input', byName.lastName);
+      srSet('#email-input', byName.email);
+      srSet('#confirm-email-input', byName.email);
+      srSet('#linkedin-input', p.linkedin_profile_url || p.linkedin);
+      srSet('#website-input', p.website_url || p.website);
+      try { await srLocation(p); } catch (_) {}
+      try { await srPhone(p); } catch (_) {}
+      // The consent box on the screening step.
+      for (const box of deepAll("[data-test='consent-box'] spl-checkbox", 4)) {
+        const cb = box.shadowRoot && box.shadowRoot.querySelector('input[type=checkbox]');
+        if (cb && !cb.checked) { cb.click(); await sleep(120); }
+      }
+
       // Location typeahead needs its suggestion committed, or SmartRecruiters
       // rejects the step with "Please select a location from the list".
       if (loc) {
@@ -12646,10 +12938,13 @@
       // résumé attached, or drops the one that was in flight.
       if (resumeUploadInFlight()) { LOG('SmartRecruiters: waiting for the CV upload to finish'); await waitForResumeUpload(25000); }
 
-      // Advance. Text-matched so it survives SmartRecruiters renaming its test ids.
+      // Advance. SmartRecruiters' own data-test markers first, text as the fallback.
       const buttons = deepQueryAll('button,spl-button,[role="button"]').filter(isVisible);
       const nameOf = b => (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-      const submit = findSubmitControl() || buttons.find(b => isSubmitLabel(nameOf(b)));
+      const enabledEl = (el) => el && isVisible(el) && !el.disabled && !el.hasAttribute('disabled') && el.getAttribute('aria-disabled') !== 'true';
+      const dtSubmit = deepAll("[data-test='footer-submit']", 2).find(enabledEl);
+      const dtNext = deepAll("[data-test='footer-next']", 2).find(enabledEl);
+      const submit = dtSubmit || findSubmitControl() || buttons.find(b => isSubmitLabel(nameOf(b)));
       if (submit) {
         LOG('SmartRecruiters: submitting via "' + controlLabel(submit) + '"');
         realClick(submit);
@@ -12658,7 +12953,7 @@
         await resolveBlockingDialog();
         break;
       }
-      const next = buttons.find(b => /^\s*(next|continue|save (and|&) continue|proceed|review)\b/i.test(nameOf(b)));
+      const next = dtNext || buttons.find(b => /^\s*(next|continue|save (and|&) continue|proceed|review)\b/i.test(nameOf(b)));
       if (next) {
         LOG('SmartRecruiters: next step');
         realClick(next);
@@ -12672,7 +12967,9 @@
           LOG('SmartRecruiters: the step will not advance after two attempts — handing over instead of re-filling it');
           break;
         }
-        LOG('SmartRecruiters: step did not advance — fixing what is blocking it');
+        const toast = srErrorToast();
+        LOG('SmartRecruiters: step did not advance — ' + (toast ? 'the form says: "' + toast + '"' : 'fixing what is blocking it'));
+        if (toast) DIAG('sr.step-error', toast);
         await resolveBlockingDialog();
         await handleValidationErrors();
         await guaranteeRequiredFields();
@@ -12980,6 +13277,90 @@
     LOG('ADP myjobs automation complete');
   }
 
+  /* ── Amazon Jobs (amazon.jobs) ──────────────────────────────────────────────
+     Amazon runs its own careers system, and most of a daily CSV can be amazon.jobs
+     links, so it gets its own driver instead of the generic path:
+       www.amazon.jobs/<lang>/jobs/<id>/<slug>     the posting — "Apply now"
+       passport.amazon.jobs / account sign-in      email → password or emailed code
+       www.amazon.jobs/applicant/jobs/<id>/apply   the application, several steps
+     "Apply now" opens a NEW tab on Amazon's page; that would pull the run (and
+     you) into another tab, so the link is followed in this one. Already-applied
+     and closed postings are caught before this runs (FAILURE_TEXT_RE). */
+  const AMAZON_APPLY_PATH_RE = /\/applicant\/(jobs\/\d+\/apply|application)/i;
+  function isAmazonJobs() { try { return /(^|\.)amazon\.jobs$/i.test(location.hostname); } catch (_) { return false; } }
+  async function amazonJobsAutomation() {
+    LOG('Amazon Jobs automation starting (' + location.hostname + location.pathname.slice(0, 40) + ')');
+    await loadAnswerBank();
+    await resolveBlockingDialog();
+    await dismissCookieBanner();
+
+    // The posting → the application, in this tab.
+    if (!AMAZON_APPLY_PATH_RE.test(location.pathname) && !looksLikeAuthPage() && !hasApplicationForm()) {
+      const link = deepAll('a#apply-button,a.apply-button,a[href*="/applicant/jobs/"],button#apply-button', 10).find(isVisible) ||
+        deepAll('a,button,[role="button"]', 200).filter(isVisible).find((b) => /^(apply now|apply)$/i.test(normLabel(b.textContent)));
+      if (!link) { LOG('Amazon: no "Apply now" on this page'); return; }
+      const href = link.tagName === 'A' ? link.getAttribute('href') : '';
+      LOG('Amazon: opening the application in this tab');
+      const before = stepSignature();
+      if (href && !/^javascript:/i.test(href)) {
+        try { location.assign(new URL(href, location.href).href); } catch (_) { realClick(link); }
+      } else {
+        if (link.target === '_blank') link.target = '_self';
+        realClick(link);
+      }
+      noteProgress('clicked Apply');
+      await waitForStepChange(before, 15000);
+      if (!AMAZON_APPLY_PATH_RE.test(location.pathname) && !looksLikeAuthPage()) return;   // navigating; the next page picks up
+    }
+
+    // Sign-in / create account (email-first; a code may be emailed).
+    for (let i = 0; i < 3 && looksLikeAuthPage(); i++) {
+      await handleAccountAuth();
+      if (detectEmailVerificationWall()) await resolveEmailVerification(120000);
+      await waitForFormStable(2000);
+    }
+    if (looksLikeAuthPage()) { LOG('Amazon: still on the sign-in step'); DIAG('amazon.auth.stuck', 'still signing in'); return; }
+
+    // The application: a train of steps with one primary action each.
+    let stuck = 0;
+    for (let step = 1; step <= 15; step++) {
+      if (autoStopped()) break;
+      if (checkSuccess()) { LOG('Amazon: application submitted'); break; }
+      await resolveBlockingDialog();
+      if (detectCaptcha()) await waitForCaptchaClear();
+      await waitForFormStable(2500);
+      const sig = stepSignature();
+      LOG('Amazon: step ' + step);
+      const cv = await attachResume();
+      if (cv === 'no-resume') LOG('Amazon: no résumé saved — a résumé step will not pass');
+      await triggerAutofillQuick();
+      await fallbackFill();
+      await guaranteeRequiredFields();
+      await handleValidationErrors();
+      if (resumeUploadInFlight()) await waitForResumeUpload(25000);
+      const action = await autoSubmitOrNext();
+      if (action === 'submitted') {
+        await sleep(scaled(3000, 1500));
+        if (confirmSubmitted() || checkSuccess()) { LOG('Amazon: submission confirmed'); break; }
+        continue;
+      }
+      if (action === 'next_page' && await waitForStepChange(sig, 15000)) { stuck = 0; continue; }
+      // Amazon's own wording, when the shared finder found nothing to press.
+      const btn = deepAll('button,[role="button"],input[type=submit]', 150).filter((b) => isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+        .find((b) => /^(continue|save and continue|next|review|submit application|submit)\b/i.test(normLabel(b.textContent || b.value || '')));
+      if (btn) {
+        LOG('Amazon: "' + controlLabel(btn).slice(0, 30) + '"');
+        await clearOverSubmit(btn);
+        realClick(btn);
+        if (isSubmitLabel(controlLabel(btn))) markSubmitAttempt();
+        if (await waitForStepChange(sig, 15000)) { stuck = 0; continue; }
+      }
+      if (++stuck >= 2) { LOG('Amazon: the step will not advance — ' + (remainingErrorSummary() || 'no message on the page')); break; }
+    }
+    learnFromFilledFields();
+    LOG('Amazon Jobs automation complete');
+  }
+
   // ===================== ATS DISPATCHER =====================
   async function dispatchATSAutomation() {
     if (autoStopped()) { LOG(`dispatchATSAutomation: not running (${window.__uaAutoReason ? window.__uaAutoReason() : 'automation off'})`); return; }
@@ -13015,6 +13396,7 @@
        confident evidence; the fingerprint fills in the rest. */
     const platform = detectATS();
     if (isWorkday() || platform === 'Workday') await workdayAutomation();
+    else if (isAmazonJobs() || platform === 'Amazon Jobs') await amazonJobsAutomation();
     else if (/greenhouse\.io|boards\.greenhouse/i.test(url) || platform === 'Greenhouse' || platform === 'Greenhouse EU') await greenhouseAutomation();
     else if (/lever\.co|jobs\.lever/i.test(url) || platform === 'Lever') await leverAutomation();
     else if (/icims\.com/i.test(url) || platform === 'iCIMS') await icimsAutomation();

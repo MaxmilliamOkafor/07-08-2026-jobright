@@ -1,0 +1,88 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer - Acme</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:20px auto} .f{margin:10px 0} oc-oneclick-form{display:block}</style></head>
+<body>
+<!-- Modelled on SmartRecruiters' Spark one-click form: web components with their own
+     shadow roots, using the markers SpeedyApply 2.28 targets. -->
+<script>
+  const mk = (name, html, init) => customElements.define(name, class extends HTMLElement {
+    constructor() { super(); this.attachShadow({ mode: 'open' }).innerHTML = html(this); if (init) init(this); }
+  });
+  mk('spl-input', (h) => `<label style="display:block;font-weight:600">${h.getAttribute('label') || ''}</label><input type="${h.getAttribute('type') || 'text'}" aria-label="${h.getAttribute('label') || ''}" style="width:100%;padding:6px">`);
+  mk('spl-internal-form-field', () => `<slot></slot>`);
+  mk('spl-select-option', (h) => `<div style="padding:4px;cursor:pointer"><slot></slot></div>`);
+  mk('spl-typography-body', () => `<slot></slot>`);
+  // Location: the options appear in the autocomplete's OWN shadow root after typing.
+  mk('spl-autocomplete', () => `<label style="display:block;font-weight:600">Location *</label><spl-internal-form-field><spl-input label=""></spl-input></spl-internal-form-field><div slot="menu"></div>`, (h) => {
+    setTimeout(() => {
+      const inner = h.shadowRoot.querySelector('spl-input').shadowRoot.querySelector('input');
+      const menu = h.shadowRoot.querySelector("div[slot='menu']");
+      inner.addEventListener('input', () => {
+        menu.innerHTML = ''; h.removeAttribute('data-picked');
+        if (inner.value.trim().length < 2) return;
+        const o = document.createElement('spl-select-option'); o.setAttribute('value', 'London, UK');
+        o.innerHTML = '<spl-typography-body>London, England, United Kingdom</spl-typography-body>';
+        o.addEventListener('click', () => { inner.value = 'London, England, United Kingdom'; h.setAttribute('data-picked', '1'); menu.innerHTML = ''; });
+        menu.appendChild(o);
+      });
+    }, 0);
+  });
+  mk('spl-phone-field', () => `<label style="display:block;font-weight:600">Phone number *</label>
+    <div class="picker"><spl-select-option label="Ireland"><div>Ireland +353</div></spl-select-option><spl-select-option label="United Kingdom"><div>United Kingdom +44</div></spl-select-option></div>
+    <spl-input label=""></spl-input>`, (h) => {
+    setTimeout(() => h.shadowRoot.querySelectorAll('spl-select-option').forEach((o) => o.addEventListener('click', () => h.setAttribute('data-country', o.getAttribute('label')))), 0);
+  });
+  mk('spl-checkbox', (h) => `<label><input type="checkbox"> ${h.getAttribute('label') || ''}</label>`);
+  mk('sr-file-upload', () => `<label style="display:block;font-weight:600">Resume *</label><input type="file">`);
+  mk('spl-toast', () => `<div style="background:#c00;color:#fff;padding:8px"><slot></slot></div>`);
+</script>
+<h1 data-test="topbar-job-title">Senior Data Engineer</h1>
+<oc-oneclick-form>
+  <section id="s1">
+    <div class="f"><spl-input id="first-name-input" label="First name *"></spl-input></div>
+    <div class="f"><spl-input id="last-name-input" label="Last name *"></spl-input></div>
+    <div class="f"><spl-input id="email-input" type="email" label="Email *"></spl-input></div>
+    <div class="f"><spl-input id="confirm-email-input" type="email" label="Confirm your email *"></spl-input></div>
+    <div class="f" data-test="personal-info-location"><spl-autocomplete></spl-autocomplete></div>
+    <div class="f"><spl-phone-field></spl-phone-field></div>
+    <div class="f"><spl-input id="linkedin-input" label="LinkedIn"></spl-input></div>
+    <div class="f"><sr-file-upload data-test="resume-upload"></sr-file-upload></div>
+    <button type="button" data-test="footer-next">Next</button>
+  </section>
+  <section id="s2" hidden>
+    <sr-screening-questions-form>
+      <fieldset class="f" role="radiogroup"><legend>Will you now or in the future require visa sponsorship to work in the UK? *</legend>
+        <label><input type="radio" name="sp" value="Yes"> Yes</label><label><input type="radio" name="sp" value="No"> No</label></fieldset>
+      <div class="f" data-test="consent-box"><spl-checkbox label="I consent to Acme processing my personal data for recruitment purposes *"></spl-checkbox></div>
+    </sr-screening-questions-form>
+    <button type="button" data-test="footer-submit">Submit</button>
+  </section>
+</oc-oneclick-form>
+<div id="toasts"></div>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
+  const sv = (id) => { const h = document.getElementById(id); return h ? h.shadowRoot.querySelector('input').value.trim() : ''; };
+  const toast = (msg) => { document.getElementById('toasts').innerHTML = msg ? '<spl-toast variant="error">' + msg + '</spl-toast>' : ''; };
+  document.querySelector('[data-test=footer-next]').addEventListener('click', () => {
+    const loc = document.querySelector('spl-autocomplete'), ph = document.querySelector('spl-phone-field');
+    const phoneVal = ph.shadowRoot.querySelector('spl-input').shadowRoot.querySelector('input').value.trim();
+    const file = document.querySelector('sr-file-upload').shadowRoot.querySelector('input').files.length;
+    const ok = sv('first-name-input') && sv('last-name-input') && sv('email-input') && sv('email-input') === sv('confirm-email-input') &&
+      loc.getAttribute('data-picked') === '1' && phoneVal.replace(/\D/g, '').length >= 9 && !/^\+/.test(phoneVal) && file;
+    if (!ok) { console.log('SRSTATE ' + JSON.stringify({ first: sv('first-name-input'), last: sv('last-name-input'), email: sv('email-input'), confirm: sv('confirm-email-input'), picked: loc.getAttribute('data-picked'), phoneVal, file })); return toast('Please fill in all required fields'); }
+    toast(''); document.getElementById('s1').hidden = true; document.getElementById('s2').hidden = false;
+  });
+  document.querySelector('[data-test=footer-submit]').addEventListener('click', () => {
+    const consent = document.querySelector('[data-test=consent-box] spl-checkbox').shadowRoot.querySelector('input').checked;
+    const sp = document.querySelector('[name=sp]:checked');
+    if (!consent || !sp) return toast('Please answer all required questions');
+    const out = { first: sv('first-name-input'), last: sv('last-name-input'), email: sv('email-input'), confirm: sv('confirm-email-input'),
+      locationPicked: document.querySelector('spl-autocomplete').getAttribute('data-picked') === '1',
+      phoneCountry: document.querySelector('spl-phone-field').getAttribute('data-country') || '',
+      phone: document.querySelector('spl-phone-field').shadowRoot.querySelector('spl-input').shadowRoot.querySelector('input').value,
+      linkedin: sv('linkedin-input'), resume: document.querySelector('sr-file-upload').shadowRoot.querySelector('input').files.length ? 'attached' : '', sponsorship: sp.value, consent };
+    console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<oc-success-page-content><h1>Thank you for applying!</h1><p>Your application has been sent.</p></oc-success-page-content>';
+  });
+</script>
+</body></html>

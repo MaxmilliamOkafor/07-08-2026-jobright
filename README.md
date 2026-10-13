@@ -2972,6 +2972,71 @@ scripts; the 12 real-DOM checks pass; suite **1,651 assertions**, all green.
 
 ---
 
+## v17.9 — your daily CSV, Amazon Jobs, Workday and SmartRecruiters
+
+Sources: your `fresh_jobs_7days` CSV, SpeedyApply 2.28.0, OptimHire 9.0, and
+LazyApply 0.8.94. Every change was checked by running the extension in a real
+browser against a test form modelled on that platform.
+
+### Your daily CSV
+All 25 rows import (job title and company carried from your columns). 20 are
+**amazon.jobs**, 4 Greenhouse (one embedded on pinterestcareers.com), 1 Lever.
+
+### Amazon Jobs — a driver of its own
+Amazon runs its own careers system and had no handling here at all.
+- **Apply now is followed in the same tab.** Amazon opens it in a new one, which
+  would pull the run — and you — into another tab. Script-opened application tabs
+  (`window.open`) on any site are now kept in place during a run too.
+- **Sign-in / create account**, with the emailed code fetched from your connected
+  Gmail (Amazon's senders are searched).
+- **The multi-step application** — contact, questions, résumé, review — to
+  "Submit application". Already-applied and closed postings are skipped.
+- Tested: eligible Yes · sponsorship **No** · previously employed **No** ·
+  relocate Yes · CV attached · certification ticked → submitted.
+
+### Workday — SpeedyApply 2.28's newer layouts
+SpeedyApply knows 52 Workday element ids this driver had never seen. Added: the
+"info…" name/contact fields, the public-site **address component** (picked from
+its suggestions), the **numbered work/education history**, the **Self Identify**
+page (signature, **today's date via Workday's picker**, the disability checkbox
+group, language, ethnicity), the hidden create-account terms box, and Workday's
+own error messages into the error reader. Also fixed: the page detector took the
+first page marker in the document even when hidden, so a tenant that keeps
+earlier steps mounted was stuck "on My Information". Tested end to end: all five
+pages, every value right, submitted in 90s.
+
+### SmartRecruiters — the current one-click form
+Its fields are web components (`#first-name-input`, `#email-input`, …) with labels
+inside their shadow roots, a location autocomplete whose options live in ITS
+shadow root, and a phone widget with a country picker. All filled now, using
+SmartRecruiters' own `data-test` Next/Submit markers, its error toast (quoted in
+the log when a step is refused), its consent box and its success page.
+
+**A bug caught on the way:** the "values in the wrong box" sanitizer (v17.5)
+emptied SmartRecruiters' Email box — it could not read the label inside the
+component, saw an email in a "nameless" box, and cleared it. It now never acts
+on a box it cannot name or one that declares itself an email box, and labels
+inside shadow roots are read.
+
+### From OptimHire 9.0
+- **Phone boxes with their own country picker** get the local number — typing
+  "+353 87…" next to a 🇮🇪 +353 picker is rejected and cleared, over and over.
+- **No fill fights**: a value of ours still in place is not retyped, the site's
+  own reformat of it is left alone, and a value it keeps clearing is tried at most
+  three times — the flickering field.
+
+### LazyApply
+Its ATS script covers Greenhouse, Lever, Workday, iCIMS and Ashby, each handled
+in more depth here; nothing ported.
+
+### Not verified live
+These test forms are built from each platform's real element ids, but this
+environment cannot reach the live sites. To test on real Workday / SmartRecruiters
+jobs, run a session on your own machine (Claude Desktop, or `claude remote-control`
+in this folder), which can drive your browser.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

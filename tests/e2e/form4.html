@@ -56,7 +56,7 @@ input[type=text],input[type=email],input[type=tel],select,textarea{width:100%;pa
     e.preventDefault();
     const fd = new FormData(document.getElementById('application_form'));
     const out = {}; for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name + ':' + v.size : '') : v;
-    window.__submitted = out;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
     try { localStorage.setItem('__submitted', JSON.stringify(out)); } catch (_) {}
     document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
     return false;

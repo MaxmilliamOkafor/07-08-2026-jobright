@@ -12,8 +12,10 @@ const lib = `
   const deepAll = (sel, cap) => [...document.querySelectorAll(sel)].slice(0, cap || 500);
   const isVisible = (el) => !!el && !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
   ${src.match(/  const WD_STEP_LABELS = [^\n]*\n/)[0]}
-  ${['normLabel', 'safeClass', 'isSelect2Native', 'coveredBy', 'describeControl', 'workdayOnAccountWall', 'workdayApplicationReady'].map(fn).join('\n')}
-  window.T = { coveredBy, describeControl, workdayOnAccountWall, workdayApplicationReady };`;
+  const getLabel = (el) => (el.labels && el.labels[0] && el.labels[0].textContent) || '';
+  const getQuestionForInput = () => '', textOfIds = () => '';
+  ${['normLabel', 'safeClass', 'isSelect2Native', 'coveredBy', 'describeControl', 'workdayOnAccountWall', 'workdayApplicationReady', 'isPhoneBox', 'dialCodeBeside', 'phoneForPickerBox', 'fieldName'].map(fn).join('\n')}
+  window.T = { coveredBy, describeControl, workdayOnAccountWall, workdayApplicationReady, phoneForPickerBox, fieldName };`;
 let pass = 0, fail = 0;
 const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.stringify(want);
   if (g === w) { pass++; console.log('  ok   ' + name); } else { fail++; console.log('  FAIL ' + name + '\n       got  ' + g + '\n       want ' + w); } };
@@ -41,6 +43,15 @@ const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.string
   eq('select2', await run('<select id=s class="select2-hidden-accessible" required><option>a</option></select><span class="select2-container" style="display:block">x</span>', 'T.describeControl(document.getElementById("s"))'), 'select2 · required · 1 options');
   eq('a covered required text box', await run('<input id=b required style="position:absolute;top:100px"><div class="modal" style="position:fixed;inset:0"></div>', 'T.describeControl(document.getElementById("b"))'), 'text box · required · covered by a dialog');
   eq('a Workday field', await run('<div data-automation-id="formField-city"><input id=b aria-invalid=true></div>', 'T.describeControl(document.getElementById("b"))'), 'workday text · marked invalid');
+  console.log('phone boxes with their own country picker');
+  eq('a picker showing +353 → the box gets the local number', await run('<div class="iti"><button class="iti__selected-flag" aria-label="Ireland +353">🇮🇪 +353</button><input type=tel id=p></div>', 'T.phoneForPickerBox(document.getElementById("p"), "+353 87 426 1508")'), '874261508');
+  eq('a select showing +44 → the local number', await run('<div><select><option value="44" selected>United Kingdom (+44)</option></select><input type=tel id=p></div>', 'T.phoneForPickerBox(document.getElementById("p"), "+44 7700 900123")'), '7700900123');
+  eq('no picker → the number as given', await run('<div><input type=tel id=p></div>', 'T.phoneForPickerBox(document.getElementById("p"), "+353 87 426 1508")'), '+353 87 426 1508');
+  eq('a picker for a DIFFERENT code leaves the number alone', await run('<div class="iti"><button aria-label="France +33">+33</button><input type=tel id=p></div>', 'T.phoneForPickerBox(document.getElementById("p"), "+353 87 426 1508")'), '+353 87 426 1508');
+
+  console.log('labels inside web components');
+  eq('a shadow-root label names the field', await run('<x-field id=h></x-field>', `customElements.define("x-field", class extends HTMLElement { constructor(){ super(); this.attachShadow({mode:"open"}).innerHTML = "<label>Email *</label><input>"; } });
+    T.fieldName(document.getElementById("h").shadowRoot.querySelector("input"))`), 'Email *');
   await b.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -1,0 +1,48 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Apply | Amazon.jobs</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto} .f{margin:12px 0} label{display:block;font-weight:600} input[type=text],input[type=email],input[type=tel],select{width:100%;padding:6px}</style></head>
+<body><h1>Systems Development Engineer, ESC Managed Operations</h1>
+<ol id="steps"><li>Contact information</li><li>Job questions</li><li>Resume</li><li>Review</li></ol>
+<form id="app" novalidate onsubmit="return false">
+  <section data-step="1">
+    <h2>Contact information</h2>
+    <div class="f"><label for="fn">First name *</label><input type="text" id="fn" name="firstName" required></div>
+    <div class="f"><label for="ln">Last name *</label><input type="text" id="ln" name="lastName" required></div>
+    <div class="f"><label for="em">Email *</label><input type="email" id="em" name="email" required></div>
+    <div class="f"><label for="ph">Phone number *</label><input type="tel" id="ph" name="phone" required></div>
+    <div class="f"><label for="city">City *</label><input type="text" id="city" name="city" required></div>
+    <button type="button" class="next">Continue</button>
+  </section>
+  <section data-step="2" hidden>
+    <h2>Job questions</h2>
+    <div class="f"><label for="elig">Are you legally eligible to work in Ireland? *</label><select id="elig" name="eligible" required><option value="">Select</option><option>Yes</option><option>No</option></select></div>
+    <fieldset class="f"><legend>Will you now, or in the future, require sponsorship for an employment visa? *</legend>
+      <label><input type="radio" name="sponsor" value="Yes" required> Yes</label><label><input type="radio" name="sponsor" value="No"> No</label></fieldset>
+    <fieldset class="f"><legend>Have you previously been employed by Amazon? *</legend>
+      <label><input type="radio" name="prevAmazon" value="Yes" required> Yes</label><label><input type="radio" name="prevAmazon" value="No"> No</label></fieldset>
+    <div class="f"><label for="relo">Are you willing to relocate? *</label><select id="relo" name="relocate" required><option value="">Select</option><option>Yes</option><option>No</option></select></div>
+    <button type="button" class="next">Continue</button>
+  </section>
+  <section data-step="3" hidden>
+    <h2>Resume</h2>
+    <div class="f"><label for="cv">Upload your resume *</label><input type="file" id="cv" name="resume" required></div>
+    <button type="button" class="next">Continue</button>
+  </section>
+  <section data-step="4" hidden>
+    <h2>Review</h2><p>Please review your application before submitting.</p>
+    <div class="f"><label><input type="checkbox" id="ack" name="ack" required> I certify that the information I have provided is accurate and complete *</label></div>
+    <button type="button" id="submitApp">Submit application</button>
+  </section>
+</form>
+<script>
+  window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
+  const show = (n) => document.querySelectorAll('[data-step]').forEach((s) => { s.hidden = Number(s.dataset.step) !== n; });
+  const valid = (sec) => [...sec.querySelectorAll('[required]')].every((el) => el.type === 'radio' ? sec.querySelector('[name="' + el.name + '"]:checked') : el.type === 'checkbox' ? el.checked : el.type === 'file' ? el.files.length : el.value.trim());
+  document.querySelectorAll('.next').forEach((b) => b.addEventListener('click', () => { const sec = b.closest('section'); if (valid(sec)) show(Number(sec.dataset.step) + 1); }));
+  document.getElementById('submitApp').addEventListener('click', () => {
+    const sec = document.querySelector('[data-step="4"]'); if (!valid(sec)) return;
+    const fd = new FormData(document.getElementById('app')); const out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted. You can track its status in your dashboard.</p>';
+  });
+</script></body></html>

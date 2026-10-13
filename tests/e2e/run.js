@@ -31,7 +31,7 @@ const WAIT = Number(process.argv[4] || 90000);
   if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const logs = [];
   ctx.on('page', (p) => {
-    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill/i.test(t)) logs.push(t.slice(0, 300)); });
+    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE/i.test(t)) logs.push(t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
 
@@ -44,7 +44,8 @@ const WAIT = Number(process.argv[4] || 90000);
     await chrome.storage.local.set({
       ua_profile: {
         first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@example.com', phone: '+44 7700 900123',
-        city: 'London', country: 'United Kingdom', linkedin: 'linkedin.com/in/maxtest',
+        city: 'London', country: 'United Kingdom', address: '1 Grand Canal Square', postal_code: 'D02 P820',
+        current_company: 'Acme Cloud', current_title: 'Senior Solutions Architect', school: 'Trinity College Dublin', major: 'Computer Science', work_start_year: '2019', linkedin: 'linkedin.com/in/maxtest',
         years_experience: '7', expected_salary: '85000', notice_period: '1 month', degree: 'Master of Science', education_level: "Master's",
       },
       ua_resume_data: { base64: 'data:application/pdf;base64,' + pdf, fileName: 'Maxmilliam_Okafor_CV.pdf', mimeType: 'application/pdf' },
@@ -64,7 +65,7 @@ const WAIT = Number(process.argv[4] || 90000);
     if (!jobPage) continue;
     const s = await jobPage.evaluate(() => {
       const vals = {};
-      for (const el of document.querySelectorAll('#application_form input,#application_form select,#application_form textarea')) {
+      for (const el of document.querySelectorAll('form input,form select,form textarea')) {
         const k = el.name || el.id; if (!k) continue;
         if (el.type === 'radio') { if (el.checked) vals[k] = el.value; else if (!(k in vals)) vals[k] = ''; }
         else if (el.type === 'checkbox') vals[k] = el.checked;
@@ -85,6 +86,9 @@ const WAIT = Number(process.argv[4] || 90000);
   // the queue's own verdict is the authority.
   const outcome = (q.q[0] && q.q[0].status) || 'unknown';
   console.log('OUTCOME:', outcome === 'done' || (snapshots.at(-1) || {}).submitted ? 'submitted' : outcome);
+  // What the form actually received (the fixtures log it on a successful submit).
+  const sub = logs.map((l) => (l.match(/^SUBMITTED (.*)$/) || [])[1]).filter(Boolean).pop();
+  if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
