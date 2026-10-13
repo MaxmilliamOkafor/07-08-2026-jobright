@@ -12441,17 +12441,19 @@
      widgets. The boxes rarely carry a label of their own; four or more
      single-character inputs side by side are the tell. */
   function codeBoxGroup() {
-    return deepAll('input[type=text],input[type=tel],input[type=number],input[type=password],input:not([type])', 60)
-      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && el.maxLength === 1)
-      .slice(0, 10)
-      .filter((el, _, all) => all.length >= 4);
+    // One character each — by the property, the attribute (number boxes ignore
+    // maxLength) or simply by being a narrow box in a row of four to eight.
+    const one = (el) => el.maxLength === 1 || el.getAttribute('maxlength') === '1' || (() => { try { return el.getBoundingClientRect().width < 70; } catch (_) { return false; } })();
+    const boxes = deepAll('input[type=text],input[type=tel],input[type=number],input[type=password],input:not([type])', 60)
+      .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && one(el));
+    return boxes.length >= 4 && boxes.length <= 8 ? boxes : [];
   }
   /* Type a code into the box we found — or across the group, one digit each.
      Putting "482913" into the first of six one-digit boxes kept "4" and left the
      other five empty, so the Verify button never enabled. */
   function typeVerificationCode(box, code) {
     const digits = String(code || '').replace(/\s+/g, '');
-    const group = box && box.maxLength === 1 ? codeBoxGroup() : [];
+    const group = codeBoxGroup().includes(box) ? codeBoxGroup() : [];
     if (group.length >= digits.length && group.length > 1) {
       digits.split('').forEach((ch, i) => {
         try { group[i].focus({ preventScroll: true }); } catch (_) {}
@@ -12498,6 +12500,8 @@
     // older code belongs to a previous job and is rejected.
     const since = Date.now() - 3 * 60000;
     const tried = new Set();
+    const startedAt = Date.now();
+    let resent = false;
 
     while (Date.now() < deadline) {
       if (autoStopped()) return false;
@@ -12530,10 +12534,19 @@
           try { location.assign(r.link); } catch (_) {}
           return true;
         }
+      } else if (r && r.reason === 'gmail-not-signed-in') {
+        LOG('Verification code needed, but Gmail is not signed in in this browser — sign in to Gmail in Chrome, or the job needs you');
+        try { reportNeedsHuman('verification code — sign in to Gmail in this browser'); } catch (_) {}
+        return false;
       } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
-        LOG('Email verification needed and no mailbox is connected — this job needs you. Connect one under 🔑 in the Queue Manager to clear these automatically.');
+        LOG('Email verification needed and no mailbox is connected — this job needs you. Tick "Read codes from my signed-in Gmail" in the Queue Manager to clear these automatically.');
         try { reportNeedsHuman('email verification'); } catch (_) {}
         return false;
+      }
+      // A code that never came (or expired): ask for a new one, once.
+      if (!resent && Date.now() - startedAt > 50000) {
+        const again = deepAll('a,button,[role="button"]', 120).find((b) => isVisible(b) && /^(send( a)? new code|resend( the)? code|resend|send code again|get a new code)$/i.test(normLabel(b.textContent)));
+        if (again) { resent = true; LOG('No code yet — asking for a new one'); realClick(again); }
       }
       await sleep(4000);   // the mail has not landed yet
     }
@@ -13257,6 +13270,7 @@
       if (!onEmailStep) return;
       const box = strictEmailField();
       const email = await getAppEmail();
+      if (!box && hasApplicationForm()) return;     // past the email step already (e.g. after the PIN)
       if (!box || !email) { LOG('Oracle: email step with no ' + (box ? 'saved email' : 'email box') + ' — leaving it for you'); return; }
       const before = stepSignature();
       if (!(box.value || '').trim()) {

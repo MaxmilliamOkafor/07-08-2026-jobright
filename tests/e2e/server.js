@@ -16,5 +16,7 @@ https.createServer({ key: fs.readFileSync(path.join(certDir, 'key.pem')), cert: 
     }
   } catch (_) {}
   if (/\.(ico|png|js|css)$/.test(req.url)) { res.writeHead(204); return res.end(); }
+  // A feed (the Gmail stand-in) is served as XML with the current time filled in.
+  if (/\.xml$/.test(f)) { res.writeHead(200, { 'content-type': 'application/atom+xml; charset=utf-8' }); return res.end(String(fs.readFileSync(f)).replace(/\{\{NOW\}\}/g, new Date().toISOString())); }
   res.writeHead(200, { 'content-type': 'text/html' }); res.end(fs.readFileSync(f));
 }).listen(8443, '127.0.0.1');

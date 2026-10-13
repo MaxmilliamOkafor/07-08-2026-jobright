@@ -553,6 +553,12 @@
   $('btnExport').addEventListener('click', exportCsv);
   $('btnCopyFails').addEventListener('click', copyFailures);
   $('btnDiag').addEventListener('click', extractDiagnostics);
+  // Verification codes from the signed-in Gmail (see ua-mailbox.js, findViaGmailSession).
+  get('ua_mail_gmail_session').then((v) => { $('optGmailSession').checked = v === true; });
+  $('optGmailSession').addEventListener('change', async (e) => {
+    await set({ ua_mail_gmail_session: !!e.target.checked });
+    log(e.target.checked ? 'Verification codes will be read from your signed-in Gmail' : 'Stopped reading codes from Gmail', e.target.checked ? 'ok' : '');
+  });
   /* ── QUESTIONS TO ANSWER (the idea behind LazyApply's question bank) ───────
      The recorder keeps every required question the autofill had no answer for
      (ua_diag_q). Answering one here writes it into the same three stores a

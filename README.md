@@ -3088,6 +3088,35 @@ embedded on company sites) · Amazon 11 · SmartRecruiters 5 · Lever 3 · Ashby
 
 ---
 
+## v17.12 — verification codes from the Gmail you are already signed in to
+
+JPMorgan's "Confirm Your Identity" (Oracle) emails a PIN on every visit, and the
+only way to read it was the Gmail API route — which needs a Google OAuth client ID,
+so in practice it was never connected and every such job was set aside.
+
+**Now:** tick **"Read codes from my signed-in Gmail"** in the Queue Manager. Gmail
+publishes your unread inbox as a small feed (`mail.google.com/mail/feed/atom`, what
+Gmail-notifier extensions read) carrying each email's subject, sender, time and
+opening text — and a verification email's opening text holds its code. The
+extension reads that feed with the Gmail sign-in already in this browser (every
+signed-in account, inbox and Updates tab), takes the code from the email that
+arrived after the PIN screen appeared, types it — one digit per box on Oracle's six
+round boxes, which are number fields — and presses VERIFY. No code after ~50s:
+it presses "Send New Code" once and keeps waiting.
+
+Same limits as the API route: opt-in, read-only, only emails from the last few
+minutes that read like a verification email, nothing stored. Works for every ATS
+that emails a code — Oracle/JPMorgan, Workday, Amazon, iCIMS…
+
+Tested in a real browser with a stand-in feed worded exactly like the JPMorgan
+email: the PIN page → code read (an order number in another email ignored) →
+typed into the six boxes → accepted → application submitted. **Not yet run
+against real Gmail** — the first JPMorgan job on your next run is the live check;
+if Chrome does not send the Gmail sign-in with the request, the log says "Gmail is
+not signed in in this browser" rather than failing silently.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

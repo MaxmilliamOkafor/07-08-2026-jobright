@@ -58,6 +58,7 @@
     ENABLED: 'ua_mail_enabled',
     CLIENT_ID: 'ua_mail_client_id',  // the user's own OAuth client id
     LOG: 'ua_mail_log',
+    SESSION_FEED: 'ua_mail_gmail_session',   // opt-in: read codes via the Gmail you are signed in to
   };
   const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
   const API = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -271,6 +272,71 @@
     return { ok: false, reason: 'no-code' };
   }
 
+
+  /* ── SECOND SOURCE: THE GMAIL YOU ARE ALREADY SIGNED IN TO ─────────────────
+     The API route above needs a Google OAuth client ID, which is a real hurdle.
+     But you are normally signed in to Gmail in this same browser, and Gmail
+     publishes your unread inbox as a small feed (mail.google.com/mail/feed/atom
+     — what Gmail-notifier extensions read): each entry has the subject, sender,
+     time and the opening text. A verification email's opening text carries its
+     code ("…confirm your identity on our careers site: 968134"), so the code can
+     be read from the feed with nothing to set up.
+     Same limits as the API route: opt-in (one tick in the Queue Manager),
+     read-only, only entries that arrived after the code was requested, only
+     ones that read like a verification email, and nothing is kept. */
+  const FEED_LABELS = ['', '%5Esq_ig_i_notification'];   // the inbox, and Gmail's "Updates" tab
+  const VERIFY_WORDS_RE = /verif|confirm|identity|one.?time|passcode|security code|your code|code requested|pin\b|otp\b|sign.?in code|log.?in code/i;
+  const CODE_NEAR_RE = /(?:code|pin|passcode|otp)[^0-9]{0,80}?\b(\d{4,8})\b/i;
+  const xmlText = (s) => String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/\s+/g, ' ').trim();
+  const tag = (block, name) => { const m = block.match(new RegExp('<' + name + '\\b[^>]*>([\\s\\S]*?)</' + name + '>', 'i')); return m ? xmlText(m[1]) : ''; };
+  function parseAtom(xml) {
+    const out = [];
+    for (const m of String(xml || '').matchAll(/<entry\b[\s\S]*?<\/entry>/gi)) {
+      const b = m[0];
+      const author = (b.match(/<author\b[\s\S]*?<\/author>/i) || [''])[0];
+      out.push({ title: tag(b, 'title'), summary: tag(b, 'summary'), issued: Date.parse(tag(b, 'issued') || tag(b, 'modified')) || 0,
+        from: (tag(author, 'name') + ' ' + tag(author, 'email')).trim() });
+    }
+    return out;
+  }
+  async function findViaGmailSession(hints) {
+    const since = Number(hints && hints.since) || 0;
+    const cutoff = Math.max(Date.now() - MAX_AGE_MIN * 60000, since - 60000);
+    // Words that tie an email to THIS employer: host labels and company names.
+    const tokens = new Set();
+    for (const h of (hints && hints.hosts) || []) for (const w of String(h).toLowerCase().split(/[^a-z0-9]+/)) if (w.length > 2 && !/^(www|com|net|org|jobs|careers|apply|oraclecloud|oracle|fa|ocs|myworkdayjobs|wd\d+)$/.test(w)) tokens.add(w);
+    for (const c of (hints && hints.companies) || []) for (const w of String(c).toLowerCase().split(/[^a-z0-9]+/)) if (w.length > 2) tokens.add(w);
+    const found = [];
+    let signedIn = false;
+    for (let u = 0; u < 4; u++) {
+      for (const label of FEED_LABELS) {
+        let res;
+        try { res = await fetch(`https://mail.google.com/mail/u/${u}/feed/atom/${label}`, { credentials: 'include', cache: 'no-store' }); } catch (_) { continue; }
+        if (!res.ok) { if (label === '') break; continue; }
+        const xml = await res.text();
+        if (!/<feed\b/i.test(xml)) { if (label === '') break; continue; }
+        signedIn = true;
+        for (const e of parseAtom(xml)) {
+          if (e.issued && e.issued < cutoff) continue;
+          const text = e.title + ' ' + e.summary;
+          if (!VERIFY_WORDS_RE.test(text)) continue;
+          const m = text.match(CODE_NEAR_RE) || text.match(/\b(\d{6})\b/);
+          if (!m) continue;
+          const hay = (e.from + ' ' + text).toLowerCase();
+          const tie = [...tokens].some((t) => hay.includes(t));
+          found.push({ code: m[1], issued: e.issued, tie, subject: e.title.slice(0, 140) });
+        }
+      }
+    }
+    if (!signedIn) return { ok: false, reason: 'gmail-not-signed-in' };
+    if (!found.length) return { ok: false, reason: 'no-message' };
+    // This employer's newest first; otherwise the newest qualifying one (the window is minutes wide).
+    found.sort((a, b) => (b.tie - a.tie) || (b.issued - a.issued));
+    log(`Verification code found in your signed-in Gmail${found[0].tie ? ' (sender matches the employer)' : ''}`);
+    return { ok: true, code: found[0].code, link: null, subject: found[0].subject, source: 'gmail-session' };
+  }
+
   /* ── messages ────────────────────────────────────────────────────────────── */
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -315,6 +381,7 @@
       (async () => {
         sendResponse({
           enabled: (await local.get(K.ENABLED)) === true,
+          sessionFeed: (await local.get(K.SESSION_FEED)) === true,
           address: (await local.get(K.ACCOUNT)) || '',
           hasClientId: !!(await local.get(K.CLIENT_ID)),
           connected: !!(await sess.get(K.TOKEN)),
@@ -327,15 +394,22 @@
        waiting on; there is no "list my mail" path. */
     if (msg.type === 'UA_MAIL_FIND_VERIFICATION') {
       (async () => {
-        if ((await local.get(K.ENABLED)) !== true) return sendResponse({ ok: false, reason: 'disabled' });
+        const apiOn = (await local.get(K.ENABLED)) === true;
+        const feedOn = (await local.get(K.SESSION_FEED)) === true;
+        if (!apiOn && !feedOn) return sendResponse({ ok: false, reason: 'disabled' });
         const hosts = Array.isArray(msg.hosts) ? msg.hosts.slice(0, 6) : [];
         // Fall back to the requesting tab's own host, never to "anything".
         if (!hosts.length && sender && sender.tab && sender.tab.url) {
           try { hosts.push(new URL(sender.tab.url).hostname); } catch (_) {}
         }
         if (!hosts.length) return sendResponse({ ok: false, reason: 'no-hosts' });
-        try { sendResponse(await findVerification({ hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0 })); }
-        catch (e) { sendResponse({ ok: false, reason: String(e.message || e) }); }
+        const hints = { hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0 };
+        try {
+          let r = apiOn ? await findVerification(hints) : { ok: false, reason: 'not-connected' };
+          // The API route is not set up, or found nothing yet: try the signed-in Gmail.
+          if (!r.ok && feedOn) r = await findViaGmailSession(hints);
+          sendResponse(r);
+        } catch (e) { sendResponse({ ok: false, reason: String(e.message || e) }); }
       })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
       return true;
     }

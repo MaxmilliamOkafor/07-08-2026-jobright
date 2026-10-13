@@ -31,7 +31,7 @@ const WAIT = Number(process.argv[4] || 90000);
   if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const logs = [];
   ctx.on('page', (p) => {
-    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN/i.test(t)) logs.push(t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
+    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push(t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
 

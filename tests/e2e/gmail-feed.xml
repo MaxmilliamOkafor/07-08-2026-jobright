@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed version="0.3" xmlns="http://purl.org/atom/ns#">
+<title>Gmail - Inbox for max.test@example.com</title>
+<tagline>New messages in your Gmail Inbox</tagline>
+<fullcount>2</fullcount>
+<entry>
+<title>Take action to confirm your identity</title>
+<summary>Maxmilliam, Please use this code to confirm your identity on our careers site: 968134 This verification code will expire in 10 minutes. If it expires, you can request a new one</summary>
+<link rel="alternate" href="https://mail.google.com/mail/u/0?account_id=x&amp;message_id=1" type="text/html" />
+<modified>{{NOW}}</modified>
+<issued>{{NOW}}</issued>
+<id>tag:gmail.google.com,2004:1</id>
+<author><name>JPMorgan Chase &amp; Co. Human Resources</name><email>jpmorganchase@candidate.example</email></author>
+</entry>
+<entry>
+<title>Your weekly newsletter</title>
+<summary>Order 123456 has shipped</summary>
+<modified>{{NOW}}</modified><issued>{{NOW}}</issued><id>tag:gmail.google.com,2004:2</id>
+<author><name>Shop</name><email>shop@example.com</email></author>
+</entry>
+</feed>

@@ -30,8 +30,11 @@ function grabFn(s, name) {
 console.log('the mailbox is read-only by construction');
 eq('the only scope requested is gmail.readonly',
   (src.match(/googleapis\.com\/auth\/[a-z.]+/g) || []), ['googleapis.com/auth/gmail.readonly']);
-for (const bad of ['gmail.modify', 'gmail.send', 'gmail.compose', 'gmail.labels', 'mail.google.com', 'gmail.insert'])
+for (const bad of ['gmail.modify', 'gmail.send', 'gmail.compose', 'gmail.labels', 'gmail.insert'])
   eq(`the ${bad} scope is never requested`, src.includes(bad), false);
+// The full-access scope is the bare origin "https://mail.google.com/". (The read-only
+// unread feed at mail.google.com/mail/u/N/feed/atom is a different thing — see section 9.)
+eq('the full-access mail.google.com scope is never requested', /['"`]https:\/\/mail\.google\.com\/['"`]/.test(src), false);
 eq('no request ever uses a mutating verb on the mail API',
   /method:\s*'(DELETE|PUT|PATCH)'/.test(src), false);
 eq('there is no trash, delete, modify or send endpoint',
@@ -159,7 +162,8 @@ console.log('a split PIN is typed one digit per box');
       if (enh[i] === '{') { d++; seen = true; } else if (enh[i] === '}') { d--; if (seen && !d) return enh.slice(a, i + 1); }
     }
   };
-  const mk = (n, max) => Array.from({ length: n }, () => ({ maxLength: max, value: '', disabled: false, readOnly: false, focus() {} }));
+  const mk = (n, max) => Array.from({ length: n }, () => ({ maxLength: max, value: '', disabled: false, readOnly: false, focus() {},
+    getAttribute: (k) => (k === 'maxlength' && max > 0 ? String(max) : null), getBoundingClientRect: () => ({ width: 200 }) }));
   const run = (boxes, code) => {
     new Function('boxes', 'code', `
       const deepAll = () => boxes, isVisible = () => true;
@@ -176,5 +180,40 @@ console.log('a split PIN is typed one digit per box');
   eq('three one-char inputs are not taken for a PIN', run(mk(3, 1), '482913'), ['482913', '', '']);
 }
 
+
+/* ── 9. codes from the signed-in Gmail (no Google setup) ─────────────────────── */
+console.log('verification codes from the signed-in Gmail feed');
+{
+  const chunk = src.slice(src.indexOf('  const FEED_LABELS = '), src.indexOf('  /* ── messages'));
+  const now = new Date().toISOString(), old = new Date(Date.now() - 3600e3).toISOString();
+  const feed = (entries) => `<?xml version="1.0"?><feed version="0.3"><title>Gmail - Inbox</title>${entries.map((e) =>
+    `<entry><title>${e.t}</title><summary>${e.s}</summary><issued>${e.i || now}</issued><author><name>${e.n}</name><email>${e.m || 'x@y.com'}</email></author></entry>`).join('')}</feed>`;
+  const mk = (pages) => {
+    const x = {};
+    new Function('exports', 'fetch', `const MAX_AGE_MIN = 15; const log = () => {}; ${chunk}; exports.find = findViaGmailSession; exports.parse = parseAtom;`)(x,
+      async (url) => { const body = pages[url.replace(/^https:\/\/mail\.google\.com\/mail\//, '')]; return body == null ? { ok: false, text: async () => '' } : { ok: true, text: async () => body }; });
+    return x;
+  };
+  (async () => {
+    const jpmc = { t: 'Take action to confirm your identity', s: 'Maxmilliam, Please use this code to confirm your identity on our careers site: 968134 This verification code will expire in 10 minutes.', n: 'JPMorgan Chase &amp; Co. Human Resources' };
+    const noise = { t: 'Your order', s: 'Order 123456 has shipped', n: 'Shop' };
+    let r = await mk({ 'u/0/feed/atom/': feed([noise, jpmc]) }).find({ hosts: ['jpmc.fa.oraclecloud.com'], companies: ['JPMorgan Chase'], since: Date.now() - 60000 });
+    eq('the JPMorgan PIN is read from the feed', r.code, '968134');
+    eq('an order number in another email is not taken', r.ok && r.code !== '123456', true);
+    r = await mk({ 'u/0/feed/atom/': feed([Object.assign({}, jpmc, { i: old })]) }).find({ hosts: ['jpmc.fa.oraclecloud.com'], since: Date.now() - 60000 });
+    eq('a code sent BEFORE this PIN screen is ignored', r.ok, false);
+    r = await mk({}).find({ hosts: ['x.com'], since: 0 });
+    eq('not signed in to Gmail is reported as such', r.reason, 'gmail-not-signed-in');
+    r = await mk({ 'u/0/feed/atom/': '<html>login</html>', 'u/1/feed/atom/': feed([jpmc]) }).find({ hosts: ['jpmc.fa.oraclecloud.com'], since: Date.now() - 60000 });
+    eq('a second signed-in Gmail account is checked too', r.code, '968134');
+    eq('the sender name is decoded', mk({}).parse(feed([jpmc]))[0].from.startsWith('JPMorgan Chase & Co.'), true);
+  })();
+  eq('it is opt-in', /if \(!apiOn && !feedOn\) return sendResponse\(\{ ok: false, reason: 'disabled' \}\);/.test(src), true);
+  eq('and used when the API route is not set up', /if \(!r\.ok && feedOn\) r = await findViaGmailSession\(hints\);/.test(src), true);
+  eq('nothing from the email body is stored', /local\.set\([^)]*summary|local\.set\([^)]*code/.test(chunk), false);
+}
+
+setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+}, 100);
