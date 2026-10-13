@@ -4920,6 +4920,23 @@
   }
   function stalledFor() { return Date.now() - _lastProgressAt; }
   function isStalled() { return stalledFor() > _stallLimitMs; }
+  /* The per-job cap is a wall clock, and a wall clock cannot tell a stuck job from
+     a slow one. A Workday tenant that needs an account plus five pages, or an
+     Oracle "Confirm Your Identity" PIN that takes a minute to reach the inbox, both
+     outlive 150s while doing everything right — and were being thrown away as
+     "Timed out after 150s". When the cap is reached, a job that is mid-operation
+     or made progress in the last 30s gets another 45s, up to a hard ceiling. A job
+     that is genuinely going nowhere still expires on the first check, as before. */
+  const JOB_EXTEND_MS = 45000;
+  const JOB_RECENT_PROGRESS_MS = 30000;
+  const JOB_HARD_CEIL_MS = 8 * 60 * 1000;
+  function jobTimeoutExtension(startedAt) {
+    const age = Date.now() - (startedAt || Date.now());
+    const ceil = Math.max(JOB_HARD_CEIL_MS, qTimeout);
+    if (age >= ceil) return 0;
+    if (!isBusy() && stalledFor() >= JOB_RECENT_PROGRESS_MS) return 0;
+    return Math.min(JOB_EXTEND_MS, ceil - age);
+  }
   // A page whose URL or field-set changed is making progress even if nothing we
   // did caused it, so watch for that too rather than only crediting our own work.
   let _progressSignature = '';
@@ -9174,6 +9191,8 @@
     // MAIN-world hooks answer them for the lifetime of this job (and only then).
     setAutomationFlag(true);
     noteProgress('job started');
+    // The worker's pick time, so the hard ceiling also holds across a reload of this tab.
+    const jobStart = (c.startedAt && Date.now() - c.startedAt < 30 * 60000) ? c.startedAt : Date.now();
     let finalized = false, tId = null, stallIv = null, beatIv = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
@@ -9213,7 +9232,15 @@
     const onTimeout = async () => {
       if (finalized) return;
       if (detectCaptcha()) { showCaptchaBanner(detectCaptcha()?.provider); tId = setTimeout(onTimeout, 60000); return; }
-      await finalize('timeout', `Timed out after ${qTimeout / 1000}s`);
+      const more = jobTimeoutExtension(jobStart);
+      if (more) {
+        LOG(`Job cap reached but still working (${isBusy() ? _busyWhat : _lastProgressWhat}) — extending ${Math.round(more / 1000)}s`);
+        DIAG('job.extended', isBusy() ? _busyWhat : _lastProgressWhat, { detail: { ms: Date.now() - jobStart } });
+        tId = setTimeout(onTimeout, more);
+        return;
+      }
+      const took = Math.round((Date.now() - jobStart) / 1000);
+      await finalize('timeout', `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`);
     };
     tId = setTimeout(onTimeout, qTimeout);
 
@@ -9244,23 +9271,13 @@
       try { pct = fillReport().pct; } catch (_) {}
       try {
         chrome.runtime.sendMessage({
-          type: 'UA_JOB_PROGRESS', id: c.id, stage: _lastProgressWhat,
-          idleMs: stalledFor(), pct,
+          type: 'UA_JOB_PROGRESS', id: c.id, stage: isBusy() ? _busyWhat : _lastProgressWhat,
+          idleMs: stalledFor(), busy: isBusy(), pct,
         }, () => void chrome.runtime.lastError);
       } catch (_) {}
     };
     beat();   // straight away: a page that just reloaded should not look silent
-    beatIv = setInterval(() => {
-      if (finalized) return;
-      let pct = null;
-      try { pct = fillReport().pct; } catch (_) {}
-      try {
-        chrome.runtime.sendMessage({
-          type: 'UA_JOB_PROGRESS', id: c.id, stage: _lastProgressWhat,
-          idleMs: stalledFor(), pct,
-        }, () => void chrome.runtime.lastError);
-      } catch (_) {}
-    }, 5000);
+    beatIv = setInterval(beat, 5000);
 
     try {
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
@@ -9477,9 +9494,16 @@
               _qTimeoutId = setTimeout(onJobTimeout, 60000);
               return;
             }
-            LOG(`Queue: job timed out after ${qTimeout / 1000}s — auto-skipping`);
+            const more = jobTimeoutExtension(c.startedAt);
+            if (more) {
+              LOG(`Queue: job cap reached but still working (${isBusy() ? _busyWhat : _lastProgressWhat}) — extending ${Math.round(more / 1000)}s`);
+              _qTimeoutId = setTimeout(onJobTimeout, more);
+              return;
+            }
+            const took = Math.round((Date.now() - (c.startedAt || Date.now())) / 1000) || Math.round(qTimeout / 1000);
+            LOG(`Queue: job timed out after ${took}s — auto-skipping`);
             c.status = 'timeout';
-            c.error = `Timed out after ${qTimeout / 1000}s`;
+            c.error = `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`;
             c.completedAt = Date.now();
             qStats.timedOut++;
             await saveQ(); await saveStats();

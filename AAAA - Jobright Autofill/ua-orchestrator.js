@@ -150,6 +150,11 @@
      tab and get killed mid-run. This is how long a tab may take to come back
      after a navigation before we stop giving it the benefit of the doubt. */
   const NAV_GRACE_MS = 45 * 1000;
+  /* Mirrors the job tab's own cap extension (jobTimeoutExtension in
+     ua-enhancement.js): a tab that is busy, or progressed within this window, is
+     still working, and may run up to the hard ceiling. */
+  const JOB_RECENT_PROGRESS_MS = 30 * 1000;
+  const JOB_HARD_CEIL_MS = 8 * 60 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,
@@ -483,7 +488,7 @@
     await withQueue((jobs) => {
       for (const j of jobs) {
         if (j.status === 'applying') { j.status = 'pending'; j.startedAt = null; }
-        delete j.needsHuman; delete j.beatAt; delete j.stage; delete j.pct; delete j.navAt;
+        delete j.needsHuman; delete j.beatAt; delete j.stage; delete j.pct; delete j.navAt; delete j.working;
       }
       total = jobs.filter((j) => j.status === 'pending').length;
     });
@@ -617,6 +622,12 @@
           stale.push({ id: j.id, label: j.title || j.url, why: 'unresponsive' });
           continue;
         }
+        /* Past the per-job cap but the tab says it is still working and has beaten
+           recently: the tab extends its own cap in that case, so do not kill it from
+           here — up to the tab's hard ceiling plus a margin for it to report. */
+        if (j.startedAt && Date.now() - j.startedAt > cfg.jobTimeoutMs &&
+            j.working && j.beatAt && Date.now() - j.beatAt < 15000 &&
+            Date.now() - j.startedAt < Math.max(cfg.jobTimeoutMs, JOB_HARD_CEIL_MS + 60000)) continue;
         if (j.startedAt && Date.now() - j.startedAt > cfg.jobTimeoutMs) {
           j.status = 'timeout';
           j.error = `Watchdog: no result in ${Math.round(cfg.jobTimeoutMs / 60000)} min`;
@@ -877,6 +888,9 @@
             j.beatAt = Date.now();
             j.stage = String(msg.stage || '').slice(0, 60);
             if (typeof msg.pct === 'number') j.pct = msg.pct;
+            // Whether the tab is still doing work — lets the watchdog tell a slow
+            // job (verification email, multi-page Workday) from a stuck one.
+            j.working = !!msg.busy || (typeof msg.idleMs === 'number' && msg.idleMs < JOB_RECENT_PROGRESS_MS);
           });
           sendResponse({ ok: true });
         })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });

@@ -3117,6 +3117,29 @@ not signed in in this browser" rather than failing silently.
 
 ---
 
+## v17.13 — "Timed out after 150s" no longer kills jobs that are still working
+
+The per-job cap was a plain stopwatch: at 150s the job was thrown away whatever it
+was doing. The jobs that need longest are exactly the ones doing everything right —
+a JPMorgan PIN that takes a minute to reach the inbox, a Workday tenant that needs
+an account and then five pages — and they were the "timeout" failures in the run
+summary. A page that is genuinely stuck was already caught in ~15s by the stall
+check, so the stopwatch was only ever catching slow, working jobs.
+
+**Now:** when the cap is reached, a job that is mid-operation (filling, signing in,
+waiting for the verification email, submitting, verifying) or made progress in the
+last 30s gets another 45s, and is checked again — up to a hard ceiling of 8 minutes.
+A job that has done nothing for 30s still times out on the first check, as before.
+The worker's own watchdog follows the same rule from the tab's heartbeat, so it no
+longer kills a working tab at its 3-minute mark either. A timeout now also says what
+the job was doing: `Timed out after 312s (last activity: waiting for the verification email)`.
+
+Checked in a real browser: the JPMorgan PIN fixture with the code arriving 85s
+after the start and the cap set to 60s — before, "Watchdog: no result in 1 min";
+now the cap is extended once, the PIN is typed and the application is submitted.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
