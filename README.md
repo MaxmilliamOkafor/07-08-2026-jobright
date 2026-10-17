@@ -3202,6 +3202,29 @@ extension update/reload. Nothing else changes; applying works exactly as before.
 
 ---
 
+## v17.16 — rebased onto Jobright 1.24.1
+
+Jobright's 1.24.1 changes three of its files; everything else is byte-identical to
+1.24.0.
+
+- `helper-app.41ea2652.js` (copied verbatim): its autofill now asks Jobright's
+  server for answers as a **stream** — a `getGptResultsStream` port to the worker,
+  falling back to the old request — and fills each answer the moment it arrives
+  instead of waiting for all of them. Requests now also carry the current job id.
+- `static/background/index.js`: theirs, plus our three `importScripts` lines. The
+  worker gains the stream handler, a `getAutofillConfig` message, and site rules
+  that wait until you are logged in to Jobright. The same four `active:!0` tab
+  calls as 1.24.0, still kept in the background during runs by the tab guard.
+- `manifest.json`: only the version (1.24.1). Their content scripts are unchanged;
+  their `web_accessible_resources` still list assets they don't ship, so ours is
+  kept. `_metadata/` (Chrome Web Store signing data) is not copied.
+
+Nothing in it overlaps our code: no `UA_` messages, no ports of ours, and our
+request interception never sat on the worker's requests. Unit suite green; the
+fixtures were re-run on the patched build (see the commit).
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
@@ -3368,7 +3391,9 @@ the new bundle removed a file the manifest still points at, or if the appended
    - `side_panel.default_path` = `ua-queue.html`.
    - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
      `identity`.
-   - Their new content scripts go after ours, in their order (1.24.0 added four).
+   - Their new content scripts go after ours, in their order (1.24.0 added four;
+     1.24.1 added none).
+   - Don't copy `_metadata/` — it is Web Store signing data for their build.
 5. Check the new worker for anything that would collide with ours — side panel,
    alarms, message types beginning `UA_`, `beforeunload` — and for `active:!0`
    (tabs brought to the front). Those are neutralised during runs by the tab
