@@ -212,7 +212,12 @@
     origAdd.call(window, 'beforeunload', function (e) {
       if (!beforeUnloadSilenced()) return;
       try { e.stopImmediatePropagation(); } catch (_) {}
-      try { e.returnValue = undefined; } catch (_) {}
+      /* Never touch e.returnValue here. It is a string property: assigning
+         undefined stores "undefined", which is non-empty, and a non-empty
+         returnValue is exactly how a page ASKS for the prompt — so this line
+         raised "Leave site? Changes you made may not be saved." on every site
+         after any click, the very dialog it was written to prevent. Stopping the
+         page's handlers above is the whole of the suppression. */
       report('beforeunload', 'Leave site? suppressed before the page could ask', true);
     }, true);
   } catch (_) {}
@@ -227,8 +232,8 @@
           return typeof v === 'function' ? v.bind(t) : v;
         },
         set(t, p, v) {
-          // Belt and braces — the wrapper clears the real event afterwards too,
-          // so this alone is not what suppresses the prompt.
+          // Swallowed: the real event's returnValue is never written, by the
+          // handler or by us — writing it at all is what arms the prompt.
           if (p === 'returnValue') return true;
           try { t[p] = v; } catch (_) {}
           return true;
@@ -246,9 +251,9 @@
       if (!beforeUnloadSilenced()) return listener.apply(this, arguments);
       let r;
       try { r = listener.call(this, shieldEvent(e)); } catch (_) {}
-      // Belt and braces: clear anything the handler managed to set on the real
-      // event, and never pass a string back — either would raise the prompt.
-      try { e.returnValue = undefined; } catch (_) {}
+      // The handler only ever saw the shielded event, so the real one is untouched.
+      // Never assign e.returnValue (any value arms the prompt — see above) and
+      // never pass a string back.
       report('beforeunload', 'Leave site? suppressed', true);
       return undefined;
     };

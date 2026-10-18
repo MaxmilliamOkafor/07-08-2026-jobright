@@ -3225,6 +3225,31 @@ fixtures were re-run on the patched build (see the commit).
 
 ---
 
+## v17.17 — "Leave site? Changes you made may not be saved." was coming from us
+
+Yes — that prompt (seen on optimhire.com, and on every other site) was raised by
+this extension. `ua-page-hooks.js` runs on every page, and its job is to *stop*
+that prompt: it halts the page's own leave-page handlers. But it also "cleared"
+the event with `e.returnValue = undefined`. `returnValue` is a text property, so
+that stored the word "undefined" — and any non-empty `returnValue` is precisely
+how a page asks Chrome for the prompt. So after any click, leaving any page asked
+"Leave site?", even a page that never asked for it, and during a run it could stall
+the tab between jobs.
+
+Now `returnValue` is never written, by us or by the page's handlers (they only ever
+see a shielded copy of the event). Checked in real Chromium, old vs new:
+
+| page | before | after |
+|---|---|---|
+| asks for nothing | prompt | none |
+| `preventDefault()` / `returnValue = "x"` / `onbeforeunload` returning text / its own capture listener | prompt | none |
+
+`tests/e2e/leave-site.js` repeats that check in a real browser (with a control
+proving it can see the prompt), and the node test's fake event now stores
+`returnValue` as text the way Chrome does, so it fails on the old line too.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
@@ -3399,7 +3424,7 @@ the new bundle removed a file the manifest still points at, or if the appended
    (tabs brought to the front). Those are neutralised during runs by the tab
    guard in `ua-orchestrator.js`, but a new one is worth knowing about.
 6. Run the six fixtures: `for f in tests/e2e/form*.html; do node tests/e2e/run.js "$(basename $f)"; done`
-   from `tests/e2e`, and `node tests/e2e/dom-units.js`.
+   from `tests/e2e`, `node tests/e2e/dom-units.js` and `node tests/e2e/leave-site.js`.
 7. `./tests/run.sh`. It fails if any of the three worker lines is missing.
 
 ## Notes
