@@ -1156,7 +1156,9 @@
     if (/graduation|grad.?date|grad.?year/.test(l)) return p.graduation_year || p.grad_year || '';
     // Excluded "position/title APPLIED FOR" (that's the JOB's title, not the
     // candidate's) and "position type" (employment-type dropdown, e.g. Full-Time).
-    if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type/.test(l)) return p.current_title || p.title || '';
+    // "Role Description" / "Position responsibilities" ask for prose, not the title —
+    // the title rule used to put "Senior Solutions Architect" in a description box.
+    if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type|descri|responsib|dut(y|ies)|summary|achievement|accomplish/.test(l)) return p.current_title || p.title || '';
     // Dropped bare "org" — a 3-letter fragment that could match unrelated labels
     // (e.g. a "yourname.org" website hint) and stuff the company name into them.
     if (/company|employer|current.?company/.test(l)) return p.current_company || p.company || '';

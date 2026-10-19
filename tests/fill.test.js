@@ -3103,6 +3103,8 @@ console.log('v17.18: Workday engine — any language, every formField container'
   eq('parser ghosts are deleted down to the profile\'s count, never below', /while \(n > 0 && bs\.length > n\)/.test(body('wdEnsureBlocks')), true);
   eq('dates are typed a digit at a time', /new KeyboardEvent\('keydown', \{ key: ch/.test(body('wdSetSegment')), true);
   eq('a school not in the list falls back to its "Other"', /'Sonstige'/.test(body('wdMyExperience')), true);
+  eq('a replaced parser entry does not keep the other role\'s description', /if \(!r\.description && otherRole\)/.test(body('wdMyExperience')), true);
+  eq('"Role Description" is not answered with the job title', /dut\(y\|ies\)\|summary/.test(src), true);
 }
 
 
