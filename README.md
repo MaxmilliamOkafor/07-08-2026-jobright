@@ -3250,6 +3250,61 @@ proving it can see the prompt), and the node test's fake event now stores
 
 ---
 
+## v17.18 — Workday: your standalone engine's approach, ported in
+
+From `claude-extension-standalone/src/workday/` (selectors, dom, controls, steps,
+answers, detect, i18n). Ported as plain JavaScript into `ua-enhancement.js`, and
+run after the existing Workday fillers, touching only what they left empty:
+
+- **One pass over every field.** Every Workday field sits in a
+  `formField-…` container. The pass works out what each one is (text, dropdown,
+  search-and-pick list, radio, checkbox, checkbox group, date), decides the
+  answer, writes it the way that control takes input, and checks it stuck. New
+  or renamed tenant questions are no longer missed because their id isn't on a list.
+- **Any language.** Knockout questions are decided in English, German, French,
+  Spanish, Portuguese, Italian, Dutch and Polish. Before, a German "Benötigen Sie
+  … Sponsoring?" fell through to the English decider's default — "Yes" (needs
+  sponsorship). Localised options match your profile: "Vereinigtes Königreich",
+  "Mobil", "Ja/Nein", and decline options such as "Keine Angabe". Step names are
+  read in every language too.
+- **My Information:** "How did you hear" lists (walking into sub-lists), "previously
+  worked here" (No), country, county, phone type, **country phone code** (the
+  number then goes in without the code).
+- **My Experience:** entries Workday's CV parser invented are **deleted** down to
+  the number of roles in your profile, and the rest are filled from your own
+  history (title, company, location, current, dates, description). Schools
+  not in the tenant's list fall back to its "Other" entry; degree, field of
+  study, GPA, skills, LinkedIn.
+- **Dates are typed digit by digit**, as Workday's date boxes expect; a typed value
+  alone is often discarded.
+- **Self Identify:** signature name, **today's date**, disability (decline unless
+  your profile says otherwise). Voluntary Disclosures: decline unless your profile
+  has an answer; the terms box is ticked.
+- **The "Upload your resume" page** that can sit between sign-in and the
+  application is handled: the CV is attached and Continue pressed. It had no
+  handler, and the job stalled there.
+- **Workday's error banner** names each field it refused; on a stuck page each one
+  is followed and that field answered.
+- Waiting for the application to load now counts as work, so the 15-second stall
+  watchdog can't drop the job mid-load.
+
+**Tested with your mock** (`test/workday-e2e/mock-workday.js`, now
+`tests/e2e/src/mock-workday.js`, built into `tests/e2e/workday-mock.html`):
+the whole application — job → Apply → create account through the click layer →
+resume upload → five steps → review → submitted — in **English and German**,
+every required answer right. Before the port, the same run stalled on the resume
+upload page.
+
+Not ported: the engine's tailoring/PDF rendering, its AI answers and its
+password vault — they depend on its own settings, structured CV and AI key;
+here Jobright's tailoring and the existing answer bank/site logins do those jobs.
+The optional German "Field of study" stays empty when your profile's English
+value ("Computer Science") has no match in the list ("Informatik") — matching
+across languages needs the engine's AI step. SpeedyApply 2.28.0 is the version
+already ported in v17.9.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole

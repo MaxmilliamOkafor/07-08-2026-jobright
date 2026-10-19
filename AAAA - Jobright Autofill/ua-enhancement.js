@@ -6346,10 +6346,14 @@
       }
     }
 
-    // Wait for form page
-    const fp = workdayApplicationReady() ||
-      await waitFor("[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']", 15000) ||
-      (await waitUntil(workdayApplicationReady, 5000, 250));
+    // "Upload your resume" can sit between sign-in and the wizard.
+    for (let i = 0; i < 2 && await wdHandleResumeUploadPage(); i++) await sleep(scaled(800, 400));
+
+    /* Wait for form page — as work, not idleness: this wait was up to 20s with
+       nothing reporting progress, and the stall watchdog drops a job after 15. */
+    const WD_FORM_IDS = "[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']";
+    const fp = workdayApplicationReady() || await withBusy('waiting for the Workday application', () =>
+      waitUntil(() => workdayApplicationReady() || !!wdStepKind() || !!document.querySelector(WD_FORM_IDS), 20000, 250));
     if (!fp) { LOG('Workday form page not found'); return; }
     await sleep(scaled(1000, 500));
 
@@ -6365,6 +6369,8 @@
     await workdayFillLanguage(p);
     await workdayResumeUpload();
     await fixPhoneCountryCode();
+    // Whatever the fixed-id fillers above left empty, in any language.
+    await wdEnginePass(p);
 
     // Jobright autofill as a BACKUP — catches any field SpeedyApply missed on this page.
     await triggerAutofill();
@@ -7120,6 +7126,672 @@
     return n;
   }
 
+  /* ── WORKDAY ENGINE (ported from your standalone Workday autopilot) ─────────
+     The field-by-field fillers above know a fixed list of automation ids. A
+     tenant that adds a question, renames a step, or runs in German, French or
+     Polish slipped past them: German knockouts fell through to the English
+     decider's default "Yes" (on a sponsorship question that is the wrong answer),
+     parser-invented "Work Experience 2/3" entries with no dates blocked My
+     Experience, the "Upload your resume" page had no handler at all, and dates
+     typed as a value were dropped by Workday's spinbuttons.
+
+     This is the engine's approach, in this file's terms: every field on a page
+     sits in a [data-automation-id^="formField-"] container, so work out what
+     kind of control each one is, decide the answer (profile → saved answers →
+     knockout reasoning, in eight languages), write it the way that control
+     takes input, and check that it stuck. It runs after the existing fillers and
+     only touches what they left empty — except the parser's ghost entries,
+     which are replaced with the profile's own history. */
+  const WD_FF = '[data-automation-id^="formField-"]';
+  const wdRx = (parts) => new RegExp(parts.join('|'), 'iu');
+  const WD_STEP_PATTERNS = [
+    [wdRx(['self.?identif', 'disabilit', 'selbstidentifi', 'behinderung', 'auto-?identification', 'autoidentificaci', 'discapacidad', 'autoidentifica', 'deficiência', 'disabilità', 'zelfidentificatie', 'niepełnosprawn']), 'selfIdentify'],
+    [wdRx(['voluntary', 'disclosure', 'equal (employment )?opportunit', '\\beeo\\b', 'freiwillige angaben', 'chancengleichheit', 'informations facultatives', 'déclarations volontaires', 'divulgaciones voluntarias', 'información voluntaria', 'divulgações voluntárias', 'informações voluntárias', 'dichiarazioni volontarie', 'informazioni facoltative', 'vrijwillige', 'dobrowolne']), 'voluntary'],
+    [wdRx(['^review', 'überprüfen', '^prüfen', 'zusammenfassung', 'vérifier', 'révision', 'récapitulatif', '^revisar', 'revisión', 'revisão', '^rivedi', 'revisione', 'riepilogo', 'controleren', 'overzicht', 'przegląd', 'podsumowanie']), 'review'],
+    [wdRx(['my information', 'personal (information|details)', 'contact (information|details)', 'meine (informationen|angaben|daten)', 'persönliche (angaben|daten|informationen)', 'mes informations', 'informations personnelles', 'mi información', 'información personal', 'datos personales', 'minhas informações', 'informações pessoais', 'le mie informazioni', 'informazioni personali', 'mijn gegevens', 'persoonlijke gegevens', 'moje informacje', 'dane osobowe']), 'myInformation'],
+    [wdRx(['my experience', 'experience', 'work history', 'meine (erfahrung|berufserfahrung)', 'erfahrung', 'lebenslauf', 'expérience', 'experiencia', 'experiência', 'esperienza', 'ervaring', 'doświadczenie']), 'myExperience'],
+    [wdRx(['question', 'additional information', 'screening', 'application details', 'fragen', 'zusätzliche informationen', 'informations complémentaires', 'preguntas', 'información adicional', 'perguntas', 'informações adicionais', 'domande', 'informazioni aggiuntive', 'vragen', 'aanvullende informatie', 'pytania', 'dodatkowe informacje']), 'questions'],
+  ];
+  const WD_ADD_RX = wdRx(['^add( another)?$', '^hinzufügen$', '^weitere hinzufügen$', '^ajouter$', '^ajouter un(e)? autre$', '^(añadir|agregar)( otro| otra)?$', '^adicionar( outro| outra)?$', '^aggiungi( altro| altra)?$', '^toevoegen$', '^nog een toevoegen$', '^dodaj( kolejny| następny)?$']);
+  const WD_DELETE_RX = wdRx(['^(delete|remove)$', '^(löschen|entfernen)$', '^supprimer$', '^(eliminar|borrar|quitar)$', '^(excluir|remover)$', '^(elimina|rimuovi)$', '^verwijderen$', '^usuń$']);
+  const WD_DECLINE_RX = wdRx(['decline', 'not wish', 'prefer not', "don'?t wish", 'do not want', 'choose not', 'not to (answer|disclose|self.?identify)', 'rather not',
+    'keine angabe', 'möchte (ich )?(keine angabe|nicht|das nicht)', 'nicht angeben', 'ohne angabe', 'ne (souhaite|veux|désire) pas', 'préfère ne pas', 'ne pas (répondre|divulguer)',
+    'prefiero no', 'no deseo', 'no quiero', 'prefiro não', 'não desejo', 'não quero', 'preferisco non', 'non desidero', 'non voglio', 'liever niet', 'niet (beantwoorden|opgeven)', 'wolę nie', 'nie chcę', 'odmawiam']);
+  // Workday's ids are the same in every locale; the questions are not.
+  const WD_Q = {
+    sponsorship: wdRx(['sponsor', '\\bvisa', 'work permit', 'immigration', 'arbeitserlaubnis', 'visum', 'aufenthaltstitel', 'parrainage', 'permis de travail', 'patrocinio', 'permiso de trabajo', 'patrocínio', 'autorização de trabalho', 'sponsorizzazione', 'permesso di lavoro', 'werkvergunning', 'pozwolenie na pracę']),
+    authorized: wdRx(['authori[sz]ed', 'eligible to work', 'right to work', 'legally (able|permitted|entitled)', 'berechtigt', 'arbeitsberechtigung', 'arbeiten zu dürfen', 'autorisé', 'droit de travailler', 'autorizad[oa]', 'derecho a trabajar', 'autorizzat[oa]', 'diritto di lavorare', 'bevoegd', 'recht om te werken', 'uprawnion', 'prawo do pracy']),
+    adult: wdRx(['(at least|over|older than) 18', 'age of 18', '18 years', '18 jahre', 'volljährig', '18 ans', 'majeur', '18 años', 'mayor de edad', '18 anos', 'maior de idade', '18 anni', 'maggiorenne', '18 jaar', 'meerderjarig', '18 lat', 'pełnoletni']),
+    relocate: wdRx(['relocat', 'umzug', 'umziehen', 'relocalis', 'déménag', 'reubica', 'traslad', 'realoca', 'trasferi', 'verhuiz', 'relokac', 'przeprowadz']),
+    previouslyWorked: wdRx(['previously (been )?(worked|employed)', 'former (employee|worker)', 'current or former', 'ever worked for', 'bereits (bei|für) .*(gearbeitet|tätig)', 'ehemalige', 'déjà travaillé', 'ancien (employé|salarié)', 'trabajado (anteriormente|antes|previamente)', 'trabalhou anteriormente', 'lavorato in precedenza', 'eerder gewerkt', 'wcześniej pracował']),
+    criminal: wdRx(['convict', 'criminal', 'felony', 'misdemeanou?r', 'offen[cs]e', 'vorstraf', 'strafrechtlich', 'verurteilt', 'straftat', 'casier judiciaire', 'condamn', 'antecedentes penales', 'condenad', 'antecedentes criminais', 'precedenti penali', 'condannat', 'strafblad', 'veroordeeld', 'karaln', 'skazan']),
+    salary: wdRx(['salary', 'compensation', 'pay expectation', 'gehalt', 'vergütung', 'salaire', 'rémunération', 'salario', 'sueldo', 'salário', 'stipendio', 'retribuzione', 'salaris', 'wynagrodzeni']),
+    years: wdRx(['years? of (relevant |professional |work )?experience', 'how many years', 'jahre (an |berufs)?erfahrung', 'wie viele jahre', "années d'expérience", "combien d'années", 'años de experiencia', 'cuántos años', 'anos de experiência', 'quantos anos', 'anni di esperienza', 'quanti anni', 'jaar (werk)?ervaring', 'hoeveel jaar', 'lat doświadczenia', 'ile lat']),
+    why: wdRx(['why (do you want|are you interested)', 'motivation', 'warum möchten sie', 'pourquoi (souhaitez|voulez)', 'por qué (quieres|desea)', 'por que (você )?(quer|deseja)', 'perché (vuoi|desidera)', 'waarom wil', 'dlaczego chcesz']),
+    source: wdRx(['how did you hear', 'referral source', '^source$', 'wie haben sie .* erfahren', 'comment avez-vous (connu|entendu)', 'cómo (te enteraste|se enteró)', 'como (soube|ficou sabendo)', 'come (hai|ha) saputo', 'hoe (heb je|bent u) .* (gehoord|gevonden)', 'jak dowiedział']),
+    eeo: wdRx(['gender', '^sex$', 'geschlecht', 'genre', 'sexe', 'género', 'gênero', 'genere', 'geslacht', 'płeć', 'ethnic', '\\brace\\b', 'herkunft', 'etnia', 'raza', 'raça', 'veteran', 'militär', 'vétéran', 'hispanic', 'latino', 'disabilit', 'behinderung', 'handicap', 'discapacidad', 'deficiência', 'disabilità', 'niepełnosprawn']),
+  };
+  const WD_COUNTRY_ALIASES = {
+    'united kingdom': ['vereinigtes königreich', 'vereinigten königreich', 'großbritannien', 'royaume-uni', 'reino unido', 'regno unito', 'verenigd koninkrijk', 'wielka brytania', 'great britain', 'britain', 'uk', 'u.k.'],
+    'united states': ['vereinigte staaten von amerika', 'vereinigten staaten', 'vereinigte staaten', 'united states of america', 'usa', 'u.s.a.', 'u.s.', 'us', 'états-unis', 'etats-unis', 'estados unidos', 'stati uniti', 'verenigde staten', 'stany zjednoczone'],
+    ireland: ['irland', 'irlande', 'irlanda', 'ierland', 'irlandia', 'republic of ireland'],
+    germany: ['deutschland', 'allemagne', 'alemania', 'alemanha', 'germania', 'duitsland', 'niemcy'],
+    france: ['frankreich', 'francia', 'frança', 'frankrijk', 'francja'],
+    spain: ['spanien', 'espagne', 'españa', 'espanha', 'spagna', 'spanje', 'hiszpania'],
+    italy: ['italien', 'italie', 'italia', 'itália', 'italië', 'włochy'],
+    netherlands: ['niederlande', 'pays-bas', 'países bajos', 'países baixos', 'paesi bassi', 'nederland', 'holandia', 'holland'],
+    canada: ['kanada', 'canadá'],
+    poland: ['polen', 'pologne', 'polonia', 'polska'],
+    switzerland: ['schweiz', 'suisse', 'suiza', 'suíça', 'svizzera', 'zwitserland', 'szwajcaria'],
+    india: ['indien', 'inde', 'índia', 'indie'],
+  };
+  const wdEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const WD_COUNTRY_RX = Object.entries(WD_COUNTRY_ALIASES).flatMap(([canon, aliases]) =>
+    aliases.map((a) => [new RegExp('(^|[^\\p{L}])' + wdEsc(a) + '(?=[^\\p{L}]|$)', 'giu'), '$1' + canon]));
+  const WD_SYNONYMS = [
+    [/^(ja|oui|si|sí|sim|sì|tak)$/iu, 'yes'], [/^(nein|non|não|nao|nee|nie)$/iu, 'no'],
+    [/\b(mobil|mobiltelefon|handy|portable|móvil|movil|celular|cellulare|mobiel|komórkowy|cell( phone)?)\b/giu, 'mobile'],
+    [/\b(festnetz|fixe|fijo|fixo|fisso|vast|stacjonarny)\b/giu, 'landline'],
+    [/\b(bachelor'?s?|bsc|b\.sc\.?|beng|licence|licenciatura|grado|laurea triennale|licencjat|bacharelado)\b/giu, 'bachelor'],
+    [/\b(master'?s?|msc|m\.sc\.?|meng|mba|máster|maîtrise|mestrado|laurea magistrale|magister)\b/giu, 'master'],
+    [/\b(phd|ph\.d\.?|doctorate|doktor|doctorat|doctorado|doutorado|dottorato)\b/giu, 'doctor'],
+  ];
+  function wdNorm(s) {
+    let t = String(s == null ? '' : s).toLowerCase().normalize('NFKC').replace(/[’']/g, "'").trim();
+    for (const [rx, rep] of WD_COUNTRY_RX) t = t.replace(rx, rep);
+    for (const [rx, rep] of WD_SYNONYMS) t = t.replace(rx, rep);
+    t = t.normalize('NFD').replace(/\p{M}+/gu, '');
+    return t.replace(/[^\p{L}\p{N}+ ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function wdSimilarity(a, b) {
+    const x = wdNorm(a), y = wdNorm(b);
+    if (!x || !y) return 0;
+    if (x === y) return 1;
+    if (y.startsWith(x) || x.startsWith(y)) return 0.92;
+    if (y.includes(x) || x.includes(y)) return 0.85;
+    const tx = new Set(x.split(' ')), ty = new Set(y.split(' '));
+    let inter = 0; tx.forEach((w) => { if (ty.has(w)) inter++; });
+    return inter / Math.max(tx.size, ty.size);
+  }
+  function wdBestIndex(texts, wanted, min) {
+    let best = -1, score = 0;
+    texts.forEach((t, i) => { const s = wdSimilarity(wanted, t); if (s > score) { score = s; best = i; } });
+    return score >= (min == null ? 0.6 : min) ? best : -1;
+  }
+  const wdText = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+  const wdContainer = (el) => (el && el.closest && el.closest(WD_FF)) || el;
+  function wdLabelOf(c) {
+    const own = c && c.querySelector && c.querySelector('legend, label');
+    let t = wdText(own);
+    if (!t) { try { t = getLabel(c.querySelector('input,textarea,button') || c) || ''; } catch (_) {} }
+    return String(t).replace(/\*/g, '').trim();
+  }
+  function wdRequired(c) {
+    if (/\*/.test(wdText(c.querySelector('legend, label')))) return true;
+    return !!c.querySelector('[aria-required="true"],[required]');
+  }
+  function wdKind(c) {
+    if (!c || !c.querySelector) return 'none';
+    if (c.querySelector('input[type="file"]')) return 'file';
+    if (c.querySelector('[data-automation-id="dateSectionYear-input"],[data-automation-id="dateSectionMonth-input"]')) return 'date';
+    if (c.querySelector('[data-automation-id="searchBox"],[data-uxi-widget-type="multiselect"],[data-automation-id="selectedItem"]')) return 'multiselect';
+    if (c.querySelector('button[aria-haspopup="listbox"]')) return 'dropdown';
+    if (c.querySelector('input[type="radio"],[role="radio"]')) return 'radio';
+    const boxes = c.querySelectorAll('input[type="checkbox"],[role="checkbox"]');
+    if (boxes.length > 1) return 'checkboxGroup';
+    if (boxes.length === 1) return 'checkbox';
+    if (c.querySelector('textarea')) return 'textarea';
+    if (c.querySelector('input:not([type="hidden"])')) return 'text';
+    return 'none';
+  }
+  const wdBoxOn = (b) => !!(b && (b.checked || b.getAttribute('aria-checked') === 'true'));
+  function wdOptionLabel(input) {
+    try {
+      if (input.id) { const l = ownerScope(input).querySelector(`label[for="${CSS.escape(input.id)}"]`); if (l) return wdText(l); }
+    } catch (_) {}
+    return wdText(input.closest('label')) || input.getAttribute('aria-label') || wdText(input.parentElement);
+  }
+  const wdDropdownBtn = (c) => (c.matches && c.matches('button[aria-haspopup="listbox"]')) ? c : c.querySelector('button[aria-haspopup="listbox"]');
+  function wdDropdownValue(c) {
+    const t = wdText(wdDropdownBtn(c));
+    return /^(select one|select|auswählen|bitte auswählen|sélectionner|seleccionar|selecionar|seleziona|selecteren|wybierz)$/i.test(t) ? '' : t;
+  }
+  function wdReadValue(c) {
+    switch (wdKind(c)) {
+      case 'text': case 'textarea': { const i = c.querySelector('textarea,input:not([type="hidden"])'); return (i && i.value) || ''; }
+      case 'dropdown': return wdDropdownValue(c);
+      case 'multiselect': return Array.from(c.querySelectorAll('[data-automation-id="selectedItem"]')).map(wdText).filter(Boolean).join(', ');
+      case 'radio': { const r = Array.from(c.querySelectorAll('input[type="radio"],[role="radio"]')).find(wdBoxOn); return r ? wdOptionLabel(r) : ''; }
+      case 'checkbox': return wdBoxOn(c.querySelector('input[type="checkbox"],[role="checkbox"]')) ? 'true' : '';
+      case 'checkboxGroup': return Array.from(c.querySelectorAll('input[type="checkbox"],[role="checkbox"]')).filter(wdBoxOn).map(wdOptionLabel).join(', ');
+      case 'date': {
+        const segs = Array.from(c.querySelectorAll('[data-automation-id^="dateSection"][data-automation-id$="-input"]'));
+        return segs.length && segs.every((s) => String(s.value || s.getAttribute('aria-valuenow') || '').trim()) ? segs.map((s) => s.value).join('/') : '';
+      }
+      default: return '';
+    }
+  }
+  // Workday covers many buttons with a click_filter; workdayClickTarget finds it.
+  async function wdClick(el) {
+    if (!el) return;
+    const target = workdayClickTarget(el) || el;
+    try { scrollIfNeeded(target); } catch (_) {}
+    realClick(target);
+    await sleep(60);
+  }
+  function wdOpenListbox(btn) {
+    const ctl = btn && btn.getAttribute('aria-controls');
+    if (ctl) { const byId = document.getElementById(ctl); if (byId && isVisible(byId)) return byId; }
+    const field = btn && btn.closest(WD_FF);
+    const local = field && Array.from(field.querySelectorAll('[role="listbox"]')).find(isVisible);
+    if (local) return local;
+    const open = deepAll('[role="listbox"]', 10).filter(isVisible);
+    return open.find((l) => !l.closest(WD_FF) || l.closest(WD_FF) === field) || null;
+  }
+  async function wdCloseListbox(btn) {
+    for (const t of [btn, document.body]) { try { t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, composed: true })); } catch (_) {} }
+    await sleep(80);
+    if (wdOpenListbox(btn)) { await wdClick(btn); await sleep(80); }
+  }
+  async function wdDropdownOptions(c) {
+    const btn = wdDropdownBtn(c);
+    if (!btn) return [];
+    if (!wdOpenListbox(btn)) await wdClick(btn);
+    await waitUntil(() => wdOpenListbox(btn), 3000, 100);
+    const list = wdOpenListbox(btn);
+    const out = list ? Array.from(list.querySelectorAll('[role="option"]')).map(wdText).filter((t) => t && !/^select one$/i.test(t)) : [];
+    await wdCloseListbox(btn);
+    return out;
+  }
+  /* wanted: display text, or 'decline' for the decline-to-answer option. */
+  async function wdSelectDropdown(c, wanted, min) {
+    const btn = wdDropdownBtn(c);
+    if (!btn || !wanted) return false;
+    const cur = wdDropdownValue(c);
+    if (cur && (wanted === 'decline' ? WD_DECLINE_RX.test(cur) : wdSimilarity(wanted, cur) >= 0.92)) return true;
+    if (!wdOpenListbox(btn)) await wdClick(btn);
+    await waitUntil(() => wdOpenListbox(btn), 4000, 100);
+    const list = wdOpenListbox(btn);
+    if (!list) return false;
+    const opts = Array.from(list.querySelectorAll('[role="option"]')).filter((o) => wdText(o) && !/^select one$/i.test(wdText(o)));
+    const i = wanted === 'decline' ? opts.findIndex((o) => WD_DECLINE_RX.test(wdText(o))) : wdBestIndex(opts.map(wdText), wanted, min);
+    if (i < 0) { await wdCloseListbox(btn); return false; }
+    await wdClick(opts[i]);
+    await sleep(150);
+    return !!wdDropdownValue(c);
+  }
+  const wdSelected = (c) => Array.from(c.querySelectorAll('[data-automation-id="selectedItem"]')).map(wdText).filter(Boolean);
+  /* Search-and-pick lists (source, phone code, school, field of study, skills).
+     A category row drills into a sub-list; walk at most three levels. */
+  async function wdMultiselectPick(c, wanted, opts) {
+    opts = opts || {};
+    const min = opts.min == null ? 0.6 : opts.min;
+    if (!wanted) return false;
+    if (wdSelected(c).some((s) => wdSimilarity(wanted, s) >= 0.85)) return true;
+    const input = c.querySelector('[data-automation-id="searchBox"]') || c.querySelector('input');
+    if (!input) return false;
+    await wdClick(input);
+    nativeSet(input, String(wanted));
+    for (const t of ['keydown', 'keyup']) { try { input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true, composed: true })); } catch (_) {} }
+    await sleep(250);
+    for (let depth = 0; depth < 3; depth++) {
+      let options = [];
+      await waitUntil(() => (options = deepAll('[data-automation-id="promptOption"],[data-automation-id="promptLeafNode"]', 200).filter(isVisible)).length > 0, 4000, 120);
+      if (!options.length) break;
+      let i = wdBestIndex(options.map(wdText), wanted, min);
+      if (i < 0 && opts.fallbackFirst) i = 0;
+      if (i < 0) break;
+      await wdClick(options[i]);
+      await sleep(250);
+      if (wdSelected(c).length) { try { input.blur(); } catch (_) {} return true; }
+    }
+    try { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); input.blur(); } catch (_) {}
+    await sleep(80);
+    return wdSelected(c).some((s) => wdSimilarity(wanted, s) >= 0.6);
+  }
+  async function wdSelectRadio(c, wanted) {
+    const rs = Array.from(c.querySelectorAll('input[type="radio"],[role="radio"]'));
+    const labels = rs.map(wdOptionLabel);
+    const i = wanted === 'decline' ? labels.findIndex((l) => WD_DECLINE_RX.test(l)) : wdBestIndex(labels, wanted, 0.6);
+    if (i < 0) return false;
+    if (wdBoxOn(rs[i])) return true;
+    commitChoice(rs[i]);
+    await sleep(80);
+    return wdBoxOn(rs[i]);
+  }
+  async function wdSetCheckbox(box, on) {
+    if (!box) return false;
+    if (wdBoxOn(box) === on) return true;
+    await setCheckboxChecked(box);
+    await sleep(60);
+    return wdBoxOn(box) === on;
+  }
+  async function wdCheckInGroup(c, wanted) {
+    const boxes = Array.from(c.querySelectorAll('input[type="checkbox"],[role="checkbox"]'));
+    const labels = boxes.map(wdOptionLabel);
+    const i = wanted === 'decline' ? labels.findIndex((l) => WD_DECLINE_RX.test(l)) : wdBestIndex(labels, wanted, 0.5);
+    return i >= 0 ? wdSetCheckbox(boxes[i], true) : false;
+  }
+  /* Workday's date parts are spinbuttons that listen for keystrokes; a value set
+     directly is often discarded. Type each digit, a beat apart so the control
+     re-renders between them, and fall back to setting the value. */
+  async function wdSetSegment(seg, value) {
+    const clean = () => String(seg.value || seg.getAttribute('aria-valuenow') || '').replace(/^0+/, '');
+    const want = String(value).replace(/^0+/, '');
+    if (clean() === want) return true;
+    await wdClick(seg);
+    try { seg.focus({ preventScroll: true }); } catch (_) {}
+    for (const ch of String(value)) {
+      try {
+        seg.dispatchEvent(new KeyboardEvent('keydown', { key: ch, code: 'Digit' + ch, bubbles: true, cancelable: true, composed: true }));
+        seg.dispatchEvent(new InputEvent('beforeinput', { data: ch, inputType: 'insertText', bubbles: true, cancelable: true, composed: true }));
+        seg.dispatchEvent(new KeyboardEvent('keyup', { key: ch, code: 'Digit' + ch, bubbles: true, composed: true }));
+      } catch (_) {}
+      await sleep(40);
+    }
+    if (clean() !== want) nativeSet(seg, String(value));
+    await sleep(60);
+    return clean() === want;
+  }
+  /* ymd: { y, m, d } — any part may be missing. */
+  async function wdSetDate(c, ymd) {
+    const seg = (id) => c.querySelector(`[data-automation-id="${id}"]`);
+    const month = seg('dateSectionMonth-input'), day = seg('dateSectionDay-input'), year = seg('dateSectionYear-input');
+    let ok = true;
+    if (month && ymd.m) ok = (await wdSetSegment(month, String(ymd.m).padStart(2, '0'))) && ok;
+    if (day && ymd.d) ok = (await wdSetSegment(day, String(ymd.d).padStart(2, '0'))) && ok;
+    if (year && ymd.y) ok = (await wdSetSegment(year, String(ymd.y))) && ok;
+    if (year) { try { year.blur(); } catch (_) {} }
+    return ok && !!(month || year);
+  }
+  // "2019-01", "01/2019", "Jan 2019", "2019" → { y, m }.
+  function wdParseYM(s) {
+    const t = String(s || '').trim();
+    let m;
+    if ((m = t.match(/(\d{4})[-/.](\d{1,2})/))) return { y: m[1], m: m[2] };
+    if ((m = t.match(/(\d{1,2})[-/.](\d{4})/))) return { y: m[2], m: m[1] };
+    const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    if ((m = t.toLowerCase().match(/([a-z]{3})[a-z]*\.?\s+(\d{4})/)) && MONTHS.indexOf(m[1]) >= 0) return { y: m[2], m: String(MONTHS.indexOf(m[1]) + 1) };
+    if ((m = t.match(/\b(19|20)\d{2}\b/))) return { y: m[0] };
+    return {};
+  }
+  // The profile's own history, one entry per role; the flat fields as a single
+  // entry when that is all there is.
+  function wdWorkEntries(p) {
+    const list = (Array.isArray(p.work_experiences) ? p.work_experiences : []).filter((w) => w && (w.title || w.company));
+    if (list.length) {
+      return list.map((w, i) => ({
+        title: w.title || '', company: w.company || '', location: w.location || '', description: w.description || '',
+        start: wdParseYM(w.from), end: wdParseYM(w.to),
+        current: !!w.current || (i === 0 && !w.to),
+      }));
+    }
+    const title = p.current_title || p.title || '', company = p.current_company || p.company || '';
+    if (!title && !company) return [];
+    return [{
+      title, company, location: p.city || '', description: p.work_description || '',
+      start: { y: p.work_start_year || '', m: p.work_start_month || '01' },
+      end: p.work_end_year ? { y: p.work_end_year, m: p.work_end_month || '12' } : {},
+      current: p.currently_working !== false && !p.work_end_year,
+    }];
+  }
+  function wdEducationEntries(p) {
+    const list = (Array.isArray(p.education) ? p.education : []).filter((e) => e && e.school);
+    if (list.length) return list.map((e) => ({ school: e.school, degree: e.degree || p.degree || '', field: e.field || p.major || '', gpa: e.gpa || '' }));
+    if (!p.school && !p.university) return [];
+    return [{ school: p.school || p.university, degree: p.degree || '', field: p.major || p.field_of_study || '', gpa: p.gpa || '', endYear: p.graduation_year || p.grad_year || '' }];
+  }
+  // By automation id — bare or as its formField- container, since tenants use both.
+  const wdField = (root, ids) => {
+    const all = [...new Set(ids.flatMap((id) => /^formField-/.test(id) ? [id] : [id, 'formField-' + id]))];
+    for (const id of all) {
+      const hit = Array.from(root.querySelectorAll(`[data-automation-id="${id}"]`)).find(isVisible);
+      if (hit) return wdContainer(hit);
+    }
+    return null;
+  };
+  // A section's repeated entries: the outermost element per anchor field.
+  function wdBlocks(section, anchorIds) {
+    const all = Array.from(section.querySelectorAll(anchorIds.map((a) => `[data-automation-id="${a}"]`).join(','))).filter(isVisible);
+    const anchors = all.filter((a) => !all.some((o) => o !== a && o.contains(a)));
+    const count = (el) => anchors.filter((a) => el.contains(a)).length;
+    const out = [];
+    for (const a of anchors) {
+      let b = a;
+      while (b.parentElement && b.parentElement !== section && count(b.parentElement) === 1) b = b.parentElement;
+      if (!out.includes(b)) out.push(b);
+    }
+    return out;
+  }
+  const wdButtonIn = (root, rx) => Array.from(root.querySelectorAll('button,[role="button"],a')).find((b) => isVisible(b) && rx.test(wdText(b) || b.getAttribute('aria-label') || ''));
+  /* Make the section hold exactly n entries: the parser's extras are deleted
+     (last first), missing ones added. Never deletes below the profile's count. */
+  async function wdEnsureBlocks(section, anchorIds, n) {
+    let bs = wdBlocks(section, anchorIds);
+    while (n > 0 && bs.length > n) {
+      const last = bs[bs.length - 1];
+      const del = Array.from(last.querySelectorAll('[data-automation-id="panel-set-delete-button"]')).find(isVisible) || wdButtonIn(last, WD_DELETE_RX);
+      if (!del) break;
+      await wdClick(del);
+      await sleep(scaled(400, 250));
+      const after = wdBlocks(section, anchorIds);
+      if (after.length >= bs.length) break;
+      bs = after;
+    }
+    for (let guard = 0; bs.length < n && guard < n + 2; guard++) {
+      const add = Array.from(section.querySelectorAll('[data-automation-id="add-button"],[data-automation-id="Add"],[data-automation-id="addButton"]')).filter(isVisible).pop() || wdButtonIn(section, WD_ADD_RX);
+      if (!add) break;
+      const before = bs.length;
+      await wdClick(add);
+      await waitUntil(() => wdBlocks(section, anchorIds).length > before, 6000, 150);
+      bs = wdBlocks(section, anchorIds);
+    }
+    return bs;
+  }
+  const wdSection = (ids, heading) => {
+    for (const id of ids) { const el = deepAll(`[data-automation-id="${id}"]`, 2).find(isVisible); if (el) return el; }
+    const h = deepAll('h2,h3,h4,legend,[role="heading"]', 60).find((e) => isVisible(e) && heading.test(wdText(e)));
+    return h ? (h.closest('section,fieldset,[role="group"],div[data-automation-id]') || h.parentElement) : null;
+  };
+  async function wdWriteText(c, val, overwrite) {
+    const i = c && c.querySelector('textarea,input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
+    if (!i || val == null || val === '') return false;
+    if (!overwrite && String(i.value || '').trim()) return true;
+    if (i.value === String(val)) return true;
+    try { i.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(i, String(val));
+    await sleep(40);
+    return i.value === String(val);
+  }
+
+  /* ── Deciding an answer: the same reasoning in every language ────────────── */
+  const WD_LANG_IS_EN = (label) => !/[äöüßéèêàçñãõìòúóíáąęłńśźżø]/i.test(label) && /\b(you|your|the|do|are|have|will|what|how)\b/i.test(label);
+  /* 'yes' | 'no' | 'decline' | '' for a Yes/No question. English goes through
+     determineYesNo (with all its nuance); other languages through the
+     multilingual rules, because the English decider's default for a question it
+     cannot read is "yes". */
+  function wdYesNo(label) {
+    const l = String(label || '').toLowerCase().replace(/\s+/g, ' ');
+    if (WD_Q.eeo.test(l)) return 'decline';
+    if (WD_LANG_IS_EN(l)) { try { return determineYesNo(l); } catch (_) { return ''; } }
+    if (WD_Q.sponsorship.test(l)) return 'no';
+    if (WD_Q.authorized.test(l) || WD_Q.adult.test(l)) return 'yes';
+    if (WD_Q.criminal.test(l) || WD_Q.previouslyWorked.test(l)) return 'no';
+    if (WD_Q.relocate.test(l)) return 'yes';
+    return '';
+  }
+  function wdProfileYears(p) { return parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years, 10) || 0; }
+  /* An answer for a choice control: the option text to pick, or 'decline'. */
+  function wdChooseOption(label, options, p) {
+    const texts = options.map((o) => String(o));
+    if (!texts.length) return '';
+    const yn = texts.map(wdNorm);
+    const binary = texts.length <= 3 && yn.includes('yes') && yn.includes('no');
+    if (WD_Q.eeo.test(label)) {
+      const want = /gender|geschlecht|genre|sexe|género|gênero|genere|geslacht|płeć/i.test(label) ? p.gender
+        : /hispanic|latino/i.test(label) ? p.hispanic
+        : /veteran|militär|vétéran/i.test(label) ? p.veteran
+        : /disabilit|behinderung|handicap|discapacidad/i.test(label) ? p.disability
+        : (p.ethnicity || p.race);
+      if (want && !/decline|prefer not/i.test(String(want))) { const i = wdBestIndex(texts, want, 0.8); if (i >= 0) return texts[i]; }
+      return texts.some((t) => WD_DECLINE_RX.test(t)) ? 'decline' : '';
+    }
+    if (binary) {
+      const d = wdYesNo(label);
+      if (d === 'yes' || d === 'no') return texts[yn.indexOf(d)];
+    }
+    if (WD_Q.years.test(label) || YEARS_Q_RE.test(label)) {
+      const yrs = wdProfileYears(p);
+      let best = -1, bestScore = 0;
+      texts.forEach((t, i) => { const s = scoreExperienceRange(t, yrs); if (s > bestScore) { bestScore = s; best = i; } });
+      if (best >= 0) return texts[best];
+    }
+    let want = '';
+    try { want = String(guessFieldValue(label, p, null) || ''); } catch (_) {}
+    if (want) {
+      let i = wdBestIndex(texts, want, 0.6);
+      if (i < 0) { try { i = bestOptionIndex(texts, want, label); } catch (_) {} }
+      if (i >= 0) return texts[i];
+    }
+    try { const i = bestOptionIndex(texts, profileTargetFor(label, p), label); if (i >= 0) return texts[i]; } catch (_) {}
+    if (!binary) return '';
+    const d = wdYesNo(label);
+    return d === 'yes' || d === 'no' ? texts[yn.indexOf(d)] : '';
+  }
+  function wdTextAnswer(label, p) {
+    if (WD_Q.why.test(label)) return whyAnswer();
+    if (WD_Q.salary.test(label)) return String(p.expected_salary || p.salary_expectation || DEFAULTS.salary || '');
+    if (WD_Q.years.test(label)) return String(wdProfileYears(p) || '');
+    try { return String(guessFieldValue(label, p, null) || ''); } catch (_) { return ''; }
+  }
+  async function wdAnswerContainer(c, p) {
+    const kind = wdKind(c);
+    if (kind === 'none' || kind === 'file' || wdReadValue(c)) return false;
+    const label = wdLabelOf(c);
+    if (!label) return false;
+    if (kind === 'text' || kind === 'textarea') return wdWriteText(c, wdTextAnswer(label, p));
+    if (kind === 'date') {
+      // A date the form wants filled with no other context is today's (signature dates).
+      if (!/date|datum|fecha|data|date de|signed|unterschrieben/i.test(label)) return false;
+      const d = new Date();
+      return wdSetDate(c, { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() });
+    }
+    if (kind === 'checkbox') {
+      const box = c.querySelector('input[type="checkbox"],[role="checkbox"]');
+      if (isMarketingCheckbox(box) || !(wdRequired(c) || CONSENT_TEXT_RE.test(label))) return false;
+      return wdSetCheckbox(box, true);
+    }
+    if (kind === 'multiselect') {
+      const want = WD_Q.source.test(label) ? (p.source || p.how_heard || 'LinkedIn') : wdTextAnswer(label, p);
+      return wdMultiselectPick(c, want, { fallbackFirst: wdRequired(c) && WD_Q.source.test(label) });
+    }
+    const options = kind === 'dropdown' ? await wdDropdownOptions(c)
+      : kind === 'radio' ? Array.from(c.querySelectorAll('input[type="radio"],[role="radio"]')).map(wdOptionLabel)
+      : Array.from(c.querySelectorAll('input[type="checkbox"],[role="checkbox"]')).map(wdOptionLabel);
+    const pick = wdChooseOption(label, options, p);
+    if (!pick) return false;
+    if (kind === 'dropdown') return wdSelectDropdown(c, pick, 0.9);
+    if (kind === 'radio') return wdSelectRadio(c, pick);
+    return wdCheckInGroup(c, pick);
+  }
+
+  /* ── The pages ─────────────────────────────────────────────────────────────── */
+  async function wdMyInformation(p) {
+    let n = 0;
+    const src = wdField(document, ['sourceDropdown', 'formField-sourceDropdown', 'formField-source--source', 'formField-source']);
+    if (src && !wdReadValue(src)) {
+      const want = p.source || p.how_heard || 'LinkedIn';
+      const ok = (wdKind(src) === 'multiselect' ? await wdMultiselectPick(src, want, { fallbackFirst: true }) : await wdSelectDropdown(src, want)) ||
+        (wdKind(src) === 'multiselect' && await wdMultiselectPick(src, 'Job Board', { fallbackFirst: true }));
+      if (ok) n++;
+    }
+    const prev = wdField(document, ['previousWorker', 'formField-candidateIsPreviousWorker']);
+    if (prev && !wdReadValue(prev) && await wdSelectRadio(prev, /^(yes|true)$/i.test(String(p.previously_worked || '')) ? 'Yes' : 'No')) n++;
+    const country = wdField(document, ['countryDropdown', 'formField-countryDropdown', 'formField-country']);
+    if (country && !wdReadValue(country) && p.country) {
+      if (await wdSelectDropdown(country, p.country)) { n++; await waitUntil(() => wdField(document, ['legalNameSection_firstName', 'formField-legalName--firstName']), 6000, 150); }
+    }
+    const text = [
+      [['legalNameSection_firstName', 'formField-legalName--firstName'], p.first_name || p.firstName],
+      [['legalNameSection_lastName', 'formField-legalName--lastName'], p.last_name || p.lastName],
+      [['addressSection_addressLine1', 'formField-address--addressLine1'], p.address],
+      [['addressSection_city', 'formField-address--city'], p.city],
+      [['addressSection_postalCode', 'formField-address--postalCode'], p.postal_code || p.zip],
+    ];
+    for (const [ids, val] of text) { const c = wdField(document, ids); if (c && val && !wdReadValue(c) && await wdWriteText(c, val)) n++; }
+    const region = wdField(document, ['addressSection_countryRegion', 'formField-address--countryRegion']);
+    if (region && !wdReadValue(region) && (p.state || p.county) && await wdSelectDropdown(region, p.state || p.county)) n++;
+    const type = wdField(document, ['phone-device-type', 'formField-phoneNumber--phoneType']);
+    if (type && !wdReadValue(type) && await wdSelectDropdown(type, p.phone_type || 'Mobile', 0.5)) n++;
+    const code = wdField(document, ['countryPhoneCode', 'formField-phoneNumber--countryPhoneCode']);
+    if (code && !wdReadValue(code) && p.country) {
+      const ok = await wdMultiselectPick(code, p.country) || (/^\+\d+/.test(String(p.phone || '')) && await wdMultiselectPick(code, String(p.phone).match(/^\+\d+/)[0]));
+      if (ok) n++;
+    }
+    const phone = wdField(document, ['phone-number', 'formField-phoneNumber--phoneNumber']);
+    if (phone && !wdReadValue(phone) && p.phone) {
+      // The code is its own field here, so the number goes in without it.
+      const local = String(p.phone).replace(/^\s*\+\d{1,3}\s*/, '').trim();
+      if (await wdWriteText(phone, code ? local : p.phone)) n++;
+    }
+    return n;
+  }
+  async function wdMyExperience(p) {
+    let n = 0;
+    const work = wdSection(['workExperienceSection', 'workExperience', 'workSection'], /work experience|employment history|berufserfahrung|expérience professionnelle|experiencia (laboral|profesional)|experiência profissional|esperienza (lavorativa|professionale)|werkervaring|doświadczenie zawodowe/iu);
+    const roles = wdWorkEntries(p);
+    if (work && roles.length) {
+      const bs = await wdEnsureBlocks(work, ['jobTitle', 'formField-jobTitle'], roles.length);
+      for (let i = 0; i < Math.min(bs.length, roles.length); i++) {
+        const b = bs[i], r = roles[i];
+        // A parser entry for a different role: its description belongs to that role.
+        const was = wdReadValue(wdField(b, ['company', 'formField-companyName']) || b) || '';
+        const otherRole = !!was && !!r.company && wdSimilarity(was, r.company) < 0.6;
+        // The profile's entry replaces whatever the CV parser put here.
+        const set = async (ids, v) => { const c = wdField(b, ids); if (c && v && await wdWriteText(c, v, true)) n++; };
+        await set(['jobTitle', 'formField-jobTitle'], r.title);
+        await set(['company', 'formField-companyName'], r.company);
+        await set(['location', 'formField-location'], r.location);
+        const cur = wdField(b, ['currentlyWorkHere', 'formField-currentlyWorkHere']);
+        if (cur) { await wdSetCheckbox(cur.querySelector('input[type="checkbox"],[role="checkbox"]'), !!r.current); await sleep(150); }
+        const start = wdField(b, ['formField-startDate', 'formField-firstYearAttended']);
+        if (start && r.start.y && await wdSetDate(start, { y: r.start.y, m: r.start.m || '01' })) n++;
+        const end = !r.current && wdField(b, ['formField-endDate', 'formField-lastYearAttended']);
+        if (end && r.end.y && await wdSetDate(end, { y: r.end.y, m: r.end.m || '12' })) n++;
+        await set(['description', 'formField-roleDescription'], r.description);
+        if (!r.description && otherRole) {
+          const d = wdField(b, ['description', 'formField-roleDescription']);
+          const i = d && d.querySelector('textarea,input');
+          if (i && String(i.value || '').trim()) { nativeSet(i, ''); n++; }
+        }
+      }
+    }
+    const edu = wdSection(['educationSection', 'education'], /^(education|ausbildung|bildung|formation|educación|formación|educação|formação|istruzione|formazione|opleiding|wykształcenie)/iu);
+    const schools = wdEducationEntries(p);
+    if (edu && schools.length) {
+      const anchor = edu.querySelector('[data-automation-id="school"],[data-automation-id="formField-schoolName"],[data-automation-id="formField-school"]') ? ['school', 'formField-schoolName', 'formField-school'] : ['degree', 'formField-degree'];
+      const bs = await wdEnsureBlocks(edu, anchor, schools.length);
+      for (let i = 0; i < Math.min(bs.length, schools.length); i++) {
+        const b = bs[i], e = schools[i];
+        const school = wdField(b, ['school', 'formField-schoolName', 'formField-school']);
+        if (school && !wdReadValue(school)) {
+          let ok = wdKind(school) === 'multiselect' ? await wdMultiselectPick(school, e.school, { min: 0.7 }) : await wdWriteText(school, e.school);
+          // Not in the tenant's list: its "Other" entry, in whatever language it uses.
+          if (!ok && wdKind(school) === 'multiselect') for (const other of ['Other', 'Andere', 'Sonstige', 'Autre', 'Otro', 'Outro', 'Altro', 'Overig', 'Inne']) if ((ok = await wdMultiselectPick(school, other, { min: 0.8 }))) break;
+          if (ok) n++;
+        }
+        const degree = wdField(b, ['degree', 'formField-degree']);
+        if (degree && !wdReadValue(degree) && e.degree && await wdSelectDropdown(degree, mapDegree(e.degree), 0.5)) n++;
+        const field = wdField(b, ['fieldOfStudy', 'formField-fieldOfStudy']);
+        if (field && !wdReadValue(field) && e.field && (wdKind(field) === 'multiselect' ? await wdMultiselectPick(field, e.field) : await wdWriteText(field, e.field))) n++;
+        const gpa = wdField(b, ['gradeAverage', 'formField-gradeAverage']);
+        if (gpa && e.gpa && !wdReadValue(gpa) && await wdWriteText(gpa, e.gpa)) n++;
+        const end = wdField(b, ['formField-lastYearAttended', 'formField-endDate']);
+        if (end && e.endYear && !wdReadValue(end) && await wdSetDate(end, { y: e.endYear })) n++;
+      }
+    }
+    const skills = wdField(document, ['formField-skills', 'skills', 'skillsSection']);
+    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
+    if (skills && wdKind(skills) === 'multiselect') {
+      for (const s of list) if (!wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85) && await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
+    }
+    const li = wdField(document, ['linkedinQuestion', 'formField-linkedInAccount']);
+    if (li && !wdReadValue(li) && (p.linkedin_profile_url || p.linkedin) && await wdWriteText(li, p.linkedin_profile_url || p.linkedin)) n++;
+    return n;
+  }
+  async function wdSelfIdentify(p) {
+    let n = 0;
+    const name = wdField(document, ['name', 'formField-name']);
+    const full = [p.first_name || p.firstName, p.last_name || p.lastName].filter(Boolean).join(' ');
+    if (name && full && !wdReadValue(name) && await wdWriteText(name, full)) n++;
+    const date = wdField(document, ['dateSignedOn', 'formField-dateSignedOn']);
+    if (date && !wdReadValue(date)) { const d = new Date(); if (await wdSetDate(date, { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() })) n++; }
+    const dis = wdField(document, ['selfIdentifiedDisabilityData', 'disabilityStatus', 'formField-disabilityStatus']);
+    if (dis && !wdReadValue(dis)) {
+      const pref = String(p.disability || '').toLowerCase();
+      const want = /^no\b|do not have/.test(pref) ? 'No, I do not have a disability' : /^yes\b/.test(pref) ? 'Yes, I have a disability' : 'decline';
+      if (await wdCheckInGroup(dis, want) || await wdSelectRadio(dis, want)) n++;
+    }
+    return n;
+  }
+  /* Everything still empty on the page, whatever it is. */
+  async function wdGenericPass(p) {
+    let n = 0;
+    const containers = deepAll(WD_FF, 120).filter(isVisible);
+    for (const c of containers) {
+      if (autoStopped()) break;
+      if (containers.some((o) => o !== c && o.contains(c))) continue;   // the outer container answers for it
+      try { if (await wdAnswerContainer(c, p)) { n++; noteProgress('filling fields'); } } catch (_) {}
+    }
+    return n;
+  }
+  /* Workday's error banner lists each field it refused as a button that focuses
+     it. Follow each one and answer the field it lands on. */
+  async function wdFixFromErrorBanner(p) {
+    const banner = deepAll('[data-automation-id="errorBanner"],[data-automation-id="errorSection"]', 2).find(isVisible);
+    if (!banner) return 0;
+    let n = 0;
+    for (const link of Array.from(banner.querySelectorAll('button,a,li')).slice(0, 12)) {
+      await wdClick(link);
+      await sleep(250);
+      const c = wdContainer(document.activeElement);
+      if (c && c !== document.activeElement && c.matches && c.matches(WD_FF) && await wdAnswerContainer(c, p)) n++;
+    }
+    if (n) LOG(`Workday: fixed ${n} field(s) named in the error banner`);
+    return n;
+  }
+  function wdStepKind() {
+    const active = deepAll('[data-automation-id="progressBarActiveStep"],[aria-current="step"]', 3).find(isVisible);
+    const head = deepAll('[data-automation-id="pageHeader"],[data-automation-id="pageHeaderTitle"]', 3).find(isVisible);
+    for (const t of [wdText(active), wdText(head)]) {
+      if (!t) continue;
+      for (const [rx, kind] of WD_STEP_PATTERNS) if (rx.test(t)) return kind;
+    }
+    return '';
+  }
+  /* The "Upload your resume" page that "Autofill with Resume" (and some tenants
+     after sign-in) put before the wizard: a file input, a Continue button, no
+     progress bar and no questions. */
+  function wdOnResumeUploadPage() {
+    if (workdayOnAccountWall()) return false;
+    if (deepAll('[data-automation-id="progressBar"],[data-automation-id="progressBarActiveStep"]', 2).some(isVisible)) return false;
+    const file = deepAll('[data-automation-id="file-upload-input-ref"],input[type="file"]', 4)[0];
+    if (!file) return false;
+    return deepAll(WD_FF, 20).filter((c) => isVisible(c) && wdKind(c) !== 'file').length === 0;
+  }
+  async function wdHandleResumeUploadPage() {
+    if (!wdOnResumeUploadPage()) return false;
+    LOG('Workday: resume upload page — attaching the CV and continuing');
+    const shown = () => deepAll('[data-automation-id="file-upload-successful"],[data-automation-id="file-upload-item"]', 4).some(isVisible);
+    if (!shown()) {
+      try { await attachResume(); } catch (_) {}
+      await waitUntil(shown, 20000, 250);
+    }
+    const next = deepAll('[data-automation-id="pageFooterNextButton"],[data-automation-id="bottom-navigation-next-button"]', 2).find(isVisible) ||
+      deepAll('button', 40).find((b) => isVisible(b) && /^(continue|next|weiter|suivant|continuar|avanti|volgende|dalej)$/i.test(wdText(b)));
+    if (!next) return false;
+    const before = stepSignature();
+    await wdClick(next);
+    noteProgress('resume uploaded');
+    await waitForStepChange(before, 12000);
+    return true;
+  }
+  /* One pass of the engine over whatever page is on screen. */
+  async function wdEnginePass(p) {
+    return withBusy('filling the Workday page', async () => {
+      const kind = wdStepKind();
+      let n = 0;
+      try {
+        if (kind === 'myInformation' || (!kind && wdField(document, ['legalNameSection_firstName', 'formField-legalName--firstName', 'countryDropdown']))) n += await wdMyInformation(p);
+        if (kind === 'myExperience' || (!kind && wdSection(['workExperienceSection', 'educationSection'], /(?!)/))) n += await wdMyExperience(p);
+        if (kind === 'selfIdentify' || wdField(document, ['dateSignedOn', 'selfIdentifiedDisabilityData', 'formField-dateSignedOn'])) n += await wdSelfIdentify(p);
+        n += await wdGenericPass(p);
+      } catch (e) { LOG('Workday engine error:', e && e.message || e); }
+      if (n) LOG(`Workday engine: ${n} field(s) answered on ${kind || 'this page'}`);
+      return n;
+    });
+  }
+
   // SpeedyApply Workday: multi-page navigation with page type detection (enhanced)
   async function workdayMultiPageFlow() {
     const MAX_PAGES = 12;
@@ -7152,11 +7824,19 @@
       if (currentPageType === 'unknown') {
         for (const pt of pageTypes) { if ($(`[data-automation-id="${pt}"]`)) { currentPageType = pt; break; } }
       }
+      // No page-type marker (many tenants, and every locale but English for the
+      // step names): read the step off the progress bar / page heading instead.
+      if (currentPageType === 'unknown') {
+        currentPageType = ({ myInformation: 'applyFlowMyInfoPage', myExperience: 'applyFlowMyExpPage', questions: 'applyFlowPrimaryQuestionsPage',
+          voluntary: 'applyFlowVoluntaryDisclosuresPage', selfIdentify: 'applyFlowSelfIdentifyPage', review: 'applyFlowReviewPage' })[wdStepKind()] || 'unknown';
+      }
+      if (currentPageType === 'unknown' && await wdHandleResumeUploadPage()) { lastPageType = ''; continue; }
       LOG(`Workday multi-page: page ${page} — ${currentPageType}`);
 
       // Detect stuck on same page (validation error likely)
       if (page > 1 && currentPageType === lastPageType) {
         LOG('Workday: stuck on same page — running validation fix');
+        await wdFixFromErrorBanner(p);
         await handleValidationErrors();
         await fallbackFill();
         await sleep(scaled(1000, 500));
@@ -7194,7 +7874,9 @@
         }
       }
 
-      // Also run generic fallback on every page
+      // The engine pass (every formField container, any language), then the
+      // generic fallback on every page.
+      await wdEnginePass(p);
       await fallbackFill();
       await sleep(500);
       await handleValidationErrors();
@@ -8991,6 +9673,8 @@
       const heads = deepAll('[data-automation-id="pageHeaderTitle"],[data-automation-id="applicationPage"],h1,h2', 30).filter(isVisible);
       const stepRe = new RegExp('^(' + WD_STEP_LABELS.join('|') + ')$', 'i');
       if (heads.some((el) => el.getAttribute('data-automation-id') === 'applicationPage' || stepRe.test(normLabel(el.textContent)))) return true;
+      // The step names in any of the eight languages the engine reads.
+      if (wdStepKind()) return true;
       const bar = deepAll('[data-automation-id="progressBar"]', 2).find(isVisible);
       if (bar) {
         const t = normLabel(bar.textContent).toLowerCase();

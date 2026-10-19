@@ -75,7 +75,9 @@ const T0 = Date.now();
         else if (el.type === 'file') vals[k] = el.files && el.files[0] ? 'FILE:' + el.files[0].name : '';
         else vals[k] = el.value;
       }
-      return { t: Math.round(performance.now() / 1000), rounds: window.__rounds, seq: window.__seq, lastErrors: window.__lastErrors, vals, ev: window.__events, submitted: window.__submitted || null, body: document.body.innerText.slice(0, 80) };
+      return { t: Math.round(performance.now() / 1000), rounds: window.__rounds, seq: window.__seq, lastErrors: window.__lastErrors, vals, ev: window.__events, submitted: window.__submitted || null, body: document.body.innerText.slice(0, 80),
+        // The Workday mock exposes its own state: where the application got to.
+        mock: window.__mock ? { route: window.__mock.route, step: window.__mock.step, data: window.__mock.data, files: window.__mock.files } : undefined };
     }).catch((e) => ({ err: e.message }));
     snapshots.push(s);
     if (s.submitted || (s.body && /thank you/i.test(s.body))) break;

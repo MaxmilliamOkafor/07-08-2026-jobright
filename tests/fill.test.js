@@ -3045,6 +3045,66 @@ console.log('v17.14: react-select answers, knockouts, dates, popups, Workday ove
   eq('Eightfold never types into a checkbox', /:not\(\[type=checkbox\]\):not\(\[type=radio\]\)/.test(body('eightfoldAutomation')), true);
 }
 
+/* ── 68. v17.18: the Workday engine (ported from the standalone autopilot) ── */
+console.log('v17.18: Workday engine — any language, every formField container');
+{
+  // The engine's pure helpers, lifted out of the file and run for real.
+  const start = src.indexOf('  const WD_FF = ');
+  const end = src.indexOf('  /* ── The pages ─');
+  eq('the engine block is present', start > 0 && end > start, true);
+  const wd = {};
+  new Function('exports', 'determineYesNo', 'DEFAULTS', `
+    ${src.slice(start, end)}
+    Object.assign(exports, { wdNorm, wdSimilarity, wdBestIndex, wdParseYM, wdYesNo, WD_STEP_PATTERNS, WD_DECLINE_RX, WD_Q });
+  `)(wd, koCtx.decide, { years: '7' });
+  const step = (t) => (wd.WD_STEP_PATTERNS.find(([rx]) => rx.test(t)) || [])[1] || '';
+
+  // Localised options match the profile's English value.
+  eq('"Vereinigtes Königreich" is the United Kingdom', wd.wdSimilarity('United Kingdom', 'Vereinigtes Königreich') >= 0.9, true);
+  eq('"Vereinigtes Königreich (+44)" is a phone-code match', wd.wdSimilarity('United Kingdom', 'Vereinigtes Königreich (+44)') >= 0.6, true);
+  eq('"Mobil" is Mobile', wd.wdSimilarity('Mobile', 'Mobil'), 1);
+  eq('"Nein" is No and "Ja" is Yes', wd.wdNorm('Nein') + '/' + wd.wdNorm('Ja'), 'no/yes');
+  eq('USA is the United States', wd.wdSimilarity('United States', 'USA') >= 0.9, true);
+  eq('the best option is picked, not the first', wd.wdBestIndex(['Canada', 'Vereinigtes Königreich', 'Vereinigte Staaten von Amerika'], 'United Kingdom'), 1);
+  eq('nothing close → no pick', wd.wdBestIndex(['Canada', 'Mexico'], 'United Kingdom'), -1);
+
+  // Knockouts in German reach the right answer instead of the English default "yes".
+  eq('German sponsorship → no', wd.wdYesNo('Benötigen Sie jetzt oder künftig ein Visum oder Sponsoring für eine Arbeitserlaubnis?'), 'no');
+  eq('German right to work → yes', wd.wdYesNo('Sind Sie berechtigt, im Vereinigten Königreich zu arbeiten?'), 'yes');
+  eq('German conviction → no', wd.wdYesNo('Wurden Sie jemals wegen einer Straftat verurteilt?'), 'no');
+  eq('French sponsorship → no', wd.wdYesNo('Avez-vous besoin d\'un parrainage pour un permis de travail ?'), 'no');
+  eq('Spanish right to work → yes', wd.wdYesNo('¿Está autorizado para trabajar en España?'), 'yes');
+  eq('an unreadable German question gets no guess', wd.wdYesNo('Mögen Sie Katzen?'), '');
+  eq('English still goes through the full English decider', wd.wdYesNo('Will you now or in the future require sponsorship for employment visa status?'), 'no');
+  eq('a demographic question is declined', wd.wdYesNo('Geschlecht'), 'decline');
+  eq('German "decline" options are recognised', ['Ich möchte keine Angabe machen', 'Keine Angabe', 'Ich möchte das nicht angeben', 'Ich möchte nicht antworten'].every((t) => wd.WD_DECLINE_RX.test(t)), true);
+
+  // Steps named in any language.
+  eq('"Meine Informationen" is My Information', step('Meine Informationen'), 'myInformation');
+  eq('"Meine Erfahrung" is My Experience', step('Meine Erfahrung'), 'myExperience');
+  eq('"Bewerbungsfragen" is the questions', step('Bewerbungsfragen'), 'questions');
+  eq('"Freiwillige Angaben" is the disclosures', step('Freiwillige Angaben'), 'voluntary');
+  eq('"Selbstidentifizierung" is Self Identify', step('Selbstidentifizierung'), 'selfIdentify');
+  eq('"Überprüfen" is the review', step('Überprüfen'), 'review');
+  eq('"Mes informations" is My Information', step('Mes informations'), 'myInformation');
+
+  // Profile dates in any common shape.
+  eq('"2019-03" → March 2019', JSON.stringify(wd.wdParseYM('2019-03')), '{"y":"2019","m":"03"}');
+  eq('"03/2019" → March 2019', JSON.stringify(wd.wdParseYM('03/2019')), '{"y":"2019","m":"03"}');
+  eq('"Mar 2019" → March 2019', JSON.stringify(wd.wdParseYM('Mar 2019')), '{"y":"2019","m":"3"}');
+  eq('"2019" → the year', JSON.stringify(wd.wdParseYM('2019')), '{"y":"2019"}');
+
+  // Wiring.
+  eq('every Workday page gets the engine pass', /await wdEnginePass\(p\);\n      await fallbackFill\(\);/.test(body('workdayMultiPageFlow')), true);
+  eq('a page without a page-type marker is read off the progress bar', /\[wdStepKind\(\)\]/.test(body('workdayMultiPageFlow')), true);
+  eq('the "Upload your resume" page is handled', /wdHandleResumeUploadPage\(\)/.test(body('workdayAutomation')) && /wdHandleResumeUploadPage\(\)/.test(body('workdayMultiPageFlow')), true);
+  eq('waiting for the application counts as work', /withBusy\('waiting for the Workday application'/.test(body('workdayAutomation')), true);
+  eq('a stuck page follows Workday\'s error banner', /await wdFixFromErrorBanner\(p\);/.test(body('workdayMultiPageFlow')), true);
+  eq('parser ghosts are deleted down to the profile\'s count, never below', /while \(n > 0 && bs\.length > n\)/.test(body('wdEnsureBlocks')), true);
+  eq('dates are typed a digit at a time', /new KeyboardEvent\('keydown', \{ key: ch/.test(body('wdSetSegment')), true);
+  eq('a school not in the list falls back to its "Other"', /'Sonstige'/.test(body('wdMyExperience')), true);
+}
+
 
 setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
