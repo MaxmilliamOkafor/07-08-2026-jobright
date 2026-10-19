@@ -27,11 +27,17 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
 
 /* A beforeunload event faithful enough to answer the only question that counts.
    Chrome shows the prompt when the handler called preventDefault(), assigned a
-   non-empty returnValue, or returned a string. */
+   non-empty returnValue, or returned a string. returnValue is a DOMString, so
+   ANY assignment is stored as text — `e.returnValue = undefined` stores
+   "undefined" and arms the prompt. The fake used to treat undefined as "not
+   armed", which is how the page hooks shipped a line that raised the very dialog
+   they were written to stop (tests/e2e/leave-site.js checks the real thing). */
 function makeEnv({ automating }) {
   const listeners = new Map();
   class Ev {
-    constructor(type) { this.type = type; this.defaultPrevented = false; this.returnValue = ''; this.stopped = false; }
+    constructor(type) { this.type = type; this.defaultPrevented = false; this._rv = ''; this.stopped = false; }
+    get returnValue() { return this._rv; }
+    set returnValue(v) { this._rv = String(v); }   // DOMString, as in Chrome
     preventDefault() { this.defaultPrevented = true; }
     /* The browser really does stop every later listener on the same target.
        Without modelling that, the capture interceptor would look like it does
@@ -78,7 +84,7 @@ function makeEnv({ automating }) {
       if (typeof r === 'string' && r) returned = r;
       if (e.stopped) break;   // exactly what stopImmediatePropagation does
     }
-    return e.defaultPrevented || (e.returnValue !== '' && e.returnValue != null) || !!returned;
+    return e.defaultPrevented || e.returnValue !== '' || !!returned;
   };
   return { win, fire, listeners, ownListeners };
 }

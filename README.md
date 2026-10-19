@@ -2866,6 +2866,14 @@ against a local form served under a real ATS hostname, recording every field,
 every write, scroll direction changes and what was submitted. Four fixtures
 cover the cases above; all four submit with correct answers and no flicker.
 
+Options (environment variables): `FIXTURE_ROUTES` serves another page on a path,
+`EXTRA_HOSTS` maps more hostnames, `EXTRA_STORAGE` seeds storage keys,
+`PROFILE_EXTRA` overrides profile fields (e.g. `{"availability":"2025-12-02"}`),
+`FEED_DELAY_MS` holds the stand-in Gmail feed empty for a while, and `LOG_TIMES=1`
+timestamps the log. `greenhouse-remix.html` is built from
+`tests/e2e/src/greenhouse-remix.jsx` with the real react-select by
+`tests/e2e/src/build.sh` (needs npm) — edit the source and rebuild, never the page.
+
 Suite total: **1,616 assertions**, all green.
 
 ---
@@ -3140,6 +3148,163 @@ now the cap is extended once, the PIN is typed and the application is submitted.
 
 ---
 
+## v17.14 — the Anthropic Greenhouse form, Workday's Sign In, Microsoft, the credits popup
+
+From your screenshots: an Anthropic application on Greenhouse's new boards showing
+"Yes" under three questions that still said **"This field is required."**, a start
+date of 2025-12-02, "Yes" to sponsorship and to "interviewed before"; Workday filling
+the Sign In form and never pressing **Sign In**; Microsoft's Acknowledgment boxes; and
+Jobright's "0 remaining Autofill credits" box on every page.
+
+**Greenhouse dropdowns (react-select).**
+- **The "Yes" was never chosen.** It was text typed into the dropdown's search box, which looks exactly like a chosen answer. The required-field pass typed it, and every "already answered?" check believed it. Now a dropdown only counts as answered when it shows a chosen option. Typed text is cleared and the option is picked, in the required-field pass and the error fixer.
+- **The question was read as "Select...", the placeholder.** It now comes from the dropdown's own label.
+- **Unknown Yes/No dropdowns got nothing.** They are now decided the way radio buttons already were.
+- **Sponsorship got "Yes".** A bare Yes/No on a work-authorisation question picked "Yes" as "I can work here". For "Do you require sponsorship?" that says the opposite. A bare Yes/No now answers the question as asked; worded options ("Does not require sponsorship") are unchanged. Radio buttons had the same problem and are fixed too.
+- **"Interviewed before" got "Yes".** "Have you ever interviewed at <company> before?" now answers No.
+
+**Dates and written answers.**
+- **Stale start date.** A start date stored as a date that has passed becomes today plus your notice period (two weeks if none), in the same format. A date already sitting in the box is corrected too.
+- **Deadlines question.** "Any deadlines or timeline considerations?" is answered in words, not with a date.
+- **"Why <company>?"** No longer gets "N/A".
+
+**The page.**
+- **Paywall remover could hide the whole page.** The old remover, finding a credits box or an "Upgrade" button in the page itself, climbed up to `<html>` and hid everything. The application then looked done with nothing filled. It now stops at anything containing form fields.
+- **Credits box.** Jobright's box is now closed on every site with its own **Cancel** (never Upgrade). Before, this only happened on jobright.ai.
+- **Waiting for Jobright's sidebar.** When the sidebar never appears, the job is no longer killed as "Stalled" after 15s, and the fallback skips a pointless ~20s hunt for Jobright's Autofill button.
+
+**Workday Sign In.**
+- **Clicks went to the wrong element.** Workday covers its Sign In and Create Account buttons with an invisible `click_filter` layer that receives the click; the button underneath does nothing. Both are now pressed through that layer.
+- **Create Account was recorded but never sent.** Because of the same layer, the next pass switched to signing in to an account that didn't exist. That no longer happens.
+
+**Microsoft acknowledgements.**
+- A box labelled only "Yes" is now read together with the statement above it.
+- A styled checkbox (invisible input under a drawn box) is now considered.
+
+**Checked in a real browser:**
+- **Anthropic-style form with the real react-select:** with availability set to 2025-12-02, it submits with every dropdown chosen, sponsorship No/No, interviewed No, start date moved forward, deadlines answered in words, and the credits box closed.
+- **Workday account fixture with the click layer:** it reproduced "never presses Sign In" before the fix; it now signs in and submits.
+- **Microsoft Acknowledgment fixture:** submits with all three boxes ticked. It passes on the old code too, so whatever stops your real page isn't reproduced here. If it still happens, send that section's HTML (right-click → Inspect → copy the element).
+
+---
+
+## v17.15 — LinkedIn recruiter follow-up removed
+
+The "📨 Recruiter Follow-up" box that appeared on LinkedIn job and profile pages is
+gone. It queued every submitted application and, with Auto-send ticked, messaged a
+recruiter or hiring manager on LinkedIn — against LinkedIn's terms, and it named
+Greenhouse's new boards as the company "Job Boards". It was never part of applying.
+
+Removed with it: the follow-up queue written after each application, and the
+capture of Jobright's "Insider Connections" that only fed it. The service worker
+clears the data it left behind (queue, sent log, template, settings) on the next
+extension update/reload. Nothing else changes; applying works exactly as before.
+
+---
+
+## v17.16 — rebased onto Jobright 1.24.1
+
+Jobright's 1.24.1 changes three of its files; everything else is byte-identical to
+1.24.0.
+
+- `helper-app.41ea2652.js` (copied verbatim): its autofill now asks Jobright's
+  server for answers as a **stream** — a `getGptResultsStream` port to the worker,
+  falling back to the old request — and fills each answer the moment it arrives
+  instead of waiting for all of them. Requests now also carry the current job id.
+- `static/background/index.js`: theirs, plus our three `importScripts` lines. The
+  worker gains the stream handler, a `getAutofillConfig` message, and site rules
+  that wait until you are logged in to Jobright. The same four `active:!0` tab
+  calls as 1.24.0, still kept in the background during runs by the tab guard.
+- `manifest.json`: only the version (1.24.1). Their content scripts are unchanged;
+  their `web_accessible_resources` still list assets they don't ship, so ours is
+  kept. `_metadata/` (Chrome Web Store signing data) is not copied.
+
+Nothing in it overlaps our code: no `UA_` messages, no ports of ours, and our
+request interception never sat on the worker's requests. Unit suite green; the
+fixtures were re-run on the patched build (see the commit).
+
+---
+
+## v17.17 — "Leave site? Changes you made may not be saved." was coming from us
+
+Yes — that prompt (seen on optimhire.com, and on every other site) was raised by
+this extension. `ua-page-hooks.js` runs on every page, and its job is to *stop*
+that prompt: it halts the page's own leave-page handlers. But it also "cleared"
+the event with `e.returnValue = undefined`. `returnValue` is a text property, so
+that stored the word "undefined" — and any non-empty `returnValue` is precisely
+how a page asks Chrome for the prompt. So after any click, leaving any page asked
+"Leave site?", even a page that never asked for it, and during a run it could stall
+the tab between jobs.
+
+Now `returnValue` is never written, by us or by the page's handlers (they only ever
+see a shielded copy of the event). Checked in real Chromium, old vs new:
+
+| page | before | after |
+|---|---|---|
+| asks for nothing | prompt | none |
+| `preventDefault()` / `returnValue = "x"` / `onbeforeunload` returning text / its own capture listener | prompt | none |
+
+`tests/e2e/leave-site.js` repeats that check in a real browser (with a control
+proving it can see the prompt), and the node test's fake event now stores
+`returnValue` as text the way Chrome does, so it fails on the old line too.
+
+---
+
+## v17.18 — Workday: your standalone engine's approach, ported in
+
+From `claude-extension-standalone/src/workday/` (selectors, dom, controls, steps,
+answers, detect, i18n). Ported as plain JavaScript into `ua-enhancement.js`, and
+run after the existing Workday fillers, touching only what they left empty:
+
+- **One pass over every field.** Every Workday field sits in a
+  `formField-…` container. The pass works out what each one is (text, dropdown,
+  search-and-pick list, radio, checkbox, checkbox group, date), decides the
+  answer, writes it the way that control takes input, and checks it stuck. New
+  or renamed tenant questions are no longer missed because their id isn't on a list.
+- **Any language.** Knockout questions are decided in English, German, French,
+  Spanish, Portuguese, Italian, Dutch and Polish. Before, a German "Benötigen Sie
+  … Sponsoring?" fell through to the English decider's default — "Yes" (needs
+  sponsorship). Localised options match your profile: "Vereinigtes Königreich",
+  "Mobil", "Ja/Nein", and decline options such as "Keine Angabe". Step names are
+  read in every language too.
+- **My Information:** "How did you hear" lists (walking into sub-lists), "previously
+  worked here" (No), country, county, phone type, **country phone code** (the
+  number then goes in without the code).
+- **My Experience:** entries Workday's CV parser invented are **deleted** down to
+  the number of roles in your profile, and the rest are filled from your own
+  history (title, company, location, current, dates, description). Schools
+  not in the tenant's list fall back to its "Other" entry; degree, field of
+  study, GPA, skills, LinkedIn.
+- **Dates are typed digit by digit**, as Workday's date boxes expect; a typed value
+  alone is often discarded.
+- **Self Identify:** signature name, **today's date**, disability (decline unless
+  your profile says otherwise). Voluntary Disclosures: decline unless your profile
+  has an answer; the terms box is ticked.
+- **The "Upload your resume" page** that can sit between sign-in and the
+  application is handled: the CV is attached and Continue pressed. It had no
+  handler, and the job stalled there.
+- **Workday's error banner** names each field it refused; on a stuck page each one
+  is followed and that field answered.
+- Waiting for the application to load now counts as work, so the 15-second stall
+  watchdog can't drop the job mid-load.
+
+**Tested with your mock** (`test/workday-e2e/mock-workday.js`, now
+`tests/e2e/src/mock-workday.js`, built into `tests/e2e/workday-mock.html`):
+the whole application — job → Apply → create account through the click layer →
+resume upload → five steps → review → submitted — in **English and German**,
+every required answer right. Before the port, the same run stalled on the resume
+upload page.
+
+Not ported: the engine's tailoring/PDF rendering, its AI answers and its
+password vault — they depend on its own settings, structured CV and AI key;
+here Jobright's tailoring and the existing answer bank/site logins do those jobs.
+The optional German "Field of study" stays empty when your profile's English
+value ("Computer Science") has no match in the list ("Informatik") — matching
+across languages needs the engine's AI step. SpeedyApply 2.28.0 is the version
+already ported in v17.9.
+
+---
+
 ## Reading the diagnostics
 
 **Queue Manager side panel → 🩺 Diagnostics.** It opens a dialog with the whole
@@ -3306,13 +3471,15 @@ the new bundle removed a file the manifest still points at, or if the appended
    - `side_panel.default_path` = `ua-queue.html`.
    - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
      `identity`.
-   - Their new content scripts go after ours, in their order (1.24.0 added four).
+   - Their new content scripts go after ours, in their order (1.24.0 added four;
+     1.24.1 added none).
+   - Don't copy `_metadata/` — it is Web Store signing data for their build.
 5. Check the new worker for anything that would collide with ours — side panel,
    alarms, message types beginning `UA_`, `beforeunload` — and for `active:!0`
    (tabs brought to the front). Those are neutralised during runs by the tab
    guard in `ua-orchestrator.js`, but a new one is worth knowing about.
 6. Run the six fixtures: `for f in tests/e2e/form*.html; do node tests/e2e/run.js "$(basename $f)"; done`
-   from `tests/e2e`, and `node tests/e2e/dom-units.js`.
+   from `tests/e2e`, `node tests/e2e/dom-units.js` and `node tests/e2e/leave-site.js`.
 7. `./tests/run.sh`. It fails if any of the three worker lines is missing.
 
 ## Notes

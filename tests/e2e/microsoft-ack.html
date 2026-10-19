@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Software Engineer II | Microsoft Careers</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:20px auto}.f,.question{margin:14px 0}label{display:block}.question-text{font-weight:600}.err{color:#c00}
+.cb{position:relative;display:inline-flex;gap:8px;align-items:center;cursor:pointer}.cb-input{position:absolute;opacity:0;width:20px;height:20px;margin:0}.cb-box{width:18px;height:18px;border:1px solid #888;border-radius:3px}.cb-input:checked+.cb-box{background:#5b3fd6}</style></head><body>
+<!-- Microsoft careers (Eightfold), the Acknowledgment step from the screenshot: each
+     required statement is its own block, and the checkbox under it is labelled only
+     "Yes". The real input is invisible (opacity 0) under a drawn box; the label takes the click. Submit application refuses until all three are ticked. -->
+<form class="apply-form" id="application-form" novalidate>
+  <div class="f"><label for="fn">First name *</label><input id="fn" name="firstName" required></div>
+  <div class="f"><label for="ln">Last name *</label><input id="ln" name="lastName" required></div>
+  <h2>Acknowledgment</h2>
+  <div class="question" id="q1">
+    <div class="question-text">As part of the online application process you were asked whether you possess certain minimum required qualifications for the role to which you are applying. By selecting yes, you agree that you answered these questions accurately. You further acknowledge that your answers may result in your application not being considered further for this role if you do not currently meet the required qualifications for the role.<span class="required">*</span></div>
+    <label class="cb"><input type="checkbox" name="ack_quals" class="cb-input"><span class="cb-box"></span>Yes</label>
+  </div>
+  <div class="question" id="q2">
+    <div class="question-text">By checking this you agree to the <a href="#">Microsoft Data Privacy Notice (DPN)</a>.<span class="required">*</span></div>
+    <label class="cb"><input type="checkbox" name="ack_dpn" class="cb-input"><span class="cb-box"></span>Yes</label>
+  </div>
+  <div class="question" id="q3">
+    <div class="question-text">By checking this, you affirm that you have familiarized yourself with the Microsoft recruiting process and agree to the <a href="#">candidate code of conduct</a>.<span class="required">*</span></div>
+    <label class="cb"><input type="checkbox" name="ack_conduct" class="cb-input"><span class="cb-box"></span>Yes</label>
+  </div>
+  <p id="err" class="err"></p>
+  <button type="button">Cancel</button> <span>Changes saved less than a minute ago</span>
+  <button type="submit" id="submit">Submit application</button>
+</form>
+<script>
+  document.getElementById('application-form').onsubmit = (e) => {
+    e.preventDefault();
+    const boxes = ['ack_quals', 'ack_dpn', 'ack_conduct'].map((n) => document.querySelector(`[name="${n}"]`));
+    const missing = boxes.filter((b) => !b.checked).map((b) => b.name);
+    if (!document.getElementById('fn').value) missing.push('firstName');
+    if (missing.length) { document.getElementById('err').textContent = 'Please complete all required fields.'; console.log('BLOCKED ' + JSON.stringify(missing)); return; }
+    const out = { firstName: document.getElementById('fn').value };
+    for (const b of boxes) out[b.name] = b.checked;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying</h1><p>Your application has been submitted.</p>';
+  };
+</script>
+</body></html>

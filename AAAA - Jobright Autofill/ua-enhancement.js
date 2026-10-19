@@ -968,6 +968,7 @@
     // every ATS that asks, and a screening filter looking for a minimum never
     // prefers the smaller answer.
     years: '7', salary: '80000', notice: '2 weeks', availability: 'Immediately',
+    noDeadlines: 'No — I have no deadlines or timeline constraints at the moment.',
     country: 'Ireland', phoneCountryCode: '+353', countryCode: 'IE',
     cover: 'I am excited to apply for this role. My background and skills make me an excellent candidate and I look forward to contributing to your team.',
     why: 'I admire the company culture and the opportunity to make a meaningful impact.',
@@ -1004,6 +1005,48 @@
   const COVER_FIELD_RE = /cover.?letter|motivation|message to (the )?(hiring|recruit|team|us)|why (do you )?(want|are you)|additional.?info|anything else you.?d like/i;
   const ATS_HOST_LABEL_RE = /^(myworkdayjobs|myworkdaysite|smartrecruiters|greenhouse|job-boards|lever|icims|taleo|oraclecloud|adp|workable|ashbyhq|avature|jobvite|jazzhr|bamboohr|successfactors|phenom|eightfold)$/i;
 
+  // The candidate's OWN deadlines — never "can you work under tight deadlines?".
+  const DEADLINE_Q_RE = /^(?![^?]*\b(experience|work(ing)? (to|under|with)|meet(ing)?|manag\w*|handl\w*|tight|pressure)\b)[^?]*\b(any|your)\b[^?]{0,40}\b(deadlines?|timeline (considerations?|constraints?)|time.?sensitive|competing offers?|other offers?)\b/i;
+  /* A start date saved as a DATE goes stale: an availability of "2025-12-02" kept
+     being entered as the earliest start date long after it had passed, which reads
+     as a typo at best. A past date becomes today plus the notice period (two weeks
+     if none), written back in the same format. Words ("Immediately", "1 month")
+     and future dates pass through untouched. */
+  function freshStartDate(v, p) {
+    const s = String(v == null ? '' : v).trim();
+    let m, y, mo, d, fmt;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) { y = +m[1]; mo = +m[2]; d = +m[3]; fmt = 'iso'; }
+    else if ((m = s.match(/^(\d{1,2})([\/.])(\d{1,2})\2(\d{4})$/))) {
+      // Day-first unless that cannot be right; either reading must be in the past.
+      const a = +m[1], b = +m[3];
+      if (a > 12) { d = a; mo = b; fmt = 'dmy'; } else if (b > 12) { mo = a; d = b; fmt = 'mdy'; } else { d = a; mo = b; fmt = 'dmy'; }
+      y = +m[4];
+      fmt += m[2];
+    } else return s;
+    const when = new Date(y, mo - 1, d);
+    if (isNaN(when)) return s;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    // Ambiguous d/m: only rewrite if BOTH readings are past.
+    const alt = /^(dmy|mdy)/.test(fmt) && d <= 12 ? new Date(y, d - 1, mo) : when;
+    if (when >= today || alt >= today) return s;
+    let days = NaN;
+    try { days = toDays((p && (p.notice_period || p.notice)) || ''); } catch (_) {}
+    if (!(days >= 0)) days = 14;
+    const n = new Date(today.getTime() + Math.max(days, 1) * 86400000);
+    const p2 = (x) => String(x).padStart(2, '0');
+    if (fmt === 'iso') return `${n.getFullYear()}-${p2(n.getMonth() + 1)}-${p2(n.getDate())}`;
+    const sep = fmt.slice(3);
+    return fmt.startsWith('dmy') ? `${p2(n.getDate())}${sep}${p2(n.getMonth() + 1)}${sep}${n.getFullYear()}`
+      : `${p2(n.getMonth() + 1)}${sep}${p2(n.getDate())}${sep}${n.getFullYear()}`;
+  }
+  function isDateText(v) { return /^\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/.]\d{1,2}[\/.]\d{4})\s*$/.test(String(v || '')); }
+  // "Why <company>?" — named, not the one generic line every form gets.
+  function whyAnswer() {
+    let co = '';
+    try { co = String(pageCompanyName() || '').trim(); } catch (_) {}
+    if (!co || co.length > 40) return DEFAULTS.why;
+    return `I'm drawn to ${co}'s mission and the chance to work on problems that genuinely matter. My experience building and shipping production systems maps closely to this role, and I would welcome the opportunity to contribute to the team and grow with it.`;
+  }
   function pageCompanyName() {
     // The queue knows it when the CSV carried it.
     try {
@@ -1113,7 +1156,9 @@
     if (/graduation|grad.?date|grad.?year/.test(l)) return p.graduation_year || p.grad_year || '';
     // Excluded "position/title APPLIED FOR" (that's the JOB's title, not the
     // candidate's) and "position type" (employment-type dropdown, e.g. Full-Time).
-    if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type/.test(l)) return p.current_title || p.title || '';
+    // "Role Description" / "Position responsibilities" ask for prose, not the title —
+    // the title rule used to put "Senior Solutions Architect" in a description box.
+    if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type|descri|responsib|dut(y|ies)|summary|achievement|accomplish/.test(l)) return p.current_title || p.title || '';
     // Dropped bare "org" — a 3-letter fragment that could match unrelated labels
     // (e.g. a "yourname.org" website hint) and stuff the company name into them.
     if (/company|employer|current.?company/.test(l)) return p.current_company || p.company || '';
@@ -1134,14 +1179,19 @@
     if (/today.?s date|date signed|signature date|current date|date of (signature|application)/.test(l)) return '__TODAY__';
     if (/cover.?letter|motivation|additional.?info|message.?to/.test(l)) return p.cover_letter || DEFAULTS.cover;
     if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
-    if (/why.*(compan|role|want|interest|position)/.test(l)) return DEFAULTS.why;
+    /* "Why Anthropic?" names the company and nothing else, so it matched none of
+       these words and a REQUIRED question went out as "N/A". */
+    if (/why.*(compan|role|want|interest|position|join|work (here|with us|for us|at))/.test(l) ||
+        /^\s*why\s+[\w&.' -]{2,40}\?\s*\*?\s*$/.test(l)) return whyAnswer();
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
     // The PROFILE first. These two returned the defaults outright and the rules
     // further down that read the profile were never reached — a "1 month"
     // notice period was answered "Immediately" on every form.
     if (/years.*(exp|work)|exp.*years|total.*experience/.test(l)) return yearsAnswer(p);
     if (/notice.?period|days.?notice|period of notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
-    if (/availab|start.?date|notice|when.*start/.test(l)) return p.availability || p.start_date || DEFAULTS.availability;
+    // "Any deadlines or timeline considerations?" is not a start date — it got one.
+    if (DEADLINE_Q_RE.test(l)) return DEFAULTS.noDeadlines;
+    if (/availab|start.?date|notice|when.*start/.test(l)) return freshStartDate(p.availability || p.start_date || DEFAULTS.availability, p);
     // Both directions from one decider — see workAuthorisationAnswer. The old
     // pair ran /authoriz/ (which never matched the British "authorised") and then
     // /sponsor|visa/, so every European eligibility question answered "No".
@@ -1683,6 +1733,10 @@
       /(applied|interviewed)\s+(to|with|for|at)\s+(this|our|the)\s+(company|organi[sz]ation|firm|business|role|position|team)/,
       /(applied|interviewed)[^.?]{0,40}\b(in|within)\s+the\s+(last|past)\b/,
       /worked.*(here|for us|for this|for the company).*before/, /applied.*before/,
+      // "Have you ever interviewed at Anthropic before?" names the company, so the
+      // "this/our/the company" pattern above missed it and it fell through to the
+      // default Yes.
+      /\b(ever|previously)\b[^?]{0,30}\binterview(ed)?\b/, /\binterviewed\b[^?]*\bbefore\b/,
       // Prior employment with the employer named on the page: "Have you ever
       // worked for Acme before?", "previously been employed by Acme?".
       /have you (ever )?(previously )?worked (for|at) (?!an? |any )[^?]*\bbefore\b/, /(previously|ever) been employed (by|at|with)/,
@@ -2432,7 +2486,15 @@
     if (!texts || !texts.length || !decision) return -1;
     const norm = texts.map(t => (t || '').trim().toLowerCase());
     // Work authorisation / sponsorship gets its own matcher — see above.
-    if (question && workAuthorisationAnswer(question)) {
+    const waQ = question ? workAuthorisationAnswer(question) : null;
+    if (waQ) {
+      /* …except on a bare Yes / No. The stance matcher reads "Yes" as "I can work
+         here", which is right for "Are you authorised to work in the UK?" and exactly
+         wrong for "Do you require visa sponsorship?" — where "Yes" says you NEED it.
+         A bare answer only means something against the question, so answer the
+         question as asked. */
+      const yi = norm.findIndex(t => /^yes\.?$/.test(t)), ni = norm.findIndex(t => /^no\.?$/.test(t));
+      if (yi >= 0 && ni >= 0) return waQ === 'yes' ? yi : ni;
       const wi = workAuthOptionIndex(norm);
       if (wi >= 0) return wi;
     }
@@ -2870,14 +2932,35 @@
     return n;
   }
 
+  /* A styled checkbox hides its real <input> (opacity 0) under a drawn box and lets
+     the label take the click — Microsoft's careers site is built this way. Visible
+     means: the control, or the label you would actually click. */
+  function choiceShown(cb) {
+    if (isVisible(cb)) return true;
+    try {
+      if (cb.labels && Array.from(cb.labels).some(isVisible)) return true;
+      const wrap = cb.closest && cb.closest('label');
+      return !!(wrap && isVisible(wrap));
+    } catch (_) { return false; }
+  }
   async function tickConsentBoxes() {
     let n = 0;
-    for (const cb of deepAll(CONSENT_CONTROL_SEL, 150).filter(isVisible)) {
+    for (const cb of deepAll(CONSENT_CONTROL_SEL, 150).filter(choiceShown)) {
       if (checkboxChecked(cb)) continue;
       // One option of a multiple-choice question, not a declaration — leave it to
       // answerCheckboxGroups, which picks exactly one.
       if (checkboxGroup(cb).length) continue;
-      const txt = controlText(cb);
+      let txt = controlText(cb);
+      /* A box whose own label is only "Yes" / "I agree": the statement it agrees to
+         is the question ABOVE it. Microsoft's Acknowledgment step is three of these
+         ("By checking this you agree to the Microsoft Data Privacy Notice.*" over a
+         lone "Yes"), and read on their own they were neither consent nor required,
+         so Submit application stayed blocked. */
+      if (/^\s*(yes|i agree|agree|i accept|accept|i do|i confirm|confirm(ed)?|true|ok)\s*\.?\s*$/i.test(txt)) {
+        let q = '';
+        try { q = String(getFullQuestionText(cb) || ''); } catch (_) {}
+        if (q.trim() && q.trim().toLowerCase() !== txt.trim().toLowerCase()) txt = q + ' ' + txt;
+      }
       let required = false;
       try { required = isFieldRequired(cb); } catch (_) {}
       if (!required) required = REQUIRED_ERROR_RE.test(txt);
@@ -2977,6 +3060,15 @@
         continue;
       }
       if (isLocationField(el)) { continue; } // already handled by resolveLocationFields
+      /* A react-select's search box carries aria-required, so it lands here — and
+         typing "Yes" into it is what left Greenhouse questions showing "Yes" with
+         "This field is required." under them. Pick the option instead. */
+      if (isSelectSearchBox(el)) {
+        const ctrl = reactSelectControl(el);
+        if ((el.value || '').trim()) { try { nativeSet(el, ''); } catch (_) {} await sleep(120); }
+        if (await commitCustomDropdown(ctrl, guessFieldValue(getFullQuestionText(el) || lbl, p, el), true)) fixed++;
+        continue;
+      }
       let val = guessFieldValue(lbl, p, el);
       if (!val) {
         // Safe generic defaults so a required text box is never left empty.
@@ -2985,7 +3077,7 @@
         // extension duplication bug fixed above in guessValue().
         if (!/ext(ension)?\b/i.test(lbl || '') && (el.type === 'tel' || /phone/i.test(lbl || ''))) val = p.phone || '';
         else if (el.type === 'email' || /email/i.test(lbl || '')) val = p.email || '';
-        else if (el.tagName === 'TEXTAREA') val = 'N/A';
+        else if (el.tagName === 'TEXTAREA') val = /\bwhy\b|interest|motivat|excite|tell us|describe/i.test(lbl || '') ? whyAnswer() : 'N/A';
         else if (el.type === 'number') val = '0';
       }
       if (val) { el.focus({ preventScroll: true }); await sleep(60); nativeSet(el, val); el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); fixed++; await sleep(120); }
@@ -3393,7 +3485,8 @@
     if (/years?.{0,30}(experience|exp\b)|experience.{0,20}years?|how long/.test(l)) return yearsAnswer(p);
     if (/salary|compensation|pay (expectation|range)|desired pay|remuneration/.test(l)) return p.expected_salary || p.desired_salary || DEFAULTS.salary;
     if (/notice/.test(l)) return p.notice_period || p.notice || DEFAULTS.notice;
-    if (/availab|start date|when can you start|earliest start/.test(l)) return p.availability || p.notice_period || DEFAULTS.availability;
+    if (DEADLINE_Q_RE.test(l)) return DEFAULTS.noDeadlines;
+    if (/availab|start date|when can you start|earliest start/.test(l)) return freshStartDate(p.availability || p.notice_period || DEFAULTS.availability, p);
     if (/educat|degree|qualification/.test(l)) return p.education_level || p.highest_degree || p.degree || "Bachelor's";
     if (/how did you (hear|find)|source|where did you (see|find)/.test(l)) return DEFAULTS.howHeard;
     return '';
@@ -3904,9 +3997,51 @@
     try { return (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim(); }
     catch (_) { return ''; }
   }
+  /* A react-select's <input> is its SEARCH box, not its value. Text typed into it
+     renders exactly where a chosen answer would — Greenhouse's new boards showed
+     "Yes" under three required questions that were never actually answered, each
+     with "This field is required." — and every "already answered?" check read the
+     search text as the answer, so nothing ever went back to pick the option. The
+     value is the single-value / multi-value node the control renders on a pick. */
+  const RS_CONTROL_SEL = '[class*="select__control" i],[class*="Select-control" i]';
+  function reactSelectControl(el) {
+    try { return (el && el.closest && el.closest(RS_CONTROL_SEL)) || null; } catch (_) { return null; }
+  }
+  function reactSelectHasValue(ctrl) {
+    try {
+      return !!ctrl.querySelector('[class*="single-value" i],[class*="singleValue" i],[class*="multi-value" i],[class*="multiValue" i],.Select-value');
+    } catch (_) { return false; }
+  }
+  function isSelectSearchBox(el) {
+    return !!(el && el.tagName === 'INPUT' && el.type !== 'hidden' && reactSelectControl(el));
+  }
+  /* The question a dropdown asks. A react-select's control <div> has no label of
+     its own — the <label for> points at the search <input> inside it — so reading
+     the div gave an empty question, and an empty question has no answer. */
+  function comboQuestion(combo) {
+    let el = combo;
+    try {
+      const rs = reactSelectControl(combo) || (combo.querySelector && combo.querySelector(RS_CONTROL_SEL));
+      if (rs) el = rs.querySelector('input') || combo;
+      // Its own <label for> / aria-labelledby first: the nearest text to a
+      // react-select is its "Select..." placeholder, and that is what the general
+      // question reader returned — so every question read as "Select...".
+      const byFor = el.id ? ownerScope(el).querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
+      const own = ((byFor && byFor.textContent) || textOfIds(el, 'aria-labelledby') || '').replace(/\s+/g, ' ').trim();
+      if (own) return own;
+    } catch (_) {}
+    const PLACEHOLDER = /^(select|choose|pick|search|start typing)\b[^?]{0,20}$/i;
+    for (const t of [getFullQuestionText(el), getLabel(el), getFullQuestionText(combo), getLabel(combo)]) {
+      const v = String(t || '').replace(/\s+/g, ' ').trim();
+      if (v && !PLACEHOLDER.test(v)) return v;
+    }
+    return '';
+  }
   // Does this combobox already hold an answer?
   function comboHasValue(el) {
     try {
+      const rs = reactSelectControl(el) || (el.querySelector && el.querySelector(RS_CONTROL_SEL));
+      if (rs) return reactSelectHasValue(rs);
       const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || el.querySelector?.('input');
       if (inner && (inner.value || '').trim()) return true;
       if ((el.value || '').trim()) return true;
@@ -4005,8 +4140,30 @@
        one. That is how a Greenhouse application went out saying "Less than 1
        year" of professional experience. Score the ranges instead, exactly as the
        radio path already does. */
-    const qFull = String(getFullQuestionText(combo) || getLabel(combo) || '');
-    const isYearsQ = YEARS_Q_RE.test(qFull);
+    const qFull = comboQuestion(combo);
+
+    /* A genuine Yes/No dropdown is a knockout, and is decided the way the radio path
+       decides one: a stored answer only if it IS a yes or no (saved answers have
+       already been through the knockout guard), otherwise determineYesNo, mapped onto
+       the real option wording. The general guesser hands these questions whatever
+       its keywords hit — "united kingdom" for a sponsorship question that mentions a
+       country, "london" for relocation, "advanced" for "have you written evals" —
+       and the fuzzy matchers below turned that into an arbitrary "Yes". Only on a
+       binary option set, exactly as selectOptionForQuestion gates native selects. */
+    if (qFull.trim()) {
+      const texts = real.map(o => comboText(o));
+      const pols = texts.map(optionPolarity);
+      const binary = texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) ||
+        (texts.some(t => /^yes$/i.test(t)) && texts.some(t => /^no$/i.test(t))));
+      if (binary) {
+        let decision = /^(yes|y|true)$/.test(want) ? 'yes' : /^(no|n|false)$/.test(want) ? 'no' : '';
+        if (!decision) { try { decision = determineYesNo(qFull.toLowerCase().replace(/\s+/g, ' ')); } catch (_) {} }
+        if (decision === 'eeo') decision = 'decline';
+        const i = optionIndexForDecision(texts, decision, qFull);
+        if (i >= 0) pick = real[i];
+      }
+    }
+    const isYearsQ = !pick && YEARS_Q_RE.test(qFull);
     if (isYearsQ) {
       const yrs = parseInt(String(want).match(/\d+/)?.[0], 10) || parseInt(DEFAULTS.years, 10);
       let best = 0;
@@ -4127,8 +4284,9 @@
     let filled = 0;
     for (const combo of combos.slice(0, 40)) {
       if (comboHasValue(combo)) continue;
-      const q = getFullQuestionText(combo) || getLabel(combo) || '';
-      const required = isFieldRequired(combo) || /\*/.test(q);
+      const q = comboQuestion(combo);
+      const rsInput = reactSelectControl(combo) ? (reactSelectControl(combo).querySelector('input') || combo) : combo;
+      const required = isFieldRequired(combo) || isFieldRequired(rsInput) || /\*/.test(q);
       const guess = q ? guessFieldValue(q, profile, combo) : '';
       try { if (await commitCustomDropdown(combo, guess, required)) filled++; } catch (_) {}
       await sleep(150);
@@ -4372,6 +4530,8 @@
       return true;
     }
     if (el.type === 'checkbox' || el.type === 'radio') return !!el.checked;
+    // A react-select's search text is not its value — see reactSelectControl.
+    if (isSelectSearchBox(el)) return reactSelectHasValue(reactSelectControl(el));
     // "+353" alone in a phone box is a seed, not an answer — see dialCodeOnly.
     return !!el.value?.trim() && !dialCodeOnly(el);
   }
@@ -4566,11 +4726,18 @@
       else if (isEmail && !EMAIL_LABEL_RE.test(lbl) && !/e-?mail|username/.test(declares) && !/contact|reference|referr/i.test(lbl) && el.tagName !== 'TEXTAREA') why = 'an email address';
       else if ((el.type === 'email' || (/e-?mail/i.test(lbl) && !/confirm|re-?enter|repeat|verify/i.test(lbl) && !/(recruiter|referr|reference|manager)/i.test(lbl))) && !isEmail && el.tagName !== 'TEXTAREA') why = 'not an email address';
       else if ((el.type === 'tel' || /phone|mobile|telephone/i.test(lbl)) && !/code|ext/i.test(lbl) && !/\d{3}/.test(v)) why = 'not a phone number';
+      /* Dates where they do not belong: the earliest-start date copied into "Do you
+         have any deadlines or timeline considerations?", and a start date that has
+         already passed (a profile date saved months ago, or Jobright's own fill). */
+      else if (isDateText(v) && DEADLINE_Q_RE.test(lbl)) why = 'a date';
+      else if (isDateText(v) && /availab|start|earliest|when.*(join|begin)/i.test(lbl) && freshStartDate(v, p) !== v) why = 'a date in the past';
       if (!why) continue;
       let good = '';
       try { good = String(guessFieldValue(lbl, p, el) || '').trim(); } catch (_) {}
       if (good && good === v) continue;
-      const goodIsBad = !good || (why === 'a link' && /^(https?:\/\/|www\.)/i.test(good)) || (why === 'an email address' && /@/.test(good));
+      if (why === 'a date in the past' && (!good || freshStartDate(good, p) !== good)) good = freshStartDate(v, p);
+      const goodIsBad = !good || (why === 'a link' && /^(https?:\/\/|www\.)/i.test(good)) || (why === 'an email address' && /@/.test(good)) ||
+        (why === 'a date' && isDateText(good));
       LOG(`"${lbl.slice(0, 50)}" held ${why} — ${goodIsBad ? 'cleared' : 'replaced with the right answer'}`);
       try { el.focus({ preventScroll: true }); } catch (_) {}
       nativeSet(el, goodIsBad ? '' : good);
@@ -4589,7 +4756,10 @@
 
     // Text inputs & textareas — only unfilled ones
     const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
-      .filter(el => isVisible(el) && (!el.value?.trim() || dialCodeOnly(el)) && !isTrapField(el));
+      .filter(el => isVisible(el) && (!el.value?.trim() || dialCodeOnly(el)) && !isTrapField(el) &&
+        // A dropdown's search box is answered by picking an option (the custom
+        // dropdown pass below), never by typing the answer into it.
+        !isSelectSearchBox(el));
 
     for (const inp of inputs) {
       const lbl = getLabel(inp);
@@ -5693,7 +5863,7 @@
 
     // Wait for Jobright sidebar to load (shadow-aware)
     const sidebar = await waitForSidebar(15000);
-    if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow(); return; }
+    if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow({ noJobright: true }); return; }
     await sleep(scaled(2000, 1000));
 
     // Step 1: Click "Generate Custom Resume" only if the user opted into tailoring
@@ -5927,9 +6097,12 @@
   function getPageHash() { return stepSignature(); }
 
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
-  async function directAutofillFlow() {
-    await triggerAutofill();
-    await sleep(scaled(5000, 2500));
+  async function directAutofillFlow(opts) {
+    // No sidebar means no Autofill button to press: looking for one cost ~20s a job.
+    if (!(opts && opts.noJobright)) {
+      await triggerAutofill();
+      await sleep(scaled(5000, 2500));
+    }
     await fixPhoneCountryCode();
     await fallbackFill();
     await sleep(scaled(1000, 500));
@@ -6175,10 +6348,14 @@
       }
     }
 
-    // Wait for form page
-    const fp = workdayApplicationReady() ||
-      await waitFor("[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']", 15000) ||
-      (await waitUntil(workdayApplicationReady, 5000, 250));
+    // "Upload your resume" can sit between sign-in and the wizard.
+    for (let i = 0; i < 2 && await wdHandleResumeUploadPage(); i++) await sleep(scaled(800, 400));
+
+    /* Wait for form page — as work, not idleness: this wait was up to 20s with
+       nothing reporting progress, and the stall watchdog drops a job after 15. */
+    const WD_FORM_IDS = "[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage'],[data-automation-id='contactInformationPage'],[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='ApplyFlowPage'],[data-automation-id='applyFlowContainer'],[data-automation-id='applyFlowForm']";
+    const fp = workdayApplicationReady() || await withBusy('waiting for the Workday application', () =>
+      waitUntil(() => workdayApplicationReady() || !!wdStepKind() || !!document.querySelector(WD_FORM_IDS), 20000, 250));
     if (!fp) { LOG('Workday form page not found'); return; }
     await sleep(scaled(1000, 500));
 
@@ -6194,6 +6371,8 @@
     await workdayFillLanguage(p);
     await workdayResumeUpload();
     await fixPhoneCountryCode();
+    // Whatever the fixed-id fillers above left empty, in any language.
+    await wdEnginePass(p);
 
     // Jobright autofill as a BACKUP — catches any field SpeedyApply missed on this page.
     await triggerAutofill();
@@ -6949,6 +7128,672 @@
     return n;
   }
 
+  /* ── WORKDAY ENGINE (ported from your standalone Workday autopilot) ─────────
+     The field-by-field fillers above know a fixed list of automation ids. A
+     tenant that adds a question, renames a step, or runs in German, French or
+     Polish slipped past them: German knockouts fell through to the English
+     decider's default "Yes" (on a sponsorship question that is the wrong answer),
+     parser-invented "Work Experience 2/3" entries with no dates blocked My
+     Experience, the "Upload your resume" page had no handler at all, and dates
+     typed as a value were dropped by Workday's spinbuttons.
+
+     This is the engine's approach, in this file's terms: every field on a page
+     sits in a [data-automation-id^="formField-"] container, so work out what
+     kind of control each one is, decide the answer (profile → saved answers →
+     knockout reasoning, in eight languages), write it the way that control
+     takes input, and check that it stuck. It runs after the existing fillers and
+     only touches what they left empty — except the parser's ghost entries,
+     which are replaced with the profile's own history. */
+  const WD_FF = '[data-automation-id^="formField-"]';
+  const wdRx = (parts) => new RegExp(parts.join('|'), 'iu');
+  const WD_STEP_PATTERNS = [
+    [wdRx(['self.?identif', 'disabilit', 'selbstidentifi', 'behinderung', 'auto-?identification', 'autoidentificaci', 'discapacidad', 'autoidentifica', 'deficiência', 'disabilità', 'zelfidentificatie', 'niepełnosprawn']), 'selfIdentify'],
+    [wdRx(['voluntary', 'disclosure', 'equal (employment )?opportunit', '\\beeo\\b', 'freiwillige angaben', 'chancengleichheit', 'informations facultatives', 'déclarations volontaires', 'divulgaciones voluntarias', 'información voluntaria', 'divulgações voluntárias', 'informações voluntárias', 'dichiarazioni volontarie', 'informazioni facoltative', 'vrijwillige', 'dobrowolne']), 'voluntary'],
+    [wdRx(['^review', 'überprüfen', '^prüfen', 'zusammenfassung', 'vérifier', 'révision', 'récapitulatif', '^revisar', 'revisión', 'revisão', '^rivedi', 'revisione', 'riepilogo', 'controleren', 'overzicht', 'przegląd', 'podsumowanie']), 'review'],
+    [wdRx(['my information', 'personal (information|details)', 'contact (information|details)', 'meine (informationen|angaben|daten)', 'persönliche (angaben|daten|informationen)', 'mes informations', 'informations personnelles', 'mi información', 'información personal', 'datos personales', 'minhas informações', 'informações pessoais', 'le mie informazioni', 'informazioni personali', 'mijn gegevens', 'persoonlijke gegevens', 'moje informacje', 'dane osobowe']), 'myInformation'],
+    [wdRx(['my experience', 'experience', 'work history', 'meine (erfahrung|berufserfahrung)', 'erfahrung', 'lebenslauf', 'expérience', 'experiencia', 'experiência', 'esperienza', 'ervaring', 'doświadczenie']), 'myExperience'],
+    [wdRx(['question', 'additional information', 'screening', 'application details', 'fragen', 'zusätzliche informationen', 'informations complémentaires', 'preguntas', 'información adicional', 'perguntas', 'informações adicionais', 'domande', 'informazioni aggiuntive', 'vragen', 'aanvullende informatie', 'pytania', 'dodatkowe informacje']), 'questions'],
+  ];
+  const WD_ADD_RX = wdRx(['^add( another)?$', '^hinzufügen$', '^weitere hinzufügen$', '^ajouter$', '^ajouter un(e)? autre$', '^(añadir|agregar)( otro| otra)?$', '^adicionar( outro| outra)?$', '^aggiungi( altro| altra)?$', '^toevoegen$', '^nog een toevoegen$', '^dodaj( kolejny| następny)?$']);
+  const WD_DELETE_RX = wdRx(['^(delete|remove)$', '^(löschen|entfernen)$', '^supprimer$', '^(eliminar|borrar|quitar)$', '^(excluir|remover)$', '^(elimina|rimuovi)$', '^verwijderen$', '^usuń$']);
+  const WD_DECLINE_RX = wdRx(['decline', 'not wish', 'prefer not', "don'?t wish", 'do not want', 'choose not', 'not to (answer|disclose|self.?identify)', 'rather not',
+    'keine angabe', 'möchte (ich )?(keine angabe|nicht|das nicht)', 'nicht angeben', 'ohne angabe', 'ne (souhaite|veux|désire) pas', 'préfère ne pas', 'ne pas (répondre|divulguer)',
+    'prefiero no', 'no deseo', 'no quiero', 'prefiro não', 'não desejo', 'não quero', 'preferisco non', 'non desidero', 'non voglio', 'liever niet', 'niet (beantwoorden|opgeven)', 'wolę nie', 'nie chcę', 'odmawiam']);
+  // Workday's ids are the same in every locale; the questions are not.
+  const WD_Q = {
+    sponsorship: wdRx(['sponsor', '\\bvisa', 'work permit', 'immigration', 'arbeitserlaubnis', 'visum', 'aufenthaltstitel', 'parrainage', 'permis de travail', 'patrocinio', 'permiso de trabajo', 'patrocínio', 'autorização de trabalho', 'sponsorizzazione', 'permesso di lavoro', 'werkvergunning', 'pozwolenie na pracę']),
+    authorized: wdRx(['authori[sz]ed', 'eligible to work', 'right to work', 'legally (able|permitted|entitled)', 'berechtigt', 'arbeitsberechtigung', 'arbeiten zu dürfen', 'autorisé', 'droit de travailler', 'autorizad[oa]', 'derecho a trabajar', 'autorizzat[oa]', 'diritto di lavorare', 'bevoegd', 'recht om te werken', 'uprawnion', 'prawo do pracy']),
+    adult: wdRx(['(at least|over|older than) 18', 'age of 18', '18 years', '18 jahre', 'volljährig', '18 ans', 'majeur', '18 años', 'mayor de edad', '18 anos', 'maior de idade', '18 anni', 'maggiorenne', '18 jaar', 'meerderjarig', '18 lat', 'pełnoletni']),
+    relocate: wdRx(['relocat', 'umzug', 'umziehen', 'relocalis', 'déménag', 'reubica', 'traslad', 'realoca', 'trasferi', 'verhuiz', 'relokac', 'przeprowadz']),
+    previouslyWorked: wdRx(['previously (been )?(worked|employed)', 'former (employee|worker)', 'current or former', 'ever worked for', 'bereits (bei|für) .*(gearbeitet|tätig)', 'ehemalige', 'déjà travaillé', 'ancien (employé|salarié)', 'trabajado (anteriormente|antes|previamente)', 'trabalhou anteriormente', 'lavorato in precedenza', 'eerder gewerkt', 'wcześniej pracował']),
+    criminal: wdRx(['convict', 'criminal', 'felony', 'misdemeanou?r', 'offen[cs]e', 'vorstraf', 'strafrechtlich', 'verurteilt', 'straftat', 'casier judiciaire', 'condamn', 'antecedentes penales', 'condenad', 'antecedentes criminais', 'precedenti penali', 'condannat', 'strafblad', 'veroordeeld', 'karaln', 'skazan']),
+    salary: wdRx(['salary', 'compensation', 'pay expectation', 'gehalt', 'vergütung', 'salaire', 'rémunération', 'salario', 'sueldo', 'salário', 'stipendio', 'retribuzione', 'salaris', 'wynagrodzeni']),
+    years: wdRx(['years? of (relevant |professional |work )?experience', 'how many years', 'jahre (an |berufs)?erfahrung', 'wie viele jahre', "années d'expérience", "combien d'années", 'años de experiencia', 'cuántos años', 'anos de experiência', 'quantos anos', 'anni di esperienza', 'quanti anni', 'jaar (werk)?ervaring', 'hoeveel jaar', 'lat doświadczenia', 'ile lat']),
+    why: wdRx(['why (do you want|are you interested)', 'motivation', 'warum möchten sie', 'pourquoi (souhaitez|voulez)', 'por qué (quieres|desea)', 'por que (você )?(quer|deseja)', 'perché (vuoi|desidera)', 'waarom wil', 'dlaczego chcesz']),
+    source: wdRx(['how did you hear', 'referral source', '^source$', 'wie haben sie .* erfahren', 'comment avez-vous (connu|entendu)', 'cómo (te enteraste|se enteró)', 'como (soube|ficou sabendo)', 'come (hai|ha) saputo', 'hoe (heb je|bent u) .* (gehoord|gevonden)', 'jak dowiedział']),
+    eeo: wdRx(['gender', '^sex$', 'geschlecht', 'genre', 'sexe', 'género', 'gênero', 'genere', 'geslacht', 'płeć', 'ethnic', '\\brace\\b', 'herkunft', 'etnia', 'raza', 'raça', 'veteran', 'militär', 'vétéran', 'hispanic', 'latino', 'disabilit', 'behinderung', 'handicap', 'discapacidad', 'deficiência', 'disabilità', 'niepełnosprawn']),
+  };
+  const WD_COUNTRY_ALIASES = {
+    'united kingdom': ['vereinigtes königreich', 'vereinigten königreich', 'großbritannien', 'royaume-uni', 'reino unido', 'regno unito', 'verenigd koninkrijk', 'wielka brytania', 'great britain', 'britain', 'uk', 'u.k.'],
+    'united states': ['vereinigte staaten von amerika', 'vereinigten staaten', 'vereinigte staaten', 'united states of america', 'usa', 'u.s.a.', 'u.s.', 'us', 'états-unis', 'etats-unis', 'estados unidos', 'stati uniti', 'verenigde staten', 'stany zjednoczone'],
+    ireland: ['irland', 'irlande', 'irlanda', 'ierland', 'irlandia', 'republic of ireland'],
+    germany: ['deutschland', 'allemagne', 'alemania', 'alemanha', 'germania', 'duitsland', 'niemcy'],
+    france: ['frankreich', 'francia', 'frança', 'frankrijk', 'francja'],
+    spain: ['spanien', 'espagne', 'españa', 'espanha', 'spagna', 'spanje', 'hiszpania'],
+    italy: ['italien', 'italie', 'italia', 'itália', 'italië', 'włochy'],
+    netherlands: ['niederlande', 'pays-bas', 'países bajos', 'países baixos', 'paesi bassi', 'nederland', 'holandia', 'holland'],
+    canada: ['kanada', 'canadá'],
+    poland: ['polen', 'pologne', 'polonia', 'polska'],
+    switzerland: ['schweiz', 'suisse', 'suiza', 'suíça', 'svizzera', 'zwitserland', 'szwajcaria'],
+    india: ['indien', 'inde', 'índia', 'indie'],
+  };
+  const wdEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const WD_COUNTRY_RX = Object.entries(WD_COUNTRY_ALIASES).flatMap(([canon, aliases]) =>
+    aliases.map((a) => [new RegExp('(^|[^\\p{L}])' + wdEsc(a) + '(?=[^\\p{L}]|$)', 'giu'), '$1' + canon]));
+  const WD_SYNONYMS = [
+    [/^(ja|oui|si|sí|sim|sì|tak)$/iu, 'yes'], [/^(nein|non|não|nao|nee|nie)$/iu, 'no'],
+    [/\b(mobil|mobiltelefon|handy|portable|móvil|movil|celular|cellulare|mobiel|komórkowy|cell( phone)?)\b/giu, 'mobile'],
+    [/\b(festnetz|fixe|fijo|fixo|fisso|vast|stacjonarny)\b/giu, 'landline'],
+    [/\b(bachelor'?s?|bsc|b\.sc\.?|beng|licence|licenciatura|grado|laurea triennale|licencjat|bacharelado)\b/giu, 'bachelor'],
+    [/\b(master'?s?|msc|m\.sc\.?|meng|mba|máster|maîtrise|mestrado|laurea magistrale|magister)\b/giu, 'master'],
+    [/\b(phd|ph\.d\.?|doctorate|doktor|doctorat|doctorado|doutorado|dottorato)\b/giu, 'doctor'],
+  ];
+  function wdNorm(s) {
+    let t = String(s == null ? '' : s).toLowerCase().normalize('NFKC').replace(/[’']/g, "'").trim();
+    for (const [rx, rep] of WD_COUNTRY_RX) t = t.replace(rx, rep);
+    for (const [rx, rep] of WD_SYNONYMS) t = t.replace(rx, rep);
+    t = t.normalize('NFD').replace(/\p{M}+/gu, '');
+    return t.replace(/[^\p{L}\p{N}+ ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function wdSimilarity(a, b) {
+    const x = wdNorm(a), y = wdNorm(b);
+    if (!x || !y) return 0;
+    if (x === y) return 1;
+    if (y.startsWith(x) || x.startsWith(y)) return 0.92;
+    if (y.includes(x) || x.includes(y)) return 0.85;
+    const tx = new Set(x.split(' ')), ty = new Set(y.split(' '));
+    let inter = 0; tx.forEach((w) => { if (ty.has(w)) inter++; });
+    return inter / Math.max(tx.size, ty.size);
+  }
+  function wdBestIndex(texts, wanted, min) {
+    let best = -1, score = 0;
+    texts.forEach((t, i) => { const s = wdSimilarity(wanted, t); if (s > score) { score = s; best = i; } });
+    return score >= (min == null ? 0.6 : min) ? best : -1;
+  }
+  const wdText = (el) => String((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+  const wdContainer = (el) => (el && el.closest && el.closest(WD_FF)) || el;
+  function wdLabelOf(c) {
+    const own = c && c.querySelector && c.querySelector('legend, label');
+    let t = wdText(own);
+    if (!t) { try { t = getLabel(c.querySelector('input,textarea,button') || c) || ''; } catch (_) {} }
+    return String(t).replace(/\*/g, '').trim();
+  }
+  function wdRequired(c) {
+    if (/\*/.test(wdText(c.querySelector('legend, label')))) return true;
+    return !!c.querySelector('[aria-required="true"],[required]');
+  }
+  function wdKind(c) {
+    if (!c || !c.querySelector) return 'none';
+    if (c.querySelector('input[type="file"]')) return 'file';
+    if (c.querySelector('[data-automation-id="dateSectionYear-input"],[data-automation-id="dateSectionMonth-input"]')) return 'date';
+    if (c.querySelector('[data-automation-id="searchBox"],[data-uxi-widget-type="multiselect"],[data-automation-id="selectedItem"]')) return 'multiselect';
+    if (c.querySelector('button[aria-haspopup="listbox"]')) return 'dropdown';
+    if (c.querySelector('input[type="radio"],[role="radio"]')) return 'radio';
+    const boxes = c.querySelectorAll('input[type="checkbox"],[role="checkbox"]');
+    if (boxes.length > 1) return 'checkboxGroup';
+    if (boxes.length === 1) return 'checkbox';
+    if (c.querySelector('textarea')) return 'textarea';
+    if (c.querySelector('input:not([type="hidden"])')) return 'text';
+    return 'none';
+  }
+  const wdBoxOn = (b) => !!(b && (b.checked || b.getAttribute('aria-checked') === 'true'));
+  function wdOptionLabel(input) {
+    try {
+      if (input.id) { const l = ownerScope(input).querySelector(`label[for="${CSS.escape(input.id)}"]`); if (l) return wdText(l); }
+    } catch (_) {}
+    return wdText(input.closest('label')) || input.getAttribute('aria-label') || wdText(input.parentElement);
+  }
+  const wdDropdownBtn = (c) => (c.matches && c.matches('button[aria-haspopup="listbox"]')) ? c : c.querySelector('button[aria-haspopup="listbox"]');
+  function wdDropdownValue(c) {
+    const t = wdText(wdDropdownBtn(c));
+    return /^(select one|select|auswählen|bitte auswählen|sélectionner|seleccionar|selecionar|seleziona|selecteren|wybierz)$/i.test(t) ? '' : t;
+  }
+  function wdReadValue(c) {
+    switch (wdKind(c)) {
+      case 'text': case 'textarea': { const i = c.querySelector('textarea,input:not([type="hidden"])'); return (i && i.value) || ''; }
+      case 'dropdown': return wdDropdownValue(c);
+      case 'multiselect': return Array.from(c.querySelectorAll('[data-automation-id="selectedItem"]')).map(wdText).filter(Boolean).join(', ');
+      case 'radio': { const r = Array.from(c.querySelectorAll('input[type="radio"],[role="radio"]')).find(wdBoxOn); return r ? wdOptionLabel(r) : ''; }
+      case 'checkbox': return wdBoxOn(c.querySelector('input[type="checkbox"],[role="checkbox"]')) ? 'true' : '';
+      case 'checkboxGroup': return Array.from(c.querySelectorAll('input[type="checkbox"],[role="checkbox"]')).filter(wdBoxOn).map(wdOptionLabel).join(', ');
+      case 'date': {
+        const segs = Array.from(c.querySelectorAll('[data-automation-id^="dateSection"][data-automation-id$="-input"]'));
+        return segs.length && segs.every((s) => String(s.value || s.getAttribute('aria-valuenow') || '').trim()) ? segs.map((s) => s.value).join('/') : '';
+      }
+      default: return '';
+    }
+  }
+  // Workday covers many buttons with a click_filter; workdayClickTarget finds it.
+  async function wdClick(el) {
+    if (!el) return;
+    const target = workdayClickTarget(el) || el;
+    try { scrollIfNeeded(target); } catch (_) {}
+    realClick(target);
+    await sleep(60);
+  }
+  function wdOpenListbox(btn) {
+    const ctl = btn && btn.getAttribute('aria-controls');
+    if (ctl) { const byId = document.getElementById(ctl); if (byId && isVisible(byId)) return byId; }
+    const field = btn && btn.closest(WD_FF);
+    const local = field && Array.from(field.querySelectorAll('[role="listbox"]')).find(isVisible);
+    if (local) return local;
+    const open = deepAll('[role="listbox"]', 10).filter(isVisible);
+    return open.find((l) => !l.closest(WD_FF) || l.closest(WD_FF) === field) || null;
+  }
+  async function wdCloseListbox(btn) {
+    for (const t of [btn, document.body]) { try { t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, composed: true })); } catch (_) {} }
+    await sleep(80);
+    if (wdOpenListbox(btn)) { await wdClick(btn); await sleep(80); }
+  }
+  async function wdDropdownOptions(c) {
+    const btn = wdDropdownBtn(c);
+    if (!btn) return [];
+    if (!wdOpenListbox(btn)) await wdClick(btn);
+    await waitUntil(() => wdOpenListbox(btn), 3000, 100);
+    const list = wdOpenListbox(btn);
+    const out = list ? Array.from(list.querySelectorAll('[role="option"]')).map(wdText).filter((t) => t && !/^select one$/i.test(t)) : [];
+    await wdCloseListbox(btn);
+    return out;
+  }
+  /* wanted: display text, or 'decline' for the decline-to-answer option. */
+  async function wdSelectDropdown(c, wanted, min) {
+    const btn = wdDropdownBtn(c);
+    if (!btn || !wanted) return false;
+    const cur = wdDropdownValue(c);
+    if (cur && (wanted === 'decline' ? WD_DECLINE_RX.test(cur) : wdSimilarity(wanted, cur) >= 0.92)) return true;
+    if (!wdOpenListbox(btn)) await wdClick(btn);
+    await waitUntil(() => wdOpenListbox(btn), 4000, 100);
+    const list = wdOpenListbox(btn);
+    if (!list) return false;
+    const opts = Array.from(list.querySelectorAll('[role="option"]')).filter((o) => wdText(o) && !/^select one$/i.test(wdText(o)));
+    const i = wanted === 'decline' ? opts.findIndex((o) => WD_DECLINE_RX.test(wdText(o))) : wdBestIndex(opts.map(wdText), wanted, min);
+    if (i < 0) { await wdCloseListbox(btn); return false; }
+    await wdClick(opts[i]);
+    await sleep(150);
+    return !!wdDropdownValue(c);
+  }
+  const wdSelected = (c) => Array.from(c.querySelectorAll('[data-automation-id="selectedItem"]')).map(wdText).filter(Boolean);
+  /* Search-and-pick lists (source, phone code, school, field of study, skills).
+     A category row drills into a sub-list; walk at most three levels. */
+  async function wdMultiselectPick(c, wanted, opts) {
+    opts = opts || {};
+    const min = opts.min == null ? 0.6 : opts.min;
+    if (!wanted) return false;
+    if (wdSelected(c).some((s) => wdSimilarity(wanted, s) >= 0.85)) return true;
+    const input = c.querySelector('[data-automation-id="searchBox"]') || c.querySelector('input');
+    if (!input) return false;
+    await wdClick(input);
+    nativeSet(input, String(wanted));
+    for (const t of ['keydown', 'keyup']) { try { input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true, composed: true })); } catch (_) {} }
+    await sleep(250);
+    for (let depth = 0; depth < 3; depth++) {
+      let options = [];
+      await waitUntil(() => (options = deepAll('[data-automation-id="promptOption"],[data-automation-id="promptLeafNode"]', 200).filter(isVisible)).length > 0, 4000, 120);
+      if (!options.length) break;
+      let i = wdBestIndex(options.map(wdText), wanted, min);
+      if (i < 0 && opts.fallbackFirst) i = 0;
+      if (i < 0) break;
+      await wdClick(options[i]);
+      await sleep(250);
+      if (wdSelected(c).length) { try { input.blur(); } catch (_) {} return true; }
+    }
+    try { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); input.blur(); } catch (_) {}
+    await sleep(80);
+    return wdSelected(c).some((s) => wdSimilarity(wanted, s) >= 0.6);
+  }
+  async function wdSelectRadio(c, wanted) {
+    const rs = Array.from(c.querySelectorAll('input[type="radio"],[role="radio"]'));
+    const labels = rs.map(wdOptionLabel);
+    const i = wanted === 'decline' ? labels.findIndex((l) => WD_DECLINE_RX.test(l)) : wdBestIndex(labels, wanted, 0.6);
+    if (i < 0) return false;
+    if (wdBoxOn(rs[i])) return true;
+    commitChoice(rs[i]);
+    await sleep(80);
+    return wdBoxOn(rs[i]);
+  }
+  async function wdSetCheckbox(box, on) {
+    if (!box) return false;
+    if (wdBoxOn(box) === on) return true;
+    await setCheckboxChecked(box);
+    await sleep(60);
+    return wdBoxOn(box) === on;
+  }
+  async function wdCheckInGroup(c, wanted) {
+    const boxes = Array.from(c.querySelectorAll('input[type="checkbox"],[role="checkbox"]'));
+    const labels = boxes.map(wdOptionLabel);
+    const i = wanted === 'decline' ? labels.findIndex((l) => WD_DECLINE_RX.test(l)) : wdBestIndex(labels, wanted, 0.5);
+    return i >= 0 ? wdSetCheckbox(boxes[i], true) : false;
+  }
+  /* Workday's date parts are spinbuttons that listen for keystrokes; a value set
+     directly is often discarded. Type each digit, a beat apart so the control
+     re-renders between them, and fall back to setting the value. */
+  async function wdSetSegment(seg, value) {
+    const clean = () => String(seg.value || seg.getAttribute('aria-valuenow') || '').replace(/^0+/, '');
+    const want = String(value).replace(/^0+/, '');
+    if (clean() === want) return true;
+    await wdClick(seg);
+    try { seg.focus({ preventScroll: true }); } catch (_) {}
+    for (const ch of String(value)) {
+      try {
+        seg.dispatchEvent(new KeyboardEvent('keydown', { key: ch, code: 'Digit' + ch, bubbles: true, cancelable: true, composed: true }));
+        seg.dispatchEvent(new InputEvent('beforeinput', { data: ch, inputType: 'insertText', bubbles: true, cancelable: true, composed: true }));
+        seg.dispatchEvent(new KeyboardEvent('keyup', { key: ch, code: 'Digit' + ch, bubbles: true, composed: true }));
+      } catch (_) {}
+      await sleep(40);
+    }
+    if (clean() !== want) nativeSet(seg, String(value));
+    await sleep(60);
+    return clean() === want;
+  }
+  /* ymd: { y, m, d } — any part may be missing. */
+  async function wdSetDate(c, ymd) {
+    const seg = (id) => c.querySelector(`[data-automation-id="${id}"]`);
+    const month = seg('dateSectionMonth-input'), day = seg('dateSectionDay-input'), year = seg('dateSectionYear-input');
+    let ok = true;
+    if (month && ymd.m) ok = (await wdSetSegment(month, String(ymd.m).padStart(2, '0'))) && ok;
+    if (day && ymd.d) ok = (await wdSetSegment(day, String(ymd.d).padStart(2, '0'))) && ok;
+    if (year && ymd.y) ok = (await wdSetSegment(year, String(ymd.y))) && ok;
+    if (year) { try { year.blur(); } catch (_) {} }
+    return ok && !!(month || year);
+  }
+  // "2019-01", "01/2019", "Jan 2019", "2019" → { y, m }.
+  function wdParseYM(s) {
+    const t = String(s || '').trim();
+    let m;
+    if ((m = t.match(/(\d{4})[-/.](\d{1,2})/))) return { y: m[1], m: m[2] };
+    if ((m = t.match(/(\d{1,2})[-/.](\d{4})/))) return { y: m[2], m: m[1] };
+    const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    if ((m = t.toLowerCase().match(/([a-z]{3})[a-z]*\.?\s+(\d{4})/)) && MONTHS.indexOf(m[1]) >= 0) return { y: m[2], m: String(MONTHS.indexOf(m[1]) + 1) };
+    if ((m = t.match(/\b(19|20)\d{2}\b/))) return { y: m[0] };
+    return {};
+  }
+  // The profile's own history, one entry per role; the flat fields as a single
+  // entry when that is all there is.
+  function wdWorkEntries(p) {
+    const list = (Array.isArray(p.work_experiences) ? p.work_experiences : []).filter((w) => w && (w.title || w.company));
+    if (list.length) {
+      return list.map((w, i) => ({
+        title: w.title || '', company: w.company || '', location: w.location || '', description: w.description || '',
+        start: wdParseYM(w.from), end: wdParseYM(w.to),
+        current: !!w.current || (i === 0 && !w.to),
+      }));
+    }
+    const title = p.current_title || p.title || '', company = p.current_company || p.company || '';
+    if (!title && !company) return [];
+    return [{
+      title, company, location: p.city || '', description: p.work_description || '',
+      start: { y: p.work_start_year || '', m: p.work_start_month || '01' },
+      end: p.work_end_year ? { y: p.work_end_year, m: p.work_end_month || '12' } : {},
+      current: p.currently_working !== false && !p.work_end_year,
+    }];
+  }
+  function wdEducationEntries(p) {
+    const list = (Array.isArray(p.education) ? p.education : []).filter((e) => e && e.school);
+    if (list.length) return list.map((e) => ({ school: e.school, degree: e.degree || p.degree || '', field: e.field || p.major || '', gpa: e.gpa || '' }));
+    if (!p.school && !p.university) return [];
+    return [{ school: p.school || p.university, degree: p.degree || '', field: p.major || p.field_of_study || '', gpa: p.gpa || '', endYear: p.graduation_year || p.grad_year || '' }];
+  }
+  // By automation id — bare or as its formField- container, since tenants use both.
+  const wdField = (root, ids) => {
+    const all = [...new Set(ids.flatMap((id) => /^formField-/.test(id) ? [id] : [id, 'formField-' + id]))];
+    for (const id of all) {
+      const hit = Array.from(root.querySelectorAll(`[data-automation-id="${id}"]`)).find(isVisible);
+      if (hit) return wdContainer(hit);
+    }
+    return null;
+  };
+  // A section's repeated entries: the outermost element per anchor field.
+  function wdBlocks(section, anchorIds) {
+    const all = Array.from(section.querySelectorAll(anchorIds.map((a) => `[data-automation-id="${a}"]`).join(','))).filter(isVisible);
+    const anchors = all.filter((a) => !all.some((o) => o !== a && o.contains(a)));
+    const count = (el) => anchors.filter((a) => el.contains(a)).length;
+    const out = [];
+    for (const a of anchors) {
+      let b = a;
+      while (b.parentElement && b.parentElement !== section && count(b.parentElement) === 1) b = b.parentElement;
+      if (!out.includes(b)) out.push(b);
+    }
+    return out;
+  }
+  const wdButtonIn = (root, rx) => Array.from(root.querySelectorAll('button,[role="button"],a')).find((b) => isVisible(b) && rx.test(wdText(b) || b.getAttribute('aria-label') || ''));
+  /* Make the section hold exactly n entries: the parser's extras are deleted
+     (last first), missing ones added. Never deletes below the profile's count. */
+  async function wdEnsureBlocks(section, anchorIds, n) {
+    let bs = wdBlocks(section, anchorIds);
+    while (n > 0 && bs.length > n) {
+      const last = bs[bs.length - 1];
+      const del = Array.from(last.querySelectorAll('[data-automation-id="panel-set-delete-button"]')).find(isVisible) || wdButtonIn(last, WD_DELETE_RX);
+      if (!del) break;
+      await wdClick(del);
+      await sleep(scaled(400, 250));
+      const after = wdBlocks(section, anchorIds);
+      if (after.length >= bs.length) break;
+      bs = after;
+    }
+    for (let guard = 0; bs.length < n && guard < n + 2; guard++) {
+      const add = Array.from(section.querySelectorAll('[data-automation-id="add-button"],[data-automation-id="Add"],[data-automation-id="addButton"]')).filter(isVisible).pop() || wdButtonIn(section, WD_ADD_RX);
+      if (!add) break;
+      const before = bs.length;
+      await wdClick(add);
+      await waitUntil(() => wdBlocks(section, anchorIds).length > before, 6000, 150);
+      bs = wdBlocks(section, anchorIds);
+    }
+    return bs;
+  }
+  const wdSection = (ids, heading) => {
+    for (const id of ids) { const el = deepAll(`[data-automation-id="${id}"]`, 2).find(isVisible); if (el) return el; }
+    const h = deepAll('h2,h3,h4,legend,[role="heading"]', 60).find((e) => isVisible(e) && heading.test(wdText(e)));
+    return h ? (h.closest('section,fieldset,[role="group"],div[data-automation-id]') || h.parentElement) : null;
+  };
+  async function wdWriteText(c, val, overwrite) {
+    const i = c && c.querySelector('textarea,input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
+    if (!i || val == null || val === '') return false;
+    if (!overwrite && String(i.value || '').trim()) return true;
+    if (i.value === String(val)) return true;
+    try { i.focus({ preventScroll: true }); } catch (_) {}
+    nativeSet(i, String(val));
+    await sleep(40);
+    return i.value === String(val);
+  }
+
+  /* ── Deciding an answer: the same reasoning in every language ────────────── */
+  const WD_LANG_IS_EN = (label) => !/[äöüßéèêàçñãõìòúóíáąęłńśźżø]/i.test(label) && /\b(you|your|the|do|are|have|will|what|how)\b/i.test(label);
+  /* 'yes' | 'no' | 'decline' | '' for a Yes/No question. English goes through
+     determineYesNo (with all its nuance); other languages through the
+     multilingual rules, because the English decider's default for a question it
+     cannot read is "yes". */
+  function wdYesNo(label) {
+    const l = String(label || '').toLowerCase().replace(/\s+/g, ' ');
+    if (WD_Q.eeo.test(l)) return 'decline';
+    if (WD_LANG_IS_EN(l)) { try { return determineYesNo(l); } catch (_) { return ''; } }
+    if (WD_Q.sponsorship.test(l)) return 'no';
+    if (WD_Q.authorized.test(l) || WD_Q.adult.test(l)) return 'yes';
+    if (WD_Q.criminal.test(l) || WD_Q.previouslyWorked.test(l)) return 'no';
+    if (WD_Q.relocate.test(l)) return 'yes';
+    return '';
+  }
+  function wdProfileYears(p) { return parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years, 10) || 0; }
+  /* An answer for a choice control: the option text to pick, or 'decline'. */
+  function wdChooseOption(label, options, p) {
+    const texts = options.map((o) => String(o));
+    if (!texts.length) return '';
+    const yn = texts.map(wdNorm);
+    const binary = texts.length <= 3 && yn.includes('yes') && yn.includes('no');
+    if (WD_Q.eeo.test(label)) {
+      const want = /gender|geschlecht|genre|sexe|género|gênero|genere|geslacht|płeć/i.test(label) ? p.gender
+        : /hispanic|latino/i.test(label) ? p.hispanic
+        : /veteran|militär|vétéran/i.test(label) ? p.veteran
+        : /disabilit|behinderung|handicap|discapacidad/i.test(label) ? p.disability
+        : (p.ethnicity || p.race);
+      if (want && !/decline|prefer not/i.test(String(want))) { const i = wdBestIndex(texts, want, 0.8); if (i >= 0) return texts[i]; }
+      return texts.some((t) => WD_DECLINE_RX.test(t)) ? 'decline' : '';
+    }
+    if (binary) {
+      const d = wdYesNo(label);
+      if (d === 'yes' || d === 'no') return texts[yn.indexOf(d)];
+    }
+    if (WD_Q.years.test(label) || YEARS_Q_RE.test(label)) {
+      const yrs = wdProfileYears(p);
+      let best = -1, bestScore = 0;
+      texts.forEach((t, i) => { const s = scoreExperienceRange(t, yrs); if (s > bestScore) { bestScore = s; best = i; } });
+      if (best >= 0) return texts[best];
+    }
+    let want = '';
+    try { want = String(guessFieldValue(label, p, null) || ''); } catch (_) {}
+    if (want) {
+      let i = wdBestIndex(texts, want, 0.6);
+      if (i < 0) { try { i = bestOptionIndex(texts, want, label); } catch (_) {} }
+      if (i >= 0) return texts[i];
+    }
+    try { const i = bestOptionIndex(texts, profileTargetFor(label, p), label); if (i >= 0) return texts[i]; } catch (_) {}
+    if (!binary) return '';
+    const d = wdYesNo(label);
+    return d === 'yes' || d === 'no' ? texts[yn.indexOf(d)] : '';
+  }
+  function wdTextAnswer(label, p) {
+    if (WD_Q.why.test(label)) return whyAnswer();
+    if (WD_Q.salary.test(label)) return String(p.expected_salary || p.salary_expectation || DEFAULTS.salary || '');
+    if (WD_Q.years.test(label)) return String(wdProfileYears(p) || '');
+    try { return String(guessFieldValue(label, p, null) || ''); } catch (_) { return ''; }
+  }
+  async function wdAnswerContainer(c, p) {
+    const kind = wdKind(c);
+    if (kind === 'none' || kind === 'file' || wdReadValue(c)) return false;
+    const label = wdLabelOf(c);
+    if (!label) return false;
+    if (kind === 'text' || kind === 'textarea') return wdWriteText(c, wdTextAnswer(label, p));
+    if (kind === 'date') {
+      // A date the form wants filled with no other context is today's (signature dates).
+      if (!/date|datum|fecha|data|date de|signed|unterschrieben/i.test(label)) return false;
+      const d = new Date();
+      return wdSetDate(c, { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() });
+    }
+    if (kind === 'checkbox') {
+      const box = c.querySelector('input[type="checkbox"],[role="checkbox"]');
+      if (isMarketingCheckbox(box) || !(wdRequired(c) || CONSENT_TEXT_RE.test(label))) return false;
+      return wdSetCheckbox(box, true);
+    }
+    if (kind === 'multiselect') {
+      const want = WD_Q.source.test(label) ? (p.source || p.how_heard || 'LinkedIn') : wdTextAnswer(label, p);
+      return wdMultiselectPick(c, want, { fallbackFirst: wdRequired(c) && WD_Q.source.test(label) });
+    }
+    const options = kind === 'dropdown' ? await wdDropdownOptions(c)
+      : kind === 'radio' ? Array.from(c.querySelectorAll('input[type="radio"],[role="radio"]')).map(wdOptionLabel)
+      : Array.from(c.querySelectorAll('input[type="checkbox"],[role="checkbox"]')).map(wdOptionLabel);
+    const pick = wdChooseOption(label, options, p);
+    if (!pick) return false;
+    if (kind === 'dropdown') return wdSelectDropdown(c, pick, 0.9);
+    if (kind === 'radio') return wdSelectRadio(c, pick);
+    return wdCheckInGroup(c, pick);
+  }
+
+  /* ── The pages ─────────────────────────────────────────────────────────────── */
+  async function wdMyInformation(p) {
+    let n = 0;
+    const src = wdField(document, ['sourceDropdown', 'formField-sourceDropdown', 'formField-source--source', 'formField-source']);
+    if (src && !wdReadValue(src)) {
+      const want = p.source || p.how_heard || 'LinkedIn';
+      const ok = (wdKind(src) === 'multiselect' ? await wdMultiselectPick(src, want, { fallbackFirst: true }) : await wdSelectDropdown(src, want)) ||
+        (wdKind(src) === 'multiselect' && await wdMultiselectPick(src, 'Job Board', { fallbackFirst: true }));
+      if (ok) n++;
+    }
+    const prev = wdField(document, ['previousWorker', 'formField-candidateIsPreviousWorker']);
+    if (prev && !wdReadValue(prev) && await wdSelectRadio(prev, /^(yes|true)$/i.test(String(p.previously_worked || '')) ? 'Yes' : 'No')) n++;
+    const country = wdField(document, ['countryDropdown', 'formField-countryDropdown', 'formField-country']);
+    if (country && !wdReadValue(country) && p.country) {
+      if (await wdSelectDropdown(country, p.country)) { n++; await waitUntil(() => wdField(document, ['legalNameSection_firstName', 'formField-legalName--firstName']), 6000, 150); }
+    }
+    const text = [
+      [['legalNameSection_firstName', 'formField-legalName--firstName'], p.first_name || p.firstName],
+      [['legalNameSection_lastName', 'formField-legalName--lastName'], p.last_name || p.lastName],
+      [['addressSection_addressLine1', 'formField-address--addressLine1'], p.address],
+      [['addressSection_city', 'formField-address--city'], p.city],
+      [['addressSection_postalCode', 'formField-address--postalCode'], p.postal_code || p.zip],
+    ];
+    for (const [ids, val] of text) { const c = wdField(document, ids); if (c && val && !wdReadValue(c) && await wdWriteText(c, val)) n++; }
+    const region = wdField(document, ['addressSection_countryRegion', 'formField-address--countryRegion']);
+    if (region && !wdReadValue(region) && (p.state || p.county) && await wdSelectDropdown(region, p.state || p.county)) n++;
+    const type = wdField(document, ['phone-device-type', 'formField-phoneNumber--phoneType']);
+    if (type && !wdReadValue(type) && await wdSelectDropdown(type, p.phone_type || 'Mobile', 0.5)) n++;
+    const code = wdField(document, ['countryPhoneCode', 'formField-phoneNumber--countryPhoneCode']);
+    if (code && !wdReadValue(code) && p.country) {
+      const ok = await wdMultiselectPick(code, p.country) || (/^\+\d+/.test(String(p.phone || '')) && await wdMultiselectPick(code, String(p.phone).match(/^\+\d+/)[0]));
+      if (ok) n++;
+    }
+    const phone = wdField(document, ['phone-number', 'formField-phoneNumber--phoneNumber']);
+    if (phone && !wdReadValue(phone) && p.phone) {
+      // The code is its own field here, so the number goes in without it.
+      const local = String(p.phone).replace(/^\s*\+\d{1,3}\s*/, '').trim();
+      if (await wdWriteText(phone, code ? local : p.phone)) n++;
+    }
+    return n;
+  }
+  async function wdMyExperience(p) {
+    let n = 0;
+    const work = wdSection(['workExperienceSection', 'workExperience', 'workSection'], /work experience|employment history|berufserfahrung|expérience professionnelle|experiencia (laboral|profesional)|experiência profissional|esperienza (lavorativa|professionale)|werkervaring|doświadczenie zawodowe/iu);
+    const roles = wdWorkEntries(p);
+    if (work && roles.length) {
+      const bs = await wdEnsureBlocks(work, ['jobTitle', 'formField-jobTitle'], roles.length);
+      for (let i = 0; i < Math.min(bs.length, roles.length); i++) {
+        const b = bs[i], r = roles[i];
+        // A parser entry for a different role: its description belongs to that role.
+        const was = wdReadValue(wdField(b, ['company', 'formField-companyName']) || b) || '';
+        const otherRole = !!was && !!r.company && wdSimilarity(was, r.company) < 0.6;
+        // The profile's entry replaces whatever the CV parser put here.
+        const set = async (ids, v) => { const c = wdField(b, ids); if (c && v && await wdWriteText(c, v, true)) n++; };
+        await set(['jobTitle', 'formField-jobTitle'], r.title);
+        await set(['company', 'formField-companyName'], r.company);
+        await set(['location', 'formField-location'], r.location);
+        const cur = wdField(b, ['currentlyWorkHere', 'formField-currentlyWorkHere']);
+        if (cur) { await wdSetCheckbox(cur.querySelector('input[type="checkbox"],[role="checkbox"]'), !!r.current); await sleep(150); }
+        const start = wdField(b, ['formField-startDate', 'formField-firstYearAttended']);
+        if (start && r.start.y && await wdSetDate(start, { y: r.start.y, m: r.start.m || '01' })) n++;
+        const end = !r.current && wdField(b, ['formField-endDate', 'formField-lastYearAttended']);
+        if (end && r.end.y && await wdSetDate(end, { y: r.end.y, m: r.end.m || '12' })) n++;
+        await set(['description', 'formField-roleDescription'], r.description);
+        if (!r.description && otherRole) {
+          const d = wdField(b, ['description', 'formField-roleDescription']);
+          const i = d && d.querySelector('textarea,input');
+          if (i && String(i.value || '').trim()) { nativeSet(i, ''); n++; }
+        }
+      }
+    }
+    const edu = wdSection(['educationSection', 'education'], /^(education|ausbildung|bildung|formation|educación|formación|educação|formação|istruzione|formazione|opleiding|wykształcenie)/iu);
+    const schools = wdEducationEntries(p);
+    if (edu && schools.length) {
+      const anchor = edu.querySelector('[data-automation-id="school"],[data-automation-id="formField-schoolName"],[data-automation-id="formField-school"]') ? ['school', 'formField-schoolName', 'formField-school'] : ['degree', 'formField-degree'];
+      const bs = await wdEnsureBlocks(edu, anchor, schools.length);
+      for (let i = 0; i < Math.min(bs.length, schools.length); i++) {
+        const b = bs[i], e = schools[i];
+        const school = wdField(b, ['school', 'formField-schoolName', 'formField-school']);
+        if (school && !wdReadValue(school)) {
+          let ok = wdKind(school) === 'multiselect' ? await wdMultiselectPick(school, e.school, { min: 0.7 }) : await wdWriteText(school, e.school);
+          // Not in the tenant's list: its "Other" entry, in whatever language it uses.
+          if (!ok && wdKind(school) === 'multiselect') for (const other of ['Other', 'Andere', 'Sonstige', 'Autre', 'Otro', 'Outro', 'Altro', 'Overig', 'Inne']) if ((ok = await wdMultiselectPick(school, other, { min: 0.8 }))) break;
+          if (ok) n++;
+        }
+        const degree = wdField(b, ['degree', 'formField-degree']);
+        if (degree && !wdReadValue(degree) && e.degree && await wdSelectDropdown(degree, mapDegree(e.degree), 0.5)) n++;
+        const field = wdField(b, ['fieldOfStudy', 'formField-fieldOfStudy']);
+        if (field && !wdReadValue(field) && e.field && (wdKind(field) === 'multiselect' ? await wdMultiselectPick(field, e.field) : await wdWriteText(field, e.field))) n++;
+        const gpa = wdField(b, ['gradeAverage', 'formField-gradeAverage']);
+        if (gpa && e.gpa && !wdReadValue(gpa) && await wdWriteText(gpa, e.gpa)) n++;
+        const end = wdField(b, ['formField-lastYearAttended', 'formField-endDate']);
+        if (end && e.endYear && !wdReadValue(end) && await wdSetDate(end, { y: e.endYear })) n++;
+      }
+    }
+    const skills = wdField(document, ['formField-skills', 'skills', 'skillsSection']);
+    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
+    if (skills && wdKind(skills) === 'multiselect') {
+      for (const s of list) if (!wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85) && await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
+    }
+    const li = wdField(document, ['linkedinQuestion', 'formField-linkedInAccount']);
+    if (li && !wdReadValue(li) && (p.linkedin_profile_url || p.linkedin) && await wdWriteText(li, p.linkedin_profile_url || p.linkedin)) n++;
+    return n;
+  }
+  async function wdSelfIdentify(p) {
+    let n = 0;
+    const name = wdField(document, ['name', 'formField-name']);
+    const full = [p.first_name || p.firstName, p.last_name || p.lastName].filter(Boolean).join(' ');
+    if (name && full && !wdReadValue(name) && await wdWriteText(name, full)) n++;
+    const date = wdField(document, ['dateSignedOn', 'formField-dateSignedOn']);
+    if (date && !wdReadValue(date)) { const d = new Date(); if (await wdSetDate(date, { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() })) n++; }
+    const dis = wdField(document, ['selfIdentifiedDisabilityData', 'disabilityStatus', 'formField-disabilityStatus']);
+    if (dis && !wdReadValue(dis)) {
+      const pref = String(p.disability || '').toLowerCase();
+      const want = /^no\b|do not have/.test(pref) ? 'No, I do not have a disability' : /^yes\b/.test(pref) ? 'Yes, I have a disability' : 'decline';
+      if (await wdCheckInGroup(dis, want) || await wdSelectRadio(dis, want)) n++;
+    }
+    return n;
+  }
+  /* Everything still empty on the page, whatever it is. */
+  async function wdGenericPass(p) {
+    let n = 0;
+    const containers = deepAll(WD_FF, 120).filter(isVisible);
+    for (const c of containers) {
+      if (autoStopped()) break;
+      if (containers.some((o) => o !== c && o.contains(c))) continue;   // the outer container answers for it
+      try { if (await wdAnswerContainer(c, p)) { n++; noteProgress('filling fields'); } } catch (_) {}
+    }
+    return n;
+  }
+  /* Workday's error banner lists each field it refused as a button that focuses
+     it. Follow each one and answer the field it lands on. */
+  async function wdFixFromErrorBanner(p) {
+    const banner = deepAll('[data-automation-id="errorBanner"],[data-automation-id="errorSection"]', 2).find(isVisible);
+    if (!banner) return 0;
+    let n = 0;
+    for (const link of Array.from(banner.querySelectorAll('button,a,li')).slice(0, 12)) {
+      await wdClick(link);
+      await sleep(250);
+      const c = wdContainer(document.activeElement);
+      if (c && c !== document.activeElement && c.matches && c.matches(WD_FF) && await wdAnswerContainer(c, p)) n++;
+    }
+    if (n) LOG(`Workday: fixed ${n} field(s) named in the error banner`);
+    return n;
+  }
+  function wdStepKind() {
+    const active = deepAll('[data-automation-id="progressBarActiveStep"],[aria-current="step"]', 3).find(isVisible);
+    const head = deepAll('[data-automation-id="pageHeader"],[data-automation-id="pageHeaderTitle"]', 3).find(isVisible);
+    for (const t of [wdText(active), wdText(head)]) {
+      if (!t) continue;
+      for (const [rx, kind] of WD_STEP_PATTERNS) if (rx.test(t)) return kind;
+    }
+    return '';
+  }
+  /* The "Upload your resume" page that "Autofill with Resume" (and some tenants
+     after sign-in) put before the wizard: a file input, a Continue button, no
+     progress bar and no questions. */
+  function wdOnResumeUploadPage() {
+    if (workdayOnAccountWall()) return false;
+    if (deepAll('[data-automation-id="progressBar"],[data-automation-id="progressBarActiveStep"]', 2).some(isVisible)) return false;
+    const file = deepAll('[data-automation-id="file-upload-input-ref"],input[type="file"]', 4)[0];
+    if (!file) return false;
+    return deepAll(WD_FF, 20).filter((c) => isVisible(c) && wdKind(c) !== 'file').length === 0;
+  }
+  async function wdHandleResumeUploadPage() {
+    if (!wdOnResumeUploadPage()) return false;
+    LOG('Workday: resume upload page — attaching the CV and continuing');
+    const shown = () => deepAll('[data-automation-id="file-upload-successful"],[data-automation-id="file-upload-item"]', 4).some(isVisible);
+    if (!shown()) {
+      try { await attachResume(); } catch (_) {}
+      await waitUntil(shown, 20000, 250);
+    }
+    const next = deepAll('[data-automation-id="pageFooterNextButton"],[data-automation-id="bottom-navigation-next-button"]', 2).find(isVisible) ||
+      deepAll('button', 40).find((b) => isVisible(b) && /^(continue|next|weiter|suivant|continuar|avanti|volgende|dalej)$/i.test(wdText(b)));
+    if (!next) return false;
+    const before = stepSignature();
+    await wdClick(next);
+    noteProgress('resume uploaded');
+    await waitForStepChange(before, 12000);
+    return true;
+  }
+  /* One pass of the engine over whatever page is on screen. */
+  async function wdEnginePass(p) {
+    return withBusy('filling the Workday page', async () => {
+      const kind = wdStepKind();
+      let n = 0;
+      try {
+        if (kind === 'myInformation' || (!kind && wdField(document, ['legalNameSection_firstName', 'formField-legalName--firstName', 'countryDropdown']))) n += await wdMyInformation(p);
+        if (kind === 'myExperience' || (!kind && wdSection(['workExperienceSection', 'educationSection'], /(?!)/))) n += await wdMyExperience(p);
+        if (kind === 'selfIdentify' || wdField(document, ['dateSignedOn', 'selfIdentifiedDisabilityData', 'formField-dateSignedOn'])) n += await wdSelfIdentify(p);
+        n += await wdGenericPass(p);
+      } catch (e) { LOG('Workday engine error:', e && e.message || e); }
+      if (n) LOG(`Workday engine: ${n} field(s) answered on ${kind || 'this page'}`);
+      return n;
+    });
+  }
+
   // SpeedyApply Workday: multi-page navigation with page type detection (enhanced)
   async function workdayMultiPageFlow() {
     const MAX_PAGES = 12;
@@ -6981,11 +7826,19 @@
       if (currentPageType === 'unknown') {
         for (const pt of pageTypes) { if ($(`[data-automation-id="${pt}"]`)) { currentPageType = pt; break; } }
       }
+      // No page-type marker (many tenants, and every locale but English for the
+      // step names): read the step off the progress bar / page heading instead.
+      if (currentPageType === 'unknown') {
+        currentPageType = ({ myInformation: 'applyFlowMyInfoPage', myExperience: 'applyFlowMyExpPage', questions: 'applyFlowPrimaryQuestionsPage',
+          voluntary: 'applyFlowVoluntaryDisclosuresPage', selfIdentify: 'applyFlowSelfIdentifyPage', review: 'applyFlowReviewPage' })[wdStepKind()] || 'unknown';
+      }
+      if (currentPageType === 'unknown' && await wdHandleResumeUploadPage()) { lastPageType = ''; continue; }
       LOG(`Workday multi-page: page ${page} — ${currentPageType}`);
 
       // Detect stuck on same page (validation error likely)
       if (page > 1 && currentPageType === lastPageType) {
         LOG('Workday: stuck on same page — running validation fix');
+        await wdFixFromErrorBanner(p);
         await handleValidationErrors();
         await fallbackFill();
         await sleep(scaled(1000, 500));
@@ -7023,7 +7876,9 @@
         }
       }
 
-      // Also run generic fallback on every page
+      // The engine pass (every formField container, any language), then the
+      // generic fallback on every page.
+      await wdEnginePass(p);
       await fallbackFill();
       await sleep(500);
       await handleValidationErrors();
@@ -7065,8 +7920,9 @@
   async function greenhouseAutomation() {
     LOG('Greenhouse automation starting...');
     const p = await getProfile();
-    if (!$('#application_form,#application,.application-form') && await openEmbeddedGreenhouseForm()) return;
-    const form = await waitFor('#application_form,#application,.application-form,.main-content form', 10000);
+    // job-boards.greenhouse.io (the new boards) names it #application-form.
+    if (!$('#application_form,#application-form,#application,.application-form,.application--form') && await openEmbeddedGreenhouseForm()) return;
+    const form = await waitFor('#application_form,#application-form,#application,.application-form,.application--form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
 
@@ -7872,8 +8728,9 @@
     if (!form) { LOG('No Eightfold form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
 
-    // Eightfold uses React with custom components
-    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
+    // Eightfold uses React with custom components. Tick boxes are the consent
+    // pass's job (tickConsentBoxes), not something to type a guess into.
+    const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=checkbox]):not([type=radio]),textarea,select')
       .filter(el => isVisible(el) && !hasFieldValue(el));
     for (const inp of inputs) {
       const lbl = getLabel(inp);
@@ -8312,6 +9169,15 @@
       const opt = bi >= 0 ? el.options[bi] : null;
       if (opt && opt.value !== '') { setSelectValue(el, opt.value); return 'picked "' + opt.text.trim().slice(0, 30) + '"'; }
       return '';
+    }
+    // A react-select flagged as required: typing the answer into its search box
+    // only LOOKS answered. Clear any such text and pick the option instead.
+    const rsCtrl = kind !== 'list' && isSelectSearchBox(el) ? reactSelectControl(el) : null;
+    if (rsCtrl) {
+      if (reactSelectHasValue(rsCtrl)) return '';
+      if (cur.trim()) { try { nativeSet(el, ''); } catch (_) {} await sleep(150); }
+      const want = guessFieldValue(label, p, el);
+      return (await commitCustomDropdown(rsCtrl, want, true)) ? 'picked an option from the list' : '';
     }
     switch (kind) {
       case 'email': {
@@ -8809,6 +9675,8 @@
       const heads = deepAll('[data-automation-id="pageHeaderTitle"],[data-automation-id="applicationPage"],h1,h2', 30).filter(isVisible);
       const stepRe = new RegExp('^(' + WD_STEP_LABELS.join('|') + ')$', 'i');
       if (heads.some((el) => el.getAttribute('data-automation-id') === 'applicationPage' || stepRe.test(normLabel(el.textContent)))) return true;
+      // The step names in any of the eight languages the engine reads.
+      if (wdStepKind()) return true;
       const bar = deepAll('[data-automation-id="progressBar"]', 2).find(isVisible);
       if (bar) {
         const t = normLabel(bar.textContent).toLowerCase();
@@ -8880,6 +9748,45 @@
     } catch (_) { return ''; }
   }
 
+  /* Workday's Sign In and Create Account buttons are covered by a transparent
+     div[data-automation-id="click_filter"] that owns the click; the <button>
+     underneath has no handler of its own (tabindex -1, often aria-hidden). Pressing
+     the button therefore did nothing at all: the fields were filled and the form
+     just sat there — "it forgot to click Sign In" — and a Create Account that was
+     never sent was recorded as created, so the next pass switched to a Sign In for
+     an account that does not exist. Press what Workday listens to. */
+  function workdaySubmitControl(aid) {
+    try { return deepAll(`[data-automation-id="${aid}"]`, 6).find((b) => workdayControlShown(b)) || deepOne(`[data-automation-id="${aid}"]`); }
+    catch (_) { return null; }
+  }
+  function workdayClickTarget(btn) {
+    if (!btn) return null;
+    try {
+      // The overlay sits beside the button, in the same wrapper.
+      for (let scope = btn.parentElement, up = 0; scope && up < 3; scope = scope.parentElement, up++) {
+        const f = Array.from(scope.querySelectorAll('[data-automation-id="click_filter"]')).find(isVisible);
+        if (f) return f;
+      }
+      // Or whatever is on top of the button's centre, if it is the overlay.
+      const r = btn.getBoundingClientRect();
+      const top = r.width ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+      if (top && top !== btn && !btn.contains(top) && /click_filter/i.test(top.getAttribute('data-automation-id') || '')) return top;
+    } catch (_) {}
+    return btn;
+  }
+  function workdayControlShown(btn) {
+    if (!btn) return false;
+    return isVisible(btn) || isVisible(workdayClickTarget(btn));
+  }
+  function pressWorkdayButton(btn) {
+    const target = workdayClickTarget(btn);
+    if (!target) return false;
+    if (target !== btn) LOG('Workday: pressing the button through its click overlay');
+    scrollIfNeeded(target);
+    realClick(target);
+    return true;
+  }
+
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
     let pwFields = $$('input[type=password]').filter(isVisible);
@@ -8888,18 +9795,18 @@
     const auth = wdAuthState();
     const candidates = await workdayPasswordCandidates();
     // Which form are we on? (decided before the password, which depends on it)
-    const _createBtn0 = $('button[data-automation-id="createAccountSubmitButton"]');
-    const _onCreate0 = !!_createBtn0 && isVisible(_createBtn0);
+    const _createBtn0 = workdaySubmitControl('createAccountSubmitButton');
+    const _onCreate0 = workdayControlShown(_createBtn0);
     // Creating an account uses the first choice; signing in walks the list.
     const pw = _onCreate0 ? candidates[0] : candidates[Math.min(auth.idx, candidates.length - 1)];
     if (!email || !pw) return 'working';
 
     // Which form are we on?
-    const createBtn = $('button[data-automation-id="createAccountSubmitButton"]');
-    const signInBtn = $('button[data-automation-id="signInSubmitButton"]');
+    const createBtn = workdaySubmitControl('createAccountSubmitButton');
+    const signInBtn = workdaySubmitControl('signInSubmitButton');
     const verifyField = pwFields.find(f => /verify|confirm|re-?enter|retype/i.test((getLabel(f) || '') + (f.name || '') + (f.id || '') + (f.getAttribute('data-automation-id') || '')));
-    const onCreate = !!createBtn && isVisible(createBtn);
-    const onSignIn = !onCreate && !!signInBtn && isVisible(signInBtn) && !verifyField;
+    const onCreate = workdayControlShown(createBtn);
+    const onSignIn = !onCreate && workdayControlShown(signInBtn) && !verifyField;
 
     // Defend email + password(s) with the saved credentials (React-committing setter).
     let emailField = $('input[data-automation-id="email"]') ||
@@ -9005,7 +9912,7 @@
       if (!createBtn.disabled && createBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
-        clickEl(createBtn);
+        pressWorkdayButton(createBtn);
         /* Record it NOW, not only if the watcher later happens to see the
            My Information page. The run frequently navigates on before that
            selector appears, and the account was then never written down — so the
@@ -9022,7 +9929,7 @@
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: signing in with saved password ${Math.min(auth.idx, candidates.length - 1) + 1} of ${candidates.length} (action ${_wdActions}/${WD_MAX_ACTIONS})`);
         auth.triedSignIn = true; wdAuthSave();
-        clickEl(signInBtn);
+        pressWorkdayButton(signInBtn);
         await markAccountCreated(location.hostname);   // an account we can sign into exists
       }
       return 'working';
@@ -9828,104 +10735,6 @@
       _appHistory = keep.slice(0, APP_HISTORY_CAP);
     }
     await saveAppHistory();
-    // On a CONFIRMED submission, queue a LinkedIn recruiter follow-up for this company/
-    // role. The LinkedIn module (below) sends it when you land on a matching profile.
-    if ((status || 'applied') === 'applied') {
-      try {
-        // Attach the insider contacts we captured from Jobright just before applying, so the
-        // LinkedIn module aims at the exact recruiter / hiring manager Jobright surfaced.
-        let contacts = [];
-        const pend = await st.get('ua_pending_insiders');
-        if (pend && Array.isArray(pend.contacts) && (Date.now() - (pend.ts || 0) < 30 * 60 * 1000)) {
-          contacts = pend.contacts;
-          await st.set('ua_pending_insiders', null); // consume once
-        }
-        await enqueueFollowUp(extractCompanyFromUrl(url), title || '', url, contacts);
-      } catch (_) {}
-    }
-  }
-
-  // ---- LinkedIn recruiter follow-up queue (consumed by the LinkedIn module) ----
-  // A queue item can carry EXACT people to contact (captured from Jobright's "Insider
-  // Connection" panel — Jobright is good at surfacing the right person), each with their
-  // LinkedIn profile slug so the LinkedIn module messages that precise person, not a guess.
-  async function enqueueFollowUp(company, role, url, contacts) {
-    if (!company || company === 'Unknown') return;
-    const q = (await st.get('ua_followup_queue')) || [];
-    const key = (company + '|' + (role || '')).toLowerCase();
-    const existing = q.find(f => (f.company + '|' + (f.role || '')).toLowerCase() === key);
-    if (existing) {
-      if (contacts && contacts.length) { // merge any newly-found insider contacts
-        existing.contacts = existing.contacts || [];
-        for (const c of contacts) if (c.profile && !existing.contacts.some(x => x.profile === c.profile)) existing.contacts.push(c);
-        await st.set('ua_followup_queue', q);
-      }
-      return;
-    }
-    q.unshift({ company, role: role || '', url: url || '', ts: Date.now(), status: 'pending', contacts: contacts || [] });
-    await st.set('ua_followup_queue', q.slice(0, 200));
-    LOG(`Follow-up queued for ${company}${role ? ' — ' + role : ''}${contacts && contacts.length ? ' (' + contacts.length + ' insider contacts)' : ''}`);
-  }
-
-  // Classify a person's title/headline: who has the most say over an interview?
-  //  3 = the actual hiring manager / decision maker for the role (VP/Director/Head/Lead/Manager
-  //      of the relevant function, or literally "hiring manager").
-  //  2 = a recruiter / talent-acquisition / people-team contact (owns the pipeline).
-  //  1 = anyone else at the company (weak signal — last resort).
-  // Higher wins, so the LinkedIn module messages the person who matters most first.
-  function scoreContactRole(title) {
-    const t = (title || '').toLowerCase();
-    if (/hiring manager|\bhead of\b|\bvp\b|vice president|\bdirector\b|\bchief\b|\bcto\b|\bceo\b|\blead\b|\bmanager\b|\bprincipal\b|founder/.test(t)) return 3;
-    if (/recruit|talent|sourcer|\bta\b|people|human resources|\bhr\b|staffing|acquisition/.test(t)) return 2;
-    return 1;
-  }
-
-  // Scrape Jobright's "Insider Connection" panel for the specific people it surfaced.
-  // Depends on the panel exposing linkedin.com/in/ profile links (the "in" button). If
-  // Jobright renders those as JS-only buttons without hrefs we simply capture nothing and
-  // fall back to company-based matching — never guesses a wrong person. Each captured
-  // contact carries its title + a role score so we can aim at the recruiter / hiring
-  // manager for THIS role (the people with a say on getting the interview) first.
-  function captureInsiderConnections() {
-    try {
-      if (!isJobright()) return [];
-      const links = (typeof window.__uaDeepQueryAll === 'function')
-        ? window.__uaDeepQueryAll('a[href*="linkedin.com/in/"]')
-        : [...document.querySelectorAll('a[href*="linkedin.com/in/"]')];
-      const seen = new Set(), out = [];
-      for (const a of links) {
-        const m = (a.getAttribute('href') || '').match(/linkedin\.com\/in\/([^/?#]+)/i);
-        if (!m) continue;
-        const slug = m[1].toLowerCase();
-        if (seen.has(slug)) continue; seen.add(slug);
-        // Name/title from the card around the link (best-effort).
-        const card = a.closest('li,[class*="card"],[class*="connection"],[class*="item"],div') || a;
-        const name = ((card.querySelector('[class*="name"],b,strong,h3,h4')?.textContent) || a.textContent || '').trim().slice(0, 60);
-        // Title/headline sits near the name in the card; grab the fuller card text minus
-        // the name so scoreContactRole can spot "Recruiter" / "Engineering Manager" etc.
-        let title = (card.querySelector('[class*="title"],[class*="headline"],[class*="position"],[class*="role"],[class*="subtitle"]')?.textContent || '').trim();
-        if (!title) { const ct = (card.textContent || '').replace(name, ' ').replace(/\s+/g, ' ').trim(); title = ct.slice(0, 120); }
-        const score = scoreContactRole(title);
-        out.push({ profile: slug, name, title: title.slice(0, 120), score, ts: Date.now() });
-      }
-      // Best contacts first: hiring managers, then recruiters, then everyone else.
-      out.sort((a, b) => b.score - a.score);
-      return out;
-    } catch (_) { return []; }
-  }
-
-  // Capture the insiders on the CURRENT Jobright job page and stash them (with the job's
-  // role) so recordApplication — which fires later on the ATS page — can attach them to the
-  // follow-up queue item. Recency-matched: an application submitted shortly after viewing a
-  // Jobright job belongs to the insiders we just saw.
-  async function stashInsidersFromJobright(role) {
-    try {
-      if (!isJobright()) return;
-      const contacts = captureInsiderConnections();
-      if (!contacts.length) return;
-      await st.set('ua_pending_insiders', { role: role || '', contacts, ts: Date.now() });
-      LOG(`Captured ${contacts.length} insider contact(s) from Jobright (top: ${contacts[0].name || contacts[0].profile})`);
-    } catch (_) {}
   }
 
   function extractCompanyFromUrl(url) {
@@ -11375,7 +12184,12 @@
   // Resolve a selector against the page first, then the sidebar shadow tree.
   function pageOrSidebar(sel) { return document.querySelector(sel) || sbQuery(sel); }
   // Wait until the Jobright sidebar exists (shadow-aware).
-  function waitForSidebar(ms) {
+  /* Inside the busy guard: the wait was up to 15s with nothing reporting progress,
+     and the stall watchdog's limit is 15s — so on any page where Jobright's sidebar
+     never mounted, the job was killed as "Stalled — no progress for 15s" a moment
+     before it would have fallen back to our own filler. */
+  function waitForSidebar(ms) { return withBusy('waiting for the Jobright sidebar', () => waitForSidebar__impl(ms)); }
+  function waitForSidebar__impl(ms) {
     return new Promise(res => {
       const dl = Date.now() + (ms || 10000);
       const tick = () => {
@@ -13752,10 +14566,6 @@
     if (isWorkday() && (autoApply || runnerActive || mgrJob)) startWorkdayAccountWatch();
     if (isJobright()) {
       await sleep(scaled(2000, 1000)); resumeTailoringAutomation();
-      // Capture Jobright's Insider Connections (recruiter/hiring manager for this role) so a
-      // follow-up can be aimed at the exact person. Re-capture as the panel loads/expands.
-      const roleGuess = ((document.querySelector('h1, [class*="job-title"], [class*="jobTitle"]')?.textContent) || '').trim().slice(0, 80);
-      [1500, 4000, 8000].forEach(ms => setTimeout(() => stashInsidersFromJobright(roleGuess), ms));
     }
     // Auto-learn (MANUAL answers only): whenever YOU answer a question the autofill left
     // blank, remember question→answer and auto-apply it the next time it appears.
@@ -15881,9 +16691,16 @@ a[href*="/checkout" i],
     const KEEP_RE = /(your\s+autofill\s+information|upload\s+resume|tailor\s+resume|match\s+score|completion|add\s+this\s+job)/i;
     let cur = el; let best = el;
     const limit = hard ? 8 : 6;
+    /* Never climb into the page itself. A credits box or an "Upgrade" button in
+       the page DOM (not Jobright's shadow root) climbed eight levels to <html> and
+       hid the WHOLE application — every field zero-sized, "No submit button found",
+       and the job recorded as done. Stop at anything that holds form controls. */
+    const isPage = (n) => n === document.body || n === document.documentElement ||
+      !!(n.querySelector && n.querySelector('input:not([type=hidden]),textarea,select,form,[role="combobox"]'));
     for (let i = 0; i < limit && cur; i++) {
       const txt = (cur.textContent || '').trim();
       if (!txt) break;
+      if (i > 0 && isPage(cur)) break;
       if (hard) {
         // Hard mode: only stop climbing when the wrapper would also engulf
         // a clearly-different control (not just any element containing the
@@ -16824,7 +17641,32 @@ a[href*="/checkout" i],
   // div/span/p) on each DOM mutation + every 600ms. That is far too heavy to run on
   // unrelated websites — it was freezing/crashing normal browsing. The Jobright
   // out-of-credit popups only appear on jobright.ai, so run this ONLY there.
-  if (!/(^|\.)jobright(?:-internal)?\.(?:ai|com)$/i.test(location.hostname)) return;
+  if (!/(^|\.)jobright(?:-internal)?\.(?:ai|com)$/i.test(location.hostname)) {
+    /* …except that they don't: Jobright's helper opens the same "You have 0
+       remaining Autofill credits … Upgrade to Turbo" box on every ATS page once
+       the day's credits are gone, inside its plasmo-csui shadow root — and with
+       this whole suppressor switched off there, it stayed up job after job. The
+       cheap part only: look inside Jobright's own helper hosts (a handful of
+       class lookups, never a page sweep) and press the box's own Cancel. Never
+       Upgrade. */
+    const CREDIT_RE = /remaining\s+autofill\s+credits|credits?\s+will\s+be\s+refilled|credits?\s+refill\s+to/i;
+    setInterval(() => {
+      try {
+        for (const h of document.querySelectorAll('plasmo-csui,#jobright-helper-plugin')) {
+          const r = h.shadowRoot;
+          if (!r) continue;
+          for (const w of r.querySelectorAll('.popup-modal-wrap,.popup-modal')) {
+            if (!w.getClientRects().length || !CREDIT_RE.test(w.textContent || '')) continue;
+            const cancel = [...w.querySelectorAll('button')].find((b) => /^\s*cancel\s*$/i.test(b.textContent || ''));
+            try { if (cancel) cancel.click(); } catch (_) {}
+            if (w.getClientRects().length) w.style.setProperty('display', 'none', 'important');
+            log('closed Jobright\'s "0 remaining Autofill credits" box');
+          }
+        }
+      } catch (_) {}
+    }, 700);
+    return;
+  }
 
   // ---- 1. Intercept iframe → parent message that triggers the popup ----
   // Capture-phase listeners run before normal-phase ones. Because this
@@ -17563,293 +18405,3 @@ a[href*="/checkout" i],
   log('candidate-profile snapshot watcher active');
 })();
 
-// ============================================================================
-// === LINKEDIN RECRUITER FOLLOW-UP (auto-send after applying) ===
-// After a confirmed application, a follow-up for {company, role} is queued (see
-// enqueueFollowUp in the main module). This module runs on linkedin.com: when you
-// land on the profile of someone whose CURRENT company matches a pending follow-up,
-// and auto-send is enabled, it composes a short personalized note and sends it.
-//
-// IMPORTANT / HONEST NOTE: automating LinkedIn messaging is against LinkedIn's User
-// Agreement and can get an account restricted or banned — Premium raises message
-// LIMITS, not automation PERMISSION. To reduce that risk this is OFF by default and
-// heavily throttled: a per-day cap, a randomized delay between sends, and dedupe so
-// the same person is never messaged twice. You stay in control of WHO by choosing
-// which profiles to open (e.g. via Jobright's "Insider Connections").
-// ============================================================================
-(function () {
-  'use strict';
-  const TAG = '[UA-LinkedIn]';
-  const log = (...a) => { try { console.log(TAG, ...a); } catch (_) {} };
-  if (!/(^|\.)linkedin\.com$/i.test(location.hostname)) return;
-  if (window.top !== window.self) return;
-
-  const S = {
-    get: k => new Promise(r => { try { chrome.storage.local.get(k, d => r(d[k])); } catch (_) { r(undefined); } }),
-    set: (k, v) => new Promise(r => { try { chrome.storage.local.set({ [k]: v }, r); } catch (_) { r(); } }),
-  };
-  const DEFAULT_TEMPLATE =
-    "Hi {first}, I just submitted my application for the {role} role at {company} and wanted to reach out directly. I'm genuinely excited about the opportunity and would welcome the chance to connect. Thank you for your time!";
-  const DEFAULT_CAP = 12;          // max auto-sends per day
-  const MIN_GAP_MS = 45_000;       // minimum gap between two auto-sends
-  const RAND_GAP_MS = 40_000;      // + up to this much random jitter
-
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-
-  // ---------- config ----------
-  async function cfg() {
-    return {
-      enabled: (await S.get('ua_followup_enabled')) === true,
-      template: (await S.get('ua_followup_template')) || DEFAULT_TEMPLATE,
-      cap: (await S.get('ua_followup_daily_cap')) || DEFAULT_CAP,
-    };
-  }
-  async function sentLog() { return (await S.get('ua_followup_sent')) || []; }
-  async function sentToday() { const now = Date.now(); return (await sentLog()).filter(s => now - s.ts < 86_400_000).length; }
-  async function alreadyMessaged(profileKey) { return (await sentLog()).some(s => s.profile === profileKey); }
-  async function markSent(profileKey, company, role) {
-    const l = await sentLog(); l.unshift({ profile: profileKey, company, role, ts: Date.now() });
-    await S.set('ua_followup_sent', l.slice(0, 2000));
-  }
-  async function queue() { return (await S.get('ua_followup_queue')) || []; }
-  async function removeFromQueue(company) {
-    const q = await queue();
-    await S.set('ua_followup_queue', q.filter(f => norm(f.company) !== norm(company)));
-  }
-
-  // ---------- profile parsing ----------
-  function profileKey() { const m = location.pathname.match(/\/in\/([^/]+)/i); return m ? m[1].toLowerCase() : ''; }
-  function firstName() {
-    const h = document.querySelector('h1.text-heading-xlarge, .pv-text-details__left-panel h1, main h1');
-    const full = (h && h.textContent || '').trim();
-    return (full.split(/\s+/)[0] || 'there').replace(/[^a-zA-Z''-]/g, '') || 'there';
-  }
-  // The person's CURRENT company text (headline + top-card subtitle + first experience).
-  function profileCompanyText() {
-    const parts = [];
-    const head = document.querySelector('.text-body-medium.break-words, .pv-text-details__left-panel .text-body-medium');
-    if (head) parts.push(head.textContent || '');
-    // "Current" line in the top card (e.g. a company chip) + first experience entry.
-    document.querySelectorAll('[data-field="experience_company_logo"], .pv-text-details__right-panel, #experience ~ * li:first-child, .pvs-list__item--line-separated:first-child').forEach(e => parts.push(e.textContent || ''));
-    return norm(parts.join(' • ')).slice(0, 800);
-  }
-  function looksLikeRecruiter() {
-    const t = profileCompanyText() + ' ' + norm((document.querySelector('main h1')?.parentElement?.textContent) || '');
-    return /recruit|talent|sourcer|people|human resources|\bhr\b|hiring|staffing|acquisition/.test(t);
-  }
-
-  // ---------- message sending ----------
-  function setContentEditable(box, text) {
-    box.focus();
-    // Clear then insert via execCommand so LinkedIn's React/Draft editor fires its input handlers.
-    try { document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); } catch (_) {}
-    let ok = false;
-    try { ok = document.execCommand('insertText', false, text); } catch (_) {}
-    if (!ok) {
-      box.textContent = text;
-      box.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: text, inputType: 'insertText' }));
-    }
-    box.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-  }
-  async function openMessageComposer() {
-    // Already open?
-    let box = document.querySelector('.msg-form__contenteditable[contenteditable="true"]');
-    if (box) return box;
-    // Click the profile "Message" button (Premium opens InMail for non-connections).
-    const btn = [...document.querySelectorAll('button, a')].find(b => {
-      const l = (b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '');
-      return /^\s*message\b/i.test((b.textContent || '').trim()) || /message [A-Z]/.test(l);
-    });
-    if (!btn) return null;
-    btn.click();
-    for (let i = 0; i < 20; i++) { await sleep(300); box = document.querySelector('.msg-form__contenteditable[contenteditable="true"]'); if (box) return box; }
-    return null;
-  }
-  function findSendButton(box) {
-    const scope = box.closest('.msg-form, .msg-overlay-conversation-bubble, form') || document;
-    return scope.querySelector('.msg-form__send-button:not([disabled]), button[type="submit"].msg-form__send-button:not([disabled])')
-      || [...scope.querySelectorAll('button')].find(b => /^\s*send\s*$/i.test(b.textContent || '') && !b.disabled);
-  }
-  async function sendMessage(text) {
-    const box = await openMessageComposer();
-    if (!box) { log('No message composer found on this profile'); return false; }
-    await sleep(600 + Math.random() * 800);
-    setContentEditable(box, text);
-    await sleep(900 + Math.random() * 900); // let the Send button enable + look human
-    const send = findSendButton(box);
-    if (!send) { log('Send button not found / disabled'); return false; }
-    send.click();
-    log('Follow-up message sent');
-    return true;
-  }
-
-  // ---------- driver ----------
-  let _lastSendAt = 0;
-  let _busy = false;
-  // LazyApply-style: on a LinkedIn JOB page, LinkedIn's "Meet the hiring team" card
-  // explicitly names the recruiter/job-poster and gives a direct Message button. That's
-  // a far more reliable target than guessing from an arbitrary profile — so prefer it.
-  function jobPageCompany() {
-    const el = document.querySelector('.job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, [class*="company-name"] a, .topcard__org-name-link');
-    return el ? (el.textContent || '').trim() : '';
-  }
-  function hiringTeamCard() {
-    // The card lives in the right rail / details; find a container that mentions the
-    // hiring team and contains a profile link + a Message affordance.
-    const cards = [...document.querySelectorAll('.hirer-card__container, [class*="hirer-card"], .job-details-people-who-can-help__section, section')];
-    for (const card of cards) {
-      const t = (card.textContent || '').toLowerCase();
-      if (!/hiring team|job poster|meet the|who can help|recruiter/.test(t)) continue;
-      const profile = card.querySelector('a[href*="/in/"]');
-      if (profile) return { card, profile };
-    }
-    // Fallback: a standalone job-poster name link.
-    const poster = document.querySelector('.jobs-poster__name a[href*="/in/"], a.jobs-poster__name');
-    if (poster) return { card: poster.closest('section, div') || poster, profile: poster };
-    return null;
-  }
-  async function messageHiringTeam(match, c) {
-    const ht = hiringTeamCard();
-    if (!ht) return false;
-    const pkey = (ht.profile.getAttribute('href') || '').match(/\/in\/([^/?#]+)/i)?.[1]?.toLowerCase() || '';
-    if (!pkey || await alreadyMessaged(pkey)) return false;
-    const first = ((ht.profile.textContent || '').trim().split(/\s+/)[0] || 'there').replace(/[^a-zA-Z''-]/g, '') || 'there';
-    // Prefer a Message button inside the card; else fall back to opening the profile.
-    const msgBtn = [...ht.card.querySelectorAll('button, a')].find(b => /message/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')));
-    const text = c.template.replace(/\{first\}/gi, first).replace(/\{role\}/gi, match.role || 'the role').replace(/\{company\}/gi, match.company);
-    _lastSendAt = Date.now();
-    if (msgBtn) {
-      msgBtn.click();
-      let box = null;
-      for (let i = 0; i < 20; i++) { await sleep(300); box = document.querySelector('.msg-form__contenteditable[contenteditable="true"]'); if (box) break; }
-      if (!box) { log('Hiring-team Message clicked but composer did not open'); return false; }
-      await sleep(700);
-      setContentEditable(box, text);
-      await sleep(1000 + Math.random() * 800);
-      const send = findSendButton(box);
-      if (!send) { log('Hiring-team composer: send button not ready'); return false; }
-      send.click();
-      log('Follow-up sent to hiring-team contact for ' + match.company);
-      await markSent(pkey, match.company, match.role); await removeFromQueue(match.company);
-      _lastSendAt = Date.now() + Math.random() * RAND_GAP_MS;
-      return true;
-    }
-    return false;
-  }
-
-  async function tick() {
-    if (_busy) return; _busy = true;
-    try {
-      const c = await cfg();
-      renderPanel(c);                     // keep the on-page panel current
-      if (!c.enabled) return;
-      if (Date.now() - _lastSendAt < MIN_GAP_MS) return; // global throttle
-      if (await sentToday() >= c.cap) return;            // daily cap
-      const q = await queue();
-      if (!q.length) return;
-
-      // Path A (preferred): LinkedIn JOB page — message the named hiring-team recruiter.
-      if (/\/jobs\/(view|collections|search)/i.test(location.pathname)) {
-        const co = norm(jobPageCompany());
-        const jm = co && q.find(f => f.company && (co.includes(norm(f.company)) || norm(f.company).includes(co)));
-        if (jm) { if (await messageHiringTeam(jm, c)) { renderPanel(await cfg()); } }
-        return;
-      }
-
-      // Path B: a profile page you opened for someone at an applied-to company.
-      if (!/\/in\//i.test(location.pathname)) return;
-      const pkey = profileKey();
-      if (!pkey || await alreadyMessaged(pkey)) return;  // dedupe
-
-      // B1 (best): this profile IS one of the exact insider contacts Jobright surfaced for a
-      // job we applied to (recruiter / hiring manager for the role). Send with no further
-      // gating — Jobright already vetted that this is the right person to reach.
-      let match = q.find(f => Array.isArray(f.contacts) && f.contacts.some(c => c.profile === pkey));
-      let exact = false;
-      if (match) { exact = true; }
-      else {
-        // B2 (fallback): guess by company text on the profile, and require a recruiter-ish
-        // headline so we don't cold-message a random employee.
-        const ptext = profileCompanyText();
-        match = q.find(f => f.company && ptext.includes(norm(f.company)));
-        if (!match) return;               // this profile isn't at an applied-to company
-        if (!looksLikeRecruiter()) { log('Profile matches ' + match.company + ' but does not look like a recruiter/hiring manager — skipping auto-send'); return; }
-      }
-      if (exact) log('Exact insider match for ' + match.company + ' — messaging the person Jobright surfaced');
-
-      const text = c.template
-        .replace(/\{first\}/gi, firstName())
-        .replace(/\{role\}/gi, match.role || 'the role')
-        .replace(/\{company\}/gi, match.company);
-      _lastSendAt = Date.now();
-      const ok = await sendMessage(text);
-      if (ok) { await markSent(pkey, match.company, match.role); await removeFromQueue(match.company); _lastSendAt = Date.now() + Math.random() * RAND_GAP_MS; renderPanel(await cfg()); }
-    } catch (e) { log('tick error:', e && e.message); }
-    finally { _busy = false; }
-  }
-
-  /* This scope renders company names, job titles and scraped contact names
-     into innerHTML on linkedin.com. All of them come from pages — job boards
-     and Jobright's Insider Connections — so none of them may reach the DOM as
-     markup. */
-  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (ch) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-
-  // ---------- on-page control panel ----------
-  function renderPanel(c) {
-    try {
-      // Stay out of the way while BROWSING LinkedIn: only show on profile (/in/) and
-      // job (/jobs/) pages — never the feed, messaging, search or notifications.
-      if (!/^\/(in|jobs)\//.test(location.pathname)) { document.getElementById('ua-li-followup')?.remove(); return; }
-      S.get('ua_followup_panel_snooze').then(sn => {
-      if (sn && Date.now() < sn) { document.getElementById('ua-li-followup')?.remove(); return; }
-      queue().then(q => {
-        let el = document.getElementById('ua-li-followup');
-        if (!q.length && !c.enabled) { if (el) el.remove(); return; }
-        if (!el) {
-          el = document.createElement('div');
-          el.id = 'ua-li-followup';
-          el.style.cssText = 'position:fixed;right:14px;bottom:14px;width:260px;z-index:2147483000;background:#fff;border:1px solid #d0d5dd;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.18);font:12px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;color:#1d2226;overflow:hidden';
-          document.body.appendChild(el);
-        }
-        sentToday().then(st => {
-          el.innerHTML =
-            '<div style="padding:9px 11px;background:#0a66c2;color:#fff;font-weight:700;display:flex;align-items:center;justify-content:space-between">📨 Recruiter Follow-up' +
-            '<span style="display:inline-flex;align-items:center;gap:8px"><label style="display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:11px;cursor:pointer"><input type="checkbox" id="ua-li-tog" ' + (c.enabled ? 'checked' : '') + '> Auto-send</label>' +
-            '<span id="ua-li-x" title="Hide for 24h" style="cursor:pointer;font-weight:600;opacity:.85;padding:0 2px">✕</span></span></div>' +
-            '<div style="padding:9px 11px">' +
-            '<div style="font-size:10px;color:#666;margin-bottom:6px">Sent today: <b>' + st + '/' + c.cap + '</b> · Pending: <b>' + q.length + '</b></div>' +
-            (c.enabled ? '<div style="font-size:10px;color:#0a66c2;margin-bottom:6px">Open a recruiter/hiring-manager profile at a company you applied to — it will auto-send.</div>'
-                       : '<div style="font-size:10px;color:#b42318;margin-bottom:6px">Off. Turning on auto-sends LinkedIn messages (against LinkedIn ToS — use at your own risk).</div>') +
-            q.slice(0, 5).map(f => {
-              // Prefer the exact insider Jobright surfaced (highest-scoring = recruiter /
-              // hiring manager for the role). Clicking opens THAT profile → auto-send fires.
-              const top = Array.isArray(f.contacts) && f.contacts.length ? f.contacts.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0] : null;
-              const href = top ? ('https://www.linkedin.com/in/' + encodeURIComponent(top.profile) + '/')
-                               : ('https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(f.company + ' recruiter'));
-              const label = top ? ((top.name ? top.name.split(/\s+/)[0] : 'contact') + ' →') : 'find →';
-              const line = (f.company) + (f.role ? ' · ' + f.role : '');
-              return '<div style="display:flex;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid #eee"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(top && top.title ? top.title : '') + '">' + esc(line) + '</span><a href="' + esc(href) + '" target="_self" style="color:#0a66c2;text-decoration:none;flex:0 0 auto">' + esc(label) + '</a></div>';
-            }).join('') +
-            '<textarea id="ua-li-tpl" style="width:100%;box-sizing:border-box;margin-top:8px;min-height:54px;border:1px solid #d0d5dd;border-radius:8px;padding:6px;font:11px/1.4 inherit;resize:vertical" placeholder="Message template">' + (c.template).replace(/</g, '&lt;') + '</textarea>' +
-            '<div style="font-size:9px;color:#888;margin-top:3px">Placeholders: {first} {role} {company}</div>' +
-            '</div>';
-          const tog = el.querySelector('#ua-li-tog');
-          if (tog) tog.onchange = () => S.set('ua_followup_enabled', tog.checked).then(() => cfg().then(renderPanel));
-          const tpl = el.querySelector('#ua-li-tpl');
-          if (tpl) tpl.onchange = () => S.set('ua_followup_template', tpl.value);
-          const x = el.querySelector('#ua-li-x');
-          if (x) x.onclick = () => S.set('ua_followup_panel_snooze', Date.now() + 86400000).then(() => el.remove());
-        });
-      });
-      });
-    } catch (_) {}
-  }
-
-  // Kick off: render the panel and poll for a matching profile.
-  function start() { cfg().then(renderPanel); setInterval(tick, 3500); setTimeout(tick, 1500); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
-  else start();
-  log('LinkedIn recruiter follow-up module active');
-})();

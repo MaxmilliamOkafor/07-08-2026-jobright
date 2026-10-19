@@ -1066,8 +1066,8 @@ eq('case is normalised', key('ACME.WD3.MyWorkdayJobs.COM'), 'acme.myworkdayjobs.
 
 const wd = body('fillWorkdayCreateAccount');
 eq('submitting Create Account records the account there and then',
-  /clickEl\(createBtn\);[\s\S]{0,700}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
-eq('signing in records it too', /clickEl\(signInBtn\);\n        await markAccountCreated\(location\.hostname\);/.test(wd), true);
+  /pressWorkdayButton\(createBtn\);[\s\S]{0,700}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
+eq('signing in records it too', /pressWorkdayButton\(signInBtn\);\n        await markAccountCreated\(location\.hostname\);/.test(wd), true);
 eq('and the site saying "already exists" is treated as proof',
   /if \(onCreate && existsErr\) \{[\s\S]{0,320}?await markAccountCreated\(location\.hostname\);/.test(wd), true);
 eq('a known employer opens Sign In instead of Create Account',
@@ -1610,7 +1610,7 @@ const cd = body('commitCustomDropdown');
 eq('the dropdown committer scores ranges before anything else',
   /const s = scoreExperienceRange\(comboText\(o\), yrs\);/.test(cd), true);
 eq('it recognises a years question from the full question, not just the label',
-  /const qFull = String\(getFullQuestionText\(combo\) \|\| getLabel\(combo\) \|\| ''\);/.test(cd), true);
+  /const qFull = comboQuestion\(combo\);/.test(cd) && /return String\(getFullQuestionText\(el\) \|\| getLabel\(el\)|for \(const t of \[getFullQuestionText\(el\), getLabel\(el\), getFullQuestionText\(combo\), getLabel\(combo\)\]\)/.test(src), true);
 eq('and an unscoreable years list takes the last option, never the first',
   /if \(!pick && real\.length\) pick = real\[real\.length - 1\];/.test(cd), true);
 eq('the generic matchers only get a say once the range pass has had one',
@@ -2470,16 +2470,11 @@ console.log('audit: page-derived text never reaches the DOM as markup');
   const resp = src.slice(src.indexOf('respList.innerHTML = filtered.map('), src.indexOf('respList.innerHTML = filtered.map(') + 1500);
   eq('saved-response keywords are escaped', resp.includes("${escHtml((r.keywords || []).join(', '))}"), true);
   eq('and so is the response text', resp.includes("${escHtml((r.response || '').slice(0, 120))}"), true);
-  /* The follow-up panel renders company, role and a scraped contact name on
-     linkedin.com — all from pages. */
-  const rp = body('renderPanel');
-  eq('the follow-up panel escapes the company and role', /'\+ esc\(line\) \+'|\+ esc\(line\) \+/.test(rp), true);
-  eq('and the contact label', /\+ esc\(label\) \+/.test(rp), true);
-  eq('and the title attribute', /title="' \+ esc\(/.test(rp), true);
-  // The escaper itself, run for real.
-  const esc = new Function('return ' + (src.match(/const esc = (\(v\) => String[\s\S]*?\[ch\]\)\);)/) || [])[1])();
-  eq('the escaper neutralises a tag', esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
-  eq('and both quote styles, so an attribute cannot be broken out of', esc(`"'`), '&quot;&#39;');
+  /* The LinkedIn recruiter follow-up (which auto-messaged people on linkedin.com)
+     was removed in v17.15 — nothing of it may come back. */
+  eq('the LinkedIn follow-up module is gone', /UA-LinkedIn|Recruiter Follow-up|ua-li-followup/.test(src), false);
+  eq('applications no longer queue LinkedIn follow-ups', /enqueueFollowUp|stashInsidersFromJobright|ua_followup_queue/.test(src), false);
+  eq('and the worker clears what it left in storage', /dropRemovedLinkedInFollowUp/.test(orch) && /'ua_followup_queue'/.test(orch), true);
 }
 {
   /* The Queue Manager is an extension page: an injection there runs with the
@@ -2818,7 +2813,7 @@ console.log('v17.5 — ranges, notice periods, education levels, misplaced value
 
   // Profile-first guesses that used to be shadowed by defaults.
   eq('years of experience reads the profile', /if \(\/years\.\*\(exp\|work\)\|exp\.\*years\|total\.\*experience\/\.test\(l\)\) return yearsAnswer\(p\);/.test(src), true);
-  eq('notice period reads the profile before "availability"', /return p\.notice_period \|\| p\.notice \|\| DEFAULTS\.notice;\n\s*if \(\/availab/.test(src), true);
+  eq('notice period reads the profile before "availability"', /return p\.notice_period \|\| p\.notice \|\| DEFAULTS\.notice;\n[\s\S]{0,200}?if \(\/availab/.test(src), true);
 
   // Misplaced values.
   eq('misplaced values are corrected after every fill', /try \{ refilled \+= sanitizeMisplacedValues\(p\); \} catch \(_\) \{\}/.test(src), true);
@@ -2973,10 +2968,143 @@ console.log('v17.11 — Workday existing accounts, embedded Greenhouse, Microsof
   eq('only an account the site has NOT confirmed is sent back to Create', /if \(onSignIn && wrongCredErr && !auth\.exists\) \{/.test(wd), true);
   eq('when every password is refused it stops and says what to do', /DIAG\('workday\.password-mismatch'/.test(wd) && /return 'stop';/.test(wd), true);
   eq('errors come from Workday\'s own messages, not the page text', /const errText = workdayAuthErrorText\(\);/.test(wd) && !/const pageText = \(document\.body\.innerText/.test(wd), true);
-  eq('an embedded Greenhouse form is opened in this tab', /if \(!\$\('#application_form,#application,\.application-form'\) && await openEmbeddedGreenhouseForm\(\)\) return;/.test(body('greenhouseAutomation')), true);
+  eq('an embedded Greenhouse form is opened in this tab', /if \(!\$\('#application_form,#application-form,#application,\.application-form,\.application--form'\) && await openEmbeddedGreenhouseForm\(\)\) return;/.test(body('greenhouseAutomation')), true);
   { const og = body('openEmbeddedGreenhouseForm');
     eq('only a real https greenhouse.io address is followed', og.includes("!/^https:$/.test(u.protocol)") && og.includes('greenhouse\\.io$/i.test(u.hostname)'), true); }
   eq('Microsoft\'s account sign-in is reported at once, not timed out', /DIAG\('microsoft\.signin'/.test(body('eightfoldAutomation')), true);
+}
+
+/* ── 67. v17.14: the Anthropic Greenhouse screenshot, Workday Sign In, Microsoft ── */
+console.log('v17.14: react-select answers, knockouts, dates, popups, Workday overlay');
+{
+  // A react-select's search text is not its value.
+  eq('a react-select counts as answered only when it renders a chosen value',
+    /if \(rs\) return reactSelectHasValue\(rs\);/.test(body('comboHasValue')), true);
+  eq('hasFieldValue agrees', /if \(isSelectSearchBox\(el\)\) return reactSelectHasValue\(reactSelectControl\(el\)\);/.test(body('hasFieldValue')), true);
+  eq('the text filler never types an answer into a dropdown search box', /!isSelectSearchBox\(el\)\);/.test(body('fallbackFill')), true);
+  eq('the required-field guarantor picks the option instead of typing',
+    /if \(isSelectSearchBox\(el\)\) \{[\s\S]{0,400}?commitCustomDropdown\(ctrl,/.test(src), true);
+  eq('the error fixer does the same for a flagged react-select', /const rsCtrl = kind !== 'list' && isSelectSearchBox\(el\)/.test(body('fixFieldError')), true);
+  eq('a dropdown question is read from its own label, never its "Select..." placeholder',
+    /label\[for="/.test(body('comboQuestion')) && /PLACEHOLDER/.test(body('comboQuestion')), true);
+  eq('a binary dropdown is decided before any fuzzy matching',
+    body('commitCustomDropdown').indexOf('determineYesNo(') < body('commitCustomDropdown').indexOf('bestOptionIndex('), true);
+
+  // A bare Yes / No answers the question as asked.
+  const oi = (opts, q) => optCtx.optionIndexForDecision(opts, 'yes', q);
+  eq('"Do you require visa sponsorship?" with Yes/No → No', oi(['yes', 'no'], 'Do you require visa sponsorship?'), 1);
+  eq('…in either order', oi(['no', 'yes'], 'Do you require visa sponsorship?'), 0);
+  eq('"Will you now or in the future require employment visa sponsorship…" → No',
+    oi(['yes', 'no'], "Will you now or will you in the future require employment visa sponsorship to work in the country in which the job you're applying for is located?"), 1);
+  eq('"Are you authorised to work in the UK?" with Yes/No → Yes', oi(['yes', 'no'], 'Are you legally authorised to work in the UK?'), 0);
+  eq('worded options still go through the stance matcher',
+    oi(['requires sponsorship', 'does not require sponsorship'], 'Will you now or in the future require visa sponsorship?'), 1);
+
+  eq('"Have you ever interviewed at Anthropic before?" → no', koCtx.decide('have you ever interviewed at anthropic before?'), 'no');
+  eq('"Have you previously interviewed with us?" → no', koCtx.decide('have you previously interviewed with us?'), 'no');
+
+  // A start date that has passed is moved forward; words and future dates are kept.
+  const fd = {};
+  new Function('exports', `${body('toDays')}\n${body('freshStartDate')}\nexports.f = freshStartDate;`)(fd);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const plus = (n) => { const t = new Date(); t.setHours(0, 0, 0, 0); return new Date(t.getTime() + n * 86400000); };
+  const local = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  eq('a past ISO start date becomes today + the notice period', fd.f('2025-12-02', { notice_period: '1 month' }), local(plus(30)));
+  eq('two weeks when there is no notice period', fd.f('2025-12-02', {}), local(plus(14)));
+  eq('a future date is kept', fd.f(local(plus(60)), {}), local(plus(60)));
+  eq('words are kept', fd.f('Immediately', {}), 'Immediately');
+  eq('a past day-first date keeps its format', /^\d{2}\/\d{2}\/\d{4}$/.test(fd.f('02/12/2025', {})) && fd.f('02/12/2025', {}) !== '02/12/2025', true);
+  void iso;
+
+  const DL = new Function(`${src.match(/^  const DEADLINE_Q_RE = .*$/m)[0]}\nreturn DEADLINE_Q_RE;`)();
+  eq('"Do you have any deadlines or timeline considerations…" is a deadlines question', DL.test('do you have any deadlines or timeline considerations we should be aware of?'), true);
+  eq('"…work under tight deadlines?" is not', DL.test('can you work under tight deadlines?'), false);
+  eq('"…experience working to deadlines?" is not', DL.test('do you have experience working to deadlines?'), false);
+  eq('a deadlines question is answered in words', /if \(DEADLINE_Q_RE\.test\(l\)\) return DEFAULTS\.noDeadlines;/.test(src), true);
+  eq('a date in a deadlines box, or a past start date, is corrected after every fill',
+    /isDateText\(v\) && DEADLINE_Q_RE\.test\(lbl\)/.test(body('sanitizeMisplacedValues')) && /a date in the past/.test(body('sanitizeMisplacedValues')), true);
+  eq('"Why <company>?" is answered, not "N/A"', /\^\\s\*why\\s\+/.test(src) && /return whyAnswer\(\);/.test(src), true);
+
+  // Pages, popups, waits.
+  eq('the paywall remover never climbs into the page itself', /if \(i > 0 && isPage\(cur\)\) break;/.test(body('findKillTarget')), true);
+  eq('Jobright\'s credits box is closed off jobright.ai too, inside its helper hosts only',
+    /querySelectorAll\('plasmo-csui,#jobright-helper-plugin'\)/.test(src) && /closed Jobright\\'s "0 remaining Autofill credits" box/.test(src), true);
+  eq('waiting for Jobright\'s sidebar counts as work, not a stall', /function waitForSidebar\(ms\) \{ return withBusy\(/.test(src), true);
+  eq('no sidebar → no 20s hunt for its Autofill button', /directAutofillFlow\(\{ noJobright: true \}\)/.test(src), true);
+  eq('the new-boards Greenhouse form is recognised', /#application-form/.test(body('greenhouseAutomation')), true);
+
+  // Workday's click overlay.
+  const wd = body('fillWorkdayCreateAccount');
+  eq('Workday buttons are pressed through their click_filter overlay', /\[data-automation-id="click_filter"\]/.test(body('workdayClickTarget')), true);
+  eq('Sign In and Create Account both use it', /pressWorkdayButton\(signInBtn\)/.test(wd) && /pressWorkdayButton\(createBtn\)/.test(wd) && !/clickEl\((signInBtn|createBtn)\)/.test(wd), true);
+  eq('a button hidden under its overlay still counts as the form', /workdayControlShown\(signInBtn\)/.test(wd), true);
+
+  // Microsoft's lone "Yes" acknowledgements.
+  eq('a box labelled only "Yes" is read with the statement above it', /getFullQuestionText\(cb\)/.test(body('tickConsentBoxes')), true);
+  eq('a styled checkbox (invisible input, visible label) is considered', /filter\(choiceShown\)/.test(body('tickConsentBoxes')), true);
+  eq('Eightfold never types into a checkbox', /:not\(\[type=checkbox\]\):not\(\[type=radio\]\)/.test(body('eightfoldAutomation')), true);
+}
+
+/* ── 68. v17.18: the Workday engine (ported from the standalone autopilot) ── */
+console.log('v17.18: Workday engine — any language, every formField container');
+{
+  // The engine's pure helpers, lifted out of the file and run for real.
+  const start = src.indexOf('  const WD_FF = ');
+  const end = src.indexOf('  /* ── The pages ─');
+  eq('the engine block is present', start > 0 && end > start, true);
+  const wd = {};
+  new Function('exports', 'determineYesNo', 'DEFAULTS', `
+    ${src.slice(start, end)}
+    Object.assign(exports, { wdNorm, wdSimilarity, wdBestIndex, wdParseYM, wdYesNo, WD_STEP_PATTERNS, WD_DECLINE_RX, WD_Q });
+  `)(wd, koCtx.decide, { years: '7' });
+  const step = (t) => (wd.WD_STEP_PATTERNS.find(([rx]) => rx.test(t)) || [])[1] || '';
+
+  // Localised options match the profile's English value.
+  eq('"Vereinigtes Königreich" is the United Kingdom', wd.wdSimilarity('United Kingdom', 'Vereinigtes Königreich') >= 0.9, true);
+  eq('"Vereinigtes Königreich (+44)" is a phone-code match', wd.wdSimilarity('United Kingdom', 'Vereinigtes Königreich (+44)') >= 0.6, true);
+  eq('"Mobil" is Mobile', wd.wdSimilarity('Mobile', 'Mobil'), 1);
+  eq('"Nein" is No and "Ja" is Yes', wd.wdNorm('Nein') + '/' + wd.wdNorm('Ja'), 'no/yes');
+  eq('USA is the United States', wd.wdSimilarity('United States', 'USA') >= 0.9, true);
+  eq('the best option is picked, not the first', wd.wdBestIndex(['Canada', 'Vereinigtes Königreich', 'Vereinigte Staaten von Amerika'], 'United Kingdom'), 1);
+  eq('nothing close → no pick', wd.wdBestIndex(['Canada', 'Mexico'], 'United Kingdom'), -1);
+
+  // Knockouts in German reach the right answer instead of the English default "yes".
+  eq('German sponsorship → no', wd.wdYesNo('Benötigen Sie jetzt oder künftig ein Visum oder Sponsoring für eine Arbeitserlaubnis?'), 'no');
+  eq('German right to work → yes', wd.wdYesNo('Sind Sie berechtigt, im Vereinigten Königreich zu arbeiten?'), 'yes');
+  eq('German conviction → no', wd.wdYesNo('Wurden Sie jemals wegen einer Straftat verurteilt?'), 'no');
+  eq('French sponsorship → no', wd.wdYesNo('Avez-vous besoin d\'un parrainage pour un permis de travail ?'), 'no');
+  eq('Spanish right to work → yes', wd.wdYesNo('¿Está autorizado para trabajar en España?'), 'yes');
+  eq('an unreadable German question gets no guess', wd.wdYesNo('Mögen Sie Katzen?'), '');
+  eq('English still goes through the full English decider', wd.wdYesNo('Will you now or in the future require sponsorship for employment visa status?'), 'no');
+  eq('a demographic question is declined', wd.wdYesNo('Geschlecht'), 'decline');
+  eq('German "decline" options are recognised', ['Ich möchte keine Angabe machen', 'Keine Angabe', 'Ich möchte das nicht angeben', 'Ich möchte nicht antworten'].every((t) => wd.WD_DECLINE_RX.test(t)), true);
+
+  // Steps named in any language.
+  eq('"Meine Informationen" is My Information', step('Meine Informationen'), 'myInformation');
+  eq('"Meine Erfahrung" is My Experience', step('Meine Erfahrung'), 'myExperience');
+  eq('"Bewerbungsfragen" is the questions', step('Bewerbungsfragen'), 'questions');
+  eq('"Freiwillige Angaben" is the disclosures', step('Freiwillige Angaben'), 'voluntary');
+  eq('"Selbstidentifizierung" is Self Identify', step('Selbstidentifizierung'), 'selfIdentify');
+  eq('"Überprüfen" is the review', step('Überprüfen'), 'review');
+  eq('"Mes informations" is My Information', step('Mes informations'), 'myInformation');
+
+  // Profile dates in any common shape.
+  eq('"2019-03" → March 2019', JSON.stringify(wd.wdParseYM('2019-03')), '{"y":"2019","m":"03"}');
+  eq('"03/2019" → March 2019', JSON.stringify(wd.wdParseYM('03/2019')), '{"y":"2019","m":"03"}');
+  eq('"Mar 2019" → March 2019', JSON.stringify(wd.wdParseYM('Mar 2019')), '{"y":"2019","m":"3"}');
+  eq('"2019" → the year', JSON.stringify(wd.wdParseYM('2019')), '{"y":"2019"}');
+
+  // Wiring.
+  eq('every Workday page gets the engine pass', /await wdEnginePass\(p\);\n      await fallbackFill\(\);/.test(body('workdayMultiPageFlow')), true);
+  eq('a page without a page-type marker is read off the progress bar', /\[wdStepKind\(\)\]/.test(body('workdayMultiPageFlow')), true);
+  eq('the "Upload your resume" page is handled', /wdHandleResumeUploadPage\(\)/.test(body('workdayAutomation')) && /wdHandleResumeUploadPage\(\)/.test(body('workdayMultiPageFlow')), true);
+  eq('waiting for the application counts as work', /withBusy\('waiting for the Workday application'/.test(body('workdayAutomation')), true);
+  eq('a stuck page follows Workday\'s error banner', /await wdFixFromErrorBanner\(p\);/.test(body('workdayMultiPageFlow')), true);
+  eq('parser ghosts are deleted down to the profile\'s count, never below', /while \(n > 0 && bs\.length > n\)/.test(body('wdEnsureBlocks')), true);
+  eq('dates are typed a digit at a time', /new KeyboardEvent\('keydown', \{ key: ch/.test(body('wdSetSegment')), true);
+  eq('a school not in the list falls back to its "Other"', /'Sonstige'/.test(body('wdMyExperience')), true);
+  eq('a replaced parser entry does not keep the other role\'s description', /if \(!r\.description && otherRole\)/.test(body('wdMyExperience')), true);
+  eq('"Role Description" is not answered with the job title', /dut\(y\|ies\)\|summary/.test(src), true);
 }
 
 

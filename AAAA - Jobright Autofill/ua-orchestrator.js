@@ -1080,6 +1080,15 @@
       }
     } catch (_) {}
   }
+  /* The LinkedIn recruiter follow-up was removed; clear what it left in storage
+     (its queue, sent log, template and settings). Harmless once they are gone. */
+  const dropRemovedLinkedInFollowUp = () => {
+    try {
+      chrome.storage.local.remove(['ua_followup_queue', 'ua_followup_sent', 'ua_followup_enabled',
+        'ua_followup_template', 'ua_followup_daily_cap', 'ua_followup_panel_snooze', 'ua_pending_insiders'], () => void chrome.runtime.lastError);
+    } catch (_) {}
+  };
+  try { chrome.runtime.onInstalled.addListener(dropRemovedLinkedInFollowUp); } catch (_) {}
   try { chrome.runtime.onInstalled.addListener(() => { installMenus(); boot(); }); } catch (_) {}
   try { chrome.runtime.onStartup.addListener(boot); } catch (_) {}
   boot();
