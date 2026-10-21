@@ -4696,6 +4696,38 @@
   }
   function isWorkday() { return /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i.test(location.href); }
   function isJobright() { return /jobright\.ai/i.test(location.hostname); }
+  /* The employer's own application address for the Jobright job page on screen.
+     Pressing Apply on Jobright makes its worker open that address in a NEW tab,
+     which the run never followed — the application went unfilled and a Jobright
+     tab was left behind for every job. Read the address instead and go there in
+     this tab. From Jobright's page data first, then its "Original Job Post" link,
+     then any link straight to a known ATS. */
+  function jobrightApplyTarget() {
+    const ok = (u) => { try { const x = new URL(String(u), location.href); return /^https?:$/.test(x.protocol) && !/(^|\.)jobright\.ai$/i.test(x.hostname) && x.href; } catch (_) { return false; } };
+    try {
+      const data = document.getElementById('__NEXT_DATA__');
+      if (data && data.textContent) {
+        const KEY = /^(applyLink|apply_link|applyUrl|apply_url|originalUrl|original_url|jobUrl|job_url|externalUrl|external_url|sourceUrl|source_url|originalJobUrl)$/i;
+        let found = '';
+        const walk = (o, d) => {
+          if (found || !o || typeof o !== 'object' || d > 12) return;
+          for (const [k, v] of Object.entries(o)) {
+            if (found) return;
+            if (typeof v === 'string' && KEY.test(k) && ok(v)) { found = ok(v); return; }
+            if (v && typeof v === 'object') walk(v, d + 1);
+          }
+        };
+        walk(JSON.parse(data.textContent), 0);
+        if (found) return found;
+      }
+    } catch (_) {}
+    const links = Array.from(document.querySelectorAll('a[href]'));
+    const byText = links.find((a) => /original job post|apply on (the )?(company|employer)('s)? (site|website)|view original/i.test(a.textContent || '') && ok(a.href));
+    if (byText) return ok(byText.href);
+    const ATS = /greenhouse\.io|lever\.co|myworkdayjobs\.com|myworkdaysite\.com|smartrecruiters\.com|ashbyhq\.com|icims\.com|oraclecloud\.com|successfactors\.(com|eu)|taleo\.net|workable\.com|bamboohr\.com|jobvite\.com|eightfold\.ai|amazon\.jobs|recruitee\.com|teamtailor\.com|personio\.(de|com)|breezy\.hr/i;
+    const direct = links.find((a) => ok(a.href) && ATS.test(new URL(a.href).hostname));
+    return direct ? ok(direct.href) : '';
+  }
 
   /* ── VALUES IN THE WRONG BOX (ported from the OptimHire patch's sanitizer) ──
      Two engines fill these forms — Jobright's and ours — and either can put a
@@ -5360,7 +5392,9 @@
       const ua = new URL(a), ub = new URL(b);
       if (ua.hostname.toLowerCase() !== ub.hostname.toLowerCase()) return false;
       const pa = ua.pathname.split('/').filter(Boolean), pb = ub.pathname.split('/').filter(Boolean);
-      if (!pa.length || !pb.length) return true;
+      // A site's home page is not every job on that site: jobright.ai/ "matched"
+      // every Jobright job link, so any Jobright tab you had open claimed a job.
+      if (!pa.length || !pb.length) return pa.length === pb.length;
       const ACTION = /^(apply|application|apply-now|start|step\d*|thanks|thank-you|thankyou|success|confirm|confirmation|complete|completed|received|submitted|submit|done|review|finish)$/i;
       const n = Math.min(pa.length, pb.length);
       for (let i = 0; i < n; i++) {
@@ -9995,6 +10029,15 @@
   function onCurrentJobPage(c) {
     // Segment-wise URL match (tolerates apply→thanks redirects, rejects different job ids).
     try { if (urlsRoughlyMatch(location.href, c.url)) return true; } catch (_) {}
+    /* A Jobright job link (a CSV row) leads to the EMPLOYER's site, so no part of
+       the address matches — and on a sign-in step, a "thank you" page, or before
+       a multi-page application has drawn its form, there is no form or Apply
+       button to go on either. The runner then took this for some other page and
+       moved to the next job's link: a Jobright page, in the middle of filling.
+       That is "autofill is now redirecting back to Jobright". The site a job
+       landed on is remembered, and a Jobright link's job is wherever it led. */
+    try { if (c.landedHost && c.landedHost === location.hostname) return true; } catch (_) {}
+    try { if (/(^|\.)jobright\.ai$/i.test(new URL(c.url).hostname) && !isJobright()) return true; } catch (_) {}
     try {
       const p = new URL(c.url).pathname;
       if (location.href.includes(p.slice(0, Math.min(p.length, 25)))) return true;
@@ -10385,7 +10428,10 @@
     const c = queue.find(j => j.status === 'applying');
     if (c) {
       try {
+        // Give a page that is still drawing a moment before deciding it is not this job's.
+        if (!onCurrentJobPage(c)) await waitUntil(() => onCurrentJobPage(c), 6000, 300);
         if (onCurrentJobPage(c)) {
+          if (!isJobright() && c.landedHost !== location.hostname) { c.landedHost = location.hostname; saveQ(); }
           // LazyApply: start timeout timer — auto-skip if job stalls
           clearTimeout(_qTimeoutId);
           const onJobTimeout = async () => {
@@ -13002,6 +13048,21 @@
   async function openApplicationForm__impl(maxClicks) {
     const limit = maxClicks || 3;
     let clicks = 0;
+    // A Jobright job page: go to the employer's application in THIS tab rather
+    // than pressing Jobright's Apply, which opens it in a new one.
+    if (isJobright() && /\/jobs\/info\//.test(location.pathname)) {
+      const target = jobrightApplyTarget();
+      if (target) {
+        LOG('Jobright job page — opening the employer\'s application in this tab: ' + target.slice(0, 80));
+        noteProgress('opening the application');
+        const from = location.href;
+        location.assign(target);
+        // The page is leaving; the next page carries the job on.
+        await waitUntil(() => location.href !== from, 15000, 200);
+        return false;
+      }
+      LOG('Jobright job page — no employer link found on the page; using Jobright\'s Apply');
+    }
     // Inside the application already: an Apply link here leads back to the job
     // description, and from there round the login again. See pastTheApplyStep.
     if (pastTheApplyStep()) return true;

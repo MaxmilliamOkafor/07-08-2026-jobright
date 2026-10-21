@@ -3103,6 +3103,22 @@ console.log('v17.18: Workday engine — any language, every formField container'
   eq('parser ghosts are deleted down to the profile\'s count, never below', /while \(n > 0 && bs\.length > n\)/.test(body('wdEnsureBlocks')), true);
   eq('dates are typed a digit at a time', /new KeyboardEvent\('keydown', \{ key: ch/.test(body('wdSetSegment')), true);
   eq('a school not in the list falls back to its "Other"', /'Sonstige'/.test(body('wdMyExperience')), true);
+}
+
+/* ── 69. v17.19: a Jobright link must not pull the tab back to Jobright ── */
+console.log('v17.19: Jobright links, extra tabs, the runner staying on the job');
+{
+  const m = {};
+  new Function('exports', `${body('urlsRoughlyMatch')}\nexports.f = urlsRoughlyMatch;`)(m);
+  eq('a site\'s home page does not match every job on it', m.f('https://jobright.ai/', 'https://jobright.ai/jobs/info/68f0a1'), false);
+  eq('two home pages still match', m.f('https://acme.com/', 'https://acme.com'), true);
+  eq('apply → thank-you still matches', m.f('https://boards.greenhouse.io/acme/jobs/1/thanks', 'https://boards.greenhouse.io/acme/jobs/1/apply'), true);
+  const cj = body('onCurrentJobPage');
+  eq('a Jobright link\'s job is wherever it led', /jobright\\\.ai\$\/i\.test\(new URL\(c\.url\)\.hostname\) && !isJobright\(\)/.test(cj), true);
+  eq('the site a job landed on is remembered', /c\.landedHost && c\.landedHost === location\.hostname/.test(cj) && /c\.landedHost = location\.hostname/.test(src), true);
+  eq('a page still drawing gets a moment before it is judged', /if \(!onCurrentJobPage\(c\)\) await waitUntil\(\(\) => onCurrentJobPage\(c\), 6000, 300\);/.test(src), true);
+  eq('a Jobright job page goes to the employer\'s link in the same tab', /const target = jobrightApplyTarget\(\);[\s\S]{0,300}location\.assign\(target\)/.test(body('openApplicationForm')), true);
+  eq('the link is read from Jobright\'s page data first', /__NEXT_DATA__/.test(body('jobrightApplyTarget')) && /applyLink/.test(body('jobrightApplyTarget')), true);
   eq('a replaced parser entry does not keep the other role\'s description', /if \(!r\.description && otherRole\)/.test(body('wdMyExperience')), true);
   eq('"Role Description" is not answered with the job title', /dut\(y\|ies\)\|summary/.test(src), true);
 }

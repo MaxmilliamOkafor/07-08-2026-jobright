@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Senior Data Engineer | Jobright.ai</title></head><body>
+<!-- A Jobright job page as a CSV row opens it: the employer's application address is
+     in the page data (__NEXT_DATA__), and "Apply Now" opens it in a NEW tab, as
+     Jobright's own Apply does. The run must go there in THIS tab instead. -->
+<h1>Senior Data Engineer</h1><p>Acme · Dublin</p>
+<a href="https://jobright.ai/jobs/recommend">More jobs</a>
+<button id="apply" type="button" onclick="window.open('https://job-boards.greenhouse.io/acme/jobs/4412392009','_blank'); console.log('JOBRIGHT_APPLY_NEW_TAB')">Apply Now</button>
+<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"jobResult":{"jobId":"68f0a1","jobTitle":"Senior Data Engineer","applyLink":"https://job-boards.greenhouse.io/acme/jobs/4412392009"}}}}</script>
+</body></html>

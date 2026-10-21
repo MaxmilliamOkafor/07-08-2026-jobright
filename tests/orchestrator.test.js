@@ -303,6 +303,31 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('even a working job is timed out past the hard ceiling', env.store.ua_q[0].status, 'timeout');
   }
 
+  /* ── 4c. Jobright opens the employer's site in its own tab: the run adopts it ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://jobright.ai/jobs/info/68f0a1')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const jobTab = env.store.ua_mgr_tabs.a;
+    eq('our own job tab is not mistaken for Jobright\'s', typeof jobTab === 'number' && env.tabs.has(jobTab), true);
+    // What Jobright's worker does when Apply is pressed on its job page.
+    const child = await new Promise((r) => env.chrome.tabs.create({ url: 'https://job-boards.greenhouse.io/acme/jobs/4412392009' }, r));
+    await tick(60);
+    eq('the job moves to the tab Jobright opened', env.store.ua_mgr_tabs.a, child.id);
+    eq('the Jobright tab it left behind is closed', env.tabs.has(jobTab), false);
+    for (const l of env.listeners.tabRemoved) await l(jobTab);
+    await tick(40);
+    eq('and closing it does not put the job back in the queue', env.store.ua_q[0].status, 'applying');
+    // A Jobright page opened during a run is not an application: left alone.
+    const jr = await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobright.ai/jobs/applied' }, r));
+    await tick(40);
+    eq('a Jobright page Jobright opens is left alone', env.tabs.has(jr.id) && env.store.ua_mgr_tabs.a === child.id, true);
+  }
+
   /* ── 5. pause holds new tabs; resume refills ── */
   {
     const env = makeChrome();

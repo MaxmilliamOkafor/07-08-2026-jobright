@@ -71,16 +71,53 @@
   } catch (_) {}
   // Our own one exception: a swap may stay in front if the tab it replaces was.
   const ALLOW_FRONT = '__uaAllowFront';
+  // Marks a tab WE open, so the adoption below never mistakes it for Jobright's.
+  const OWN = '__uaOwn';
+  const JOBRIGHT_URL_RE = /^https?:\/\/([a-z0-9-]+\.)*jobright\.ai(\/|$)/i;
+  /* ── A JOB ON A JOBRIGHT PAGE, AND JOBRIGHT'S OWN APPLY TAB ─────────────────
+     A CSV row that is a Jobright job link opens jobright.ai in the job tab, and
+     pressing Apply there makes Jobright's worker open the employer's site in a
+     NEW tab. The run never followed it: the application in the new tab sat
+     unfilled, the Jobright tab stayed behind, and every job added one more —
+     "why so many tabs, after each submission do you keep opening Jobright".
+     The content script now goes to the employer's link in the same tab. If
+     Jobright opens its tab anyway, the run adopts it: the job moves to the new
+     tab (re-mapped FIRST, so closing the old one is not read as the job tab
+     being closed and the job is not put back in the queue), and the Jobright
+     tab it left is closed. */
+  async function adoptJobrightChild(child) {
+    const map = (await get(K.TABS)) || {};
+    const owners = Object.entries(map).map(([jobId, id]) => ({ jobId, id }));
+    const runner = await get('ua_runner_tab');
+    if (typeof runner === 'number') owners.push({ jobId: null, id: runner });
+    for (const o of owners) {
+      if (o.id === child.id) return false;
+      const t = await new Promise((res) => { try { chrome.tabs.get(o.id, (v) => { void chrome.runtime.lastError; res(v || null); }); } catch (_) { res(null); } });
+      if (!t || !JOBRIGHT_URL_RE.test(t.pendingUrl || t.url || '')) continue;
+      if (o.jobId) { map[o.jobId] = child.id; await set({ [K.TABS]: map }); }
+      else await set({ ua_runner_tab: child.id });
+      log('Jobright opened the application in a new tab — the run continues there and its Jobright tab is closed', 'info');
+      try { chrome.tabs.remove(o.id, () => void chrome.runtime.lastError); } catch (_) {}
+      return true;
+    }
+    return false;
+  }
   try {
     const rawCreate = chrome.tabs.create.bind(chrome.tabs);
-    chrome.tabs.create = function (props, cb) {
-      let p = props;
+    chrome.tabs.create = function (props, done) {
+      let p = props, ours = false;
       if (p && typeof p === 'object') {
         const allowed = p[ALLOW_FRONT] === true;
-        if (ALLOW_FRONT in p) { p = Object.assign({}, p); delete p[ALLOW_FRONT]; }
+        ours = p[OWN] === true;
+        if (ALLOW_FRONT in p || OWN in p) { p = Object.assign({}, p); delete p[ALLOW_FRONT]; delete p[OWN]; }
         if (_runOn && !allowed && p.active !== false) p = Object.assign({}, p, { active: false });
       }
-      return cb === undefined ? rawCreate(p) : rawCreate(p, cb);
+      // Someone else (Jobright) opening an employer's page during a run.
+      const watch = _runOn && !ours && p && typeof p.url === 'string' && /^https?:/i.test(p.url) && !JOBRIGHT_URL_RE.test(p.url);
+      if (!watch) return done === undefined ? rawCreate(p) : rawCreate(p, done);
+      const after = (t) => { if (t && typeof t.id === 'number') adoptJobrightChild(t).catch(() => {}); };
+      if (done === undefined) return rawCreate(p).then((t) => { after(t); return t; });
+      return rawCreate(p, (t) => { after(t); done(t); });
     };
     const rawUpdate = chrome.tabs.update.bind(chrome.tabs);
     chrome.tabs.update = function (a, b, c) {
@@ -128,7 +165,7 @@
     const o = opts || {};
     const win = typeof o.windowId === 'number' ? o.windowId : await runWindow();
     if (win != null) {
-      const t = await cb((done) => chrome.tabs.create({ url, active: !!o.active, windowId: win, ...(o.index != null ? { index: o.index } : {}) }, done));
+      const t = await cb((done) => chrome.tabs.create({ url, active: !!o.active, [OWN]: true, windowId: win, ...(o.index != null ? { index: o.index } : {}) }, done));
       if (t) return t;
     }
     const w = await cb((done) => chrome.windows.create({ url, focused: false }, done));
@@ -956,7 +993,7 @@
         setTimeout(() => {
           try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (_) {}
           if (started) return;
-          chrome.tabs.create({ url, active: !!was.active, [ALLOW_FRONT]: !!was.active, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
+          chrome.tabs.create({ url, active: !!was.active, [ALLOW_FRONT]: !!was.active, [OWN]: true, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
             void chrome.runtime.lastError;
             // The new tab is the runner now; hand the marker over before the old
             // one goes, so no tick in between sees a run with no tab.
