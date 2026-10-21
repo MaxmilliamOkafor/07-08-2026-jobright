@@ -14485,8 +14485,19 @@
     try {
       if (isJobright() || /(^|\.)linkedin\.com$/i.test(location.hostname)) return; // never touch these
       const CSS_ID = 'ua-quiet-css';
+      // You opened Jobright here (its icon, or "Open Jobright on this page"):
+      // it stays visible on this tab instead of being hidden as off-topic.
+      const userOpened = () => { try { return sessionStorage.getItem('ua_jr_user_open') === '1'; } catch (_) { return false; } };
+      try {
+        chrome.runtime.onMessage.addListener((m) => {
+          if (!m || m.message !== 'iconClicked') return;
+          try { sessionStorage.setItem('ua_jr_user_open', '1'); } catch (_) {}
+          document.getElementById(CSS_ID)?.remove();
+          LOG('Jobright opened on this page by you — quiet mode lifted');
+        });
+      } catch (_) {}
       const add = () => {
-        if (document.getElementById(CSS_ID)) return;
+        if (userOpened() || document.getElementById(CSS_ID)) return;
         const s = document.createElement('style');
         s.id = CSS_ID;
         s.textContent = 'plasmo-csui,[id^="plasmo-"],[data-plasmo]{display:none !important;pointer-events:none !important}';
