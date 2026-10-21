@@ -1112,6 +1112,14 @@
     return `${MM}/${DD}/${YYYY}`;                       // the ATS default
   }
 
+  /* The dial code a phone number was written with: "+44 7700 900123" → "+44".
+     Only when the number separates it ("+44 ", "0044-", "(+44)"); a run of
+     digits cannot be split without a code table, and a guess would be wrong. */
+  function dialCodeFromPhone(phone) {
+    const m = String(phone || '').trim().match(/^\(?(?:\+|00)(\d{1,3})\)?[\s.\-)]/);
+    return m ? '+' + m[1] : '';
+  }
+
   function guessValue(label, p) {
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
     // "What state do you reside in?" is a value question; it kept coming back
@@ -1137,7 +1145,8 @@
     }
     // "state" was matching as a SUBSTRING of "statement" — a "Personal Statement" essay
     // field was getting the literal US-state value stuffed into it. Word-bounded now.
-    if (/\bstate\b|province|region/.test(l) && !/statement/.test(l)) return p.state || '';
+    // "Country/Region Code" (SuccessFactors) is the phone dial code, not a region.
+    if (/\bstate\b|province|region/.test(l) && !/statement|country (region )?code/.test(l)) return p.state || '';
     if (/zip|postal/.test(l)) return p.postal_code || p.zip || '';
     if (/country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
     if (/address|street/.test(l)) return p.address || '';
@@ -1195,6 +1204,12 @@
     // Both directions from one decider — see workAuthorisationAnswer. The old
     // pair ran /authoriz/ (which never matched the British "authorised") and then
     // /sponsor|visa/, so every European eligibility question answered "No".
+    /* "Citizenship 1:" on its own is a country picker, not a right-to-work
+       question — it went down the authorisation branch, came back "Yes", and the
+       required SuccessFactors select stayed on "No Selection". A second
+       citizenship is only filled from the profile. */
+    if (/^\s*(citizenship|nationality)\s*(1|one|primary)?\s*$/.test(l)) return p.nationality || p.citizenship || p.country || DEFAULTS.country;
+    if (/^\s*(citizenship|nationality)\s*(2|3|two|second|secondary|other|additional)\s*$|^\s*(second|secondary|other|additional|dual)\s+(citizenship|nationality)\s*$/.test(l)) return p.second_nationality || p.nationality2 || '';
     {
       const wa = workAuthorisationAnswer(label || '');
       if (wa === 'yes') return DEFAULTS.authorized;
@@ -1206,7 +1221,7 @@
     if (/disabilit/.test(l)) return p.disability || DEFAULTS.disability;
     if (/gender|sex\b|pronouns/.test(l)) return p.gender || DEFAULTS.gender;
     if (/ethnic|race|racial|heritage/.test(l)) return p.ethnicity || p.race || DEFAULTS.ethnicity;
-    if (/country.?code|phone.?code|dial.?code|calling.?code/.test(l)) return p.phoneCountryCode || DEFAULTS.phoneCountryCode;
+    if (/country.?(region.?)?code|phone.?code|dial.?code|calling.?code/.test(l)) return dialCodeFromPhone(p.phone) || p.phoneCountryCode || DEFAULTS.phoneCountryCode;
     if (/nationality|citizenship/.test(l)) return p.nationality || p.country || DEFAULTS.country;
     if (/language|fluency|fluent/.test(l)) return p.languages || 'English';
     if (/\bspeaking\b|\bspeak\b|oral.?proficiency/.test(l)) return p.language_proficiency || 'Advanced';
@@ -3392,7 +3407,8 @@
        "Notice period"        1 week / 2 weeks / 1 month     for "4 weeks"
        "Education"            Bachelor's / Master's / PhD    for "Master of Science"
      Left unanswered, each of those REQUIRED dropdowns blocked the submit. */
-  const PLACEHOLDER_OPT_RE = /^\s*(select|choose|please (select|choose)|--|—|-\s*select|pick one|none selected)\b|^\s*$/i;
+  // SuccessFactors' selects start on "No Selection" — read as an answer, every one was skipped.
+  const PLACEHOLDER_OPT_RE = /^\s*(select|choose|please (select|choose|make a selection)|--|—|-\s*select|pick one|none selected|no selection|not selected|nothing selected|make a selection|-+\s*none\s*-+)\b|^\s*$/i;
   const normMoney = (s) => String(s).toLowerCase()
     .replace(/[$€£¥₹]|usd|eur|gbp|cad|aud/g, '')
     .replace(/(\d),(\d{3})/g, '$1$2').replace(/(\d),(\d{3})/g, '$1$2')
@@ -4129,7 +4145,7 @@
     if (!opts.length) return false;
 
     const norm = (t) => String(t).replace(/\s+/g, ' ').trim().toLowerCase();
-    const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a)\b/i.test(t);
+    const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a|no selection|not selected)\b/i.test(t);
     const real = opts.filter(o => !isPlaceholder(comboText(o)));
     let pick = null;
 
@@ -4525,7 +4541,7 @@
       const idx = el.selectedIndex;
       if (idx >= 0) {
         const txt = (el.options[idx]?.textContent || '').trim().toLowerCase();
-        if (!txt || /^(select|choose|please|--|—)/.test(txt)) return false;
+        if (!txt || /^(select|choose|please|--|—)/.test(txt) || PLACEHOLDER_OPT_RE.test(txt)) return false;
       }
       return true;
     }
@@ -5517,6 +5533,18 @@
     const cands = deepQueryAll(
       'button,input[type="submit"],input[type="button"],a[role="button"],[role="button"],spl-button,oj-button'
     ).filter(enabled).filter(el => isSubmitLabel(controlLabel(el)));
+    /* SuccessFactors' career site ends its application form with "Apply" — the
+       word excluded above because elsewhere it opens the form. Taken only from
+       inside a form that is the application itself (a dozen fields or more). */
+    if (!cands.length && isSuccessFactorsHost()) {
+      const sf = deepQueryAll('button,input[type="submit"],input[type="button"],a[role="button"],[role="button"]').filter(enabled)
+        .find(el => {
+          if (!/^\s*(apply|submit application|apply now)\s*$/i.test(controlLabel(el))) return false;
+          const f = el.closest('form');
+          return !!f && f.querySelectorAll('input:not([type=hidden]),select,textarea').length >= 8;
+        });
+      if (sf) { LOG('SuccessFactors: the form\'s "Apply" button is its submit'); return sf; }
+    }
     if (!cands.length) return null;
     if (cands.length === 1) return cands[0];
 
@@ -8572,6 +8600,95 @@
   }
 
   // ===================== SUCCESSFACTORS AUTOMATION =====================
+  function isSuccessFactorsHost() {
+    return /(^|\.)(successfactors|sapsf)\.(com|eu)$/i.test(location.hostname);
+  }
+
+  /* "Country/Region Code" — a select of "Ireland (+353)" style options. Chosen
+     from the code the phone number is written with, so the two always agree;
+     then the profile's dial code, then the profile's country. */
+  function sfPickDialCode(sel, p) {
+    const opts = $$('option', sel).filter(o => !PLACEHOLDER_OPT_RE.test(o.text));
+    const nameOf = (o) => o.text.toLowerCase().replace(/\s*\(.*$/, '').trim();
+    const byCountry = (name, pool) => {
+      const n = String(name || '').trim().toLowerCase();
+      return n ? (pool || opts).find(o => nameOf(o) === n) || null : null;
+    };
+    // +44 is the UK and also Jersey, Guernsey and the Isle of Man; +1 is the US and Canada.
+    const MAIN = { 1: 'united states', 7: 'russia', 39: 'italy', 44: 'united kingdom', 47: 'norway', 61: 'australia', 358: 'finland' };
+    const byCode = (code) => {
+      const d = String(code || '').replace(/\D/g, '');
+      if (!d) return null;
+      const rx = new RegExp('\\+\\s?' + d + '(?!\\d)');
+      const hits = opts.filter(o => rx.test(o.text) || o.value.replace(/\D/g, '') === d && /^\+?\d+$/.test(o.value));
+      if (hits.length < 2) return hits[0] || null;
+      return byCountry(p.country, hits) || hits.find(o => MAIN[d] && nameOf(o).startsWith(MAIN[d])) || hits[0];
+    };
+    return byCode(dialCodeFromPhone(p.phone)) || byCode(p.phoneCountryCode) ||
+      byCountry(p.country) || byCountry(DEFAULTS.country) || byCode(DEFAULTS.phoneCountryCode);
+  }
+
+  const SF_CLICKABLE = 'a,button,[role="button"],input[type="button"],input[type="submit"]';
+
+  /* SuccessFactors keeps the CV behind an "Upload a Resume" link that opens a
+     dialog: file input, then "Upload". Putting the file on the input alone does
+     nothing — the career site only takes it when Upload is pressed. */
+  async function sfUploadResume() {
+    const opener = deepQueryAll(SF_CLICKABLE).filter(isVisible)
+      .find(el => /^\s*(upload|attach)\s+(a\s+|your\s+)?(new\s+)?(resume|r[ée]sum[ée]|cv)\b/i.test(controlLabel(el)));
+    if (!opener) return false;
+    const row = opener.closest('tr,li,.row,[class*="field" i],div') || opener.parentElement;
+    if (row && /[\w)]\.(pdf|docx?|rtf|odt|txt)\b/i.test(row.textContent || '')) { LOG('SuccessFactors: CV already uploaded'); return true; }
+    const file = await storedResumeFile();
+    if (!file) { LOG('SuccessFactors: no résumé saved in the extension — cannot upload one'); return false; }
+    realClick(opener);
+    let input = null;
+    await waitUntil(() => (input = deepAll('input[type="file"]', 40).find(i => isVisible(i) || isVisible(i.parentElement))), 6000, 200);
+    if (!input) { LOG('SuccessFactors: the upload dialog never showed a file input'); return false; }
+    try {
+      const dt = new DataTransfer(); dt.items.add(file);
+      input.files = dt.files;
+      fireOnHostChain(input, ['input', 'change']);
+    } catch (e) { LOG('SuccessFactors: could not put the CV on the input:', e?.message || e); return false; }
+    noteCvUploadedHere();
+    const box = input.closest('[role="dialog"],[class*="dialog" i],[class*="modal" i],[class*="popup" i],form,div') || document;
+    let go = null;
+    await waitUntil(() => (go = $$(SF_CLICKABLE, box).concat(deepQueryAll(SF_CLICKABLE)).filter(isVisible)
+      .find(el => el !== opener && /^\s*(upload|ok|attach|done|save)\s*$/i.test(controlLabel(el)))), 3000, 150);
+    if (!go) { LOG('SuccessFactors: no Upload button in the dialog'); return false; }
+    realClick(go);
+    noteProgress('attached CV');
+    // Done when the dialog closes or the file name shows on the page.
+    await waitUntil(() => !isVisible(input) || (document.body.innerText || '').includes(file.name), 15000, 250);
+    LOG(`SuccessFactors: CV uploaded (${file.name})`);
+    return true;
+  }
+
+  /* "Terms of Use: Read the data privacy statement." is required, and the only
+     way to satisfy it is to open the statement and press Accept. */
+  async function sfAcceptTerms() {
+    const link = deepQueryAll(SF_CLICKABLE).filter(isVisible).find(el => {
+      const t = controlLabel(el);
+      if (!/data privacy statement|privacy (statement|notice|policy)|terms of use|data protection/i.test(t)) return false;
+      const row = el.closest('tr,li,.row,div');
+      return !!row && /terms of use|privacy|consent|\*/i.test(row.textContent || '');
+    });
+    if (!link) return false;
+    const row = link.closest('tr,li,.row,div');
+    if (row && /\b(accepted|agreed)\b/i.test(row.textContent || '')) return true;
+    const hidden = row && row.querySelector('input[type="hidden"][name*="accept" i],input[type="hidden"][id*="accept" i]');
+    if (hidden && /^(true|1|yes|accepted)$/i.test(hidden.value)) return true;
+    realClick(link);
+    let accept = null;
+    await waitUntil(() => (accept = deepQueryAll(SF_CLICKABLE).filter(isVisible)
+      .find(el => /^\s*(i\s+)?(accept|agree)(\s+(and|&)\s+continue|\s+all)?\s*$/i.test(controlLabel(el)))), 6000, 200);
+    if (!accept) { LOG('SuccessFactors: the privacy statement opened but no Accept button showed'); return false; }
+    realClick(accept);
+    await sleep(400);
+    LOG('SuccessFactors: Terms of Use accepted');
+    return true;
+  }
+
   async function successFactorsAutomation() {
     LOG('SuccessFactors automation starting...');
     const p = await getProfile();
@@ -8580,6 +8697,15 @@
     const form = await waitFor('form[id*="application"],form,.applicationForm,[class*="applyForm"]', 10000);
     if (!form) { LOG('No SuccessFactors form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
+
+    try { await sfUploadResume(); } catch (e) { LOG('SuccessFactors CV upload failed:', e?.message || e); }
+
+    // Phone dial-code select, matched to the number before the generic pass guesses it.
+    for (const sel of $$('select').filter(el => isVisible(el) && !hasFieldValue(el))) {
+      if (!/country\W*(region\W*)?code|dial(ling)?\W*code|calling\W*code|phone\W*(country|code)/i.test(getLabel(sel) || sel.name || sel.id || '')) continue;
+      const opt = sfPickDialCode(sel, p);
+      if (opt) { setSelectValue(sel, opt.value); LOG('SuccessFactors: phone code → ' + opt.text.trim()); await sleep(80); }
+    }
 
     // SuccessFactors uses various field naming conventions
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -8612,6 +8738,7 @@
       answerKnockoutRadioGroup(radios, parent, p);
     }
 
+    try { await sfAcceptTerms(); } catch (e) { LOG('SuccessFactors Terms of Use failed:', e?.message || e); }
     await fixPhoneCountryCode();
     await tailorFirstFlow();
     learnFromFilledFields();
@@ -14458,7 +14585,7 @@
     else if (/breezy\.hr|breezyhr\.com/i.test(url) || platform === 'Breezy' || platform === 'BreezyHR') await breezyhrAutomation();
     else if (/ats\.rippling\.com/i.test(url) || platform === 'Rippling') await ripplingAutomation();
     else if (/adp\.com|workforcenow\.adp/i.test(url)) await adpAutomation();
-    else if (/successfactors\.com/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
+    else if (/successfactors\.(com|eu)|sapsf\.(com|eu)/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
     else if (/jazz\.co|applytojob\.com/i.test(url) || platform === 'JazzHR') await jazzhrAutomation();
     else if (/joinhandshake\.com/i.test(url) || platform === 'Handshake') await handshakeAutomation();
     else if (/governmentjobs\.com|usajobs\.gov/i.test(url)) await usajobsAutomation();

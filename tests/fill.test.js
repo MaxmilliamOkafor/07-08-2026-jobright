@@ -3123,6 +3123,50 @@ console.log('v17.19: Jobright links, extra tabs, the runner staying on the job')
   eq('"Role Description" is not answered with the job title', /dut\(y\|ies\)\|summary/.test(src), true);
 }
 
+/* ── 70. v17.20: SuccessFactors career site, start to finish ── */
+console.log('v17.20: SuccessFactors — phone code, citizenship, CV dialog, Terms of Use, Apply');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${gc('PLACEHOLDER_OPT_RE')}${body('dialCodeFromPhone')}${body('sfPickDialCode')}
+    const DEFAULTS = { country: 'Ireland', phoneCountryCode: '+353' };
+    const $$ = (s, sel) => sel.options;
+    exports.dial = dialCodeFromPhone; exports.pick = sfPickDialCode;`)(m);
+  eq('"+44 7700 900123" was written with +44', m.dial('+44 7700 900123'), '+44');
+  eq('"0044-7700…" too', m.dial('0044-7700 900123'), '+44');
+  eq('"(+353) 87…" too', m.dial('(+353) 87 426 1508'), '+353');
+  eq('a run of digits is not split by guesswork', m.dial('+447700900123'), '');
+  eq('a national number has no code', m.dial('087 426 1508'), '');
+  const opt = (text, value) => ({ text, value: value == null ? text : value });
+  const cc = { options: [opt('No Selection', ''), opt('Isle of Man (+44)', 'IM'), opt('Ireland (+353)', 'IE'), opt('United Kingdom (+44)', 'GB'), opt('United States (+1)', 'US'), opt('Antigua (+1268)', 'AG')] };
+  eq('the phone\'s code picks the option', m.pick(cc, { phone: '+353 87 426 1508' }).value, 'IE');
+  eq('+1 is not +1268', m.pick(cc, { phone: '+1 415 555 0100' }).value, 'US');
+  eq('+44 is the UK, not the Isle of Man listed before it', m.pick(cc, { phone: '+44 7700 900123' }).value, 'GB');
+  eq('…unless the profile lives on the Isle of Man', m.pick(cc, { phone: '+44 7624 000000', country: 'Isle of Man' }).value, 'IM');
+  eq('no phone code: the profile\'s country', m.pick(cc, { phone: '087 426 1508', country: 'United Kingdom' }).value, 'GB');
+  eq('no phone code: the profile\'s dial code', m.pick(cc, { phone: '087 426 1508', phoneCountryCode: '+353' }).value, 'IE');
+  eq('"No Selection" is never the answer', m.pick({ options: [opt('No Selection', '')] }, { phone: '' }), null);
+
+  const gv = body('guessValue');
+  eq('"Country/Region Code" is not a region', /!\/statement\|country \(region \)\?code\//.test(gv), true);
+  eq('"Country/Region Code" is the dial code, from the phone first', /country\.\?\(region\.\?\)\?code[^\n]*dialCodeFromPhone\(p\.phone\)/.test(gv), true);
+  const cit = gv.indexOf('(citizenship|nationality)\\s*(1|one|primary)'), wa = gv.indexOf('const wa = workAuthorisationAnswer');
+  eq('"Citizenship 1:" is a country, asked before the right-to-work decider', cit > 0 && cit < wa, true);
+  eq('a second citizenship only comes from the profile', /p\.second_nationality \|\| p\.nationality2 \|\| ''/.test(gv), true);
+  const rx = /^\s*(citizenship|nationality)\s*(1|one|primary)?\s*$/;
+  eq('"citizenship 1" matches', rx.test('citizenship 1 '), true);
+  eq('a citizenship QUESTION does not', rx.test('do you hold eu citizenship '), false);
+
+  const sf = body('successFactorsAutomation');
+  eq('the CV goes through the "Upload a Resume" dialog', /await sfUploadResume\(\)/.test(sf) && /realClick\(go\)/.test(body('sfUploadResume')), true);
+  eq('the Terms of Use are opened and accepted', /await sfAcceptTerms\(\)/.test(sf) && /realClick\(accept\)/.test(body('sfAcceptTerms')), true);
+  eq('the dial-code select is set before the generic pass', sf.indexOf('sfPickDialCode') < sf.indexOf('guessFieldValue(lbl'), true);
+  const fs = body('findSubmitControl');
+  eq('SuccessFactors\' "Apply" is its submit — only there, and only in a real form', /isSuccessFactorsHost\(\)/.test(fs) && /length >= 8/.test(fs), true);
+  eq('"Apply" stays excluded everywhere else', /'\^\\\\s\*apply\\\\b'/.test(src), true);
+  eq('a successfactors.eu job reaches the handler', /successfactors\\\.\(com\|eu\)\|sapsf[^\n]*await successFactorsAutomation\(\)/.test(src), true);
+}
+
 
 setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);

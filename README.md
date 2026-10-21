@@ -3491,3 +3491,48 @@ the new bundle removed a file the manifest still points at, or if the appended
 - Resume tailoring is **off** by default: Jobright's generator can stall on
   *"Opening resume generator…"*. Turn it on per run in the panel if you want it.
 - A visible CAPTCHA pauses that job rather than failing it, so you can solve it.
+
+---
+
+## v17.19 — runs stay on the job; no more Jobright tabs piling up
+
+- **Jobright CSV links** (`jobright.ai/jobs/info/…`): the employer's application
+  link is read from Jobright's page data and opened **in the same tab**. Before,
+  Jobright's Apply opened the ATS in a new tab the run never followed, the run
+  moved on, and every job left a Jobright tab behind.
+- If Jobright's Apply still opens a tab, the run **moves to that tab** and closes
+  the old one, so one job always means one tab.
+- The runner gives a page up to 6 seconds to draw before deciding it is "not
+  the job", and remembers which site a job landed on. That was the "redirecting
+  back to Jobright": the employer page was judged off-job while still loading,
+  and the run went on to the next Jobright link.
+- A site's home page no longer counts as matching every job on that site.
+
+## v17.19 — "🤖 Fully Automated" off means off; Jobright on any page
+
+- With the toggle **off** (and no run going), Jobright's sidebar and autofill
+  **are not loaded** on ATS pages at all. The setting is saved and survives
+  restarts. During a run, the run's own tabs still get Jobright.
+- **Open Jobright on any page** whenever you want it: click the toolbar icon,
+  or right-click → **"Open Jobright on this page"**. That tab then keeps it until
+  it closes.
+
+## v17.20 — SuccessFactors (career*.successfactors.eu / .com)
+
+Shaped on the Ericsson "Data Engineer (791854)" form. Before, the run stopped at
+"Form filled but no Submit control was found":
+
+- **"Apply" at the bottom of the form is the submit** on SuccessFactors (only
+  there, and only inside a real application form; elsewhere "Apply" still means
+  "open the form").
+- **CV:** "Upload a Resume" is clicked, the CV put in the dialog, **Upload** pressed.
+- **Terms of Use:** the privacy statement is opened and **Accept** pressed.
+- **Country/Region Code** is picked from the code your phone number is written
+  with (+44 → United Kingdom (+44), not Isle of Man), then your profile.
+- **Citizenship 1** is your nationality (it used to be treated as a
+  right-to-work question and left on "No Selection"); Citizenship 2 only from
+  your profile.
+- Selects starting on **"No Selection"** count as empty, so they are answered.
+
+Tested in Chromium with `tests/e2e/successfactors.html`: every required field
+filled, CV uploaded, terms accepted, submitted.

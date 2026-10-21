@@ -1,0 +1,58 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Career Opportunities: Data Engineer (791854)</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:20px auto}table{width:100%}td.l{width:40%;text-align:right;padding-right:8px}td{padding:4px}.req{color:#c00}#dlg,#up{display:none;position:fixed;top:80px;left:30%;background:#fff;border:2px solid #333;padding:16px;z-index:9}</style></head><body>
+<!-- SuccessFactors classic career site (career2.successfactors.eu), shaped like the
+     user's Ericsson "Data Engineer (791854)" page: label column + field column,
+     selects that start on "No Selection", Terms of Use behind a dialog that must be
+     accepted, the CV uploaded through an "Upload a Resume" dialog, and Apply. -->
+<h1>Career Opportunities: Data Engineer (791854)</h1>
+<form id="careerApplicationForm" onsubmit="return false">
+<table>
+<tr><td class="l">* Resume / CV:</td><td><button type="button" id="upBtn">Upload a Resume</button> <span id="cvName"></span></td></tr>
+<tr><td class="l"><label for="email">Email Address:</label><span class="req">*</span></td><td><input id="email" name="email" type="text"></td></tr>
+<tr><td class="l"><label for="email2">Retype Email Address:</label><span class="req">*</span></td><td><input id="email2" name="email2" type="text"></td></tr>
+<tr><td class="l"><label for="pw">Choose Password:</label><span class="req">*</span></td><td><input id="pw" name="pw" type="password"></td></tr>
+<tr><td class="l"><label for="pw2">Retype Password:</label><span class="req">*</span></td><td><input id="pw2" name="pw2" type="password"></td></tr>
+<tr><td class="l"><label for="fn">First Name:</label><span class="req">*</span></td><td><input id="fn" name="firstName" type="text"></td></tr>
+<tr><td class="l"><label for="ln">Last Name:</label><span class="req">*</span></td><td><input id="ln" name="lastName" type="text"></td></tr>
+<tr><td class="l"><label for="cc">Country/Region Code:</label><span class="req">*</span></td><td><select id="cc" name="countryCode"><option value="">No Selection</option><option value="IE">Ireland (+353)</option><option value="GB">United Kingdom (+44)</option></select></td></tr>
+<tr><td class="l"><label for="ph">Phone Number:</label><span class="req">*</span></td><td><input id="ph" name="phone" type="text"></td></tr>
+<tr><td colspan="2"><h3>Application Personal Information</h3></td></tr>
+<tr><td class="l"><label for="city">City:</label><span class="req">*</span></td><td><input id="city" name="city" type="text"></td></tr>
+<tr><td class="l"><label for="state">State/Province</label></td><td><select id="state" name="state"><option value="">No Selection</option><option>Cork</option><option>Dublin</option><option>Galway</option></select></td></tr>
+<tr><td class="l"><label for="zip">Postal Code</label><span class="req">*</span></td><td><input id="zip" name="zip" type="text"></td></tr>
+<tr><td class="l"><label for="cit1">Citizenship 1:</label><span class="req">*</span></td><td><select id="cit1" name="citizenship1"><option value="">No Selection</option><option>Afghanistan</option><option>Ireland</option><option>United Kingdom</option></select></td></tr>
+<tr><td class="l"><label for="cit2">Citizenship 2:</label></td><td><select id="cit2" name="citizenship2"><option value="">No Selection</option><option>Afghanistan</option><option>Ireland</option><option>United Kingdom</option></select></td></tr>
+<tr><td colspan="2"><h3>Additional Information</h3></td></tr>
+<tr><td class="l"><label for="hear">How did you hear about this position?</label></td><td><select id="hear" name="hear"><option value="">No Selection</option><option>Company Website</option><option>LinkedIn</option><option>Job Board</option><option>Referral</option></select></td></tr>
+<tr><td colspan="2"><h3>Voluntary Self Identification</h3></td></tr>
+<tr><td class="l"><label for="gender">Please state your gender:</label><span class="req">*</span></td><td><select id="gender" name="gender"><option value="">No Selection</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></td></tr>
+<tr><td class="l"><label for="coi">Do you have a potential Conflict of Interest as described above? (Yes or No)</label><span class="req">*</span></td><td><select id="coi" name="coi"><option value="">No Selection</option><option>Yes</option><option>No</option></select></td></tr>
+<tr><td class="l"><label for="res">Country/Region of Residence:</label><span class="req">*</span></td><td><select id="res" name="residence"><option value="">No Selection</option><option selected>Ireland</option><option>United Kingdom</option></select></td></tr>
+<tr><td class="l">Terms of Use:<span class="req">*</span></td><td><a href="#" id="tou">Read the data privacy statement.</a> <span id="touState"></span><input type="hidden" id="touAccepted" name="touAccepted" value=""></td></tr>
+</table>
+<p id="err" style="color:#c00"></p>
+<button type="button" id="apply">Apply</button>
+</form>
+<div id="dlg" role="dialog"><p>Data Privacy Statement … Ericsson processes your data …</p><button type="button" id="accept">Accept</button> <button type="button" id="decline">Decline</button></div>
+<div id="up" role="dialog"><p>Upload a Resume</p><input type="file" id="cvFile" name="resumeFile"><button type="button" id="upGo">Upload</button> <button type="button" id="upCancel">Cancel</button></div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  $('tou').onclick = (e) => { e.preventDefault(); $('dlg').style.display = 'block'; };
+  $('accept').onclick = () => { $('touAccepted').value = 'true'; $('touState').textContent = 'Accepted'; $('dlg').style.display = 'none'; };
+  $('decline').onclick = () => { $('dlg').style.display = 'none'; };
+  $('upBtn').onclick = () => { $('up').style.display = 'block'; };
+  $('upGo').onclick = () => { const f = $('cvFile').files[0]; if (f) { $('cvName').textContent = f.name; window.__cv = f.name; } $('up').style.display = 'none'; };
+  $('upCancel').onclick = () => { $('up').style.display = 'none'; };
+  $('apply').onclick = () => {
+    const req = ['email', 'email2', 'pw', 'pw2', 'fn', 'ln', 'cc', 'ph', 'city', 'zip', 'cit1', 'gender', 'coi', 'res'];
+    const missing = req.filter((id) => !$(id).value);
+    if (!window.__cv) missing.push('resume');
+    if ($('touAccepted').value !== 'true') missing.push('termsOfUse');
+    if (missing.length) { $('err').textContent = 'Please complete the required fields: ' + missing.join(', '); console.log('BLOCKED ' + JSON.stringify(missing)); return; }
+    const out = {}; for (const el of document.querySelectorAll('#careerApplicationForm input:not([type=file]),#careerApplicationForm select')) out[el.name] = el.type === 'password' ? (el.value ? '***' : '') : el.value;
+    out.resume = window.__cv;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying</h1><p>Your application has been submitted.</p>';
+  };
+</script>
+</body></html>
