@@ -2501,7 +2501,8 @@ console.log('audit: the speed selector reaches every wait');
   eq('the mailbox poll keeps its own pace', /await sleep\(4000\);\s+\/\/ the mail has not landed yet/.test(src), true);
   // Every converted wait keeps at least half its time, at any speed.
   const conv = [...src.matchAll(/await sleep\(scaled\((\d{4,}), (\d+)\)\)/g)];
-  eq('there are many converted waits', conv.length >= 85, true);
+  // v17.22 replaced four of them on Workday with waits on the page itself.
+  eq('there are many converted waits', conv.length >= 80, true);
   eq('and every one keeps at least half its original time',
     conv.every(([, ms, floor]) => Number(floor) >= Math.floor(Number(ms) / 2) - 0), true);
   const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
@@ -3165,6 +3166,119 @@ console.log('v17.20: SuccessFactors — phone code, citizenship, CV dialog, Term
   eq('SuccessFactors\' "Apply" is its submit — only there, and only in a real form', /isSuccessFactorsHost\(\)/.test(fs) && /length >= 8/.test(fs), true);
   eq('"Apply" stays excluded everywhere else', /'\^\\\\s\*apply\\\\b'/.test(src), true);
   eq('a successfactors.eu job reaches the handler', /successfactors\\\.\(com\|eu\)\|sapsf[^\n]*await successFactorsAutomation\(\)/.test(src), true);
+}
+
+
+/* ── 71. v17.21: Oracle — postcode SW1W 0RH, address lines, pills, lists ── */
+console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pills, typed-only lists');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${gc('NO_RESULTS_RE')}exports.nr = NO_RESULTS_RE;`)(m);
+  for (const t of ['No results were found.', 'No results found', 'No matches found', 'No results', 'No matching items']) eq(`"${t}" is not an option`, m.nr.test(t), true);
+  for (const t of ['No', 'None of the above', 'Not listed', 'No, I do not']) eq(`"${t}" is a real option`, m.nr.test(t), false);
+
+  // The address plan — your postcode, the country it belongs to, the street on Line 1.
+  const store = {};
+  const a = {};
+  new Function('exports', 'store', `const st = { get: async (k) => store[k] };
+    const DEFAULTS = { country: 'Ireland' };
+    ${gc('ORACLE_POSTCODE_DEFAULT')}${gc('UK_POSTCODE_RE')}${gc('COUNTRY_NAME_RE')}${body('oracleAddressPlan')}
+    exports.plan = oracleAddressPlan;`)(a, store);
+  (async () => {
+    const pl = await a.plan({ address: 'United Kingdom', address_line_2: '37 Newnham Rd', country: 'Ireland', city: 'Dublin' });
+    eq('the postcode is SW1W 0RH', pl.postcode, 'SW1W 0RH');
+    eq('…so the country is the United Kingdom (the postcode list follows it)', pl.country, 'United Kingdom');
+    eq('…and the town London', pl.city, 'London');
+    eq('a country name is never the street', pl.line1, '');
+    eq('a country name is recognised as one', pl.looksCountry('United Kingdom') && pl.looksCountry('Ireland') && !pl.looksCountry('37 Newnham Rd'), true);
+    const p2 = await a.plan({ address: '37 Newnham Rd', country: 'United Kingdom' });
+    eq('the profile street goes on Line 1', p2.line1, '37 Newnham Rd');
+    store.ua_oracle_address = { postcode: 'D02 P820', country: 'Ireland', city: 'Dublin' };
+    const p3 = await a.plan({ address: '1 Grand Canal Square' });
+    eq('ua_oracle_address overrides it', [p3.postcode, p3.country, p3.city, p3.uk].join('|'), 'D02 P820|Ireland|Dublin|false');
+  })();
+
+  // Pill questions: consent → consent; demographics → your exact answer or decline.
+  const pc = {};
+  new Function('exports', `${body('isDeclineOption')}${gc('DEMOGRAPHIC_Q_RE')}
+    const optionPolarity = (t) => /^yes\\b/i.test(t) ? 1 : /^no\\b/i.test(t) ? -1 : 0;
+    const determineYesNo = () => 'yes';
+    const optionIndexForDecision = (texts, d) => texts.findIndex((t) => t.toLowerCase() === d);
+    const guessFieldValue = () => '';
+    const bestOptionIndex = () => -1;
+    ${body('pillChoice')}
+    exports.pick = (q, opts, p) => { const i = pillChoice(q, opts, p || {}); return i < 0 ? null : opts[i]; };`)(pc);
+  eq('consent → "I consent"', pc.pick('I consent to the processing of my diversity information.', ['I consent', 'I do not consent']), 'I consent');
+  eq('consent spotted from the options alone', pc.pick('Diversity data', ['I do not agree', 'I agree']), 'I agree');
+  eq('gender → decline', pc.pick('What is your gender?', ['Male', 'Female', 'Non-binary', 'Prefer not to say']), 'Prefer not to say');
+  eq('gender → your profile\'s answer when it is an option word for word', pc.pick('What is your gender?', ['Male', 'Female', 'Prefer not to say'], { gender: 'Male' }), 'Male');
+  eq('gender identity is not answered with your gender', pc.pick('Is the gender you identify with the same as your sex registered at birth?', ['Yes', 'No', 'Prefer not to say'], { gender: 'Male' }), 'Prefer not to say');
+  eq('sexual orientation → "I prefer not to say"', pc.pick('Which of the following best describes your sexual orientation?', ['Heterosexual/Straight', 'Gay or Lesbian', 'I prefer not to say']), 'I prefer not to say');
+  eq('pronouns → "Prefer Not To Say"', pc.pick('What are your pronouns?', ['He/Him', 'She/Her', 'Prefer Not To Say']), 'Prefer Not To Say');
+  eq('disability → decline (the profile wording is not an option)', pc.pick('Do you consider yourself to have a disability?', ['Yes', 'No', 'Prefer not to say'], { disability: 'I do not have a disability' }), 'Prefer not to say');
+  eq('"language" is not an age question', /\bage\b/.test('language') , false);
+  eq('a plain yes/no pill question is decided, not declined', pc.pick('Are you willing to travel?', ['Yes', 'No']), 'Yes');
+
+  // Location filler leaves Address Line 2 alone.
+  const lf = {};
+  new Function('exports', `let L = ''; const getLabel = () => L; ${body('isLocationField')}
+    exports.loc = (label) => { L = label; return isLocationField({ tagName: 'INPUT', className: '', getAttribute: () => null }); };`)(lf);
+  eq('"Address Line 2" is not a place search', lf.loc('Address Line 2'), false);
+  eq('"Apartment / Suite" neither', lf.loc('Apartment, suite, etc.'), false);
+  eq('"Town or City" still is', lf.loc('Town or City'), true);
+  eq('"Address" still is', lf.loc('Address'), true);
+
+  const gv = body('guessValue');
+  eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (/address|street/.test(l)) return p.address"), true);
+  const cd = body('commitCustomDropdown');
+  eq('"No results" rows are not options', /filter\(o => !NO_RESULTS_RE\.test\(comboText\(o\)\)\)/.test(cd), true);
+  eq('typeahead falls back to the first word, then the full list', /\[want\.slice\(0, 24\), words\[0\], ''/.test(cd), true);
+  eq('our own search text is cleared when nothing was picked', /if \(typed\) \{ try \{ nativeSet\(typeBox, ''\)/.test(cd), true);
+  eq('typed text that found nothing is not an answer', /if \(comboShowsNoResults\(el\)\) return false;/.test(body('comboHasValue')), true);
+  eq('the Oracle driver runs the pass before and after the generic fillers', (body('oracleCloudAutomation').match(/await oracleCxPass\(\)/g) || []).length, 2);
+  eq('…and the multi-page loop runs it after a rejected submit', /if \(isOracleCloud\(\)\) await oracleCxPass\(\);/.test(body('multiPageLoop')), true);
+  eq('the country is set before the postcode', body('oracleAddressPass').indexOf('plan.country') < body('oracleAddressPass').indexOf('plan.postcode'), true);
+  eq('fields you edited are left alone', /!userTouched\(f\.el\)/.test(body('oracleAddressPass')) && /!userTouched\(x\.el\)/.test(body('oracleRepairLovs')), true);
+}
+
+
+/* ── 72. v17.22: Workday at SpeedyApply speed, and you can edit while it fills ── */
+console.log('v17.22: Workday speed; editing while it fills');
+{
+  const wa = body('workdayAutomation');
+  eq('Jobright autofill only when something required is still empty', /if \(getMissingRequired\(\)\.length\) \{[\s\S]{0,200}await triggerAutofill\(\);/.test(wa), true);
+  eq('the tailor-first detour only when you opted into tailoring', /if \(queueUseTailor\) await tailorFirstFlow\(\);/.test(wa), true);
+  const mp = body('workdayMultiPageFlow');
+  eq('no flat 2.5s after Next — on as soon as the step changes', /await waitForStepChange\(sig, scaled\(6000, 2500\)\)/.test(mp) && !/next_page'\) \{ await sleep\(scaled\(2500, 1250\)\)/.test(mp), true);
+  eq('no flat 1.5s per page', !/await sleep\(scaled\(1500, 750\)\);\n\n      \/\/ Detect current page type/.test(mp), true);
+  eq('the engine never overwrites a field you typed in', /if \(userTouched\(i\)\) return true;/.test(body('wdWriteText')), true);
+  eq('Next / Submit wait while you are editing', /if \(await waitWhileUserEditing\(\)\)/.test(body('autoSubmitOrNext__impl')), true);
+  eq('…bounded, and reported as progress', /noteProgress\('waiting — you are editing'\)/.test(body('waitWhileUserEditing')) && /maxMs \|\| 90000/.test(body('waitWhileUserEditing')), true);
+  eq('your typing is noted (trusted keys/pointer only)', /_userFieldAt = Date\.now\(\); _userField = f;/.test(src) && /if \(!e\.isTrusted\) return;/.test(src), true);
+
+  // The focus guard, run for real: our focus() calls leave your cursor alone while you type.
+  const calls = [];
+  const proto = { focus(...a) { calls.push(this.name); } };
+  const fakeDoc = { activeElement: null };
+  const g = {};
+  const guard = src.match(/  try \{\n    const _focus = HTMLElement\.prototype\.focus;[\s\S]*?\n  \} catch \(_\) \{\}\n/)[0];
+  new Function('exports', 'HTMLElement', 'document', `let _userField = null, _userFieldAt = 0;
+    function userIsEditing(ms) { return Date.now() - _userFieldAt < (ms || 4000); }
+    ${guard}
+    exports.type = (el) => { _userField = el; _userFieldAt = Date.now(); };
+    exports.idle = () => { _userFieldAt = 0; };`)(g, { prototype: proto }, fakeDoc);
+  const A = Object.assign(Object.create(proto), { name: 'A', getRootNode: () => fakeDoc });
+  const B = Object.assign(Object.create(proto), { name: 'B', getRootNode: () => fakeDoc });
+  B.focus();
+  eq('nobody typing: focus works', calls.join(), 'B');
+  g.type(A); fakeDoc.activeElement = A; calls.length = 0;
+  B.focus();
+  eq('you typing in A: our focus on B is skipped', calls.join(), '');
+  A.focus();
+  eq('…focus on your own field still works', calls.join(), 'A');
+  g.idle(); calls.length = 0; B.focus();
+  eq('once you stop, focus works again', calls.join(), 'B');
 }
 
 

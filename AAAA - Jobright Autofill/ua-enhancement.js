@@ -1149,6 +1149,9 @@
     if (/\bstate\b|province|region/.test(l) && !/statement|country (region )?code/.test(l)) return p.state || '';
     if (/zip|postal/.test(l)) return p.postal_code || p.zip || '';
     if (/country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
+    // Line 2 before the general address rule — it caught "Address Line 2" and
+    // wrote the street into both lines (Oracle showed it twice).
+    if (/address\s*(line\s*)?2\b|\bline\s*2\b/.test(l)) return p.address_line_2 || p.address2 || '';
     if (/address|street/.test(l)) return p.address || '';
     if (/location|where.*(you|do you).*live/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
     if (/linkedin/.test(l)) return p.linkedin_profile_url || p.linkedin || '';
@@ -1530,13 +1533,17 @@
      resulting focus change as a genuine event. Keys, pointer presses and real
      typing cannot be produced by a script, so those are what count. */
   const _userTouched = new WeakSet();
+  // The last moment you typed or clicked in one of the PAGE's fields, and which.
+  let _userFieldAt = 0, _userField = null;
   const _noteUserTouch = (e) => {
     try {
       if (!e.isTrusted) return;
       const t = e.composedPath ? e.composedPath()[0] : e.target;
       if (!t || !t.tagName) return;
       const f = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ? t : (t.closest && t.closest('label') && t.closest('label').control) || null;
-      if (f) _userTouched.add(f);
+      if (f) { _userTouched.add(f); _userFieldAt = Date.now(); _userField = f; }
+      // A pick in a custom list (Workday, react-select…) is editing too.
+      else if (t.closest && t.closest('[role="option"],[role="listbox"],[role="combobox"],[data-automation-id*="promptOption"]')) _userFieldAt = Date.now();
     } catch (_) {}
   };
   /* Not 'input' or 'change': when a script calls .click() on a checkbox or radio,
@@ -1544,6 +1551,33 @@
      the automation ticked was being "learned" as your answer that way. */
   try { for (const ev of ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop']) window.addEventListener(ev, _noteUserTouch, true); } catch (_) {}
   function userTouched(el) { try { return !!el && _userTouched.has(el); } catch (_) { return false; } }
+  function userIsEditing(ms) { return Date.now() - _userFieldAt < (ms || 4000); }
+
+  /* Editing while it fills. The fillers focus each field they write, and with
+     you typing in one box that focus moved your cursor mid-word into another —
+     your keystrokes then landed in the wrong field. While you are typing in a
+     field, focus() calls from this extension leave your cursor where it is.
+     (Patched in the extension's own world only; the page's focus is untouched.) */
+  try {
+    const _focus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (...a) {
+      try {
+        if (_userField && this !== _userField && userIsEditing(2500) &&
+          (document.activeElement === _userField || (_userField.getRootNode && _userField.getRootNode().activeElement === _userField))) return;
+      } catch (_) {}
+      return _focus.apply(this, a);
+    };
+  } catch (_) {}
+
+  /* Never press Next / Submit under you: while you are editing, wait until you
+     stop (bounded — a run cannot wait forever), reporting it as progress. */
+  async function waitWhileUserEditing(maxMs) {
+    if (!userIsEditing()) return false;
+    LOG('You are editing this page — waiting for you to finish before moving on');
+    const until = Date.now() + (maxMs || 90000);
+    while (userIsEditing() && Date.now() < until) { noteProgress('waiting — you are editing'); await sleep(500); }
+    return true;
+  }
   // Questions whose learned answer came from you (kept across pages).
   let _manualKeys = {};
   try { st.get('ua_manual_answer_keys').then((m) => { if (m && typeof m === 'object') _manualKeys = m; }).catch(() => {}); } catch (_) {}
@@ -2168,6 +2202,10 @@
       el.getAttribute('autocomplete'), el.getAttribute('data-automation-id')]
       .filter(Boolean).join(' ').toLowerCase();
     if (/password|email|phone|search jobs|keyword/i.test(hay)) return false;
+    // Address Line 2 / flat / suite is optional and never a place search — an
+    // empty one got "London, United Kingdom" on Oracle.
+    if (/address\s*(line\s*)?[2-4]\b|\bline\s*[2-4]\b|address2|addressline[2-4]|apartment|\bapt\b|suite|flat\b/i.test(hay) &&
+      !/(^|\W)pac-target-input(\W|$)/.test(el.className || '')) return false;
     return /location|city|town|address|where.*(live|based)|postal|zip|metro|region/i.test(hay) ||
       el.getAttribute('autocomplete') === 'address-level2' ||
       /(^|\W)(pac-target-input)(\W|$)/.test(el.className || '');
@@ -4053,11 +4091,28 @@
     }
     return '';
   }
+  /* "No results were found." — the row a typeahead shows when the typed text
+     matched nothing. It is not an option, and text that produced it is not an
+     answer: Oracle's Race/Ethnicity list was left holding a typed "Black or
+     African American" (not one of its UK options) and read as answered. */
+  const NO_RESULTS_RE = /^\s*no\s+(results?|matches|matching\s+\w+|options|items|data|records)(\s+(were|was))?(\s+(found|available))?\.?\s*$/i;
+  function comboShowsNoResults(el) {
+    try {
+      const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || (el.tagName === 'INPUT' ? el : el.querySelector?.('input'));
+      for (const lb of [listboxFor(el), inner && listboxFor(inner)]) {
+        if (!lb || !isVisible(lb)) continue;
+        if (NO_RESULTS_RE.test(comboText(lb))) return true;
+        if (deepQueryAll('li,div,span', lb, 20).some((n) => isVisible(n) && NO_RESULTS_RE.test(comboText(n)))) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
   // Does this combobox already hold an answer?
   function comboHasValue(el) {
     try {
       const rs = reactSelectControl(el) || (el.querySelector && el.querySelector(RS_CONTROL_SEL));
       if (rs) return reactSelectHasValue(rs);
+      if (comboShowsNoResults(el)) return false;
       const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || el.querySelector?.('input');
       if (inner && (inner.value || '').trim()) return true;
       if ((el.value || '').trim()) return true;
@@ -4121,28 +4176,45 @@
 
     // Open it. Web components need the full pointer sequence; some open only on
     // keyboard, so fall back to ArrowDown.
+    const typeBox = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || (combo.tagName === 'INPUT' ? combo : combo.querySelector?.('input'));
+    const optionsNow = () => visibleOptions(listboxFor(combo) || (typeBox && typeBox !== combo ? listboxFor(typeBox) : null))
+      .filter(o => !NO_RESULTS_RE.test(comboText(o)));
+    /* Text left in the search box from an earlier try filters the list down to
+       nothing; clear it so the options can show. */
+    if (typeBox && (typeBox.value || '').trim() && comboShowsNoResults(combo)) { try { nativeSet(typeBox, ''); } catch (_) {} }
     triggerMouse(combo);
     await sleep(450);
-    let opts = visibleOptions(listboxFor(combo));
+    let opts = optionsNow();
     if (!opts.length) {
       try {
-        const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input') || combo;
+        const inner = typeBox || combo;
         inner.focus?.({ preventScroll: true });
         inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
       } catch (_) {}
       await sleep(450);
-      opts = visibleOptions(listboxFor(combo));
+      opts = optionsNow();
     }
-    // Typeahead: many comboboxes only render options once you type.
-    if (!opts.length && want) {
-      const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input');
-      if (inner) {
-        try { inner.focus({ preventScroll: true }); nativeSet(inner, want.slice(0, 24)); } catch (_) {}
+    // Typeahead: many comboboxes only render options once you type. The whole
+    // answer first, then its first real word ("Black or African American" →
+    // "black"), then nothing at all (the full list); a demographic question
+    // also tries the list's decline wording.
+    let typed = false;
+    if (!opts.length && want && typeBox) {
+      const words = want.split(/[^a-z0-9]+/i).filter(w => w.length > 2 && !/^(the|and|not|any|for|with|are|you|your)$/i.test(w));
+      const demographic = /gender|disab|veteran|race|ethnic|sex\b|orientation|pronoun|religio/i.test(comboQuestion(combo));
+      const tries = [want.slice(0, 24), words[0], '', ...(demographic ? ['prefer', 'decline'] : [])]
+        .filter((t, i, a) => t != null && a.indexOf(t) === i);
+      for (const t of tries) {
+        try {
+          typeBox.focus({ preventScroll: true }); nativeSet(typeBox, t); typed = !!t;
+          if (!t) typeBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+        } catch (_) {}
         await sleep(700);
-        opts = visibleOptions(listboxFor(combo));
+        opts = optionsNow();
+        if (opts.length) break;
       }
     }
-    if (!opts.length) return false;
+    if (!opts.length) { if (typed) { try { nativeSet(typeBox, ''); } catch (_) {} } return false; }
 
     const norm = (t) => String(t).replace(/\s+/g, ' ').trim().toLowerCase();
     const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a|no selection|not selected)\b/i.test(t);
@@ -4233,7 +4305,11 @@
     // Last resort, and ONLY for a required field: an empty required dropdown
     // blocks submission outright, so any sane option beats leaving it blank.
     if (!pick && required) pick = real[0];
-    if (!pick) { try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {} return false; }
+    if (!pick) {
+      try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {}
+      if (typed) { try { nativeSet(typeBox, ''); } catch (_) {} }   // our search text is not an answer
+      return false;
+    }
 
     const inner = pick.querySelector?.('spl-typography-body') ||
       (pick.shadowRoot && pick.shadowRoot.querySelector('spl-typography-body,span,div')) || pick;
@@ -5083,7 +5159,7 @@
 
   // ===================== SUCCESS / FAILURE / STABILITY DETECTION =====================
   // (Robustness techniques adapted from the OptimHire auto-applier for 100% reliability.)
-  const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
+  const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+(job\s+)?application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+(job\s+)?application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
   /* A URL only counts as a confirmation page when one of these is a COMPLETE path
      segment. As a substring (what this used to be) it matched ordinary job slugs and
      declared the application submitted before anything had been submitted:
@@ -5613,6 +5689,8 @@
       }
     } catch (_) {}
     logFillReport('Before submit');
+    // You are changing something — let you finish, then re-check what you left.
+    if (await waitWhileUserEditing()) { await guaranteeRequiredFields(); await sleep(200); }
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
     // button's own enabled/disabled state, not on our heuristic missing-field count)
@@ -6111,6 +6189,8 @@
       // this is also what re-scans after an answer reveals a follow-up question.
       await guaranteeRequiredFields();
       await handleValidationErrors();
+      // Oracle's address, pill questions and lists — also after a rejected submit.
+      if (isOracleCloud()) await oracleCxPass();
       await sleep(scaled(300, 100));
 
       // Submit or next
@@ -6436,13 +6516,20 @@
     // Whatever the fixed-id fillers above left empty, in any language.
     await wdEnginePass(p);
 
-    // Jobright autofill as a BACKUP — catches any field SpeedyApply missed on this page.
-    await triggerAutofill();
-    await sleep(scaled(2000, 1000));
+    /* SpeedyApply-style: the engine fills Workday itself, so Jobright's autofill
+       is only called when it left something required empty, and the
+       tailor-first detour (up to ~35s of waiting on Jobright's sidebar per job)
+       only runs when you opted into resume tailoring for the queue. */
     await fallbackFill();
+    if (getMissingRequired().length) {
+      LOG('Workday: required fields still empty — asking Jobright autofill to help');
+      await triggerAutofill();
+      await waitForFormStable(scaled(2000, 600));
+      await fallbackFill();
+    }
 
-    // Phase 3: continue (tailor + autofill) into the multi-page flow.
-    await tailorFirstFlow();
+    // Phase 3: continue into the multi-page flow.
+    if (queueUseTailor) await tailorFirstFlow();
 
     // Phase 4: Workday multi-page navigation (handles all Workday page types)
     await workdayMultiPageFlow();
@@ -7560,6 +7647,7 @@
   async function wdWriteText(c, val, overwrite) {
     const i = c && c.querySelector('textarea,input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
     if (!i || val == null || val === '') return false;
+    if (userTouched(i)) return true;            // yours — never overwritten
     if (!overwrite && String(i.value || '').trim()) return true;
     if (i.value === String(val)) return true;
     try { i.focus({ preventScroll: true }); } catch (_) {}
@@ -7876,7 +7964,7 @@
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping Workday flow'); break; }
       if (checkSuccess()) { LOG('Workday: success detected'); break; }
-      await sleep(scaled(1500, 750));
+      await waitForFormStable(scaled(1500, 300));
 
       // Detect current page type
       // The page on SCREEN. Some tenants keep earlier steps mounted but hidden,
@@ -7948,9 +8036,11 @@
       // Advance via the robust shared handler (skips disabled buttons, scrolls into
       // view, re-fills + fixes validation if "Continue to the next page" is disabled,
       // and submits on the final review page).
+      const sig = stepSignature();
       const action = await autoSubmitOrNext();
-      if (action === 'submitted') { await sleep(scaled(2500, 1250)); if (confirmSubmitted()) break; }
-      else if (action === 'next_page') { await sleep(scaled(2500, 1250)); }
+      // On as soon as Workday shows the next step, instead of a flat 2.5s.
+      if (action === 'submitted') { await waitUntil(confirmSubmitted, scaled(4000, 1500), 200); if (confirmSubmitted()) break; }
+      else if (action === 'next_page') { await waitForStepChange(sig, scaled(6000, 2500)); }
       else { LOG('Workday: no next/submit button found'); break; }
     }
   }
@@ -14327,6 +14417,233 @@
       await waitForStepChange(before, 15000);
     }
   }
+  /* ── Oracle: address, self-identification pills, lists left on typed text ──
+     What the generic pass got wrong on Oracle (Goldman Sachs LateralHiring):
+       • the postal code is a LIST tied to the country — typed, it is never
+         picked, and an Irish code under "Ireland" (or a UK one under it) finds
+         nothing. You asked for SW1W 0RH, so the country is set to match it first.
+       • Address Line 1 held a country name; Line 2 repeated the street.
+       • self-identification questions are pill BUTTONS (aria-pressed), which
+         no radio/checkbox/select pass ever touched.
+       • a list holding typed text that matched nothing read as answered.
+     Overridable per Oracle with storage key ua_oracle_address
+     {postcode, country, city, line1}. Fields you have edited are left alone. */
+  const ORACLE_POSTCODE_DEFAULT = 'SW1W 0RH';
+  const UK_POSTCODE_RE = /^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i;
+  const COUNTRY_NAME_RE = /^(united kingdom|uk|u\.k\.|great britain|britain|england|scotland|wales|northern ireland|ireland|republic of ireland|united states( of america)?|usa?|u\.s\.a?\.?)$/i;
+  const ORACLE_LOV_SEL = 'oj-select-single,oj-c-select-single,oj-select-one,oj-combobox-one,oj-c-combobox-one,oj-input-search,oj-c-input-search';
+
+  async function oracleAddressPlan(p) {
+    let o = {};
+    try { o = (await st.get('ua_oracle_address')) || {}; } catch (_) {}
+    const postcode = String(o.postcode || ORACLE_POSTCODE_DEFAULT).trim().toUpperCase();
+    const uk = UK_POSTCODE_RE.test(postcode);
+    const looksCountry = (v) => COUNTRY_NAME_RE.test(String(v || '').trim()) ||
+      (!!p.country && String(v || '').trim().toLowerCase() === String(p.country).trim().toLowerCase());
+    return {
+      postcode, uk, looksCountry,
+      country: o.country || (uk ? 'United Kingdom' : (p.country || DEFAULTS.country)),
+      city: o.city || (uk && /^(EC|WC|E|N|NW|SE|SW|W)\d/i.test(postcode) ? 'London' : (p.city || '')),
+      line1: o.line1 || [p.address, p.address_line_1, p.address1, p.street].find((v) => v && !looksCountry(v)) || '',
+      line2: p.address_line_2 || p.address2 || '',
+    };
+  }
+
+  // Every labelled text box / list on the step, with what kind of control it is.
+  function oracleFields() {
+    const out = [], seen = new Set();
+    for (const el of deepAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=file]):not([type=submit]):not([type=button]),textarea', 300)) {
+      if (!isVisible(el) || el.disabled || el.readOnly || seen.has(el)) continue;
+      seen.add(el);
+      const lov = el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-autocomplete') || !!(el.closest && el.closest(ORACLE_LOV_SEL));
+      const host = (el.closest && el.closest(ORACLE_LOV_SEL)) || el;
+      const label = String((lov ? comboQuestion(host) : '') || getLabel(el) || '').replace(/[*:]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (label) out.push({ el, host, lov, label });
+    }
+    return out;
+  }
+
+  /* Pick `text` in an Oracle list: clear it, type, wait for the matching row,
+     take it. `accept` says whether a shown value / row is the one wanted. */
+  async function oracleSetLov(f, text, accept) {
+    const inp = f.el;
+    const shown = () => String(inp.value || '').trim();
+    if (accept(shown()) && !comboShowsNoResults(f.host)) return true;
+    const terms = [text, String(text).split(/[\s,]+/)[0]].filter((t, i, a) => t && a.indexOf(t) === i);
+    for (const t of terms) {
+      try { inp.focus({ preventScroll: true }); nativeSet(inp, ''); await sleep(120); nativeSet(inp, t); } catch (_) {}
+      let row = null;
+      await waitUntil(() => (row = visibleOptions(listboxFor(inp) || listboxFor(f.host))
+        .filter((o) => !NO_RESULTS_RE.test(comboText(o))).find((o) => accept(comboText(o)))), 4000, 200);
+      if (!row) continue;
+      triggerMouse(row);
+      await sleep(400);
+      if (!accept(shown())) await commitByKeyboard(f.host, row);
+      if (accept(shown())) return true;
+    }
+    if (!accept(shown())) { try { nativeSet(inp, ''); } catch (_) {} }
+    return false;
+  }
+
+  async function oracleAddressPass(p) {
+    const find = (fields, rx, not) => fields.find((f) => rx.test(f.label) && !(not && not.test(f.label)) && !userTouched(f.el));
+    let fields = oracleFields();
+    const postal = find(fields, /postal|post\s*code|postcode|zip/i);
+    if (!postal) return 0;                       // no address on this step
+    const plan = await oracleAddressPlan(p);
+    const norm = (v) => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    let n = 0;
+    // The country first — the postcode list (and often the rest) follows it.
+    const country = find(fields, /^country(\s*\/\s*region)?$/i);
+    if (country) {
+      const want = norm(plan.country);
+      const ok = (t) => norm(t) === want || (plan.uk && /^(united kingdom|uk|great britain)$/i.test(String(t).trim()));
+      if (!ok(country.el.value)) {
+        const done = country.lov ? await oracleSetLov(country, plan.country, ok) : (nativeSet(country.el, plan.country), true);
+        LOG(`Oracle: country → ${plan.country}${done ? '' : ' (not in the list)'}`);
+        if (done) { n++; await waitForFormStable(1500); fields = oracleFields(); }
+      }
+    }
+    const pc = find(fields, /postal|post\s*code|postcode|zip/i);
+    if (pc) {
+      const flat = (t) => String(t || '').toUpperCase().replace(/\s+/g, '');
+      const ok = (t) => !!t && flat(t).startsWith(flat(plan.postcode));
+      if (!ok(pc.el.value) || (pc.lov && comboShowsNoResults(pc.host))) {
+        const done = pc.lov ? await oracleSetLov(pc, plan.postcode, ok) : (nativeSet(pc.el, plan.postcode), true);
+        LOG(`Oracle: postal code → ${plan.postcode}${done ? '' : ' — not offered for this country'}`);
+        if (done) { n++; await sleep(600); fields = oracleFields(); }
+      }
+    }
+    const l1 = find(fields, /address\s*line\s*1|^address$|^street( address)?$|address 1\b/i);
+    if (l1 && plan.line1 && (!l1.el.value.trim() || plan.looksCountry(l1.el.value) || norm(l1.el.value) === norm(plan.postcode))) {
+      nativeSet(l1.el, plan.line1); n++; LOG('Oracle: Address Line 1 → the street');
+    }
+    const l2 = find(fields, /address\s*line\s*2|address 2\b/i);
+    if (l2 && l1 && l2.el.value.trim() && norm(l2.el.value) === norm(l1.el.value)) {
+      nativeSet(l2.el, plan.line2); n++; LOG('Oracle: Address Line 2 repeated Line 1 — ' + (plan.line2 ? 'set from the profile' : 'cleared'));
+    }
+    const city = find(fields, /^(town( or|\/)?\s*city|city( or town)?|town)$/i);
+    if (city && plan.city && norm(city.el.value) !== norm(plan.city) && (plan.uk || !city.el.value.trim())) {
+      const done = city.lov ? await oracleSetLov(city, plan.city, (t) => norm(t).startsWith(norm(plan.city))) : (nativeSet(city.el, plan.city), true);
+      if (done) { n++; LOG('Oracle: town/city → ' + plan.city); }
+    }
+    return n;
+  }
+
+  /* Pill-button questions: buttons with aria-pressed (Oracle's
+     cx-select-pill-section), grouped by question. */
+  function oraclePillGroups() {
+    const pills = deepAll('button[aria-pressed],[role="button"][aria-pressed],.cx-select-pill-section', 300)
+      .filter((b) => isVisible(b) && !(b.closest && b.closest('[role="listbox"] [role="option"]')));
+    const groups = new Map();
+    for (const b of pills) {
+      let c = b.parentElement;
+      for (let i = 0; c && i < 4 && pills.filter((x) => c.contains(x)).length < 2; i++) c = c.parentElement;
+      if (!c) continue;
+      if (!groups.has(c)) groups.set(c, []);
+      groups.get(c).push(b);
+    }
+    const out = [];
+    for (const [c, btns] of groups) {
+      if (btns.length < 2) continue;
+      let q = '';
+      try {
+        const fs = c.closest('fieldset');
+        q = (fs && fs.querySelector('legend') && fs.querySelector('legend').textContent) || textOfIds(c, 'aria-labelledby') || c.getAttribute('aria-label') || '';
+        for (let el = c, i = 0; !q.trim() && el && i < 4; el = el.parentElement, i++) {
+          const prev = el.previousElementSibling;
+          const t = prev && (prev.innerText || prev.textContent || '').trim();
+          if (t && t.length < 400) q = t;
+        }
+      } catch (_) {}
+      out.push({ container: c, buttons: btns, question: String(q).replace(/\s+/g, ' ').trim() });
+    }
+    return out;
+  }
+  const PILL_ON = (b) => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-checked') === 'true';
+  const DEMOGRAPHIC_Q_RE = /gender|\bsex\b|sexual|orientation|pronoun|transgender|\btrans\b|(registered|assigned) at birth|ethnic|\brace\b|racial|disab|health condition|veteran|religio|\bbelief|marital|caring responsib|\bcarer\b|social (class|background|mobility)|socio-?economic|first generation|\bage\b/i;
+
+  function pillChoice(q, texts, p) {
+    const ql = q.toLowerCase();
+    const consentQ = /\b(i )?consent|agree|acknowledg|i understand|declaration|privacy|data protection/i.test(ql) ||
+      texts.some((t) => /^i (consent|agree)\b/i.test(t));
+    if (consentQ) {
+      const i = texts.findIndex((t) => /^(i\s+)?(consent|agree|accept|acknowledge|understand|yes)\b/i.test(t) && !/\b(not|don'?t|do not|decline)\b/i.test(t));
+      if (i >= 0) return i;
+    }
+    if (DEMOGRAPHIC_Q_RE.test(ql)) {
+      // Your profile's own answer when it is one of the options word for word; otherwise decline.
+      const own = /pronoun/.test(ql) ? p.pronouns : /orientation|sexual/.test(ql) ? p.sexual_orientation
+        : /identity|trans|registered at birth|assigned at birth/.test(ql) ? '' : /gender|\bsex\b/.test(ql) ? p.gender
+        : /ethnic|race|racial/.test(ql) ? (p.ethnicity || p.race) : /disab|health/.test(ql) ? p.disability : /veteran/.test(ql) ? p.veteran : '';
+      if (own) { const i = texts.findIndex((t) => t.trim().toLowerCase() === String(own).trim().toLowerCase()); if (i >= 0) return i; }
+      const d = texts.findIndex(isDeclineOption);
+      if (d >= 0) return d;
+    }
+    const pols = texts.map(optionPolarity);
+    if (texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) || (texts.some((t) => /^yes$/i.test(t)) && texts.some((t) => /^no$/i.test(t))))) {
+      let dec = '';
+      try { dec = determineYesNo(ql.replace(/\s+/g, ' ')); } catch (_) {}
+      if (dec === 'eeo') dec = 'decline';
+      const i = optionIndexForDecision(texts, dec, q);
+      if (i >= 0) return i;
+    }
+    const g = guessFieldValue(q, p, null);
+    return g ? bestOptionIndex(texts, g, q) : -1;
+  }
+
+  async function oraclePillPass(p) {
+    let n = 0;
+    for (const g of oraclePillGroups()) {
+      if (g.buttons.some(PILL_ON)) continue;
+      const texts = g.buttons.map((b) => controlLabel(b));
+      const i = pillChoice(g.question, texts, p);
+      if (i < 0) { LOG(`Oracle: no answer for "${g.question.slice(0, 60)}" (${texts.join(' / ').slice(0, 80)})`); continue; }
+      realClick(g.buttons[i]);
+      await sleep(200);
+      if (!PILL_ON(g.buttons[i])) { triggerMouse(g.buttons[i]); await sleep(200); }
+      LOG(`Oracle: "${g.question.slice(0, 50)}" → ${texts[i]}`);
+      n++;
+    }
+    return n;
+  }
+
+  /* A list showing "No results" or flagged by the form holds typed text, not a
+     pick: clear it and answer it from the list. */
+  const _oracleLovChecked = new WeakSet();
+  async function oracleRepairLovs(p) {
+    let n = 0;
+    for (const f of oracleFields().filter((x) => x.lov && !userTouched(x.el))) {
+      let stale = comboShowsNoResults(f.host) || (!!f.el.value.trim() && FIELD_ERROR_TEXT_RE.test(errorTextNear(f.el) || ''));
+      /* A demographic list holding text is opened once to see whether that text
+         is really one of its options — an open list filtered to "No results"
+         says it was only typed. */
+      if (!stale && f.el.value.trim() && DEMOGRAPHIC_Q_RE.test(f.label) && !_oracleLovChecked.has(f.el)) {
+        _oracleLovChecked.add(f.el);
+        triggerMouse(f.el);
+        await sleep(450);
+        stale = comboShowsNoResults(f.host);
+        if (!stale) { try { f.el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {} }
+      }
+      if (!stale) continue;
+      try { nativeSet(f.el, ''); } catch (_) {}
+      await sleep(150);
+      const want = guessFieldValue(f.label, p, f.host);
+      if (await commitCustomDropdown(f.host, want, true)) { n++; LOG(`Oracle: "${f.label.slice(0, 40)}" picked from its list → ${f.el.value.trim().slice(0, 40)}`); }
+    }
+    return n;
+  }
+
+  async function oracleCxPass() {
+    const p = await getProfile();
+    let n = 0;
+    try { n += await oracleAddressPass(p); } catch (e) { LOG('Oracle address pass failed:', e?.message || e); }
+    try { n += await oraclePillPass(p); } catch (e) { LOG('Oracle pill pass failed:', e?.message || e); }
+    try { n += await oracleRepairLovs(p); } catch (e) { LOG('Oracle list repair failed:', e?.message || e); }
+    if (n) noteProgress('Oracle: answered ' + n);
+    return n;
+  }
+
   async function oracleCloudAutomation() {
     LOG('Oracle Recruiting Cloud automation starting...');
     await loadAnswerBank();
@@ -14368,9 +14685,11 @@
       // question set in place, so a flat sleep left us filling the previous one.
       const stepSig = stepSignature();
       await triggerAutofillQuick();
+      await oracleCxPass();
       await fallbackFill();
       await guaranteeRequiredFields();
       await handleValidationErrors();
+      await oracleCxPass();      // after the generic fillers, which can retype a list
 
       const r = await autoSubmitOrNext();
       if (r === 'submitted') { await sleep(scaled(3000, 1500)); break; }

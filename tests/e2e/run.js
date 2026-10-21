@@ -101,5 +101,6 @@ const T0 = Date.now();
   const sub = logs.map((l) => (l.match(/^SUBMITTED (.*)$/) || [])[1]).filter(Boolean).pop();
   if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
+  if (process.env.LOG_DUMP) for (const l of logs) console.log('  | ' + l);
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

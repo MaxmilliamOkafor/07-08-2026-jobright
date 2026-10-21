@@ -3536,3 +3536,58 @@ Shaped on the Ericsson "Data Engineer (791854)" form. Before, the run stopped at
 
 Tested in Chromium with `tests/e2e/successfactors.html`: every required field
 filled, CV uploaded, terms accepted, submitted.
+
+## v17.21 — Oracle Recruiting Cloud: address, postcode SW1W 0RH, self-identification, lists
+
+Based on your Goldman Sachs LateralHiring screenshots (hdpc.fa.us2.oraclecloud.com):
+
+- **The postal code is SW1W 0RH**, as you asked. On Oracle it is a list tied to
+  the country, so a typed code was never picked ("No results were found"), and
+  a UK code can't be found under "Ireland". The country is set to **United
+  Kingdom** first, then SW1W 0RH is typed and **picked from the list**, and Town
+  or City becomes **London**. To use something else on Oracle, set storage key
+  `ua_oracle_address` to `{postcode, country, city, line1}`.
+- **Address Line 1** had "United Kingdom" in it. A country name there is replaced
+  with your street. **Address Line 2** repeated the street, because the
+  general "address" rule caught "Address Line 2" first. It now comes from your
+  profile's second line, or stays empty. The location filler also stopped
+  writing "London, United Kingdom" into an empty Line 2.
+- **Self-identification pill buttons** are now answered. These are the buttons
+  that "didn't click": consent → **I consent**. Gender, gender identity, sexual
+  orientation, pronouns and disability → your profile's answer if it is one of
+  the options word for word, otherwise the **"Prefer not to say"** option in
+  whatever wording that list uses ("I prefer not to say", "Prefer Not To Say").
+- **Race/Ethnicity:** a list showing "No results were found" (or flagged by the
+  form) is treated as **empty**, not answered. The typed text is cleared and the
+  answer picked from the real options. "Black or African American" picks "Black,
+  Black British, Caribbean or African" on a UK list; with no profile answer it
+  picks "Prefer not to say". This applies to every list on every ATS: a
+  search that finds nothing now tries the first word, then the whole list.
+- "Thank you for your job application" is recognised as Oracle's confirmation.
+- Fields you edit yourself are left alone.
+
+Tested in Chromium with `tests/e2e/oracle.html`. That fixture copies the problems
+in your screenshots: Ireland preselected, a postcode list per country, pill
+questions, and a Race list holding typed text. Before this change it failed with
+"Validation errors could not be resolved". It now submits in ~13s, with every
+answer as listed above.
+
+## v17.22 — Workday at SpeedyApply speed, and you can edit while it fills
+
+- **No Jobright detour on Workday.** The Workday engine fills each step itself,
+  as SpeedyApply does. Jobright's autofill is called only if a required field is
+  still empty after that. The "tailor-first" pass is skipped unless you turned on
+  resume tailoring for the queue. That pass could spend ~35s per job waiting for
+  Jobright's sidebar and its Filling → Autofill button.
+- **No flat waits between steps.** The run moves on as soon as Workday shows
+  the next step, instead of a fixed 1.5s before each page and 2.5s after each Next.
+- **Edit while it fills:**
+  - **Your cursor stays put.** The fillers focus each field they write. While
+    you were typing, that moved your cursor mid-word into another box. Now,
+    while you are typing in a field, the extension's focus calls leave your
+    cursor where it is (all ATS, Jobright's autofill included).
+  - **Nothing you typed is overwritten.** The Workday engine skips any field you
+    have typed in or picked from, as the other fillers already did.
+  - **Next / Submit wait for you.** If you are editing when the run is ready to
+    advance, it waits until you stop (up to 90s), checks the page again, then
+    moves on. Only real key presses, clicks and pastes count as editing.
