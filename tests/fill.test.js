@@ -2887,7 +2887,7 @@ console.log('v17.7 — honeypots, seeded phone boxes, select2, Lever location, c
   eq('a banner that appeared late is swept right before Submit', /try \{ await dismissCookieBanner\(\); \} catch \(_\) \{\}\n\s*try \{ scrollIfNeeded\(btn\); \} catch \(_\) \{\}/.test(body('clearOverSubmit')), true);
   // 7. Workday wall
   eq('no Workday filling while a password box is on screen',
-    /while \(workdayOnAccountWall\(\) && Date\.now\(\) < until && !autoStopped\(\)\)/.test(body('workdayAutomation')), true);
+    /while \(\(workdayOnAccountWall\(\) \|\| wdResetActive\(\)\) && Date\.now\(\) < until && !autoStopped\(\) && !_authDeadEnd\)/.test(body('workdayAutomation')), true);
   eq('a tenant still on the wall is reported, not filled', /DIAG\('workday\.auth\.stuck'/.test(body('workdayAutomation')), true);
   eq('the account watcher stops on the broader "applying" test', /\|\| workdayApplicationReady\(\)\) \{/.test(src), true);
 }
@@ -2979,7 +2979,7 @@ console.log('v17.11 — Workday existing accounts, embedded Greenhouse, Microsof
   eq('Workday tries every saved password: site login, shared, Jobright\'s', /ua_app_password[\s\S]*WORKDAY_SIGNUP_INFORMATION/.test(body('workdayPasswordCandidates')), true);
   eq('a refused sign-in on an existing account tries the next password, not Create', /if \(onSignIn && wrongCredErr && auth\.exists && auth\.triedSignIn\) \{/.test(wd), true);
   eq('only an account the site has NOT confirmed is sent back to Create', /if \(onSignIn && wrongCredErr && !auth\.exists\) \{/.test(wd), true);
-  eq('when every password is refused it stops and says what to do', /DIAG\('workday\.password-mismatch'/.test(wd) && /return 'stop';/.test(wd), true);
+  eq('when every password is refused it stops and says what to do', /DIAG\('workday\.password-mismatch'/.test(body('wdPasswordDeadEnd')) && /return wdPasswordDeadEnd\(/.test(wd), true);
   eq('errors come from Workday\'s own messages, not the page text', /const errText = workdayAuthErrorText\(\);/.test(wd) && !/const pageText = \(document\.body\.innerText/.test(wd), true);
   eq('an embedded Greenhouse form is opened in this tab', /if \(!\$\('#application_form,#application-form,#application,\.application-form,\.application--form'\) && await openEmbeddedGreenhouseForm\(\)\) return;/.test(body('greenhouseAutomation')), true);
   { const og = body('openEmbeddedGreenhouseForm');
@@ -3363,6 +3363,52 @@ console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
   eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
   eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineRun')) && /8 \* 60 \* 1000/.test(body('workdayEngineRun')), true);
   eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
+}
+
+
+/* ── 75. v17.25: Workday sign-in — account made before, lockouts, resets; honest counts ── */
+console.log('v17.25: Workday sign-in scenarios; a sign-in is never "applied"');
+{
+  const wd = body('fillWorkdayCreateAccount');
+  // Counts.
+  eq('a sign-in / create-account press is never recorded as a submit', /if \(onAuthWallOnly\(\)\) \{ LOG\('Pressed a sign-in/.test(body('markSubmitAttempt')), true);
+  eq('nothing counts as applied while the sign-in form is on screen', /if \(onAuthWallOnly\(\)\) return false;/.test(body('confirmSubmitted')), true);
+  eq('…an application form that asks for a password (SuccessFactors) still counts', /&& !hasApplicationForm\(\)/.test(body('onAuthWallOnly')), true);
+  eq('Workday\'s Sign In is never pressed as the application Submit', /if \(isWorkday\(\) && workdayOnAccountWall\(\)\) \{ LOG\('Workday sign-in/.test(body('autoSubmitOrNext__impl')), true);
+  eq('a job that cannot sign in fails at once, with the reason (runner and Queue Manager)',
+    (src.match(/if \(_authDeadEnd\) break;/g) || []).length === 2 && /if \(_authDeadEnd\) return _authDeadEnd;/.test(body('submitFailureReason')), true);
+  eq('…not "needs a human" (which held the job on Processing…)', /reportNeedsHuman\('Workday sign-in'\)/.test(src), false);
+  eq('each job starts without the last one\'s dead end', (src.match(/_authDeadEnd = '';/g) || []).length >= 2, true);
+  // Passwords.
+  const cands = body('workdayPasswordCandidates');
+  eq('passwords in order: site login, the one that worked here before, shared, Jobright\'s',
+    cands.indexOf('siteLogin') < cands.indexOf('WD_SITE_PW_KEY') && cands.indexOf('WD_SITE_PW_KEY') < cands.indexOf("'ua_app_password'") && cands.indexOf("'ua_app_password'") < cands.indexOf('WORKDAY_SIGNUP_INFORMATION'), true);
+  eq('the one that worked is remembered for the site', /if \(auth\.lastPw\) await wdSiteRecord\(WD_SITE_PW_KEY, auth\.lastPw\);/.test(body('wdAuthSucceeded')) && /await wdAuthSucceeded\(\);/.test(body('workdayAutomation')), true);
+  eq('which password each press used is noted', (wd.match(/auth\.lastPw = pw;/g) || []).length, 2);
+  // Lockouts.
+  eq('refusals are counted per site and capped below Workday\'s lockout', /const refused = await wdNoteRefused\(\);/.test(wd) && /refused < WD_MAX_FAILS/.test(wd) && /const WD_MAX_FAILS = 4;/.test(src), true);
+  eq('a locked account gets no more attempts', /if \(WD_LOCKED_RE\.test\(errText\) && !\/might be locked\/i\.test\(errText\)\) return wdPasswordDeadEnd\('the account is locked'/.test(wd), true);
+  const L = new RegExp(src.match(/const WD_LOCKED_RE = \/(.*)\/i;/)[1], 'i');
+  eq('"Your account has been locked" is locked', L.test('Your account has been locked. Use Forgot your password? to unlock it.'), true);
+  eq('"too many failed attempts" is locked', L.test('Too many failed attempts. Try again later.'), true);
+  eq('Workday\'s "…or your account might be locked" is a wrong password, not a lock (handled above it)', /!\/might be locked\/i/.test(wd), true);
+  eq('a site where nothing worked fails fast next time, until your passwords change',
+    /unk && unk\.cand === wdCandHash\(candidates\)/.test(wd) && /wdSiteRecord\(WD_UNKNOWN_KEY, \{ at: Date\.now\(\), cand: wdCandHash\(candidates\) \}\)/.test(body('wdPasswordDeadEnd')), true);
+  eq('only a hash of WHICH passwords is stored, never the passwords', /never the passwords/.test(body('wdCandHash')), true);
+  // Reset.
+  const de = body('wdPasswordDeadEnd');
+  eq('a reset is only tried when your Gmail API connection can read the link', /if \(mb\.enabled && mb\.connected && forgot\)/.test(de), true);
+  const rs = body('wdResetStep');
+  eq('the reset link is only followed back to this same Workday site', /u\.protocol === 'https:' && u\.hostname === location\.hostname/.test(rs), true);
+  eq('the new password is your shared ATS password, remembered for the site', /const newPw = await getAppPassword\(\);/.test(rs) && /await wdSiteRecord\(WD_SITE_PW_KEY, newPw\);/.test(rs), true);
+  eq('a reset email that never comes fails the job after 3 minutes, with the reason', /Date\.now\(\) - r\.at > 3 \* 60 \* 1000/.test(rs), true);
+  eq('the reset counts as the account step (no filling meanwhile)', /while \(\(workdayOnAccountWall\(\) \|\| wdResetActive\(\)\)/.test(body('workdayAutomation')), true);
+  // Engine order.
+  const wa = body('workdayAutomation');
+  eq('the sign-in stays ours; your engine applies after it', wa.indexOf('await wdAuthSucceeded();') < wa.indexOf('const eng = await workdayEngineRun();'), true);
+  const entry = fs.readFileSync(path.join(path.dirname(path.dirname(process.argv[2])), 'workday-engine/src/ua/entry.ts'), 'utf8');
+  eq('…and if a session expires mid-application, the engine signs in with the same per-site password', /"ua_ats_logins", "ua_wd_site_pw"/.test(entry), true);
+  eq('an engine run that ends without reporting is recorded as stopped (no 8-minute wait)', /outcome: "stopped", page: lastPage \|\| detectPage\(\)/.test(entry), true);
 }
 
 

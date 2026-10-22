@@ -5312,7 +5312,17 @@
     try { return (managedIdFromTab() || '') || normalizeUrl(location.href).replace(/[?#].*$/, ''); }
     catch (_) { return location.origin + location.pathname; }
   }
+  /* A sign-in / create-account form on screen and no application with it: the
+     button pressed there is Sign In, not Submit. Counting it as one turned a
+     Workday job stuck on "wrong email or password" into "1 applied". */
+  function onAuthWallOnly() {
+    try {
+      if (isWorkday() && workdayOnAccountWall()) return true;
+      return deepAll('input[type=password]', 6).some(isVisible) && !hasApplicationForm();
+    } catch (_) { return false; }
+  }
   function markSubmitAttempt() {
+    if (onAuthWallOnly()) { LOG('Pressed a sign-in / account button — not counted as submitting the application'); return; }
     _lastSubmitAt = Date.now();
     const mark = { key: submitJobKey(), ts: _lastSubmitAt, origin: location.origin };
     _submitMark = mark;
@@ -5339,6 +5349,7 @@
   // "no Submit control" usually means the form has another page or the button sits
   // in a frame we did not reach; "no confirmation" means it probably did send.
   function submitFailureReason(validationStuck) {
+    if (_authDeadEnd) return _authDeadEnd;
     if (validationStuck) { const e = remainingErrorSummary(); return 'Validation errors could not be resolved' + (e ? ' — ' + e : ''); }
     if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
     return 'Submit was clicked but no confirmation appeared';
@@ -5562,6 +5573,7 @@
      be marked done — the "it skips to the next one without submitting" report. */
   function confirmSubmitted() {
     if (hardSuccessSignal()) return true;                       // the page says so
+    if (onAuthWallOnly()) return false;                         // still signing in: nothing was sent
     if (!submitAttempted()) return false;                       // we never pressed submit
     if (softSuccessSignal()) return true;                       // pressed + confirmation URL
     // Pressed, the grace window elapsed, no validation error came back, and the
@@ -5769,6 +5781,8 @@
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
   async function autoSubmitOrNext__impl() {
     LOG('Attempting auto-submit or next...');
+    // Workday's sign-in form is the account step's job; its "Sign In" is not a Submit.
+    if (isWorkday() && workdayOnAccountWall()) { LOG('Workday sign-in / create-account form — left to the account step'); return false; }
 
     // First: learn from the filled page before navigating away
     await learnFromPage();
@@ -6645,14 +6659,7 @@
       _wdAssistActive = true;
       return 'assist';
     }
-    const eng = await workdayEngineRun();
-    if (eng === 'submitted') return 'submitted';
     const p = await getProfile();
-    if (eng === 'midway') {
-      await fallbackFill();
-      await workdayMultiPageFlow();
-      return 'handed-back';
-    }
 
     /* ── Phase 1: get off the job description and into the application ───────
        This sat on an NXP job description with the Apply button in plain sight
@@ -6714,17 +6721,34 @@
        the account step (fillWorkdayCreateAccount bounds its own attempts) and
        clear an emailed code if one is asked for. */
     {
-      const until = Date.now() + 45000;
-      while (workdayOnAccountWall() && Date.now() < until && !autoStopped()) {
+      let until = Date.now() + 45000;
+      while ((workdayOnAccountWall() || wdResetActive()) && Date.now() < until && !autoStopped() && !_authDeadEnd) {
         if (detectEmailVerificationWall()) await resolveEmailVerification(60000);
         if ((await fillWorkdayCreateAccount(true)) === 'stop' && workdayOnAccountWall()) break;
-        await waitUntil(() => !workdayOnAccountWall() || workdayApplicationReady(), scaled(4000, 2000), 250);
+        // A password reset waits on an email: give it its own time, as work.
+        if (wdResetActive()) { until = Math.max(until, Date.now() + 15000); noteProgress('Workday: resetting the password'); }
+        await waitUntil(() => (!workdayOnAccountWall() && !wdResetActive()) || workdayApplicationReady(), scaled(4000, 2000), 250);
       }
-      if (workdayOnAccountWall()) {
+      if (workdayOnAccountWall() || wdResetActive()) {
         LOG('Workday: still on the sign-in / create-account step — not filling the account page as if it were the application');
-        DIAG('workday.auth.stuck', 'still on the account step after signing in');
-        try { reportNeedsHuman('Workday sign-in'); } catch (_) {}
+        DIAG('workday.auth.stuck', _authDeadEnd || 'still on the account step after signing in');
+        // A job that cannot get past the sign-in fails now, with the reason — it is not left "Processing…".
+        if (!_authDeadEnd) _authDeadEnd = 'Workday sign-in did not complete' + (workdayAuthErrorText() ? ': ' + workdayAuthErrorText().slice(0, 120) : '');
         return;
+      }
+      await wdAuthSucceeded();
+    }
+
+    /* Your Workday engine applies from here. The sign-in above stays ours: it
+       knows every saved password, remembers which one works where, stops
+       before a lockout and can reset through your mailbox. */
+    {
+      const eng = await workdayEngineRun();
+      if (eng === 'submitted') return 'submitted';
+      if (eng === 'midway') {
+        await fallbackFill();
+        await workdayMultiPageFlow();
+        return 'handed-back';
       }
     }
 
@@ -10217,6 +10241,7 @@
   async function workdayPasswordCandidates() {
     const out = [];
     try { const site = await siteLogin(); if (site && site.password) out.push(site.password); } catch (_) {}
+    try { const mem = (await st.get(WD_SITE_PW_KEY)) || {}; const k = accountKeyFor(location.hostname); if (mem[k]) out.push(mem[k]); } catch (_) {}
     try { const shared = await st.get('ua_app_password'); if (shared) out.push(shared); } catch (_) {}
     try {
       // Jobright's own Workday sign-up password ("Your Autofill information → Sign-up Information").
@@ -10276,8 +10301,171 @@
     return true;
   }
 
+  /* ── AN ACCOUNT THAT ALREADY EXISTS, LOCKOUTS, RESETS ──────────────────────
+     Scenarios on a Workday tenant, and what happens in each:
+       • New site → Create Account with your shared ATS password.
+       • "Account already exists" → Sign In; the saved passwords are tried in
+         order: your 🔐 site login, the password that worked HERE before, the
+         shared ATS password, Jobright's Workday password.
+       • The one that works is remembered for this site (and for your engine).
+       • Every one refused, or "account locked" → no more tries (Workday locks an
+         account after a handful of failures, and a locked account fails every
+         later job there too). At most WD_MAX_FAILS refusals per site per day.
+       • Then, if your Gmail is connected through the API (it can read the reset
+         link): "Forgot your password?" → the reset email → a new password = your
+         shared ATS password → sign in. The link is only followed when it points
+         back to this same Workday site.
+       • Otherwise the job FAILS at once with the reason ("account exists with a
+         different password — add it under 🔐 Site logins…"), and later jobs on the
+         same site fail fast the same way instead of trying again, until a
+         password you add changes the list.
+       • Unverified account → the verification email (existing mailbox path).
+     Nothing here is ever counted as "applied" (see onAuthWallOnly). */
+  const WD_SITE_PW_KEY = 'ua_wd_site_pw';        // { site: password that worked there }
+  const WD_FAIL_KEY = 'ua_wd_signin_fails';       // { site: { n, at } } refused sign-ins
+  const WD_UNKNOWN_KEY = 'ua_wd_pw_unknown';      // { site: { at, cand } } no saved password works
+  const WD_MAX_FAILS = 4;
+  const WD_LOCKED_RE = /\blocked\b|too many (failed |unsuccessful )?(attempts|tries|sign.?in)|temporarily (disabled|blocked|unavailable)|account (is )?(disabled|suspended)/i;
+  const WD_FORGOT_RE = /forgot (your |my )?password|reset (your |my )?password|trouble signing in|can.?t sign in/i;
+  let _authDeadEnd = '';                          // why this job cannot get past the sign-in
+
+  function wdCandHash(cands) {
+    let h = 0;
+    for (const ch of cands.join('\u0001')) h = (h * 31 + ch.charCodeAt(0)) | 0;
+    return cands.length + ':' + (h >>> 0).toString(36);   // which passwords, never the passwords
+  }
+  async function wdSiteRecord(key, update) {
+    const all = (await st.get(key)) || {};
+    const k = accountKeyFor(location.hostname);
+    if (update === undefined) return all[k] || null;
+    if (update === null) delete all[k]; else all[k] = update;
+    await st.set(key, all);
+    return all[k] || null;
+  }
+  async function wdNoteRefused() {
+    const cur = await wdSiteRecord(WD_FAIL_KEY);
+    const fresh = cur && Date.now() - cur.at < 24 * 3600 * 1000 ? cur : { n: 0, at: Date.now() };
+    return (await wdSiteRecord(WD_FAIL_KEY, { n: fresh.n + 1, at: Date.now() })).n;
+  }
+  async function wdRefusedCount() {
+    const cur = await wdSiteRecord(WD_FAIL_KEY);
+    return cur && Date.now() - cur.at < 24 * 3600 * 1000 ? cur.n : 0;
+  }
+  /* Past the wall: remember what worked, forget the failures. */
+  async function wdAuthSucceeded() {
+    try {
+      const auth = wdAuthState();
+      if (auth.lastPw) await wdSiteRecord(WD_SITE_PW_KEY, auth.lastPw);
+      await wdSiteRecord(WD_FAIL_KEY, null);
+      await wdSiteRecord(WD_UNKNOWN_KEY, null);
+      if (auth.reset) { auth.reset = null; wdAuthSave(); }
+    } catch (_) {}
+  }
+  function wdResetActive() {
+    try { const r = wdAuthState().reset; return !!(r && r.step && r.step !== 'done' && Date.now() - (r.at || 0) < 6 * 60 * 1000); } catch (_) { return false; }
+  }
+  function mailboxStatus() {
+    return new Promise((res) => {
+      try { chrome.runtime.sendMessage({ type: 'UA_MAIL_STATUS' }, (r) => { void chrome.runtime.lastError; res(r || {}); }); }
+      catch (_) { res({}); }
+    });
+  }
+  function askMailboxForReset(since) {
+    return new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', kind: 'reset', hosts: [location.hostname], companies: [], since }, (r) => {
+          void chrome.runtime.lastError; res(r || { ok: false });
+        });
+      } catch (_) { res({ ok: false }); }
+    });
+  }
+  /* No saved password gets in. Reset through your mailbox if it can read the
+     link; otherwise stop the job with a reason you can act on. */
+  async function wdPasswordDeadEnd(why, candidates) {
+    const auth = wdAuthState();
+    const email = await getAppEmail();
+    if (!auth.reset) {
+      const mb = await mailboxStatus();
+      const forgot = $$('a,button,[role="button"]').filter(isVisible).find((b) => WD_FORGOT_RE.test((b.textContent || '').trim()) && (b.textContent || '').length < 60)
+        || deepOne('[data-automation-id="forgotPasswordLink"]');
+      if (mb.enabled && mb.connected && forgot) {
+        auth.reset = { step: 'requested', at: Date.now() }; wdAuthSave();
+        LOG(`Workday: ${why} — resetting the password through your mailbox (${mb.address || 'Gmail'})`);
+        realClick(forgot);
+        return 'working';
+      }
+    }
+    await wdSiteRecord(WD_UNKNOWN_KEY, { at: Date.now(), cand: wdCandHash(candidates) });
+    _authDeadEnd = `Workday account already exists for ${email} on ${location.hostname} with a password the extension doesn't have (${why}). ` +
+      'Add it under 🔐 Site logins in the Queue Manager, or reset it there with "Forgot your password?" to your shared ATS password' +
+      ' — or connect Gmail (API) in the Queue Manager so the extension can reset it itself.';
+    LOG('Workday: ' + _authDeadEnd);
+    DIAG('workday.password-mismatch', why, { detail: { tried: candidates.length } });
+    return 'stop';
+  }
+  /* The reset pages: email → (the email) → new password. */
+  async function wdResetStep() {
+    const auth = wdAuthState();
+    const r = auth.reset;
+    if (!r || r.step === 'done') return null;
+    const pw = $$('input[type=password]').filter(isVisible);
+    const emailBox = $$('input[type=email],input[type=text]').filter(isVisible)
+      .find((i) => /e-?mail/i.test((getLabel(i) || '') + (i.name || '') + (i.id || '') + (i.getAttribute('data-automation-id') || '')));
+    const press = () => {
+      const b = $$('button,[role="button"],input[type=submit]').filter((x) => isVisible(x) && !x.disabled)
+        .find((x) => /^(submit|reset( password)?|send( (reset )?(link|email))?|continue|next|save|change password|set password|update password)\b/i.test(((x.textContent || x.value || '') + '').trim()));
+      if (b) { pressWorkdayButton(b); return true; }
+      return false;
+    };
+    // The new-password page (from the emailed link): two password boxes, no email box.
+    if (pw.length >= 2 && !emailBox) {
+      const newPw = await getAppPassword();
+      for (const f of pw) if (f.value !== newPw) reactTypeValue(f, newPw);
+      if (press()) {
+        auth.lastPw = newPw; auth.reset = { step: 'done', at: Date.now() }; auth.idx = 0; auth.triedSignIn = false; wdAuthSave();
+        await wdSiteRecord(WD_SITE_PW_KEY, newPw);
+        await wdSiteRecord(WD_FAIL_KEY, null);
+        await wdSiteRecord(WD_UNKNOWN_KEY, null);
+        LOG('Workday: new password set from the reset email — signing in with it');
+      }
+      return 'working';
+    }
+    if (r.step === 'requested') {
+      if (emailBox && !pw.length) {
+        const email = await getAppEmail();
+        if (emailBox.value !== email) reactTypeValue(emailBox, email);
+        if (press()) { auth.reset = { step: 'sent', at: Date.now(), since: Date.now() - 30000 }; wdAuthSave(); LOG('Workday: password reset requested — waiting for the email'); }
+      }
+      return 'working';
+    }
+    if (r.step === 'sent') {
+      noteProgress('Workday: waiting for the password reset email');
+      const m = await askMailboxForReset(r.since);
+      if (m && m.ok && m.link) {
+        let u = null;
+        try { u = new URL(m.link); } catch (_) {}
+        if (u && u.protocol === 'https:' && u.hostname === location.hostname) {
+          auth.reset = { step: 'link', at: Date.now() }; wdAuthSave();
+          LOG('Workday: reset email found — opening its link');
+          location.assign(u.href);
+          return 'working';
+        }
+      }
+      if (Date.now() - r.at > 3 * 60 * 1000) {
+        auth.reset = { step: 'done', at: Date.now() }; wdAuthSave();
+        _authDeadEnd = `Workday account already exists on ${location.hostname} with another password, and the reset email did not arrive within 3 minutes. Reset it from your inbox to your shared ATS password, or add it under 🔐 Site logins.`;
+        LOG('Workday: ' + _authDeadEnd);
+        return 'stop';
+      }
+      return 'working';
+    }
+    return 'working';
+  }
+
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
+    if (_authDeadEnd) return 'stop';
+    if (submit && wdAuthState().reset) { const rs = await wdResetStep(); if (rs) return rs; }
     let pwFields = $$('input[type=password]').filter(isVisible);
     if (!pwFields.length) return 'stop'; // not on a create-account / sign-in page
     const email = await getAppEmail();
@@ -10344,23 +10532,34 @@
       if (toSignIn && isVisible(toSignIn)) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: account already created here — switching to Sign In'); realClick(toSignIn); return 'working'; }
     }
 
+    /* Locked: no more attempts at all — each one would only extend the lock. */
+    if (WD_LOCKED_RE.test(errText) && !/might be locked/i.test(errText)) return wdPasswordDeadEnd('the account is locked', candidates);
+    /* A site where none of these passwords worked before, and the list has not
+       changed since: fail fast instead of spending attempts towards a lockout. */
+    if (onSignIn && !auth.triedSignIn && !auth.reset) {
+      const unk = await wdSiteRecord(WD_UNKNOWN_KEY);
+      if (unk && unk.cand === wdCandHash(candidates) && Date.now() - unk.at < 7 * 24 * 3600 * 1000) {
+        return wdPasswordDeadEnd('none of the saved passwords worked here last time', candidates);
+      }
+    }
     /* A refused sign-in on a tenant that DOES have an account: the password is
-       not the one we tried. Next candidate — never back to Create Account. */
+       not the one we tried. Next candidate — never back to Create Account —
+       within a per-site budget that stays under Workday's lockout. */
     if (onSignIn && wrongCredErr && auth.exists && auth.triedSignIn) {
-      if (auth.idx + 1 < candidates.length) {
+      const refused = await wdNoteRefused();
+      if (auth.idx + 1 < candidates.length && refused < WD_MAX_FAILS) {
         auth.idx++; auth.triedSignIn = false; wdAuthSave();
         LOG(`Workday: that password was refused — trying saved password ${auth.idx + 1} of ${candidates.length}`);
         for (const f of pwFields) reactTypeValue(f, candidates[auth.idx]);
         return 'working';
       }
-      LOG('Workday: an account exists here, and every saved password was refused — add this employer under 🔐 Site logins in the Queue Manager');
-      DIAG('workday.password-mismatch', 'account exists with a different password', { detail: { tried: candidates.length } });
-      try { reportNeedsHuman('Workday account exists with a different password — add it under Site logins'); } catch (_) {}
-      return 'stop';
+      auth.triedSignIn = false; wdAuthSave();
+      return wdPasswordDeadEnd(refused >= WD_MAX_FAILS ? `${refused} sign-ins refused today — stopping before Workday locks the account` : `all ${candidates.length} saved passwords were refused`, candidates);
     }
     // Self-correct the form mode based on the error text (covers accounts created outside
     // the extension, or a stale record).
     if (onSignIn && wrongCredErr && !auth.exists) {
+      if (auth.triedSignIn) { auth.triedSignIn = false; wdAuthSave(); await wdNoteRefused(); }
       const toCreate = inFormLink(/create account|sign ?up|new user|don'?t have an account/i);
       if (toCreate) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: Sign In rejected (no account yet) — switching to Create Account'); realClick(toCreate); return 'working'; }
     }
@@ -10401,6 +10600,7 @@
       if (!createBtn.disabled && createBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
+        auth.lastPw = pw; wdAuthSave();
         pressWorkdayButton(createBtn);
         /* Record it NOW, not only if the watcher later happens to see the
            My Information page. The run frequently navigates on before that
@@ -10417,7 +10617,7 @@
       if (!signInBtn.disabled && signInBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: signing in with saved password ${Math.min(auth.idx, candidates.length - 1) + 1} of ${candidates.length} (action ${_wdActions}/${WD_MAX_ACTIONS})`);
-        auth.triedSignIn = true; wdAuthSave();
+        auth.triedSignIn = true; auth.lastPw = pw; wdAuthSave();
         pressWorkdayButton(signInBtn);
         await markAccountCreated(location.hostname);   // an account we can sign into exists
       }
@@ -10728,6 +10928,7 @@
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       clearSubmitAttempt();   // this job has not submitted anything yet
       _uaJobKey = String(c.id || c.url || '');
+      _authDeadEnd = '';
 
       /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
          This used to stack four layers of repetition on top of each other, and
@@ -10752,6 +10953,7 @@
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
         if (attempt === 0) {
           await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation', 0);
+          if (_authDeadEnd) break;        // cannot get past the sign-in: fail now, with the reason
         } else {
           /* Second and final attempt: top up whatever is still empty and press
              the button again. No driver, no page walk — if the first pass could
@@ -10972,9 +11174,11 @@
           // persistent validation error fast-fails instead of waiting the whole timeout.
           clearSubmitAttempt(); // no submit evidence carried over from the previous job
           _uaJobKey = String(c.id || c.url || '');
+          _authDeadEnd = '';
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
+            if (_authDeadEnd) break;      // cannot get past the sign-in: fail now, with the reason
             // Verify submission (poll for a confirmation signal).
             await withBusy('verifying submission', async () => {
             for (let check = 0; check < 6; check++) {

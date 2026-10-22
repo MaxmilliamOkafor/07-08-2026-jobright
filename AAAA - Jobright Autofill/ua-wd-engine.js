@@ -2646,6 +2646,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   var LOGIN_KEY = "ua_wd_login";
   var CV_KEY = "ua_wd_cv_profile";
   var say = (msg) => console.info(`[UA][WD-Engine] ${msg}`);
+  var logShown = 0;
   var W = window;
   function within(p, ms) {
     return Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
@@ -2704,10 +2705,17 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const r = crypto.getRandomValues(new Uint32Array(12));
     return "Ua" + Array.from(r, (n) => abc[n % abc.length]).join("") + "!7q";
   }
+  function siteKey(host2 = location.hostname) {
+    return host2.toLowerCase().replace(/^www\./, "").replace(/\.wd\d+\./, ".").replace(/\.myworkdaysite\.com$/, ".myworkdayjobs.com");
+  }
   async function workdayLogin() {
-    const d = await ST.get([LOGIN_KEY, "ua_app_password", "ua_app_email", "WORKDAY_SIGNUP_INFORMATION"]);
+    const d = await ST.get([LOGIN_KEY, "ua_app_password", "ua_app_email", "WORKDAY_SIGNUP_INFORMATION", "ua_ats_logins", "ua_wd_site_pw"]);
     const login = Object.assign({ sites: {} }, d[LOGIN_KEY] || {});
-    let password = d.ua_app_password || "";
+    const k = siteKey();
+    const site = (d.ua_ats_logins || {})[k];
+    if (site && site.email && site.password) return { email: site.email, password: site.password, login: { ...login, sites: { ...login.sites, [tenantHost()]: { state: "account" } } } };
+    const known = (d.ua_wd_site_pw || {})[k];
+    let password = known || d.ua_app_password || "";
     if (!password) {
       try {
         const jr = typeof d.WORKDAY_SIGNUP_INFORMATION === "string" ? JSON.parse(d.WORKDAY_SIGNUP_INFORMATION) : d.WORKDAY_SIGNUP_INFORMATION;
@@ -2765,6 +2773,12 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       case "wd:progress":
         try {
           W.__uaWdProgress?.(msg.state?.page || "");
+        } catch {
+        }
+        try {
+          const log = msg.state && msg.state.log || [];
+          for (const l of log.slice(Math.max(0, Math.min(logShown, log.length)))) say(`${l.level && l.level !== "info" ? l.level + ": " : ""}${l.msg}`);
+          logShown = log.length;
         } catch {
         }
         return void 0;
@@ -3110,6 +3124,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
   }
   async function installHooks(mode) {
+    logShown = 0;
     const profile = await buildProfile();
     let cv = null;
     accountNoted = false;
@@ -3128,6 +3143,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   var AUTH_PAGES = ["signIn", "createAccount", "verifyEmail"];
   var accountNoted = false;
   var lastPage = "";
+  var lastActive = 0;
+  var bootUntil = 0;
   function onPage(run) {
     lastPage = run.page;
     if (!accountNoted && !AUTH_PAGES.includes(run.page) && run.done.some((p) => p === "signIn" || p === "createAccount")) {
@@ -3187,6 +3204,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     const mode = { queue: true, submit: true, startedAt: Date.now(), jobId: id };
     writeMode(mode);
+    bootUntil = Date.now() + 3e4;
     say(`applying (queue job ${id.slice(0, 40)})`);
     try {
       for (let i = 0; i < 40 && !hasWorkdayApp(); i++) await new Promise((r) => setTimeout(r, 500));
@@ -3202,10 +3220,23 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     isWorkday: () => TOP && isWorkdayHost(),
     startJob: (jobId) => void startJob(jobId),
     result: (jobId) => readResult(String(jobId || "")),
-    /** Still working on this job (or resuming it after a reload). */
+    /** Still working on this job (or about to resume it after a reload). A run
+     *  that ended without reporting (the engine stops quietly on, e.g., a Submit
+     *  button outside Review) is recorded here as "stopped" on its page, so the
+     *  host carries on instead of waiting for an outcome that never comes. */
     running: (jobId) => {
+      const id = String(jobId || "");
+      if (isActive()) {
+        lastActive = Date.now();
+        return true;
+      }
       const m = readMode();
-      return !!m && m.jobId === String(jobId || "") && !m.assist || isActive() && !!m;
+      if (!m || m.jobId !== id || m.assist) return false;
+      const ran = lastActive >= m.startedAt;
+      if (ran ? Date.now() - lastActive < 2500 : Date.now() < bootUntil || Date.now() - m.startedAt < 8e3) return true;
+      clearMode();
+      if (!readResult(id)) writeResult({ jobId: id, outcome: "stopped", page: lastPage || detectPage(), at: Date.now(), reason: "the engine stopped on this page without finishing" });
+      return false;
     },
     page: () => lastPage || detectPage(),
     stop: () => {
@@ -3296,6 +3327,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const boot = (tries = 0) => {
       const mode = readMode();
       if (!mode || mode.assist) return;
+      if (!tries) bootUntil = Date.now() + 35e3;
       if (!hasWorkdayApp()) {
         if (tries < 60) setTimeout(() => boot(tries + 1), 500);
         return;

@@ -33,7 +33,7 @@ const T0 = Date.now();
   const logs = [];
   ctx.on('page', (p) => {
     if (process.env.LOG_TABS) { const t0 = Date.now(); setTimeout(() => logs.push('TAB opened: ' + p.url()), 1500); p.on('close', () => logs.push('TAB closed: ' + p.url())); }
-    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push((process.env.LOG_TIMES ? '+' + Math.round((Date.now() - T0) / 1000) + 's ' : '') + t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
+    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|FX_|verification|code/i.test(t)) logs.push((process.env.LOG_TIMES ? '+' + Math.round((Date.now() - T0) / 1000) + 's ' : '') + t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
 
@@ -80,6 +80,19 @@ const T0 = Date.now();
         // The Workday mock exposes its own state: where the application got to.
         mock: window.__mock ? { route: window.__mock.route, step: window.__mock.step, data: window.__mock.data, files: window.__mock.files } : undefined };
     }).catch((e) => ({ err: e.message }));
+    // MUT_PROBE=1: what keeps changing the page (an engine waiting for quiet never gets it).
+    if (process.env.MUT_PROBE) {
+      const m = await jobPage.evaluate(() => {
+        if (!window.__mutProbe) {
+          window.__mutProbe = { n: 0, who: {} };
+          new MutationObserver((list) => { for (const r of list) { window.__mutProbe.n++; const t = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+            const k = (t && (t.id ? '#' + t.id : t.tagName + (t.className && typeof t.className === 'string' ? '.' + t.className.split(' ')[0] : ''))) + ':' + r.type + (r.attributeName ? '@' + r.attributeName : '');
+            window.__mutProbe.who[k] = (window.__mutProbe.who[k] || 0) + 1; } }).observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+        }
+        const p = window.__mutProbe; const top = Object.entries(p.who).sort((a, b) => b[1] - a[1]).slice(0, 4); p.who = {}; const n = p.n; p.n = 0; return { n, top };
+      }).catch(() => null);
+      if (m) logs.push('MUT ' + JSON.stringify(m));
+    }
     snapshots.push(s);
     if (s.submitted || (s.body && /thank you/i.test(s.body))) break;
   }

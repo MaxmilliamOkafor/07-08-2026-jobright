@@ -3654,3 +3654,45 @@ pdf.js, loaded into a tab only when a CV is read.
 - Switches (storage):
   - `ua_wd_engine_off: true` gives Workday back to the built-in flow.
   - `ua_wd_assist: false` turns assist off.
+
+## v17.25 — Workday accounts made before, lockouts, resets; "applied" means applied
+
+Your screenshot: a Workday site said *"You may have entered the wrong email
+address or password or your account might be locked"*. The account already
+existed (made earlier by hand or by another tool) with a different password.
+The run sat on "Processing…" and the queue then showed **1 applied** although
+nothing was submitted.
+
+**The counts.** A press of Sign In or Create Account was recorded as
+"submitted". After a grace period with no recognised error and no application
+form on screen, that counted as an application. Now:
+- Pressing Sign In or Create Account is never recorded as submitting.
+- Nothing counts as applied while a sign-in or create-account form is on screen.
+- Workday's Sign In button is never pressed as the application's Submit.
+
+An application form that itself asks for a password (SuccessFactors) still counts.
+
+**What happens on a Workday site now:**
+
+| Situation | What it does |
+|---|---|
+| New site | Creates the account with your shared ATS password. |
+| "Account already exists" | Signs in. Passwords are tried in this order: your 🔐 site login for that employer, **the password that worked on this site before**, the shared ATS password, Jobright's Workday password. |
+| A password works | It is **remembered for that site**, used first next time, and used by your Workday engine if a session expires mid-application. |
+| Passwords refused | At most **4 refusals per site per day**, staying under Workday's lockout (usually 5). |
+| "Account locked" | No more attempts. |
+| None of the passwords work, and your Gmail is connected through the API | "Forgot your password?" → reads the reset email → sets the password to your shared ATS password → signs in. The link is only followed when it points back to the same Workday site. |
+| None of the passwords work otherwise | The job **fails immediately, with the reason** ("account already exists for … on … with a password the extension doesn't have — add it under 🔐 Site logins…"). It is not left on "Processing…" and not counted as applied. Later jobs on that site fail fast the same way, without further sign-in attempts, until you add or change a password. |
+| Account not verified | The existing mailbox path reads the verification email. |
+
+Your Workday engine now starts after the sign-in, which stays with this
+extension because it knows every saved password, the lockout limit and the
+reset. If the engine stops quietly on a page, that is noticed within seconds
+and the built-in flow carries on.
+
+Tested in Chromium with `tests/e2e/workday-auth.html`:
+- An account made earlier with an unknown password: two sign-in attempts, then
+  the job failed in 27s with the reason above. Not counted as applied.
+- An account whose password is Jobright's: sign-in on the second password,
+  then submitted.
+- The full Workday mock: create account → your engine → submitted in 39s.

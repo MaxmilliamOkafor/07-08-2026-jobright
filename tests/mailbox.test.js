@@ -209,7 +209,8 @@ console.log('verification codes from the signed-in Gmail feed');
     eq('the sender name is decoded', mk({}).parse(feed([jpmc]))[0].from.startsWith('JPMorgan Chase & Co.'), true);
   })();
   eq('it is opt-in', /if \(!apiOn && !feedOn\) return sendResponse\(\{ ok: false, reason: 'disabled' \}\);/.test(src), true);
-  eq('and used when the API route is not set up', /if \(!r\.ok && feedOn\) r = await findViaGmailSession\(hints\);/.test(src), true);
+  eq('and used when the API route is not set up', /if \(!r\.ok && feedOn && !kind\) r = await findViaGmailSession\(hints\);/.test(src), true);
+  eq('a password reset is only ever a link, read through the API route', /kind === 'reset' \? \/reset\|password\|token\|recover\/i/.test(src) && /hints\.kind === 'reset' \? null/.test(src), true);
   eq('nothing from the email body is stored', /local\.set\([^)]*summary|local\.set\([^)]*code/.test(chunk), false);
 }
 
