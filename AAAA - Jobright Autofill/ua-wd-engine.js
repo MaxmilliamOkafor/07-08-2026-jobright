@@ -2429,10 +2429,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       }
       case "applyMethod": {
         await waitForExternalDocs(ctx);
-        const hasCv = !!pickCv(ctx);
-        const btn = hasCv && byAid("autofillWithResume") || byAid("applyManually") || byAid("autofillWithResume");
-        if (!btn) throw new NeedsHuman("Choose how to apply, then click Resume.");
-        ctx.log(hasCv ? "Apply method: Autofill with Resume (tailored CV)" : "Apply method: Apply Manually");
+        const btn = byAid("applyManually");
+        if (!btn) throw new NeedsHuman('Choose "Apply Manually", then click Resume.');
+        ctx.log("Apply method: Apply Manually");
         await humanClick(btn);
         await waitStable(600);
         return "next";

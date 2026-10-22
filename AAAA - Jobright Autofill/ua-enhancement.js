@@ -3663,7 +3663,12 @@
   function isDestructiveControl(el) {
     try {
       if (!el || !el.getAttribute) return false;
+      // Workday's "Autofill with Resume" / "Use My Last Application": never pressed —
+      // "Apply Manually" is the only choice taken on "Start Your Application".
+      const aid = el.getAttribute('data-automation-id') || (el.closest && el.closest('[data-automation-id]') && el.closest('[data-automation-id]').getAttribute('data-automation-id')) || '';
+      if (/^(autofillWithResume|useMyLastApplication|useLastApplication)$/i.test(aid)) return true;
       const name = controlName(el);
+      if (/^\s*(autofill with (my )?(resume|cv)|use my last application)\s*$/i.test(name)) return true;
       if (DESTRUCTIVE_NAME_RE.test(name)) return true;
       // An icon-only control anywhere near an uploaded file. Checked across shadow
       // boundaries, and the icon may live inside the button's own shadow root.
@@ -13588,7 +13593,7 @@
   /* Things that read like Apply but are not: the already-applied state, a filter,
      a save/share affordance, a sign-in wall, a link back to the listing. Clicking
      any of them wastes a click and can navigate off the job entirely. */
-  const APPLY_BAD_RE = /already applied|you have applied|application (sent|submitted|received)|how to apply|apply filter|apply filters|apply changes|apply coupon|save (this )?job|share (this )?job|refer a friend|job alert|create (an )?alert|sign ?in|log ?in|create (an )?account|register now|^applied$|^apply later$|view (all )?(other )?jobs|see (all|other) jobs|similar jobs|back to (jobs|search|results)|report this|withdraw/i;
+  const APPLY_BAD_RE = /autofill with (my )?(resume|cv)|use my last application|autofill (this )?application|already applied|you have applied|application (sent|submitted|received)|how to apply|apply filter|apply filters|apply changes|apply coupon|save (this )?job|share (this )?job|refer a friend|job alert|create (an )?alert|sign ?in|log ?in|create (an )?account|register now|^applied$|^apply later$|view (all )?(other )?jobs|see (all|other) jobs|similar jobs|back to (jobs|search|results)|report this|withdraw/i;
 
   function isApplyLabel(text) {
     const t = normLabel(text);
@@ -13602,6 +13607,11 @@
      aggregators — one per "other jobs at this company" row). Prefer the real
      primary action. Enumerated deeply, so an apply button inside a web component
      or a same-origin frame is found, and our own sidebar is excluded. */
+  /* Workday's "Start Your Application" choices: only "Apply Manually" is ever
+     pressed. "Autofill with Resume" (Workday's own CV parse) and "Use My Last
+     Application" bring in wrong data — and "useMyLastApplication" contains
+     "apply", so the [data-automation-id*="apply"] selector below could take it. */
+  const WD_NEVER_PRESS_AID_RE = /^(autofillWithResume|useMyLastApplication|useLastApplication)$/i;
   function findApplyButton() {
     const known = ['.jobs-apply-button', 'button.jobs-apply-button--top-card', '#indeedApplyButton',
       '#applyButtonLinkContainer a', 'button[data-testid*="apply" i]', 'a[data-testid*="apply" i]',
@@ -13609,7 +13619,7 @@
       'button[aria-label*="apply" i]', 'a[aria-label*="apply" i]', 'spl-button[data-test*="apply" i]'];
     for (const sel of known) {
       for (const el of deepAll(sel, 8)) {
-        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent))) return el;
+        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent)) && !WD_NEVER_PRESS_AID_RE.test(el.getAttribute('data-automation-id') || '')) return el;
       }
     }
     const cands = deepAll('button,a[role="button"],a,[role="button"],input[type=button],input[type=submit],spl-button,oj-button', 400)

@@ -227,10 +227,11 @@ async function handlePage(ctx: Ctx, page: PageKind): Promise<StepResult> {
     }
     case "applyMethod": {
       await waitForExternalDocs(ctx);
-      const hasCv = !!pickCv(ctx);
-      const btn = (hasCv && byAid("autofillWithResume")) || byAid("applyManually") || byAid("autofillWithResume");
-      if (!btn) throw new NeedsHuman("Choose how to apply, then click Resume.");
-      ctx.log(hasCv ? "Apply method: Autofill with Resume (tailored CV)" : "Apply method: Apply Manually");
+      // [ua] Always "Apply Manually" — never "Autofill with Resume" or "Use My Last Application"
+      // (Workday's parse of the CV and an old application both bring in wrong data).
+      const btn = byAid("applyManually");
+      if (!btn) throw new NeedsHuman("Choose \"Apply Manually\", then click Resume.");
+      ctx.log("Apply method: Apply Manually");
       await humanClick(btn);
       await waitStable(600);
       return "next";

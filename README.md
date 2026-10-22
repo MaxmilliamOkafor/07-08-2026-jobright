@@ -3696,3 +3696,22 @@ Tested in Chromium with `tests/e2e/workday-auth.html`:
 - An account whose password is Jobright's: sign-in on the second password,
   then submitted.
 - The full Workday mock: create account → your engine → submitted in 39s.
+
+## v17.26 — "Start Your Application": always "Apply Manually"
+
+On Workday's choice box (your CDW screenshot) only **Apply Manually** is ever
+pressed, never **Autofill with Resume** or **Use My Last Application**:
+
+- **Your Workday engine:** it used to press "Autofill with Resume" whenever it had
+  a CV. It now presses only "Apply Manually". This is the one line changed in the
+  copied engine source, marked `[ua]` in `workday-engine/src/workday/engine.ts`.
+- **The built-in flow** already pressed "Apply Manually" by its id. Two gaps are
+  closed:
+  - The generic Apply-button finder matched any `data-automation-id` containing
+    "apply", which includes `useMyLastApplication`. It now skips both buttons.
+  - Their labels are excluded as Apply labels.
+- **The click layer refuses both buttons** by id and by label, whichever part of
+  this extension tries to press them, in the same way it refuses an attachment's
+  remove button.
+
+The Workday mock now shows all three choices and logs which one was pressed.

@@ -3412,6 +3412,22 @@ console.log('v17.25: Workday sign-in scenarios; a sign-in is never "applied"');
 }
 
 
+/* ── 76. v17.26: Workday "Start Your Application" — only ever "Apply Manually" ── */
+console.log('v17.26: Apply Manually, never Autofill with Resume / Use My Last Application');
+{
+  const bad = new RegExp(src.match(/const APPLY_BAD_RE = \/(.*)\/i;/)[1], 'i');
+  for (const t of ['Autofill with Resume', 'Use My Last Application', 'Autofill Application']) eq(`"${t}" is never an Apply button`, bad.test(t.toLowerCase()), true);
+  eq('"Apply Manually" still is not excluded', bad.test('apply manually'), false);
+  eq('the [data-automation-id*=apply] selector cannot take useMyLastApplication', /!WD_NEVER_PRESS_AID_RE\.test\(el\.getAttribute\('data-automation-id'\) \|\| ''\)/.test(body('findApplyButton')), true);
+  const dc = body('isDestructiveControl');
+  eq('the click layer refuses both, by id and by label (every click path)', /autofillWithResume\|useMyLastApplication/.test(dc) && /autofill with \(my \)\?\(resume\|cv\)\|use my last application/.test(dc), true);
+  const eng = fs.readFileSync(path.join(path.dirname(path.dirname(process.argv[2])), 'workday-engine/src/workday/engine.ts'), 'utf8');
+  eq('your Workday engine presses Apply Manually only', /\/\/ \[ua\] Always "Apply Manually"/.test(eng) && /const btn = byAid\("applyManually"\);/.test(eng) && !/byAid\("autofillWithResume"\)/.test(eng), true);
+  eq('the built engine has it', /Apply method: Apply Manually/.test(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8')) &&
+    !/Autofill with Resume \(tailored CV\)/.test(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8')), true);
+}
+
+
 setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
