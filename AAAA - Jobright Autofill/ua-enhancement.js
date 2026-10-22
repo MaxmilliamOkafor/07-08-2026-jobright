@@ -6573,6 +6573,12 @@
       let raw = '';
       try { raw = guessFieldValue(label, p, null); } catch (_) { raw = guessValue(label, p) || ''; }
       if (!texts.length) return raw && !/^n\/?a$/i.test(raw) ? raw : null;
+      // Any language first ("Wurden Sie jemals … verurteilt?" → Nein): the Workday chooser.
+      try {
+        const c = wdChooseOption(label, texts, p);
+        if (c === 'decline') { const d = texts.find((t) => WD_DECLINE_RX.test(t)); if (d) return d; }
+        else if (c) return c;
+      } catch (_) {}
       const pols = texts.map(optionPolarity);
       const binary = texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) || (texts.some((t) => /^yes$/i.test(t)) && texts.some((t) => /^no$/i.test(t))));
       let i = -1;
