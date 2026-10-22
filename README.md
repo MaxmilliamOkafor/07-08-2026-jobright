@@ -3491,3 +3491,166 @@ the new bundle removed a file the manifest still points at, or if the appended
 - Resume tailoring is **off** by default: Jobright's generator can stall on
   *"Opening resume generator…"*. Turn it on per run in the panel if you want it.
 - A visible CAPTCHA pauses that job rather than failing it, so you can solve it.
+
+---
+
+## v17.19 — runs stay on the job; no more Jobright tabs piling up
+
+- **Jobright CSV links** (`jobright.ai/jobs/info/…`): the employer's application
+  link is read from Jobright's page data and opened **in the same tab**. Before,
+  Jobright's Apply opened the ATS in a new tab the run never followed, the run
+  moved on, and every job left a Jobright tab behind.
+- If Jobright's Apply still opens a tab, the run **moves to that tab** and closes
+  the old one, so one job always means one tab.
+- The runner gives a page up to 6 seconds to draw before deciding it is "not
+  the job", and remembers which site a job landed on. That was the "redirecting
+  back to Jobright": the employer page was judged off-job while still loading,
+  and the run went on to the next Jobright link.
+- A site's home page no longer counts as matching every job on that site.
+
+## v17.19 — "🤖 Fully Automated" off means off; Jobright on any page
+
+- With the toggle **off** (and no run going), Jobright's sidebar and autofill
+  **are not loaded** on ATS pages at all. The setting is saved and survives
+  restarts. During a run, the run's own tabs still get Jobright.
+- **Open Jobright on any page** whenever you want it: click the toolbar icon,
+  or right-click → **"Open Jobright on this page"**. That tab then keeps it until
+  it closes.
+
+## v17.20 — SuccessFactors (career*.successfactors.eu / .com)
+
+Shaped on the Ericsson "Data Engineer (791854)" form. Before, the run stopped at
+"Form filled but no Submit control was found":
+
+- **"Apply" at the bottom of the form is the submit** on SuccessFactors (only
+  there, and only inside a real application form; elsewhere "Apply" still means
+  "open the form").
+- **CV:** "Upload a Resume" is clicked, the CV put in the dialog, **Upload** pressed.
+- **Terms of Use:** the privacy statement is opened and **Accept** pressed.
+- **Country/Region Code** is picked from the code your phone number is written
+  with (+44 → United Kingdom (+44), not Isle of Man), then your profile.
+- **Citizenship 1** is your nationality (it used to be treated as a
+  right-to-work question and left on "No Selection"); Citizenship 2 only from
+  your profile.
+- Selects starting on **"No Selection"** count as empty, so they are answered.
+
+Tested in Chromium with `tests/e2e/successfactors.html`: every required field
+filled, CV uploaded, terms accepted, submitted.
+
+## v17.21 — Oracle Recruiting Cloud: address, postcode SW1W 0RH, self-identification, lists
+
+Based on your Goldman Sachs LateralHiring screenshots (hdpc.fa.us2.oraclecloud.com):
+
+- **The postal code is SW1W 0RH**, as you asked. On Oracle it is a list tied to
+  the country, so a typed code was never picked ("No results were found"), and
+  a UK code can't be found under "Ireland". The country is set to **United
+  Kingdom** first, then SW1W 0RH is typed and **picked from the list**, and Town
+  or City becomes **London**. To use something else on Oracle, set storage key
+  `ua_oracle_address` to `{postcode, country, city, line1}`.
+- **Address Line 1** had "United Kingdom" in it. A country name there is replaced
+  with your street. **Address Line 2** repeated the street, because the
+  general "address" rule caught "Address Line 2" first. It now comes from your
+  profile's second line, or stays empty. The location filler also stopped
+  writing "London, United Kingdom" into an empty Line 2.
+- **Self-identification pill buttons** are now answered. These are the buttons
+  that "didn't click": consent → **I consent**. Gender, gender identity, sexual
+  orientation, pronouns and disability → your profile's answer if it is one of
+  the options word for word, otherwise the **"Prefer not to say"** option in
+  whatever wording that list uses ("I prefer not to say", "Prefer Not To Say").
+- **Race/Ethnicity:** a list showing "No results were found" (or flagged by the
+  form) is treated as **empty**, not answered. The typed text is cleared and the
+  answer picked from the real options. "Black or African American" picks "Black,
+  Black British, Caribbean or African" on a UK list; with no profile answer it
+  picks "Prefer not to say". This applies to every list on every ATS: a
+  search that finds nothing now tries the first word, then the whole list.
+- "Thank you for your job application" is recognised as Oracle's confirmation.
+- Fields you edit yourself are left alone.
+
+Tested in Chromium with `tests/e2e/oracle.html`. That fixture copies the problems
+in your screenshots: Ireland preselected, a postcode list per country, pill
+questions, and a Race list holding typed text. Before this change it failed with
+"Validation errors could not be resolved". It now submits in ~13s, with every
+answer as listed above.
+
+## v17.22 — Workday at SpeedyApply speed, and you can edit while it fills
+
+- **No Jobright detour on Workday.** The Workday engine fills each step itself,
+  as SpeedyApply does. Jobright's autofill is called only if a required field is
+  still empty after that. The "tailor-first" pass is skipped unless you turned on
+  resume tailoring for the queue. That pass could spend ~35s per job waiting for
+  Jobright's sidebar and its Filling → Autofill button.
+- **No flat waits between steps.** The run moves on as soon as Workday shows
+  the next step, instead of a fixed 1.5s before each page and 2.5s after each Next.
+- **Edit while it fills:**
+  - **Your cursor stays put.** The fillers focus each field they write. While
+    you were typing, that moved your cursor mid-word into another box. Now,
+    while you are typing in a field, the extension's focus calls leave your
+    cursor where it is (all ATS, Jobright's autofill included).
+  - **Nothing you typed is overwritten.** The Workday engine skips any field you
+    have typed in or picked from, as the other fillers already did.
+  - **Next / Submit wait for you.** If you are editing when the run is ready to
+    advance, it waits until you stop (up to 90s), checks the page again, then
+    moves on. Only real key presses, clicks and pastes count as editing.
+
+## v17.23 — Knockout answers that can't rank you last: years → 7, AWS certified → Yes
+
+A wrong knockout answer can rank an application at the bottom for good, so
+these are now fixed rules instead of guesses, on every ATS and for every filler:
+
+- **Any years-of-experience question → 7**, including skill-specific ones
+  ("…with Python?"). The only override is a number you type into this
+  extension's profile editor ("Years Experience"). Years merged in from other
+  stored data, a count worked out from your roles (the Workday engine), or
+  Jobright's own guess can no longer lower it. Range dropdowns pick the range
+  containing 7.
+- **"Do you have N+ years of …?" → Yes** when 7 ≥ N.
+- **"Do you hold an AWS Certified … certification?" → Yes** (radio, dropdown or
+  pill). "Which AWS certifications…?" still gets your text answer.
+- Saved or learned answers that disagree are ignored. Your own manual answer to
+  that exact question still wins.
+- **Checked again before every submit.** Whoever filled the page (Jobright's
+  autofill, a saved answer, a parser), these answers are corrected to the rule
+  first. Fields you typed in yourself are left alone.
+
+Tested in Chromium with `tests/e2e/knockout.html`. Another filler first puts in
+3 years, "1-3 years", and No / No / No. The application went out with 7,
+"7-10 years", and Yes / Yes / Yes.
+
+## v17.24 — Your Workday engine, inside this extension
+
+Your Workday engine from `optimhire-updates` (branch
+`claude/jolly-fermat-8VrR3`, `workday-engine/`) is copied in unchanged as
+`workday-engine/src/workday` + `src/cv`. A Jobright adapter
+(`workday-engine/src/ua/entry.ts`) connects it to this extension. It is built
+(`cd workday-engine && npm install && npm run build`) into `ua-wd-engine.js`, a
+content script on Workday hosts, and `ua-wd-cvtext.js`, the CV reader with
+pdf.js, loaded into a tab only when a CV is read.
+
+- **Queue jobs on Workday** (CSV runner and Queue Manager) are applied by your
+  engine:
+  - It signs in or creates the account with your shared ATS password
+    (`ua_app_password`, else Jobright's Workday password).
+  - It uploads the CV saved in the extension, fills every step and submits.
+  - Answers come in this order: your saved/manual answers, the knockout rules
+    above, the engine's profile rules, then this extension's deciders. The
+    deciders stand in where the engine would have asked an AI.
+  - Questions the engine treats as "sensitive" (convictions, non-competes,
+    relatives, attestations, signature) are answered the way the built-in flow
+    answers them, so it doesn't pause.
+  - If the engine stops anyway, the built-in Workday flow carries on from that
+    step.
+  - On the Workday mock the whole application took **34s** (72s with the
+    built-in flow this morning, 139s before that).
+- **Assist (what you liked in SpeedyApply)**, with Fully Automated on outside a
+  run:
+  - Each step is filled the moment it appears, and nothing is pressed for you.
+    You check, edit and press Save and Continue.
+  - Each step is filled once: going Back never refills over your edits.
+  - On Review it submits after a **5-second countdown** with Submit now / Cancel.
+  - Fully Automated off stops it at once.
+- **Your roles from your CV** when the profile has none: every role, the current
+  one ticked, with descriptions, plus education, skills and languages. The CV is
+  read once and the result kept.
+- Switches (storage):
+  - `ua_wd_engine_off: true` gives Workday back to the built-in flow.
+  - `ua_wd_assist: false` turns assist off.

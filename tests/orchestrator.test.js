@@ -303,6 +303,71 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('even a working job is timed out past the hard ceiling', env.store.ua_q[0].status, 'timeout');
   }
 
+  /* ── 4c. Jobright opens the employer's site in its own tab: the run adopts it ── */
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('a', 'https://jobright.ai/jobs/info/68f0a1')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const jobTab = env.store.ua_mgr_tabs.a;
+    eq('our own job tab is not mistaken for Jobright\'s', typeof jobTab === 'number' && env.tabs.has(jobTab), true);
+    // What Jobright's worker does when Apply is pressed on its job page.
+    const child = await new Promise((r) => env.chrome.tabs.create({ url: 'https://job-boards.greenhouse.io/acme/jobs/4412392009' }, r));
+    await tick(60);
+    eq('the job moves to the tab Jobright opened', env.store.ua_mgr_tabs.a, child.id);
+    eq('the Jobright tab it left behind is closed', env.tabs.has(jobTab), false);
+    for (const l of env.listeners.tabRemoved) await l(jobTab);
+    await tick(40);
+    eq('and closing it does not put the job back in the queue', env.store.ua_q[0].status, 'applying');
+    // A Jobright page opened during a run is not an application: left alone.
+    const jr = await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobright.ai/jobs/applied' }, r));
+    await tick(40);
+    eq('a Jobright page Jobright opens is left alone', env.tabs.has(jr.id) && env.store.ua_mgr_tabs.a === child.id, true);
+  }
+
+  /* ── 4d. Jobright's helper loads only when Fully Automated is on, a run owns
+         the tab, or you opened Jobright there ── */
+  {
+    const env = makeChrome();
+    const injected = [];
+    env.chrome.scripting = { executeScript: (inj, cb) => { injected.push(inj.target.tabId); if (cb) setTimeout(() => cb([{}]), 0); return Promise.resolve([{}]); } };
+    const clicks = [];
+    env.chrome.action = { onClicked: { addListener: (l) => clicks.push(l) } };
+    env.chrome.contextMenus = { create: () => {}, removeAll: (cb) => cb && cb(), onClicked: { addListener: (l) => env.listeners.menu.push(l) } };
+    env.store.ua_aa = false;
+    load(env);
+    await tick();
+    const page = await new Promise((r) => env.chrome.tabs.create({ url: 'https://boards.greenhouse.io/acme/jobs/1' }, r));
+    const helper = (tabId) => new Promise((r) => env.chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: ['helper-app.41ea2652.js'], world: 'ISOLATED' }, r));
+    await helper(page.id);
+    eq('Fully Automated off: Jobright is not loaded into a page on its own', injected.includes(page.id), false);
+    // Other scripts are never held back.
+    await new Promise((r) => env.chrome.scripting.executeScript({ target: { tabId: page.id }, files: ['ua-enhancement.js'] }, r));
+    eq('our own scripts are never held back', injected.includes(page.id), true);
+    injected.length = 0;
+    // You click Jobright's icon on that page.
+    for (const l of clicks) l({ id: page.id });
+    await helper(page.id);
+    eq('after you click Jobright\'s icon it loads there', injected.includes(page.id), true);
+    // Right-click → "Open Jobright on this page", on any page.
+    const other = await new Promise((r) => env.chrome.tabs.create({ url: 'https://example.com/anything' }, r));
+    for (const l of env.listeners.menu) l({ menuItemId: 'ua-open-jobright' }, { id: other.id });
+    await tick(20);
+    eq('the menu asks the page to open Jobright', env.sent.some((s) => s.tabId === other.id && s.payload && s.payload.message === 'iconClicked'), true);
+    injected.length = 0;
+    await helper(other.id);
+    eq('and Jobright then loads there', injected.includes(other.id), true);
+    // Fully Automated on: loads anywhere it supports.
+    env.store.ua_aa = true;
+    const third = await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobs.lever.co/acme/1' }, r));
+    injected.length = 0;
+    await helper(third.id);
+    eq('Fully Automated on: Jobright loads as normal', injected.includes(third.id), true);
+  }
+
   /* ── 5. pause holds new tabs; resume refills ── */
   {
     const env = makeChrome();

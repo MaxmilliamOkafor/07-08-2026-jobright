@@ -975,6 +975,7 @@
     howHeard: 'LinkedIn',
   };
 
+  let _policyProfile = {};             // for knockoutPolicy in synchronous deciders
   async function getProfile() {
     let p = (await st.get(SK.PROF)) || {};
     // Also check OptimHire candidate data
@@ -982,10 +983,14 @@
     try {
       const cd = typeof ohData.candidateDetails === 'string' ? JSON.parse(ohData.candidateDetails) : (ohData.candidateDetails || {});
       const ud = typeof ohData.userDetails === 'string' ? JSON.parse(ohData.userDetails) : (ohData.userDetails || {});
+      const ownYears = p.years;              // only YOUR profile editor sets years
       p = { ...ud, ...cd, ...p };
+      p.years = ownYears;
     } catch (_) { }
+    _policyProfile = p;
     return p;
   }
+  try { getProfile().catch(() => {}); } catch (_) {}   // so the knockout rules see your profile from the start
 
   // ===================== SMART VALUE GUESSER =====================
   /* ── THE MESSAGE TO THE HIRING TEAM ────────────────────────────────────────
@@ -1112,6 +1117,14 @@
     return `${MM}/${DD}/${YYYY}`;                       // the ATS default
   }
 
+  /* The dial code a phone number was written with: "+44 7700 900123" → "+44".
+     Only when the number separates it ("+44 ", "0044-", "(+44)"); a run of
+     digits cannot be split without a code table, and a guess would be wrong. */
+  function dialCodeFromPhone(phone) {
+    const m = String(phone || '').trim().match(/^\(?(?:\+|00)(\d{1,3})\)?[\s.\-)]/);
+    return m ? '+' + m[1] : '';
+  }
+
   function guessValue(label, p) {
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
     // "What state do you reside in?" is a value question; it kept coming back
@@ -1137,9 +1150,13 @@
     }
     // "state" was matching as a SUBSTRING of "statement" — a "Personal Statement" essay
     // field was getting the literal US-state value stuffed into it. Word-bounded now.
-    if (/\bstate\b|province|region/.test(l) && !/statement/.test(l)) return p.state || '';
+    // "Country/Region Code" (SuccessFactors) is the phone dial code, not a region.
+    if (/\bstate\b|province|region/.test(l) && !/statement|country (region )?code/.test(l)) return p.state || '';
     if (/zip|postal/.test(l)) return p.postal_code || p.zip || '';
     if (/country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
+    // Line 2 before the general address rule — it caught "Address Line 2" and
+    // wrote the street into both lines (Oracle showed it twice).
+    if (/address\s*(line\s*)?2\b|\bline\s*2\b/.test(l)) return p.address_line_2 || p.address2 || '';
     if (/address|street/.test(l)) return p.address || '';
     if (/location|where.*(you|do you).*live/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
     if (/linkedin/.test(l)) return p.linkedin_profile_url || p.linkedin || '';
@@ -1195,6 +1212,12 @@
     // Both directions from one decider — see workAuthorisationAnswer. The old
     // pair ran /authoriz/ (which never matched the British "authorised") and then
     // /sponsor|visa/, so every European eligibility question answered "No".
+    /* "Citizenship 1:" on its own is a country picker, not a right-to-work
+       question — it went down the authorisation branch, came back "Yes", and the
+       required SuccessFactors select stayed on "No Selection". A second
+       citizenship is only filled from the profile. */
+    if (/^\s*(citizenship|nationality)\s*(1|one|primary)?\s*$/.test(l)) return p.nationality || p.citizenship || p.country || DEFAULTS.country;
+    if (/^\s*(citizenship|nationality)\s*(2|3|two|second|secondary|other|additional)\s*$|^\s*(second|secondary|other|additional|dual)\s+(citizenship|nationality)\s*$/.test(l)) return p.second_nationality || p.nationality2 || '';
     {
       const wa = workAuthorisationAnswer(label || '');
       if (wa === 'yes') return DEFAULTS.authorized;
@@ -1206,7 +1229,7 @@
     if (/disabilit/.test(l)) return p.disability || DEFAULTS.disability;
     if (/gender|sex\b|pronouns/.test(l)) return p.gender || DEFAULTS.gender;
     if (/ethnic|race|racial|heritage/.test(l)) return p.ethnicity || p.race || DEFAULTS.ethnicity;
-    if (/country.?code|phone.?code|dial.?code|calling.?code/.test(l)) return p.phoneCountryCode || DEFAULTS.phoneCountryCode;
+    if (/country.?(region.?)?code|phone.?code|dial.?code|calling.?code/.test(l)) return dialCodeFromPhone(p.phone) || p.phoneCountryCode || DEFAULTS.phoneCountryCode;
     if (/nationality|citizenship/.test(l)) return p.nationality || p.country || DEFAULTS.country;
     if (/language|fluency|fluent/.test(l)) return p.languages || 'English';
     if (/\bspeaking\b|\bspeak\b|oral.?proficiency/.test(l)) return p.language_proficiency || 'Advanced';
@@ -1318,10 +1341,44 @@
 
   // The candidate's own figure if they gave one, otherwise the default — never
   // zero and never blank, which are the two answers a years box must not carry.
+  /* ── YOUR KNOCKOUT ANSWERS — one rule, every ATS, every filler ─────────────
+     A wrong knockout answer ranks an application at the bottom for good, so
+     these are fixed rather than guessed:
+       • any years-of-experience question → 7 (DEFAULTS.years). The only
+         override is a number YOU put in this extension's profile editor
+         ("Years Experience"); years merged in from other stored data, a count
+         worked out from your roles (the Workday engine), or Jobright's guess
+         never lower it.
+       • "Do you have N+ years of …?" → Yes when 7 ≥ N.
+       • "Do you hold an AWS Certified … certification?" → Yes.
+     Your own manual answer to that exact question still wins; everything else
+     — saved responses, learned answers, the deciders, the Workday engine, and
+     whatever another filler typed — follows this. enforceKnockoutPolicy()
+     re-checks the page before every submit. */
   function yearsAnswer(p) {
-    const real = String((p && (p.years_experience || p.yearsExperience)) || DEFAULTS.years).trim();
-    const n = parseInt(real, 10);
-    return n > 0 ? String(n) : DEFAULTS.years;
+    const own = parseInt(String((p && p.years) || '').trim(), 10);
+    return own > 0 && own < 60 ? String(own) : DEFAULTS.years;
+  }
+  const AWS_CERT_Q_RE = /\b(aws|amazon web services)\b[^?]{0,90}\bcertif|\bcertif[^?]{0,60}\b(aws|amazon web services)\b/i;
+  const ASKS_LIST_RE = /\b(which|what|list|name|specify|describe|explain|provide|details?|when did|expir|number|id\b|credential id|date)\b/i;
+  const YES_NO_FORM_RE = /^\s*(do|did|does|are|is|have|has|can|will|would)\b|\b(do you|are you|have you)\b/i;
+  /* 'yes' | 'no' | a number of years as text | '' (no policy for this question). */
+  function knockoutPolicy(question, p) {
+    const q = String(question || '').replace(/\s+/g, ' ').trim();
+    if (!q) return '';
+    if (AWS_CERT_Q_RE.test(q) && YES_NO_FORM_RE.test(q) && !/\b(which|list|name|specify|when|expir|credential id)\b/i.test(q)) return 'yes';
+    if (YEARS_Q_RE.test(q) || /\b\d+\s*\+?\s*(\+|or more|plus)?\s*years?\b[^?]{0,40}\b(experience|exp)\b/i.test(q)) {
+      const yrs = parseInt(yearsAnswer(p), 10);
+      // "Do you have 5+ years…?" / "at least 3 years" — a yes/no on a threshold.
+      const th = q.match(/\b(?:at least|minimum(?: of)?|min\.?|over|more than)?\s*(\d{1,2})\s*(?:\+|or more|plus)?\s*(?:\+\s*)?years?\b/i);
+      if (YES_NO_FORM_RE.test(q) && !/how many|how long|number of years|total years/i.test(q) && th) {
+        const n = parseInt(th[1], 10);
+        const strictlyMore = /more than|over/i.test(th[0]);
+        return (strictlyMore ? yrs > n : yrs >= n) ? 'yes' : 'no';
+      }
+      if (/how many|how long|number of years|years of|total years|years.{0,24}experience|experience.{0,12}years/i.test(q) && !PROSE_Q_RE.test(q)) return String(yrs);
+    }
+    return '';
   }
 
   function refineAnswerForControl(val, label, p, el) {
@@ -1389,6 +1446,13 @@
     // question before — their answer must beat any generic guess) → built-in guesses →
     // fuzzy learned match as the last resort (kept last to avoid contamination).
     const questionText = el ? getFullQuestionText(el) : label;
+    {
+      const pol = knockoutPolicy(questionText || label, p) || (questionText !== label ? knockoutPolicy(label, p) : '');
+      if (pol && !isManualAnswer(label, el)) {
+        const v = pol === 'yes' ? 'Yes' : pol === 'no' ? 'No' : pol;
+        return refineAnswerForControl(v, label, p, el);
+      }
+    }
     /* Both of the FUZZY lookups are filtered — the saved-response bank and the
        fuzzy pass over learned answers. The exact learned answer between them is
        not: the user answered that precise question themselves, and their word is
@@ -1515,13 +1579,17 @@
      resulting focus change as a genuine event. Keys, pointer presses and real
      typing cannot be produced by a script, so those are what count. */
   const _userTouched = new WeakSet();
+  // The last moment you typed or clicked in one of the PAGE's fields, and which.
+  let _userFieldAt = 0, _userField = null;
   const _noteUserTouch = (e) => {
     try {
       if (!e.isTrusted) return;
       const t = e.composedPath ? e.composedPath()[0] : e.target;
       if (!t || !t.tagName) return;
       const f = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ? t : (t.closest && t.closest('label') && t.closest('label').control) || null;
-      if (f) _userTouched.add(f);
+      if (f) { _userTouched.add(f); _userFieldAt = Date.now(); _userField = f; }
+      // A pick in a custom list (Workday, react-select…) is editing too.
+      else if (t.closest && t.closest('[role="option"],[role="listbox"],[role="combobox"],[data-automation-id*="promptOption"]')) _userFieldAt = Date.now();
     } catch (_) {}
   };
   /* Not 'input' or 'change': when a script calls .click() on a checkbox or radio,
@@ -1529,6 +1597,33 @@
      the automation ticked was being "learned" as your answer that way. */
   try { for (const ev of ['keydown', 'pointerdown', 'mousedown', 'paste', 'drop']) window.addEventListener(ev, _noteUserTouch, true); } catch (_) {}
   function userTouched(el) { try { return !!el && _userTouched.has(el); } catch (_) { return false; } }
+  function userIsEditing(ms) { return Date.now() - _userFieldAt < (ms || 4000); }
+
+  /* Editing while it fills. The fillers focus each field they write, and with
+     you typing in one box that focus moved your cursor mid-word into another —
+     your keystrokes then landed in the wrong field. While you are typing in a
+     field, focus() calls from this extension leave your cursor where it is.
+     (Patched in the extension's own world only; the page's focus is untouched.) */
+  try {
+    const _focus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (...a) {
+      try {
+        if (_userField && this !== _userField && userIsEditing(2500) &&
+          (document.activeElement === _userField || (_userField.getRootNode && _userField.getRootNode().activeElement === _userField))) return;
+      } catch (_) {}
+      return _focus.apply(this, a);
+    };
+  } catch (_) {}
+
+  /* Never press Next / Submit under you: while you are editing, wait until you
+     stop (bounded — a run cannot wait forever), reporting it as progress. */
+  async function waitWhileUserEditing(maxMs) {
+    if (!userIsEditing()) return false;
+    LOG('You are editing this page — waiting for you to finish before moving on');
+    const until = Date.now() + (maxMs || 90000);
+    while (userIsEditing() && Date.now() < until) { noteProgress('waiting — you are editing'); await sleep(500); }
+    return true;
+  }
   // Questions whose learned answer came from you (kept across pages).
   let _manualKeys = {};
   try { st.get('ua_manual_answer_keys').then((m) => { if (m && typeof m === 'object') _manualKeys = m; }).catch(() => {}); } catch (_) {}
@@ -1709,6 +1804,8 @@
   // Smart Yes/No determination based on question context
   function determineYesNo(questionText) {
     const q = questionText.toLowerCase();
+    // Your fixed knockout answers first (AWS certification, years thresholds).
+    { const pol = knockoutPolicy(q, _policyProfile); if (pol === 'yes' || pol === 'no') return pol; }
     // EEO/Diversity — prefer "Prefer not to say/answer"
     if (/gender|sex\b|disability|veteran|military|ethnic|race|racial|heritage|hispanic|latino/.test(q)) return 'eeo';
 
@@ -1867,6 +1964,16 @@
   function safeKnockoutAnswer(saved, questionText) {
     if (!saved) return saved;
     const s = String(saved).trim().toLowerCase();
+    {
+      const pol = knockoutPolicy(questionText, _policyProfile);
+      if (pol === 'yes' || pol === 'no') {
+        const says = /^(yes|y|true)\b/.test(s) ? 'yes' : /^(no|n|false)\b/.test(s) ? 'no' : '';
+        if (says && says !== pol) { LOG(`Ignoring a saved "${s}" — your fixed answer to this question is ${pol}`); return ''; }
+      } else if (pol && /^\d+(\.\d+)?$/.test(s) && s !== pol) {
+        LOG(`Ignoring a saved "${s}" years — your fixed answer is ${pol}`);
+        return '';
+      }
+    }
     if (!KNOCKOUT_Q_RE.test(questionText)) return saved;
     let want = '';
     try { want = determineYesNo(String(questionText).toLowerCase()); } catch (_) {}
@@ -1913,7 +2020,7 @@
 
     // 2. Experience range questions (0-3, 3-5, 5-7, 7+)
     if (/how many years|years of experience|experience.*years|how long.*work/i.test(questionText)) {
-      const yearsExp = parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years) || 9;
+      const yearsExp = parseInt(yearsAnswer(p), 10) || 7;
       let bestMatch = null, bestScore = -1;
       for (const radio of radios) {
         const text = choiceLabel(radio);
@@ -2047,7 +2154,7 @@
       }
       const hasRange = btnTexts.some(t => /\d+\s*[-–]\s*\d+|\d+\s*\+/i.test(t));
       if (hasRange && /experience|years|how (many|long)/i.test(groupText)) {
-        const yearsExp = parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years) || 9;
+        const yearsExp = parseInt(yearsAnswer(p), 10) || 7;
         let bestMatch = null, bestScore = -1;
         for (const btn of btns) {
           const score = scoreExperienceRange(btn.textContent?.trim() || '', yearsExp);
@@ -2153,6 +2260,10 @@
       el.getAttribute('autocomplete'), el.getAttribute('data-automation-id')]
       .filter(Boolean).join(' ').toLowerCase();
     if (/password|email|phone|search jobs|keyword/i.test(hay)) return false;
+    // Address Line 2 / flat / suite is optional and never a place search — an
+    // empty one got "London, United Kingdom" on Oracle.
+    if (/address\s*(line\s*)?[2-4]\b|\bline\s*[2-4]\b|address2|addressline[2-4]|apartment|\bapt\b|suite|flat\b/i.test(hay) &&
+      !/(^|\W)pac-target-input(\W|$)/.test(el.className || '')) return false;
     return /location|city|town|address|where.*(live|based)|postal|zip|metro|region/i.test(hay) ||
       el.getAttribute('autocomplete') === 'address-level2' ||
       /(^|\W)(pac-target-input)(\W|$)/.test(el.className || '');
@@ -3392,7 +3503,8 @@
        "Notice period"        1 week / 2 weeks / 1 month     for "4 weeks"
        "Education"            Bachelor's / Master's / PhD    for "Master of Science"
      Left unanswered, each of those REQUIRED dropdowns blocked the submit. */
-  const PLACEHOLDER_OPT_RE = /^\s*(select|choose|please (select|choose)|--|—|-\s*select|pick one|none selected)\b|^\s*$/i;
+  // SuccessFactors' selects start on "No Selection" — read as an answer, every one was skipped.
+  const PLACEHOLDER_OPT_RE = /^\s*(select|choose|please (select|choose|make a selection)|--|—|-\s*select|pick one|none selected|no selection|not selected|nothing selected|make a selection|-+\s*none\s*-+)\b|^\s*$/i;
   const normMoney = (s) => String(s).toLowerCase()
     .replace(/[$€£¥₹]|usd|eur|gbp|cad|aud/g, '')
     .replace(/(\d),(\d{3})/g, '$1$2').replace(/(\d),(\d{3})/g, '$1$2')
@@ -4037,11 +4149,28 @@
     }
     return '';
   }
+  /* "No results were found." — the row a typeahead shows when the typed text
+     matched nothing. It is not an option, and text that produced it is not an
+     answer: Oracle's Race/Ethnicity list was left holding a typed "Black or
+     African American" (not one of its UK options) and read as answered. */
+  const NO_RESULTS_RE = /^\s*no\s+(results?|matches|matching\s+\w+|options|items|data|records)(\s+(were|was))?(\s+(found|available))?\.?\s*$/i;
+  function comboShowsNoResults(el) {
+    try {
+      const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || (el.tagName === 'INPUT' ? el : el.querySelector?.('input'));
+      for (const lb of [listboxFor(el), inner && listboxFor(inner)]) {
+        if (!lb || !isVisible(lb)) continue;
+        if (NO_RESULTS_RE.test(comboText(lb))) return true;
+        if (deepQueryAll('li,div,span', lb, 20).some((n) => isVisible(n) && NO_RESULTS_RE.test(comboText(n)))) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
   // Does this combobox already hold an answer?
   function comboHasValue(el) {
     try {
       const rs = reactSelectControl(el) || (el.querySelector && el.querySelector(RS_CONTROL_SEL));
       if (rs) return reactSelectHasValue(rs);
+      if (comboShowsNoResults(el)) return false;
       const inner = (el.shadowRoot && el.shadowRoot.querySelector('input')) || el.querySelector?.('input');
       if (inner && (inner.value || '').trim()) return true;
       if ((el.value || '').trim()) return true;
@@ -4105,31 +4234,48 @@
 
     // Open it. Web components need the full pointer sequence; some open only on
     // keyboard, so fall back to ArrowDown.
+    const typeBox = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || (combo.tagName === 'INPUT' ? combo : combo.querySelector?.('input'));
+    const optionsNow = () => visibleOptions(listboxFor(combo) || (typeBox && typeBox !== combo ? listboxFor(typeBox) : null))
+      .filter(o => !NO_RESULTS_RE.test(comboText(o)));
+    /* Text left in the search box from an earlier try filters the list down to
+       nothing; clear it so the options can show. */
+    if (typeBox && (typeBox.value || '').trim() && comboShowsNoResults(combo)) { try { nativeSet(typeBox, ''); } catch (_) {} }
     triggerMouse(combo);
     await sleep(450);
-    let opts = visibleOptions(listboxFor(combo));
+    let opts = optionsNow();
     if (!opts.length) {
       try {
-        const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input') || combo;
+        const inner = typeBox || combo;
         inner.focus?.({ preventScroll: true });
         inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
       } catch (_) {}
       await sleep(450);
-      opts = visibleOptions(listboxFor(combo));
+      opts = optionsNow();
     }
-    // Typeahead: many comboboxes only render options once you type.
-    if (!opts.length && want) {
-      const inner = (combo.shadowRoot && combo.shadowRoot.querySelector('input')) || combo.querySelector?.('input');
-      if (inner) {
-        try { inner.focus({ preventScroll: true }); nativeSet(inner, want.slice(0, 24)); } catch (_) {}
+    // Typeahead: many comboboxes only render options once you type. The whole
+    // answer first, then its first real word ("Black or African American" →
+    // "black"), then nothing at all (the full list); a demographic question
+    // also tries the list's decline wording.
+    let typed = false;
+    if (!opts.length && want && typeBox) {
+      const words = want.split(/[^a-z0-9]+/i).filter(w => w.length > 2 && !/^(the|and|not|any|for|with|are|you|your)$/i.test(w));
+      const demographic = /gender|disab|veteran|race|ethnic|sex\b|orientation|pronoun|religio/i.test(comboQuestion(combo));
+      const tries = [want.slice(0, 24), words[0], '', ...(demographic ? ['prefer', 'decline'] : [])]
+        .filter((t, i, a) => t != null && a.indexOf(t) === i);
+      for (const t of tries) {
+        try {
+          typeBox.focus({ preventScroll: true }); nativeSet(typeBox, t); typed = !!t;
+          if (!t) typeBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', keyCode: 40, bubbles: true, composed: true }));
+        } catch (_) {}
         await sleep(700);
-        opts = visibleOptions(listboxFor(combo));
+        opts = optionsNow();
+        if (opts.length) break;
       }
     }
-    if (!opts.length) return false;
+    if (!opts.length) { if (typed) { try { nativeSet(typeBox, ''); } catch (_) {} } return false; }
 
     const norm = (t) => String(t).replace(/\s+/g, ' ').trim().toLowerCase();
-    const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a)\b/i.test(t);
+    const isPlaceholder = (t) => /^(select|choose|pick|--|—|none|please select|n\/a|no selection|not selected)\b/i.test(t);
     const real = opts.filter(o => !isPlaceholder(comboText(o)));
     let pick = null;
 
@@ -4217,7 +4363,11 @@
     // Last resort, and ONLY for a required field: an empty required dropdown
     // blocks submission outright, so any sane option beats leaving it blank.
     if (!pick && required) pick = real[0];
-    if (!pick) { try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {} return false; }
+    if (!pick) {
+      try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {}
+      if (typed) { try { nativeSet(typeBox, ''); } catch (_) {} }   // our search text is not an answer
+      return false;
+    }
 
     const inner = pick.querySelector?.('spl-typography-body') ||
       (pick.shadowRoot && pick.shadowRoot.querySelector('spl-typography-body,span,div')) || pick;
@@ -4525,7 +4675,7 @@
       const idx = el.selectedIndex;
       if (idx >= 0) {
         const txt = (el.options[idx]?.textContent || '').trim().toLowerCase();
-        if (!txt || /^(select|choose|please|--|—)/.test(txt)) return false;
+        if (!txt || /^(select|choose|please|--|—)/.test(txt) || PLACEHOLDER_OPT_RE.test(txt)) return false;
       }
       return true;
     }
@@ -4696,6 +4846,38 @@
   }
   function isWorkday() { return /myworkdayjobs\.com|myworkdaysite\.com|workday\.com\/.*\/job/i.test(location.href); }
   function isJobright() { return /jobright\.ai/i.test(location.hostname); }
+  /* The employer's own application address for the Jobright job page on screen.
+     Pressing Apply on Jobright makes its worker open that address in a NEW tab,
+     which the run never followed — the application went unfilled and a Jobright
+     tab was left behind for every job. Read the address instead and go there in
+     this tab. From Jobright's page data first, then its "Original Job Post" link,
+     then any link straight to a known ATS. */
+  function jobrightApplyTarget() {
+    const ok = (u) => { try { const x = new URL(String(u), location.href); return /^https?:$/.test(x.protocol) && !/(^|\.)jobright\.ai$/i.test(x.hostname) && x.href; } catch (_) { return false; } };
+    try {
+      const data = document.getElementById('__NEXT_DATA__');
+      if (data && data.textContent) {
+        const KEY = /^(applyLink|apply_link|applyUrl|apply_url|originalUrl|original_url|jobUrl|job_url|externalUrl|external_url|sourceUrl|source_url|originalJobUrl)$/i;
+        let found = '';
+        const walk = (o, d) => {
+          if (found || !o || typeof o !== 'object' || d > 12) return;
+          for (const [k, v] of Object.entries(o)) {
+            if (found) return;
+            if (typeof v === 'string' && KEY.test(k) && ok(v)) { found = ok(v); return; }
+            if (v && typeof v === 'object') walk(v, d + 1);
+          }
+        };
+        walk(JSON.parse(data.textContent), 0);
+        if (found) return found;
+      }
+    } catch (_) {}
+    const links = Array.from(document.querySelectorAll('a[href]'));
+    const byText = links.find((a) => /original job post|apply on (the )?(company|employer)('s)? (site|website)|view original/i.test(a.textContent || '') && ok(a.href));
+    if (byText) return ok(byText.href);
+    const ATS = /greenhouse\.io|lever\.co|myworkdayjobs\.com|myworkdaysite\.com|smartrecruiters\.com|ashbyhq\.com|icims\.com|oraclecloud\.com|successfactors\.(com|eu)|taleo\.net|workable\.com|bamboohr\.com|jobvite\.com|eightfold\.ai|amazon\.jobs|recruitee\.com|teamtailor\.com|personio\.(de|com)|breezy\.hr/i;
+    const direct = links.find((a) => ok(a.href) && ATS.test(new URL(a.href).hostname));
+    return direct ? ok(direct.href) : '';
+  }
 
   /* ── VALUES IN THE WRONG BOX (ported from the OptimHire patch's sanitizer) ──
      Two engines fill these forms — Jobright's and ours — and either can put a
@@ -5035,7 +5217,7 @@
 
   // ===================== SUCCESS / FAILURE / STABILITY DETECTION =====================
   // (Robustness techniques adapted from the OptimHire auto-applier for 100% reliability.)
-  const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
+  const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+(job\s+)?application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+(job\s+)?application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
   /* A URL only counts as a confirmation page when one of these is a COMPLETE path
      segment. As a substring (what this used to be) it matched ordinary job slugs and
      declared the application submitted before anything had been submitted:
@@ -5360,7 +5542,9 @@
       const ua = new URL(a), ub = new URL(b);
       if (ua.hostname.toLowerCase() !== ub.hostname.toLowerCase()) return false;
       const pa = ua.pathname.split('/').filter(Boolean), pb = ub.pathname.split('/').filter(Boolean);
-      if (!pa.length || !pb.length) return true;
+      // A site's home page is not every job on that site: jobright.ai/ "matched"
+      // every Jobright job link, so any Jobright tab you had open claimed a job.
+      if (!pa.length || !pb.length) return pa.length === pb.length;
       const ACTION = /^(apply|application|apply-now|start|step\d*|thanks|thank-you|thankyou|success|confirm|confirmation|complete|completed|received|submitted|submit|done|review|finish)$/i;
       const n = Math.min(pa.length, pb.length);
       for (let i = 0; i < n; i++) {
@@ -5483,6 +5667,18 @@
     const cands = deepQueryAll(
       'button,input[type="submit"],input[type="button"],a[role="button"],[role="button"],spl-button,oj-button'
     ).filter(enabled).filter(el => isSubmitLabel(controlLabel(el)));
+    /* SuccessFactors' career site ends its application form with "Apply" — the
+       word excluded above because elsewhere it opens the form. Taken only from
+       inside a form that is the application itself (a dozen fields or more). */
+    if (!cands.length && isSuccessFactorsHost()) {
+      const sf = deepQueryAll('button,input[type="submit"],input[type="button"],a[role="button"],[role="button"]').filter(enabled)
+        .find(el => {
+          if (!/^\s*(apply|submit application|apply now)\s*$/i.test(controlLabel(el))) return false;
+          const f = el.closest('form');
+          return !!f && f.querySelectorAll('input:not([type=hidden]),select,textarea').length >= 8;
+        });
+      if (sf) { LOG('SuccessFactors: the form\'s "Apply" button is its submit'); return sf; }
+    }
     if (!cands.length) return null;
     if (cands.length === 1) return cands[0];
 
@@ -5505,6 +5701,69 @@
     }).sort((a, b) => b.score - a.score);
     LOG('Submit candidates: ' + scored.map(x => `"${x.label}"(${x.score.toFixed(1)})`).join(', '));
     return scored[0].el;
+  }
+
+  /* The last word on your fixed knockout answers (see knockoutPolicy), whoever
+     filled the page — Jobright's autofill, a saved answer, a parser. Radios,
+     native selects and plain text/number boxes are corrected; anything you
+     typed or picked yourself is left alone. Returns how many it changed. */
+  async function enforceKnockoutPolicy() {
+    let fixed = 0;
+    try {
+      const p = await getProfile();
+      const yrsN = parseInt(yearsAnswer(p), 10);
+      // Text / number boxes and native selects.
+      for (const el of deepAll('input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=file]):not([type=submit]):not([type=button]),select', 300)) {
+        if (!isVisible(el) || el.disabled || el.readOnly || userTouched(el) || isTrapField(el)) continue;
+        const q = getFullQuestionText(el) || getLabel(el) || '';
+        const pol = knockoutPolicy(q, p);
+        if (!pol) continue;
+        if (el.tagName === 'SELECT') {
+          const opts = Array.from(el.options).filter((o) => o.value !== '' && !PLACEHOLDER_OPT_RE.test(o.text));
+          if (!opts.length) continue;
+          const texts = opts.map((o) => o.text.trim());
+          let i = -1;
+          if (pol === 'yes' || pol === 'no') i = optionIndexForDecision(texts, pol, q);
+          else {
+            let best = 0;
+            texts.forEach((t, k) => { const sc = scoreExperienceRange(t, yrsN); if (sc > best) { best = sc; i = k; } });
+            if (i < 0) i = texts.findIndex((t) => parseInt(t, 10) === yrsN);
+          }
+          if (i >= 0 && el.value !== opts[i].value) {
+            setSelectValue(el, opts[i].value); fixed++;
+            LOG(`Knockout answer corrected: "${q.slice(0, 60)}" → ${texts[i]}`);
+          }
+        } else if (/^\d+$/.test(pol) && isFreeTextControl(el) && el.tagName !== 'TEXTAREA') {
+          const cur = String(el.value || '').trim();
+          if (cur !== pol && !(cur && parseInt(cur, 10) === yrsN)) {
+            nativeSet(el, pol); fixed++;
+            LOG(`Knockout answer corrected: "${q.slice(0, 60)}" → ${pol}`);
+          }
+        }
+      }
+      // Yes/No radio groups.
+      const groups = new Map();
+      for (const r of deepAll('input[type=radio]', 300)) {
+        const key = r.name || (r.closest && r.closest('[role="radiogroup"],fieldset')) || r;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      }
+      for (const radios of groups.values()) {
+        if (radios.length < 2 || radios.some(userTouched)) continue;
+        if (!radios.some((r) => isVisible(r) || (r.closest && isVisible(r.closest('label') || r.parentElement)))) continue;
+        const q = getQuestionForInput(radios[0]) || '';
+        const pol = knockoutPolicy(q, p);
+        if (pol !== 'yes' && pol !== 'no') continue;
+        const texts = radios.map((r) => choiceLabel(r));
+        const i = optionIndexForDecision(texts, pol, q);
+        if (i < 0 || choiceChecked(radios[i])) continue;
+        commitChoice(radios[i]); fixed++;
+        LOG(`Knockout answer corrected: "${q.slice(0, 60)}" → ${texts[i]}`);
+        await sleep(80);
+      }
+    } catch (e) { LOG('Knockout check failed:', e?.message || e); }
+    if (fixed) noteProgress('corrected ' + fixed + ' knockout answer(s)');
+    return fixed;
   }
 
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
@@ -5550,7 +5809,11 @@
         await sleep(300);
       }
     } catch (_) {}
+    // Your fixed knockout answers win over whatever filled the page.
+    await enforceKnockoutPolicy();
     logFillReport('Before submit');
+    // You are changing something — let you finish, then re-check what you left.
+    if (await waitWhileUserEditing()) { await guaranteeRequiredFields(); await sleep(200); }
 
     // Submit selectors (informational `missing` log above; actual gating below is on the
     // button's own enabled/disabled state, not on our heuristic missing-field count)
@@ -6049,6 +6312,8 @@
       // this is also what re-scans after an answer reveals a follow-up question.
       await guaranteeRequiredFields();
       await handleValidationErrors();
+      // Oracle's address, pill questions and lists — also after a rejected submit.
+      if (isOracleCloud()) await oracleCxPass();
       await sleep(scaled(300, 100));
 
       // Submit or next
@@ -6270,9 +6535,118 @@
   }
 
   // ===================== WORKDAY AUTOMATION (SpeedyApply-enhanced) =====================
+  /* ── YOUR WORKDAY ENGINE (workday-engine/ → ua-wd-engine.js) ──────────────
+     Copied from optimhire-updates/workday-engine (claude/jolly-fermat-8VrR3),
+     with a Jobright adapter (workday-engine/src/ua/entry.ts). It runs in this
+     same content-script world on Workday hosts and is reached through
+     window.__uaWdEngine:
+       • a queue job → the engine applies it end to end; what it cannot finish
+         comes back here and the flow below carries on from that point;
+       • Fully Automated outside a run → assist: each step filled as it appears,
+         you press Next, Review submits after a 5-second countdown you can cancel.
+     "ua_wd_engine_off: true" in storage gives Workday back to the flow below. */
+  let _uaJobKey = '';                 // the queue job this tab is applying (none outside a run)
+  let _wdAssistActive = false;        // assist has this Workday page: no automatic page walk
+  // The engine asks for YOUR answers first: saved responses and answers you gave yourself.
+  window.__uaWdAnswer = (label) => {
+    try {
+      // Your fixed knockout answers come first (years → 7, AWS certification → Yes).
+      if (!isManualAnswer(label, null)) {
+        const pol = knockoutPolicy(label, _policyProfile);
+        if (pol) return pol === 'yes' ? 'Yes' : pol === 'no' ? 'No' : pol;
+      }
+      const fromSaved = safeKnockoutAnswer(findSavedResponseMatch(label), label);
+      const exact = getLearnedAnswer(label, null, true);
+      const exactOk = exact && (isManualAnswer(label, null) ? exact : safeKnockoutAnswer(exact, label));
+      return fromSaved || exactOk || null;
+    } catch (_) { return null; }
+  };
+  window.__uaWdProgress = (page) => { try { noteProgress('Workday engine: ' + (page || 'working')); } catch (_) {} };
+  /* What the engine would have asked an AI for, decided the way every other ATS
+     is: knockouts by determineYesNo, choices by the option matchers, the rest by
+     the profile rules. Only reached after your answers and the engine's own rules. */
+  const WD_DEMOGRAPHIC_RE = /gender|\bsex\b|sexual|orientation|pronoun|ethnic|\brace\b|racial|disab|veteran|religio|hispanic|latino/i;
+  window.__uaWdGuess = async (label, kind, options) => {
+    try {
+      const p = await getProfile();
+      const texts = Array.isArray(options) ? options.filter(Boolean).map(String) : [];
+      let raw = '';
+      try { raw = guessFieldValue(label, p, null); } catch (_) { raw = guessValue(label, p) || ''; }
+      if (!texts.length) return raw && !/^n\/?a$/i.test(raw) ? raw : null;
+      const pols = texts.map(optionPolarity);
+      const binary = texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) || (texts.some((t) => /^yes$/i.test(t)) && texts.some((t) => /^no$/i.test(t))));
+      let i = -1;
+      if (binary) {
+        let dec = '';
+        try { dec = determineYesNo(String(label).toLowerCase().replace(/\s+/g, ' ')); } catch (_) {}
+        if (dec === 'eeo') dec = 'decline';
+        i = optionIndexForDecision(texts, dec, label);
+      }
+      if (i < 0 && raw) i = bestOptionIndex(texts, raw, label);
+      if (i < 0 && WD_DEMOGRAPHIC_RE.test(label)) i = texts.findIndex(isDeclineOption);
+      return i >= 0 ? texts[i] : null;
+    } catch (_) { return null; }
+  };
+  window.__uaWdPick = (value, field, options) => {
+    try { const i = bestOptionIndex((options || []).map(String), String(value || ''), String(field || '')); return i >= 0 ? options[i] : null; }
+    catch (_) { return null; }
+  };
+
+  async function workdayEngineRun() {
+    const eng = window.__uaWdEngine;
+    if (!eng || typeof eng.startJob !== 'function' || !eng.isWorkday()) return false;
+    if ((await st.get('ua_wd_engine_off')) === true) return false;
+    const id = _uaJobKey;
+    if (!id) return false;
+    const prior = eng.result(id);
+    if (prior) return workdayEngineOutcome(prior, true);
+    LOG('Workday: your Workday engine is applying to this job');
+    eng.startJob(id);
+    const res = await withBusy('Workday engine', async () => {
+      const until = Date.now() + 8 * 60 * 1000;
+      await waitUntil(() => !!eng.result(id) || eng.running(id), 1500, 150);
+      while (Date.now() < until && !autoStopped()) {
+        const r = eng.result(id);
+        if (r) return r;
+        if (!eng.running(id)) { await waitUntil(() => !!eng.result(id), 1500, 150); return eng.result(id) || { outcome: 'stopped', reason: 'the engine stopped' }; }
+        noteProgress('Workday engine: ' + (eng.page() || 'working'));
+        await sleep(700);
+      }
+      try { eng.stop(); } catch (_) {}
+      return eng.result(id) || { outcome: 'stopped', reason: autoStopped() ? 'Fully Automated turned off' : 'took longer than 8 minutes' };
+    });
+    return workdayEngineOutcome(res, false);
+  }
+  const WD_APP_STEPS = ['resumeUpload', 'myInformation', 'myExperience', 'questions', 'voluntaryDisclosures', 'selfIdentify', 'review'];
+  function workdayEngineOutcome(r, earlier) {
+    if (r.outcome === 'submitted') {
+      LOG('Workday engine: application submitted' + (earlier ? ' (before this page load)' : ''));
+      markSubmitAttempt();
+      noteProgress('submitted');
+      return 'submitted';
+    }
+    LOG(`Workday engine stopped (${r.outcome}${r.page ? ' on ' + r.page : ''})${r.reason ? ': ' + r.reason : ''} — carrying on with the built-in Workday flow`);
+    noteProgress('Workday: carrying on from the engine');
+    // Stopped inside the application: carry on from that step, not from Apply.
+    return WD_APP_STEPS.includes(r.page) ? 'midway' : false;
+  }
+
   async function workdayAutomation() {
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
+    // Fully Automated outside a run: your engine's assist fills each step as it appears.
+    if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
+      LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 5-second countdown you can cancel');
+      _wdAssistActive = true;
+      return 'assist';
+    }
+    const eng = await workdayEngineRun();
+    if (eng === 'submitted') return 'submitted';
     const p = await getProfile();
+    if (eng === 'midway') {
+      await fallbackFill();
+      await workdayMultiPageFlow();
+      return 'handed-back';
+    }
 
     /* ── Phase 1: get off the job description and into the application ───────
        This sat on an NXP job description with the Apply button in plain sight
@@ -6374,13 +6748,20 @@
     // Whatever the fixed-id fillers above left empty, in any language.
     await wdEnginePass(p);
 
-    // Jobright autofill as a BACKUP — catches any field SpeedyApply missed on this page.
-    await triggerAutofill();
-    await sleep(scaled(2000, 1000));
+    /* SpeedyApply-style: the engine fills Workday itself, so Jobright's autofill
+       is only called when it left something required empty, and the
+       tailor-first detour (up to ~35s of waiting on Jobright's sidebar per job)
+       only runs when you opted into resume tailoring for the queue. */
     await fallbackFill();
+    if (getMissingRequired().length) {
+      LOG('Workday: required fields still empty — asking Jobright autofill to help');
+      await triggerAutofill();
+      await waitForFormStable(scaled(2000, 600));
+      await fallbackFill();
+    }
 
-    // Phase 3: continue (tailor + autofill) into the multi-page flow.
-    await tailorFirstFlow();
+    // Phase 3: continue into the multi-page flow.
+    if (queueUseTailor) await tailorFirstFlow();
 
     // Phase 4: Workday multi-page navigation (handles all Workday page types)
     await workdayMultiPageFlow();
@@ -7498,6 +7879,7 @@
   async function wdWriteText(c, val, overwrite) {
     const i = c && c.querySelector('textarea,input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
     if (!i || val == null || val === '') return false;
+    if (userTouched(i)) return true;            // yours — never overwritten
     if (!overwrite && String(i.value || '').trim()) return true;
     if (i.value === String(val)) return true;
     try { i.focus({ preventScroll: true }); } catch (_) {}
@@ -7522,7 +7904,7 @@
     if (WD_Q.relocate.test(l)) return 'yes';
     return '';
   }
-  function wdProfileYears(p) { return parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years, 10) || 0; }
+  function wdProfileYears(p) { return parseInt(yearsAnswer(p), 10) || 7; }
   /* An answer for a choice control: the option text to pick, or 'decline'. */
   function wdChooseOption(label, options, p) {
     const texts = options.map((o) => String(o));
@@ -7814,7 +8196,7 @@
     for (let page = 1; page <= MAX_PAGES; page++) {
       if (autoStopped()) { LOG('Fully Automated turned off — stopping Workday flow'); break; }
       if (checkSuccess()) { LOG('Workday: success detected'); break; }
-      await sleep(scaled(1500, 750));
+      await waitForFormStable(scaled(1500, 300));
 
       // Detect current page type
       // The page on SCREEN. Some tenants keep earlier steps mounted but hidden,
@@ -7886,9 +8268,11 @@
       // Advance via the robust shared handler (skips disabled buttons, scrolls into
       // view, re-fills + fixes validation if "Continue to the next page" is disabled,
       // and submits on the final review page).
+      const sig = stepSignature();
       const action = await autoSubmitOrNext();
-      if (action === 'submitted') { await sleep(scaled(2500, 1250)); if (confirmSubmitted()) break; }
-      else if (action === 'next_page') { await sleep(scaled(2500, 1250)); }
+      // On as soon as Workday shows the next step, instead of a flat 2.5s.
+      if (action === 'submitted') { await waitUntil(confirmSubmitted, scaled(4000, 1500), 200); if (confirmSubmitted()) break; }
+      else if (action === 'next_page') { await waitForStepChange(sig, scaled(6000, 2500)); }
       else { LOG('Workday: no next/submit button found'); break; }
     }
   }
@@ -8538,6 +8922,95 @@
   }
 
   // ===================== SUCCESSFACTORS AUTOMATION =====================
+  function isSuccessFactorsHost() {
+    return /(^|\.)(successfactors|sapsf)\.(com|eu)$/i.test(location.hostname);
+  }
+
+  /* "Country/Region Code" — a select of "Ireland (+353)" style options. Chosen
+     from the code the phone number is written with, so the two always agree;
+     then the profile's dial code, then the profile's country. */
+  function sfPickDialCode(sel, p) {
+    const opts = $$('option', sel).filter(o => !PLACEHOLDER_OPT_RE.test(o.text));
+    const nameOf = (o) => o.text.toLowerCase().replace(/\s*\(.*$/, '').trim();
+    const byCountry = (name, pool) => {
+      const n = String(name || '').trim().toLowerCase();
+      return n ? (pool || opts).find(o => nameOf(o) === n) || null : null;
+    };
+    // +44 is the UK and also Jersey, Guernsey and the Isle of Man; +1 is the US and Canada.
+    const MAIN = { 1: 'united states', 7: 'russia', 39: 'italy', 44: 'united kingdom', 47: 'norway', 61: 'australia', 358: 'finland' };
+    const byCode = (code) => {
+      const d = String(code || '').replace(/\D/g, '');
+      if (!d) return null;
+      const rx = new RegExp('\\+\\s?' + d + '(?!\\d)');
+      const hits = opts.filter(o => rx.test(o.text) || o.value.replace(/\D/g, '') === d && /^\+?\d+$/.test(o.value));
+      if (hits.length < 2) return hits[0] || null;
+      return byCountry(p.country, hits) || hits.find(o => MAIN[d] && nameOf(o).startsWith(MAIN[d])) || hits[0];
+    };
+    return byCode(dialCodeFromPhone(p.phone)) || byCode(p.phoneCountryCode) ||
+      byCountry(p.country) || byCountry(DEFAULTS.country) || byCode(DEFAULTS.phoneCountryCode);
+  }
+
+  const SF_CLICKABLE = 'a,button,[role="button"],input[type="button"],input[type="submit"]';
+
+  /* SuccessFactors keeps the CV behind an "Upload a Resume" link that opens a
+     dialog: file input, then "Upload". Putting the file on the input alone does
+     nothing — the career site only takes it when Upload is pressed. */
+  async function sfUploadResume() {
+    const opener = deepQueryAll(SF_CLICKABLE).filter(isVisible)
+      .find(el => /^\s*(upload|attach)\s+(a\s+|your\s+)?(new\s+)?(resume|r[ée]sum[ée]|cv)\b/i.test(controlLabel(el)));
+    if (!opener) return false;
+    const row = opener.closest('tr,li,.row,[class*="field" i],div') || opener.parentElement;
+    if (row && /[\w)]\.(pdf|docx?|rtf|odt|txt)\b/i.test(row.textContent || '')) { LOG('SuccessFactors: CV already uploaded'); return true; }
+    const file = await storedResumeFile();
+    if (!file) { LOG('SuccessFactors: no résumé saved in the extension — cannot upload one'); return false; }
+    realClick(opener);
+    let input = null;
+    await waitUntil(() => (input = deepAll('input[type="file"]', 40).find(i => isVisible(i) || isVisible(i.parentElement))), 6000, 200);
+    if (!input) { LOG('SuccessFactors: the upload dialog never showed a file input'); return false; }
+    try {
+      const dt = new DataTransfer(); dt.items.add(file);
+      input.files = dt.files;
+      fireOnHostChain(input, ['input', 'change']);
+    } catch (e) { LOG('SuccessFactors: could not put the CV on the input:', e?.message || e); return false; }
+    noteCvUploadedHere();
+    const box = input.closest('[role="dialog"],[class*="dialog" i],[class*="modal" i],[class*="popup" i],form,div') || document;
+    let go = null;
+    await waitUntil(() => (go = $$(SF_CLICKABLE, box).concat(deepQueryAll(SF_CLICKABLE)).filter(isVisible)
+      .find(el => el !== opener && /^\s*(upload|ok|attach|done|save)\s*$/i.test(controlLabel(el)))), 3000, 150);
+    if (!go) { LOG('SuccessFactors: no Upload button in the dialog'); return false; }
+    realClick(go);
+    noteProgress('attached CV');
+    // Done when the dialog closes or the file name shows on the page.
+    await waitUntil(() => !isVisible(input) || (document.body.innerText || '').includes(file.name), 15000, 250);
+    LOG(`SuccessFactors: CV uploaded (${file.name})`);
+    return true;
+  }
+
+  /* "Terms of Use: Read the data privacy statement." is required, and the only
+     way to satisfy it is to open the statement and press Accept. */
+  async function sfAcceptTerms() {
+    const link = deepQueryAll(SF_CLICKABLE).filter(isVisible).find(el => {
+      const t = controlLabel(el);
+      if (!/data privacy statement|privacy (statement|notice|policy)|terms of use|data protection/i.test(t)) return false;
+      const row = el.closest('tr,li,.row,div');
+      return !!row && /terms of use|privacy|consent|\*/i.test(row.textContent || '');
+    });
+    if (!link) return false;
+    const row = link.closest('tr,li,.row,div');
+    if (row && /\b(accepted|agreed)\b/i.test(row.textContent || '')) return true;
+    const hidden = row && row.querySelector('input[type="hidden"][name*="accept" i],input[type="hidden"][id*="accept" i]');
+    if (hidden && /^(true|1|yes|accepted)$/i.test(hidden.value)) return true;
+    realClick(link);
+    let accept = null;
+    await waitUntil(() => (accept = deepQueryAll(SF_CLICKABLE).filter(isVisible)
+      .find(el => /^\s*(i\s+)?(accept|agree)(\s+(and|&)\s+continue|\s+all)?\s*$/i.test(controlLabel(el)))), 6000, 200);
+    if (!accept) { LOG('SuccessFactors: the privacy statement opened but no Accept button showed'); return false; }
+    realClick(accept);
+    await sleep(400);
+    LOG('SuccessFactors: Terms of Use accepted');
+    return true;
+  }
+
   async function successFactorsAutomation() {
     LOG('SuccessFactors automation starting...');
     const p = await getProfile();
@@ -8546,6 +9019,15 @@
     const form = await waitFor('form[id*="application"],form,.applicationForm,[class*="applyForm"]', 10000);
     if (!form) { LOG('No SuccessFactors form found'); await directAutofillFlow(); return; }
     await sleep(scaled(1500, 750));
+
+    try { await sfUploadResume(); } catch (e) { LOG('SuccessFactors CV upload failed:', e?.message || e); }
+
+    // Phone dial-code select, matched to the number before the generic pass guesses it.
+    for (const sel of $$('select').filter(el => isVisible(el) && !hasFieldValue(el))) {
+      if (!/country\W*(region\W*)?code|dial(ling)?\W*code|calling\W*code|phone\W*(country|code)/i.test(getLabel(sel) || sel.name || sel.id || '')) continue;
+      const opt = sfPickDialCode(sel, p);
+      if (opt) { setSelectValue(sel, opt.value); LOG('SuccessFactors: phone code → ' + opt.text.trim()); await sleep(80); }
+    }
 
     // SuccessFactors uses various field naming conventions
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -8578,6 +9060,7 @@
       answerKnockoutRadioGroup(radios, parent, p);
     }
 
+    try { await sfAcceptTerms(); } catch (e) { LOG('SuccessFactors Terms of Use failed:', e?.message || e); }
     await fixPhoneCountryCode();
     await tailorFirstFlow();
     learnFromFilledFields();
@@ -9995,6 +10478,15 @@
   function onCurrentJobPage(c) {
     // Segment-wise URL match (tolerates apply→thanks redirects, rejects different job ids).
     try { if (urlsRoughlyMatch(location.href, c.url)) return true; } catch (_) {}
+    /* A Jobright job link (a CSV row) leads to the EMPLOYER's site, so no part of
+       the address matches — and on a sign-in step, a "thank you" page, or before
+       a multi-page application has drawn its form, there is no form or Apply
+       button to go on either. The runner then took this for some other page and
+       moved to the next job's link: a Jobright page, in the middle of filling.
+       That is "autofill is now redirecting back to Jobright". The site a job
+       landed on is remembered, and a Jobright link's job is wherever it led. */
+    try { if (c.landedHost && c.landedHost === location.hostname) return true; } catch (_) {}
+    try { if (/(^|\.)jobright\.ai$/i.test(new URL(c.url).hostname) && !isJobright()) return true; } catch (_) {}
     try {
       const p = new URL(c.url).pathname;
       if (location.href.includes(p.slice(0, Math.min(p.length, 25)))) return true;
@@ -10229,6 +10721,7 @@
       }
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       clearSubmitAttempt();   // this job has not submitted anything yet
+      _uaJobKey = String(c.id || c.url || '');
 
       /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
          This used to stack four layers of repetition on top of each other, and
@@ -10385,7 +10878,10 @@
     const c = queue.find(j => j.status === 'applying');
     if (c) {
       try {
+        // Give a page that is still drawing a moment before deciding it is not this job's.
+        if (!onCurrentJobPage(c)) await waitUntil(() => onCurrentJobPage(c), 6000, 300);
         if (onCurrentJobPage(c)) {
+          if (!isJobright() && c.landedHost !== location.hostname) { c.landedHost = location.hostname; saveQ(); }
           // LazyApply: start timeout timer — auto-skip if job stalls
           clearTimeout(_qTimeoutId);
           const onJobTimeout = async () => {
@@ -10469,6 +10965,7 @@
           // a submit-click followed by an 8s grace window with no validation error. A
           // persistent validation error fast-fails instead of waiting the whole timeout.
           clearSubmitAttempt(); // no submit evidence carried over from the previous job
+          _uaJobKey = String(c.id || c.url || '');
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
@@ -13002,6 +13499,21 @@
   async function openApplicationForm__impl(maxClicks) {
     const limit = maxClicks || 3;
     let clicks = 0;
+    // A Jobright job page: go to the employer's application in THIS tab rather
+    // than pressing Jobright's Apply, which opens it in a new one.
+    if (isJobright() && /\/jobs\/info\//.test(location.pathname)) {
+      const target = jobrightApplyTarget();
+      if (target) {
+        LOG('Jobright job page — opening the employer\'s application in this tab: ' + target.slice(0, 80));
+        noteProgress('opening the application');
+        const from = location.href;
+        location.assign(target);
+        // The page is leaving; the next page carries the job on.
+        await waitUntil(() => location.href !== from, 15000, 200);
+        return false;
+      }
+      LOG('Jobright job page — no employer link found on the page; using Jobright\'s Apply');
+    }
     // Inside the application already: an Apply link here leads back to the job
     // description, and from there round the login again. See pastTheApplyStep.
     if (pastTheApplyStep()) return true;
@@ -14139,6 +14651,233 @@
       await waitForStepChange(before, 15000);
     }
   }
+  /* ── Oracle: address, self-identification pills, lists left on typed text ──
+     What the generic pass got wrong on Oracle (Goldman Sachs LateralHiring):
+       • the postal code is a LIST tied to the country — typed, it is never
+         picked, and an Irish code under "Ireland" (or a UK one under it) finds
+         nothing. You asked for SW1W 0RH, so the country is set to match it first.
+       • Address Line 1 held a country name; Line 2 repeated the street.
+       • self-identification questions are pill BUTTONS (aria-pressed), which
+         no radio/checkbox/select pass ever touched.
+       • a list holding typed text that matched nothing read as answered.
+     Overridable per Oracle with storage key ua_oracle_address
+     {postcode, country, city, line1}. Fields you have edited are left alone. */
+  const ORACLE_POSTCODE_DEFAULT = 'SW1W 0RH';
+  const UK_POSTCODE_RE = /^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i;
+  const COUNTRY_NAME_RE = /^(united kingdom|uk|u\.k\.|great britain|britain|england|scotland|wales|northern ireland|ireland|republic of ireland|united states( of america)?|usa?|u\.s\.a?\.?)$/i;
+  const ORACLE_LOV_SEL = 'oj-select-single,oj-c-select-single,oj-select-one,oj-combobox-one,oj-c-combobox-one,oj-input-search,oj-c-input-search';
+
+  async function oracleAddressPlan(p) {
+    let o = {};
+    try { o = (await st.get('ua_oracle_address')) || {}; } catch (_) {}
+    const postcode = String(o.postcode || ORACLE_POSTCODE_DEFAULT).trim().toUpperCase();
+    const uk = UK_POSTCODE_RE.test(postcode);
+    const looksCountry = (v) => COUNTRY_NAME_RE.test(String(v || '').trim()) ||
+      (!!p.country && String(v || '').trim().toLowerCase() === String(p.country).trim().toLowerCase());
+    return {
+      postcode, uk, looksCountry,
+      country: o.country || (uk ? 'United Kingdom' : (p.country || DEFAULTS.country)),
+      city: o.city || (uk && /^(EC|WC|E|N|NW|SE|SW|W)\d/i.test(postcode) ? 'London' : (p.city || '')),
+      line1: o.line1 || [p.address, p.address_line_1, p.address1, p.street].find((v) => v && !looksCountry(v)) || '',
+      line2: p.address_line_2 || p.address2 || '',
+    };
+  }
+
+  // Every labelled text box / list on the step, with what kind of control it is.
+  function oracleFields() {
+    const out = [], seen = new Set();
+    for (const el of deepAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=file]):not([type=submit]):not([type=button]),textarea', 300)) {
+      if (!isVisible(el) || el.disabled || el.readOnly || seen.has(el)) continue;
+      seen.add(el);
+      const lov = el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-autocomplete') || !!(el.closest && el.closest(ORACLE_LOV_SEL));
+      const host = (el.closest && el.closest(ORACLE_LOV_SEL)) || el;
+      const label = String((lov ? comboQuestion(host) : '') || getLabel(el) || '').replace(/[*:]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (label) out.push({ el, host, lov, label });
+    }
+    return out;
+  }
+
+  /* Pick `text` in an Oracle list: clear it, type, wait for the matching row,
+     take it. `accept` says whether a shown value / row is the one wanted. */
+  async function oracleSetLov(f, text, accept) {
+    const inp = f.el;
+    const shown = () => String(inp.value || '').trim();
+    if (accept(shown()) && !comboShowsNoResults(f.host)) return true;
+    const terms = [text, String(text).split(/[\s,]+/)[0]].filter((t, i, a) => t && a.indexOf(t) === i);
+    for (const t of terms) {
+      try { inp.focus({ preventScroll: true }); nativeSet(inp, ''); await sleep(120); nativeSet(inp, t); } catch (_) {}
+      let row = null;
+      await waitUntil(() => (row = visibleOptions(listboxFor(inp) || listboxFor(f.host))
+        .filter((o) => !NO_RESULTS_RE.test(comboText(o))).find((o) => accept(comboText(o)))), 4000, 200);
+      if (!row) continue;
+      triggerMouse(row);
+      await sleep(400);
+      if (!accept(shown())) await commitByKeyboard(f.host, row);
+      if (accept(shown())) return true;
+    }
+    if (!accept(shown())) { try { nativeSet(inp, ''); } catch (_) {} }
+    return false;
+  }
+
+  async function oracleAddressPass(p) {
+    const find = (fields, rx, not) => fields.find((f) => rx.test(f.label) && !(not && not.test(f.label)) && !userTouched(f.el));
+    let fields = oracleFields();
+    const postal = find(fields, /postal|post\s*code|postcode|zip/i);
+    if (!postal) return 0;                       // no address on this step
+    const plan = await oracleAddressPlan(p);
+    const norm = (v) => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    let n = 0;
+    // The country first — the postcode list (and often the rest) follows it.
+    const country = find(fields, /^country(\s*\/\s*region)?$/i);
+    if (country) {
+      const want = norm(plan.country);
+      const ok = (t) => norm(t) === want || (plan.uk && /^(united kingdom|uk|great britain)$/i.test(String(t).trim()));
+      if (!ok(country.el.value)) {
+        const done = country.lov ? await oracleSetLov(country, plan.country, ok) : (nativeSet(country.el, plan.country), true);
+        LOG(`Oracle: country → ${plan.country}${done ? '' : ' (not in the list)'}`);
+        if (done) { n++; await waitForFormStable(1500); fields = oracleFields(); }
+      }
+    }
+    const pc = find(fields, /postal|post\s*code|postcode|zip/i);
+    if (pc) {
+      const flat = (t) => String(t || '').toUpperCase().replace(/\s+/g, '');
+      const ok = (t) => !!t && flat(t).startsWith(flat(plan.postcode));
+      if (!ok(pc.el.value) || (pc.lov && comboShowsNoResults(pc.host))) {
+        const done = pc.lov ? await oracleSetLov(pc, plan.postcode, ok) : (nativeSet(pc.el, plan.postcode), true);
+        LOG(`Oracle: postal code → ${plan.postcode}${done ? '' : ' — not offered for this country'}`);
+        if (done) { n++; await sleep(600); fields = oracleFields(); }
+      }
+    }
+    const l1 = find(fields, /address\s*line\s*1|^address$|^street( address)?$|address 1\b/i);
+    if (l1 && plan.line1 && (!l1.el.value.trim() || plan.looksCountry(l1.el.value) || norm(l1.el.value) === norm(plan.postcode))) {
+      nativeSet(l1.el, plan.line1); n++; LOG('Oracle: Address Line 1 → the street');
+    }
+    const l2 = find(fields, /address\s*line\s*2|address 2\b/i);
+    if (l2 && l1 && l2.el.value.trim() && norm(l2.el.value) === norm(l1.el.value)) {
+      nativeSet(l2.el, plan.line2); n++; LOG('Oracle: Address Line 2 repeated Line 1 — ' + (plan.line2 ? 'set from the profile' : 'cleared'));
+    }
+    const city = find(fields, /^(town( or|\/)?\s*city|city( or town)?|town)$/i);
+    if (city && plan.city && norm(city.el.value) !== norm(plan.city) && (plan.uk || !city.el.value.trim())) {
+      const done = city.lov ? await oracleSetLov(city, plan.city, (t) => norm(t).startsWith(norm(plan.city))) : (nativeSet(city.el, plan.city), true);
+      if (done) { n++; LOG('Oracle: town/city → ' + plan.city); }
+    }
+    return n;
+  }
+
+  /* Pill-button questions: buttons with aria-pressed (Oracle's
+     cx-select-pill-section), grouped by question. */
+  function oraclePillGroups() {
+    const pills = deepAll('button[aria-pressed],[role="button"][aria-pressed],.cx-select-pill-section', 300)
+      .filter((b) => isVisible(b) && !(b.closest && b.closest('[role="listbox"] [role="option"]')));
+    const groups = new Map();
+    for (const b of pills) {
+      let c = b.parentElement;
+      for (let i = 0; c && i < 4 && pills.filter((x) => c.contains(x)).length < 2; i++) c = c.parentElement;
+      if (!c) continue;
+      if (!groups.has(c)) groups.set(c, []);
+      groups.get(c).push(b);
+    }
+    const out = [];
+    for (const [c, btns] of groups) {
+      if (btns.length < 2) continue;
+      let q = '';
+      try {
+        const fs = c.closest('fieldset');
+        q = (fs && fs.querySelector('legend') && fs.querySelector('legend').textContent) || textOfIds(c, 'aria-labelledby') || c.getAttribute('aria-label') || '';
+        for (let el = c, i = 0; !q.trim() && el && i < 4; el = el.parentElement, i++) {
+          const prev = el.previousElementSibling;
+          const t = prev && (prev.innerText || prev.textContent || '').trim();
+          if (t && t.length < 400) q = t;
+        }
+      } catch (_) {}
+      out.push({ container: c, buttons: btns, question: String(q).replace(/\s+/g, ' ').trim() });
+    }
+    return out;
+  }
+  const PILL_ON = (b) => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-checked') === 'true';
+  const DEMOGRAPHIC_Q_RE = /gender|\bsex\b|sexual|orientation|pronoun|transgender|\btrans\b|(registered|assigned) at birth|ethnic|\brace\b|racial|disab|health condition|veteran|religio|\bbelief|marital|caring responsib|\bcarer\b|social (class|background|mobility)|socio-?economic|first generation|\bage\b/i;
+
+  function pillChoice(q, texts, p) {
+    const ql = q.toLowerCase();
+    const consentQ = /\b(i )?consent|agree|acknowledg|i understand|declaration|privacy|data protection/i.test(ql) ||
+      texts.some((t) => /^i (consent|agree)\b/i.test(t));
+    if (consentQ) {
+      const i = texts.findIndex((t) => /^(i\s+)?(consent|agree|accept|acknowledge|understand|yes)\b/i.test(t) && !/\b(not|don'?t|do not|decline)\b/i.test(t));
+      if (i >= 0) return i;
+    }
+    if (DEMOGRAPHIC_Q_RE.test(ql)) {
+      // Your profile's own answer when it is one of the options word for word; otherwise decline.
+      const own = /pronoun/.test(ql) ? p.pronouns : /orientation|sexual/.test(ql) ? p.sexual_orientation
+        : /identity|trans|registered at birth|assigned at birth/.test(ql) ? '' : /gender|\bsex\b/.test(ql) ? p.gender
+        : /ethnic|race|racial/.test(ql) ? (p.ethnicity || p.race) : /disab|health/.test(ql) ? p.disability : /veteran/.test(ql) ? p.veteran : '';
+      if (own) { const i = texts.findIndex((t) => t.trim().toLowerCase() === String(own).trim().toLowerCase()); if (i >= 0) return i; }
+      const d = texts.findIndex(isDeclineOption);
+      if (d >= 0) return d;
+    }
+    const pols = texts.map(optionPolarity);
+    if (texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) || (texts.some((t) => /^yes$/i.test(t)) && texts.some((t) => /^no$/i.test(t))))) {
+      let dec = '';
+      try { dec = determineYesNo(ql.replace(/\s+/g, ' ')); } catch (_) {}
+      if (dec === 'eeo') dec = 'decline';
+      const i = optionIndexForDecision(texts, dec, q);
+      if (i >= 0) return i;
+    }
+    const g = guessFieldValue(q, p, null);
+    return g ? bestOptionIndex(texts, g, q) : -1;
+  }
+
+  async function oraclePillPass(p) {
+    let n = 0;
+    for (const g of oraclePillGroups()) {
+      if (g.buttons.some(PILL_ON)) continue;
+      const texts = g.buttons.map((b) => controlLabel(b));
+      const i = pillChoice(g.question, texts, p);
+      if (i < 0) { LOG(`Oracle: no answer for "${g.question.slice(0, 60)}" (${texts.join(' / ').slice(0, 80)})`); continue; }
+      realClick(g.buttons[i]);
+      await sleep(200);
+      if (!PILL_ON(g.buttons[i])) { triggerMouse(g.buttons[i]); await sleep(200); }
+      LOG(`Oracle: "${g.question.slice(0, 50)}" → ${texts[i]}`);
+      n++;
+    }
+    return n;
+  }
+
+  /* A list showing "No results" or flagged by the form holds typed text, not a
+     pick: clear it and answer it from the list. */
+  const _oracleLovChecked = new WeakSet();
+  async function oracleRepairLovs(p) {
+    let n = 0;
+    for (const f of oracleFields().filter((x) => x.lov && !userTouched(x.el))) {
+      let stale = comboShowsNoResults(f.host) || (!!f.el.value.trim() && FIELD_ERROR_TEXT_RE.test(errorTextNear(f.el) || ''));
+      /* A demographic list holding text is opened once to see whether that text
+         is really one of its options — an open list filtered to "No results"
+         says it was only typed. */
+      if (!stale && f.el.value.trim() && DEMOGRAPHIC_Q_RE.test(f.label) && !_oracleLovChecked.has(f.el)) {
+        _oracleLovChecked.add(f.el);
+        triggerMouse(f.el);
+        await sleep(450);
+        stale = comboShowsNoResults(f.host);
+        if (!stale) { try { f.el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {} }
+      }
+      if (!stale) continue;
+      try { nativeSet(f.el, ''); } catch (_) {}
+      await sleep(150);
+      const want = guessFieldValue(f.label, p, f.host);
+      if (await commitCustomDropdown(f.host, want, true)) { n++; LOG(`Oracle: "${f.label.slice(0, 40)}" picked from its list → ${f.el.value.trim().slice(0, 40)}`); }
+    }
+    return n;
+  }
+
+  async function oracleCxPass() {
+    const p = await getProfile();
+    let n = 0;
+    try { n += await oracleAddressPass(p); } catch (e) { LOG('Oracle address pass failed:', e?.message || e); }
+    try { n += await oraclePillPass(p); } catch (e) { LOG('Oracle pill pass failed:', e?.message || e); }
+    try { n += await oracleRepairLovs(p); } catch (e) { LOG('Oracle list repair failed:', e?.message || e); }
+    if (n) noteProgress('Oracle: answered ' + n);
+    return n;
+  }
+
   async function oracleCloudAutomation() {
     LOG('Oracle Recruiting Cloud automation starting...');
     await loadAnswerBank();
@@ -14180,9 +14919,11 @@
       // question set in place, so a flat sleep left us filling the previous one.
       const stepSig = stepSignature();
       await triggerAutofillQuick();
+      await oracleCxPass();
       await fallbackFill();
       await guaranteeRequiredFields();
       await handleValidationErrors();
+      await oracleCxPass();      // after the generic fillers, which can retype a list
 
       const r = await autoSubmitOrNext();
       if (r === 'submitted') { await sleep(scaled(3000, 1500)); break; }
@@ -14397,7 +15138,7 @@
     else if (/breezy\.hr|breezyhr\.com/i.test(url) || platform === 'Breezy' || platform === 'BreezyHR') await breezyhrAutomation();
     else if (/ats\.rippling\.com/i.test(url) || platform === 'Rippling') await ripplingAutomation();
     else if (/adp\.com|workforcenow\.adp/i.test(url)) await adpAutomation();
-    else if (/successfactors\.com/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
+    else if (/successfactors\.(com|eu)|sapsf\.(com|eu)/i.test(url) || platform === 'SuccessFactors') await successFactorsAutomation();
     else if (/jazz\.co|applytojob\.com/i.test(url) || platform === 'JazzHR') await jazzhrAutomation();
     else if (/joinhandshake\.com/i.test(url) || platform === 'Handshake') await handshakeAutomation();
     else if (/governmentjobs\.com|usajobs\.gov/i.test(url)) await usajobsAutomation();
@@ -14408,6 +15149,8 @@
     // multi-page forms, review/confirm screens) until it is. Gated on
     // confirmSubmitted(), not checkSuccess(): a confirmation-looking URL alone is
     // not a reason to skip pressing Submit.
+    // Workday assist owns the page: you press Next, so no page walk follows.
+    if (_wdAssistActive) return;
     if (!confirmSubmitted()) await multiPageLoop();
     } finally {
       if (!ownedElsewhere) setAutomationFlag(false);
@@ -14424,8 +15167,19 @@
     try {
       if (isJobright() || /(^|\.)linkedin\.com$/i.test(location.hostname)) return; // never touch these
       const CSS_ID = 'ua-quiet-css';
+      // You opened Jobright here (its icon, or "Open Jobright on this page"):
+      // it stays visible on this tab instead of being hidden as off-topic.
+      const userOpened = () => { try { return sessionStorage.getItem('ua_jr_user_open') === '1'; } catch (_) { return false; } };
+      try {
+        chrome.runtime.onMessage.addListener((m) => {
+          if (!m || m.message !== 'iconClicked') return;
+          try { sessionStorage.setItem('ua_jr_user_open', '1'); } catch (_) {}
+          document.getElementById(CSS_ID)?.remove();
+          LOG('Jobright opened on this page by you — quiet mode lifted');
+        });
+      } catch (_) {}
       const add = () => {
-        if (document.getElementById(CSS_ID)) return;
+        if (userOpened() || document.getElementById(CSS_ID)) return;
         const s = document.createElement('style');
         s.id = CSS_ID;
         s.textContent = 'plasmo-csui,[id^="plasmo-"],[data-plasmo]{display:none !important;pointer-events:none !important}';

@@ -1,0 +1,112 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Job Application — Goldman Sachs Lateral Hiring</title>
+<style>
+body{font-family:sans-serif;max-width:720px;margin:20px auto}
+.input-row{margin:10px 0;border:0;padding:0}
+.input-row__label{display:block;font-weight:bold;margin-bottom:4px}
+.lov{position:relative}
+.lov ul{position:absolute;z-index:5;background:#fff;border:1px solid #888;margin:0;padding:0;list-style:none;width:100%}
+.lov li{padding:4px;cursor:pointer}
+.cx-select-pill-section{margin:2px;padding:6px 10px;border:1px solid #333;border-radius:14px;background:#fff}
+.cx-select-pill-section[aria-pressed="true"]{background:#036;color:#fff}
+.err{color:#c00;font-size:12px}
+</style></head><body>
+<!-- Oracle Recruiting Cloud (Candidate Experience), shaped on the user's
+     hdpc.fa.us2.oraclecloud.com / LateralHiring screenshots:
+       • Country, Address Line 1/2, a Postal Code LOV that only knows the
+         postcodes of the chosen country (picking one fills Town or City),
+         Town or City, County.
+       • Self-identification questions answered with pill BUTTONS
+         (aria-pressed), not radios: consent, gender, gender identity, sexual
+         orientation, pronouns, disability.
+       • A Race/Ethnicity LOV whose UK options do not include the US wording;
+         a typed "Black or African American" finds nothing, and stays typed. -->
+<h1>Job Application</h1>
+<form id="f" onsubmit="return false">
+<h2>Address</h2>
+<div class="input-row"><label class="input-row__label" for="country">Country *</label>
+  <div class="lov"><input id="country" role="combobox" aria-autocomplete="list" aria-controls="country-lb" aria-expanded="false" autocomplete="off" value="Ireland"><ul id="country-lb" role="listbox" hidden></ul></div><div class="err"></div></div>
+<div class="input-row"><label class="input-row__label" for="line1">Address Line 1 *</label><input id="line1"><div class="err"></div></div>
+<div class="input-row"><label class="input-row__label" for="line2">Address Line 2</label><input id="line2"><div class="err"></div></div>
+<div class="input-row"><label class="input-row__label" for="postal">Postal Code *</label>
+  <div class="lov"><input id="postal" role="combobox" aria-autocomplete="list" aria-controls="postal-lb" aria-expanded="false" autocomplete="off"><ul id="postal-lb" role="listbox" hidden></ul></div><div class="err"></div></div>
+<div class="input-row"><label class="input-row__label" for="city">Town or City *</label><input id="city"><div class="err"></div></div>
+<div class="input-row"><label class="input-row__label" for="county">County</label><input id="county"><div class="err"></div></div>
+
+<h2>Diversity and Inclusion</h2>
+<div id="pills"></div>
+<div class="input-row"><label class="input-row__label" for="race">Race/Ethnicity *</label>
+  <div class="lov"><input id="race" role="combobox" aria-autocomplete="list" aria-controls="race-lb" aria-expanded="false" autocomplete="off"><ul id="race-lb" role="listbox" hidden></ul></div><div class="err"></div></div>
+<p id="msg" class="err"></p>
+<button type="button" id="submit">Submit</button>
+</form>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const POSTCODES = { 'United Kingdom': [['SW1W 0RH', 'London', 'Greater London'], ['SW1A 1AA', 'London', 'Greater London'], ['M1 1AE', 'Manchester', 'Greater Manchester']],
+    Ireland: [['D02 P820', 'Dublin', 'Dublin'], ['D04 XY12', 'Dublin', 'Dublin']], 'United States': [] };
+  const committed = {};
+  function lov(id, source, onPick) {
+    const inp = $(id), lb = $(id + '-lb');
+    const render = () => {
+      const q = inp.value.trim().toLowerCase();
+      const items = source().filter((t) => !q || t.toLowerCase().includes(q));
+      lb.innerHTML = items.length ? items.map((t, i) => '<li role="option" id="' + id + '-o' + i + '">' + t + '</li>').join('') : '<li class="oj-listbox-no-results">No results were found.</li>';
+      lb.hidden = false; inp.setAttribute('aria-expanded', 'true');
+    };
+    inp.addEventListener('input', () => { committed[id] = null; render(); });
+    inp.addEventListener('focus', render);
+    inp.addEventListener('click', render);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown') render(); if (e.key === 'Escape') { lb.hidden = true; } });
+    lb.addEventListener('mousedown', (e) => e.preventDefault());
+    lb.addEventListener('click', (e) => {
+      const li = e.target.closest('li[role=option]'); if (!li) return;
+      inp.value = li.textContent; committed[id] = li.textContent; lb.hidden = true; inp.setAttribute('aria-expanded', 'false');
+      if (onPick) onPick(li.textContent);
+    });
+    inp.addEventListener('blur', () => setTimeout(() => { lb.hidden = true; inp.setAttribute('aria-expanded', 'false'); }, 150));
+  }
+  committed.country = 'Ireland';
+  lov('country', () => ['Ireland', 'United Kingdom', 'United States'], () => { $('postal').value = ''; committed.postal = null; $('city').value = ''; $('county').value = ''; });
+  lov('postal', () => (POSTCODES[committed.country] || []).map((r) => r[0]), (code) => {
+    const r = (POSTCODES[committed.country] || []).find((x) => x[0] === code); if (r) { $('city').value = r[1]; $('county').value = r[2]; }
+  });
+  lov('race', () => ['Asian or Asian British', 'Black, Black British, Caribbean or African', 'Mixed or multiple ethnic groups', 'White', 'Other ethnic group', 'Prefer not to say']);
+
+  const PILLS = [
+    ['consent', 'I consent to the processing of my diversity information as described above. *', ['I consent', 'I do not consent']],
+    ['gender', 'What is your gender? *', ['Male', 'Female', 'Non-binary', 'Prefer not to say']],
+    ['trans', 'Is the gender you identify with the same as your sex registered at birth? *', ['Yes', 'No', 'Prefer not to say']],
+    ['orient', 'Which of the following best describes your sexual orientation? *', ['Heterosexual/Straight', 'Gay or Lesbian', 'Bisexual', 'I prefer not to say']],
+    ['pronouns', 'What are your pronouns? *', ['He/Him', 'She/Her', 'They/Them', 'Prefer Not To Say']],
+    ['disab', 'Do you consider yourself to have a disability or long-term health condition? *', ['Yes', 'No', 'Prefer not to say']],
+  ];
+  $('pills').innerHTML = PILLS.map(([k, q, opts]) => '<fieldset class="input-row" data-k="' + k + '"><legend class="input-row__label">' + q + '</legend><ul class="cx-select-pills-container" style="list-style:none;padding:0;margin:0;display:flex;flex-wrap:wrap">' +
+    opts.map((o) => '<li><button type="button" class="cx-select-pill-section" aria-pressed="false"><span class="cx-select-pill-name">' + o + '</span></button></li>').join('') + '</ul><div class="err"></div></fieldset>').join('');
+  document.querySelectorAll('.cx-select-pill-section').forEach((b) => b.addEventListener('click', () => {
+    b.closest('ul').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+    b.setAttribute('aria-pressed', 'true');
+  }));
+  const pillValue = (k) => { const b = document.querySelector('fieldset[data-k="' + k + '"] button[aria-pressed="true"]'); return b ? b.textContent.trim() : ''; };
+
+  // What the user saw: the Race LOV left holding typed text that matched nothing.
+  setTimeout(() => { $('race').value = 'Black or African American'; committed.race = null; }, 300);
+
+  $('submit').onclick = () => {
+    document.querySelectorAll('.err').forEach((e) => { e.textContent = ''; });
+    const bad = [];
+    const need = (id, ok) => { if (!ok) { bad.push(id); const e = $(id) ? $(id).closest('.input-row').querySelector('.err') : document.querySelector('fieldset[data-k="' + id + '"] .err'); if (e) e.textContent = 'This info is required.'; if ($(id)) $(id).setAttribute('aria-invalid', 'true'); } };
+    need('country', committed.country && committed.country === $('country').value);
+    need('line1', $('line1').value.trim() && !/^(united kingdom|ireland|united states)$/i.test($('line1').value.trim()));
+    need('postal', committed.postal && committed.postal === $('postal').value);
+    need('city', $('city').value.trim());
+    need('race', committed.race && committed.race === $('race').value);
+    for (const [k] of PILLS) need(k, pillValue(k));
+    if (bad.length) { $('msg').textContent = 'Fix the errors: ' + bad.join(', '); console.log('BLOCKED ' + JSON.stringify(bad)); return; }
+    const out = { country: committed.country, line1: $('line1').value, line2: $('line2').value, postal: committed.postal, city: $('city').value, county: $('county').value, race: committed.race };
+    for (const [k] of PILLS) out[k] = pillValue(k);
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for your job application.</h1><p>We received your application.</p>';
+  };
+})();
+</script>
+</body></html>

@@ -10,6 +10,7 @@
 
    Usage: node tests/fill.test.js "<ua-enhancement.js>" "<ua-orchestrator.js>" "<manifest.json>" */
 const fs = require('fs');
+const path = require('path');
 
 let pass = 0, fail = 0;
 const eq = (name, got, want) => {
@@ -625,8 +626,11 @@ eq('and the same holds in a free-text years box', refine('0', LINUX_Q, textBox),
 eq(`the figure it falls back to is the shipped default (${shippedYears})`, shippedYears, '7');
 eq('a real answer of zero to something that is NOT a years question is kept',
   refine('0', 'How many dependents do you have?', numberBox), '0');
+// v17.23: only the figure YOU set in the profile editor ("years") overrides 7.
 eq("the candidate's own profile figure beats the default",
-  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '11' }, numberBox), '11');
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years: '11' }, numberBox), '11');
+eq('years merged in from other stored data do not',
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '2' }, numberBox), '7');
 
 // A Yes/No where a value belongs.
 eq('"Yes" is not the name of an employee',
@@ -1421,6 +1425,10 @@ const reLines = (src.match(/^  const [A-Z][A-Z0-9_]*_RE = \/.*\/[a-z]*;$/gm) || 
 if (!/ELIGIBILITY_WORD_RE/.test(reLines)) throw new Error('regex constants not found');
 new Function('exports', `
   const LOG = () => {};
+  const DEFAULTS = { years: '7' };
+  const _policyProfile = {};
+  ${body('yearsAnswer')}
+  ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
   ${body('workAuthorisationAnswer')}
@@ -2501,7 +2509,8 @@ console.log('audit: the speed selector reaches every wait');
   eq('the mailbox poll keeps its own pace', /await sleep\(4000\);\s+\/\/ the mail has not landed yet/.test(src), true);
   // Every converted wait keeps at least half its time, at any speed.
   const conv = [...src.matchAll(/await sleep\(scaled\((\d{4,}), (\d+)\)\)/g)];
-  eq('there are many converted waits', conv.length >= 85, true);
+  // v17.22 replaced four of them on Workday with waits on the page itself.
+  eq('there are many converted waits', conv.length >= 80, true);
   eq('and every one keeps at least half its original time',
     conv.every(([, ms, floor]) => Number(floor) >= Math.floor(Number(ms) / 2) - 0), true);
   const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
@@ -2582,6 +2591,10 @@ console.log('knockout answers are the ones that do not get you rejected');
   const koCtx2 = {};
   new Function('exports', `
     ${reLines}
+    const DEFAULTS = { years: '7' };
+    const _policyProfile = {};
+    ${body('yearsAnswer')}
+    ${body('knockoutPolicy')}
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
@@ -3103,8 +3116,253 @@ console.log('v17.18: Workday engine — any language, every formField container'
   eq('parser ghosts are deleted down to the profile\'s count, never below', /while \(n > 0 && bs\.length > n\)/.test(body('wdEnsureBlocks')), true);
   eq('dates are typed a digit at a time', /new KeyboardEvent\('keydown', \{ key: ch/.test(body('wdSetSegment')), true);
   eq('a school not in the list falls back to its "Other"', /'Sonstige'/.test(body('wdMyExperience')), true);
+}
+
+/* ── 69. v17.19: a Jobright link must not pull the tab back to Jobright ── */
+console.log('v17.19: Jobright links, extra tabs, the runner staying on the job');
+{
+  const m = {};
+  new Function('exports', `${body('urlsRoughlyMatch')}\nexports.f = urlsRoughlyMatch;`)(m);
+  eq('a site\'s home page does not match every job on it', m.f('https://jobright.ai/', 'https://jobright.ai/jobs/info/68f0a1'), false);
+  eq('two home pages still match', m.f('https://acme.com/', 'https://acme.com'), true);
+  eq('apply → thank-you still matches', m.f('https://boards.greenhouse.io/acme/jobs/1/thanks', 'https://boards.greenhouse.io/acme/jobs/1/apply'), true);
+  const cj = body('onCurrentJobPage');
+  eq('a Jobright link\'s job is wherever it led', /jobright\\\.ai\$\/i\.test\(new URL\(c\.url\)\.hostname\) && !isJobright\(\)/.test(cj), true);
+  eq('the site a job landed on is remembered', /c\.landedHost && c\.landedHost === location\.hostname/.test(cj) && /c\.landedHost = location\.hostname/.test(src), true);
+  eq('a page still drawing gets a moment before it is judged', /if \(!onCurrentJobPage\(c\)\) await waitUntil\(\(\) => onCurrentJobPage\(c\), 6000, 300\);/.test(src), true);
+  eq('a Jobright job page goes to the employer\'s link in the same tab', /const target = jobrightApplyTarget\(\);[\s\S]{0,300}location\.assign\(target\)/.test(body('openApplicationForm')), true);
+  eq('the link is read from Jobright\'s page data first', /__NEXT_DATA__/.test(body('jobrightApplyTarget')) && /applyLink/.test(body('jobrightApplyTarget')), true);
   eq('a replaced parser entry does not keep the other role\'s description', /if \(!r\.description && otherRole\)/.test(body('wdMyExperience')), true);
   eq('"Role Description" is not answered with the job title', /dut\(y\|ies\)\|summary/.test(src), true);
+}
+
+/* ── 70. v17.20: SuccessFactors career site, start to finish ── */
+console.log('v17.20: SuccessFactors — phone code, citizenship, CV dialog, Terms of Use, Apply');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${gc('PLACEHOLDER_OPT_RE')}${body('dialCodeFromPhone')}${body('sfPickDialCode')}
+    const DEFAULTS = { country: 'Ireland', phoneCountryCode: '+353' };
+    const $$ = (s, sel) => sel.options;
+    exports.dial = dialCodeFromPhone; exports.pick = sfPickDialCode;`)(m);
+  eq('"+44 7700 900123" was written with +44', m.dial('+44 7700 900123'), '+44');
+  eq('"0044-7700…" too', m.dial('0044-7700 900123'), '+44');
+  eq('"(+353) 87…" too', m.dial('(+353) 87 426 1508'), '+353');
+  eq('a run of digits is not split by guesswork', m.dial('+447700900123'), '');
+  eq('a national number has no code', m.dial('087 426 1508'), '');
+  const opt = (text, value) => ({ text, value: value == null ? text : value });
+  const cc = { options: [opt('No Selection', ''), opt('Isle of Man (+44)', 'IM'), opt('Ireland (+353)', 'IE'), opt('United Kingdom (+44)', 'GB'), opt('United States (+1)', 'US'), opt('Antigua (+1268)', 'AG')] };
+  eq('the phone\'s code picks the option', m.pick(cc, { phone: '+353 87 426 1508' }).value, 'IE');
+  eq('+1 is not +1268', m.pick(cc, { phone: '+1 415 555 0100' }).value, 'US');
+  eq('+44 is the UK, not the Isle of Man listed before it', m.pick(cc, { phone: '+44 7700 900123' }).value, 'GB');
+  eq('…unless the profile lives on the Isle of Man', m.pick(cc, { phone: '+44 7624 000000', country: 'Isle of Man' }).value, 'IM');
+  eq('no phone code: the profile\'s country', m.pick(cc, { phone: '087 426 1508', country: 'United Kingdom' }).value, 'GB');
+  eq('no phone code: the profile\'s dial code', m.pick(cc, { phone: '087 426 1508', phoneCountryCode: '+353' }).value, 'IE');
+  eq('"No Selection" is never the answer', m.pick({ options: [opt('No Selection', '')] }, { phone: '' }), null);
+
+  const gv = body('guessValue');
+  eq('"Country/Region Code" is not a region', /!\/statement\|country \(region \)\?code\//.test(gv), true);
+  eq('"Country/Region Code" is the dial code, from the phone first', /country\.\?\(region\.\?\)\?code[^\n]*dialCodeFromPhone\(p\.phone\)/.test(gv), true);
+  const cit = gv.indexOf('(citizenship|nationality)\\s*(1|one|primary)'), wa = gv.indexOf('const wa = workAuthorisationAnswer');
+  eq('"Citizenship 1:" is a country, asked before the right-to-work decider', cit > 0 && cit < wa, true);
+  eq('a second citizenship only comes from the profile', /p\.second_nationality \|\| p\.nationality2 \|\| ''/.test(gv), true);
+  const rx = /^\s*(citizenship|nationality)\s*(1|one|primary)?\s*$/;
+  eq('"citizenship 1" matches', rx.test('citizenship 1 '), true);
+  eq('a citizenship QUESTION does not', rx.test('do you hold eu citizenship '), false);
+
+  const sf = body('successFactorsAutomation');
+  eq('the CV goes through the "Upload a Resume" dialog', /await sfUploadResume\(\)/.test(sf) && /realClick\(go\)/.test(body('sfUploadResume')), true);
+  eq('the Terms of Use are opened and accepted', /await sfAcceptTerms\(\)/.test(sf) && /realClick\(accept\)/.test(body('sfAcceptTerms')), true);
+  eq('the dial-code select is set before the generic pass', sf.indexOf('sfPickDialCode') < sf.indexOf('guessFieldValue(lbl'), true);
+  const fs = body('findSubmitControl');
+  eq('SuccessFactors\' "Apply" is its submit — only there, and only in a real form', /isSuccessFactorsHost\(\)/.test(fs) && /length >= 8/.test(fs), true);
+  eq('"Apply" stays excluded everywhere else', /'\^\\\\s\*apply\\\\b'/.test(src), true);
+  eq('a successfactors.eu job reaches the handler', /successfactors\\\.\(com\|eu\)\|sapsf[^\n]*await successFactorsAutomation\(\)/.test(src), true);
+}
+
+
+/* ── 71. v17.21: Oracle — postcode SW1W 0RH, address lines, pills, lists ── */
+console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pills, typed-only lists');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${gc('NO_RESULTS_RE')}exports.nr = NO_RESULTS_RE;`)(m);
+  for (const t of ['No results were found.', 'No results found', 'No matches found', 'No results', 'No matching items']) eq(`"${t}" is not an option`, m.nr.test(t), true);
+  for (const t of ['No', 'None of the above', 'Not listed', 'No, I do not']) eq(`"${t}" is a real option`, m.nr.test(t), false);
+
+  // The address plan — your postcode, the country it belongs to, the street on Line 1.
+  const store = {};
+  const a = {};
+  new Function('exports', 'store', `const st = { get: async (k) => store[k] };
+    const DEFAULTS = { country: 'Ireland' };
+    ${gc('ORACLE_POSTCODE_DEFAULT')}${gc('UK_POSTCODE_RE')}${gc('COUNTRY_NAME_RE')}${body('oracleAddressPlan')}
+    exports.plan = oracleAddressPlan;`)(a, store);
+  (async () => {
+    const pl = await a.plan({ address: 'United Kingdom', address_line_2: '37 Newnham Rd', country: 'Ireland', city: 'Dublin' });
+    eq('the postcode is SW1W 0RH', pl.postcode, 'SW1W 0RH');
+    eq('…so the country is the United Kingdom (the postcode list follows it)', pl.country, 'United Kingdom');
+    eq('…and the town London', pl.city, 'London');
+    eq('a country name is never the street', pl.line1, '');
+    eq('a country name is recognised as one', pl.looksCountry('United Kingdom') && pl.looksCountry('Ireland') && !pl.looksCountry('37 Newnham Rd'), true);
+    const p2 = await a.plan({ address: '37 Newnham Rd', country: 'United Kingdom' });
+    eq('the profile street goes on Line 1', p2.line1, '37 Newnham Rd');
+    store.ua_oracle_address = { postcode: 'D02 P820', country: 'Ireland', city: 'Dublin' };
+    const p3 = await a.plan({ address: '1 Grand Canal Square' });
+    eq('ua_oracle_address overrides it', [p3.postcode, p3.country, p3.city, p3.uk].join('|'), 'D02 P820|Ireland|Dublin|false');
+  })();
+
+  // Pill questions: consent → consent; demographics → your exact answer or decline.
+  const pc = {};
+  new Function('exports', `${body('isDeclineOption')}${gc('DEMOGRAPHIC_Q_RE')}
+    const optionPolarity = (t) => /^yes\\b/i.test(t) ? 1 : /^no\\b/i.test(t) ? -1 : 0;
+    const determineYesNo = () => 'yes';
+    const optionIndexForDecision = (texts, d) => texts.findIndex((t) => t.toLowerCase() === d);
+    const guessFieldValue = () => '';
+    const bestOptionIndex = () => -1;
+    ${body('pillChoice')}
+    exports.pick = (q, opts, p) => { const i = pillChoice(q, opts, p || {}); return i < 0 ? null : opts[i]; };`)(pc);
+  eq('consent → "I consent"', pc.pick('I consent to the processing of my diversity information.', ['I consent', 'I do not consent']), 'I consent');
+  eq('consent spotted from the options alone', pc.pick('Diversity data', ['I do not agree', 'I agree']), 'I agree');
+  eq('gender → decline', pc.pick('What is your gender?', ['Male', 'Female', 'Non-binary', 'Prefer not to say']), 'Prefer not to say');
+  eq('gender → your profile\'s answer when it is an option word for word', pc.pick('What is your gender?', ['Male', 'Female', 'Prefer not to say'], { gender: 'Male' }), 'Male');
+  eq('gender identity is not answered with your gender', pc.pick('Is the gender you identify with the same as your sex registered at birth?', ['Yes', 'No', 'Prefer not to say'], { gender: 'Male' }), 'Prefer not to say');
+  eq('sexual orientation → "I prefer not to say"', pc.pick('Which of the following best describes your sexual orientation?', ['Heterosexual/Straight', 'Gay or Lesbian', 'I prefer not to say']), 'I prefer not to say');
+  eq('pronouns → "Prefer Not To Say"', pc.pick('What are your pronouns?', ['He/Him', 'She/Her', 'Prefer Not To Say']), 'Prefer Not To Say');
+  eq('disability → decline (the profile wording is not an option)', pc.pick('Do you consider yourself to have a disability?', ['Yes', 'No', 'Prefer not to say'], { disability: 'I do not have a disability' }), 'Prefer not to say');
+  eq('"language" is not an age question', /\bage\b/.test('language') , false);
+  eq('a plain yes/no pill question is decided, not declined', pc.pick('Are you willing to travel?', ['Yes', 'No']), 'Yes');
+
+  // Location filler leaves Address Line 2 alone.
+  const lf = {};
+  new Function('exports', `let L = ''; const getLabel = () => L; ${body('isLocationField')}
+    exports.loc = (label) => { L = label; return isLocationField({ tagName: 'INPUT', className: '', getAttribute: () => null }); };`)(lf);
+  eq('"Address Line 2" is not a place search', lf.loc('Address Line 2'), false);
+  eq('"Apartment / Suite" neither', lf.loc('Apartment, suite, etc.'), false);
+  eq('"Town or City" still is', lf.loc('Town or City'), true);
+  eq('"Address" still is', lf.loc('Address'), true);
+
+  const gv = body('guessValue');
+  eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (/address|street/.test(l)) return p.address"), true);
+  const cd = body('commitCustomDropdown');
+  eq('"No results" rows are not options', /filter\(o => !NO_RESULTS_RE\.test\(comboText\(o\)\)\)/.test(cd), true);
+  eq('typeahead falls back to the first word, then the full list', /\[want\.slice\(0, 24\), words\[0\], ''/.test(cd), true);
+  eq('our own search text is cleared when nothing was picked', /if \(typed\) \{ try \{ nativeSet\(typeBox, ''\)/.test(cd), true);
+  eq('typed text that found nothing is not an answer', /if \(comboShowsNoResults\(el\)\) return false;/.test(body('comboHasValue')), true);
+  eq('the Oracle driver runs the pass before and after the generic fillers', (body('oracleCloudAutomation').match(/await oracleCxPass\(\)/g) || []).length, 2);
+  eq('…and the multi-page loop runs it after a rejected submit', /if \(isOracleCloud\(\)\) await oracleCxPass\(\);/.test(body('multiPageLoop')), true);
+  eq('the country is set before the postcode', body('oracleAddressPass').indexOf('plan.country') < body('oracleAddressPass').indexOf('plan.postcode'), true);
+  eq('fields you edited are left alone', /!userTouched\(f\.el\)/.test(body('oracleAddressPass')) && /!userTouched\(x\.el\)/.test(body('oracleRepairLovs')), true);
+}
+
+
+/* ── 72. v17.22: Workday at SpeedyApply speed, and you can edit while it fills ── */
+console.log('v17.22: Workday speed; editing while it fills');
+{
+  const wa = body('workdayAutomation');
+  eq('Jobright autofill only when something required is still empty', /if \(getMissingRequired\(\)\.length\) \{[\s\S]{0,200}await triggerAutofill\(\);/.test(wa), true);
+  eq('the tailor-first detour only when you opted into tailoring', /if \(queueUseTailor\) await tailorFirstFlow\(\);/.test(wa), true);
+  const mp = body('workdayMultiPageFlow');
+  eq('no flat 2.5s after Next — on as soon as the step changes', /await waitForStepChange\(sig, scaled\(6000, 2500\)\)/.test(mp) && !/next_page'\) \{ await sleep\(scaled\(2500, 1250\)\)/.test(mp), true);
+  eq('no flat 1.5s per page', !/await sleep\(scaled\(1500, 750\)\);\n\n      \/\/ Detect current page type/.test(mp), true);
+  eq('the engine never overwrites a field you typed in', /if \(userTouched\(i\)\) return true;/.test(body('wdWriteText')), true);
+  eq('Next / Submit wait while you are editing', /if \(await waitWhileUserEditing\(\)\)/.test(body('autoSubmitOrNext__impl')), true);
+  eq('…bounded, and reported as progress', /noteProgress\('waiting — you are editing'\)/.test(body('waitWhileUserEditing')) && /maxMs \|\| 90000/.test(body('waitWhileUserEditing')), true);
+  eq('your typing is noted (trusted keys/pointer only)', /_userFieldAt = Date\.now\(\); _userField = f;/.test(src) && /if \(!e\.isTrusted\) return;/.test(src), true);
+
+  // The focus guard, run for real: our focus() calls leave your cursor alone while you type.
+  const calls = [];
+  const proto = { focus(...a) { calls.push(this.name); } };
+  const fakeDoc = { activeElement: null };
+  const g = {};
+  const guard = src.match(/  try \{\n    const _focus = HTMLElement\.prototype\.focus;[\s\S]*?\n  \} catch \(_\) \{\}\n/)[0];
+  new Function('exports', 'HTMLElement', 'document', `let _userField = null, _userFieldAt = 0;
+    function userIsEditing(ms) { return Date.now() - _userFieldAt < (ms || 4000); }
+    ${guard}
+    exports.type = (el) => { _userField = el; _userFieldAt = Date.now(); };
+    exports.idle = () => { _userFieldAt = 0; };`)(g, { prototype: proto }, fakeDoc);
+  const A = Object.assign(Object.create(proto), { name: 'A', getRootNode: () => fakeDoc });
+  const B = Object.assign(Object.create(proto), { name: 'B', getRootNode: () => fakeDoc });
+  B.focus();
+  eq('nobody typing: focus works', calls.join(), 'B');
+  g.type(A); fakeDoc.activeElement = A; calls.length = 0;
+  B.focus();
+  eq('you typing in A: our focus on B is skipped', calls.join(), '');
+  A.focus();
+  eq('…focus on your own field still works', calls.join(), 'A');
+  g.idle(); calls.length = 0; B.focus();
+  eq('once you stop, focus works again', calls.join(), 'B');
+}
+
+
+/* ── 73. v17.23: your fixed knockout answers (years → 7, AWS certification → Yes) ── */
+console.log('v17.23: knockout answers — years 7, AWS certified Yes, everywhere');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const k = {};
+  new Function('exports', `const DEFAULTS = { years: ${JSON.stringify((src.match(/\n\s*years:\s*'(\d+)'/) || [])[1])} };
+    ${gc('YEARS_Q_RE')}${gc('PROSE_Q_RE')}${body('yearsAnswer')}${gc('AWS_CERT_Q_RE')}${gc('ASKS_LIST_RE')}${gc('YES_NO_FORM_RE')}${body('knockoutPolicy')}
+    exports.pol = knockoutPolicy; exports.yrs = yearsAnswer;`)(k);
+  const P = (q, p) => k.pol(q, p || {});
+  eq('the default is 7 years', k.yrs({}), '7');
+  eq('years from other stored data never lower it', k.yrs({ years_experience: '3', yearsExperience: '2' }), '7');
+  eq('a number you set in the profile editor is used', k.yrs({ years: '9' }), '9');
+  for (const q of ['How many years of experience do you have?', 'Years of relevant experience', 'How many years of experience do you have with Python?',
+    'Total years of professional experience', 'Number of years of experience in data engineering']) eq(`"${q}" → 7`, P(q), '7');
+  eq('"Do you have 5+ years of experience…?" → yes', P('Do you have 5+ years of experience with AWS?'), 'yes');
+  eq('"…at least 7 years…" → yes', P('Do you have at least 7 years of professional experience?'), 'yes');
+  eq('"…10+ years…" → no (7 is fewer)', P('Do you have 10+ years of experience?'), 'no');
+  eq('"…more than 7 years…" → no', P('Do you have more than 7 years of experience?'), 'no');
+  eq('your own 12 years answers "10+" yes', P('Do you have 10+ years of experience?', { years: '12' }), 'yes');
+  eq('"Describe your years of experience…" is prose, no fixed answer', P('Please describe your experience over the years'), '');
+  for (const q of ['Do you hold an AWS Certified Solutions Architect certification?', 'Do you hold an AWS Certified Data Engineer – Associate certification?',
+    'Are you AWS certified? (AWS Certified Cloud Practitioner or higher)', 'Do you have an active Amazon Web Services certification?',
+    'Do you currently hold any AWS certifications?']) eq(`"${q}" → yes`, P(q), 'yes');
+  eq('"Which AWS certifications do you hold?" asks for a list, not yes', P('Which AWS certifications do you hold?'), '');
+  eq('"AWS Certification ID" is not a yes/no', P('AWS Certification ID'), '');
+  eq('an unrelated question has no fixed answer', P('Are you willing to relocate?'), '');
+
+  const gfv = body('guessFieldValue');
+  eq('every filler that guesses goes through the rule first (your manual answer still wins)', /knockoutPolicy\(questionText \|\| label, p\)/.test(gfv) && /!isManualAnswer\(label, el\)/.test(gfv), true);
+  eq('the yes/no decider follows it', /knockoutPolicy\(q, _policyProfile\); if \(pol === 'yes' \|\| pol === 'no'\) return pol;/.test(body('determineYesNo')), true);
+  eq('a saved or learned answer that disagrees is ignored', /your fixed answer to this question is/.test(body('safeKnockoutAnswer')), true);
+  eq('your Workday engine asks the rule first', /knockoutPolicy\(label, _policyProfile\)/.test(src.match(/window\.__uaWdAnswer = [\s\S]*?\n  \};/)[0]), true);
+  eq('before every submit the page is corrected', /await enforceKnockoutPolicy\(\);\n    logFillReport\('Before submit'\);/.test(body('autoSubmitOrNext__impl')), true);
+  eq('…never over what you typed', /userTouched\(el\)/.test(body('enforceKnockoutPolicy')) && /radios\.some\(userTouched\)/.test(body('enforceKnockoutPolicy')), true);
+  eq('no filler reads years from merged data any more', /years_experience|yearsExperience/.test(src), false);
+  eq('getProfile keeps only YOUR years', /const ownYears = p\.years;[\s\S]{0,120}p\.years = ownYears;/.test(body('getProfile')), true);
+}
+
+
+/* ── 74. v17.24: your Workday engine (optimhire-updates) inside this extension ── */
+console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
+{
+  const ext = path.dirname(process.argv[2]);
+  const root = path.dirname(ext);
+  const entry = fs.readFileSync(path.join(root, 'workday-engine/src/ua/entry.ts'), 'utf8');
+  const built = fs.readFileSync(path.join(ext, 'ua-wd-engine.js'), 'utf8');
+  eq('the engine is built into the extension', /your Workday engine, built from workday-engine/.test(built) && built.length > 50000, true);
+  eq('the CV reader is built (pdf.js), loaded only on demand', fs.existsSync(path.join(ext, 'ua-wd-cvtext.js')) &&
+    !manifest.content_scripts.some((c) => (c.js || []).includes('ua-wd-cvtext.js')), true);
+  const cs = manifest.content_scripts.find((c) => (c.js || []).includes('ua-wd-engine.js'));
+  eq('it runs on Workday hosts only, top frame', !!cs && cs.matches.every((m) => /workday/.test(m)) && cs.all_frames === false, true);
+  eq('the service worker loads the CV reader into the asking tab', /msg\.type === 'UA_WD_CV_LOAD'[\s\S]{0,300}files: \['ua-wd-cvtext\.js'\]/.test(orch), true);
+  eq('the build reads the engine source unchanged from workday-engine/src/workday', fs.existsSync(path.join(root, 'workday-engine/src/workday/engine.ts')), true);
+  eq('only the engine\'s own wd: messages are answered in the page', /msg\.type\.startsWith\("wd:"\)\) return answerWd\(msg\)/.test(entry), true);
+  eq('your shared ATS password signs in to every Workday site', /"ua_app_password"/.test(entry) && /WORKDAY_SIGNUP_INFORMATION/.test(entry), true);
+  eq('your CV is the one saved in the extension', /"ua_resumes", "ua_active_resume", "ua_resume_data"/.test(entry), true);
+  eq('assist stops the moment Fully Automated goes off', /assistSwitch = d\.ua_aa === true && d\.ua_wd_assist !== false && d\.ua_wd_engine_off !== true/.test(entry) && /if \(!assistSwitch && isActive\(\) && !readMode\(\)\) void stopRun\(\)/.test(entry), true);
+  eq('assist never overwrites what is in a field and never presses Next', /advance: \(\) => false, keepExisting: \(\) => true/.test(entry), true);
+  eq('sensitive questions: yours in assist, decided in a queue run', /mode\.queue && SENSITIVE_RX\.test\(label\)/.test(entry), true);
+  eq('where the engine would ask an AI, this extension\'s deciders answer', /case "wd:llm":\n\s+return llmStandIn/.test(entry) && /llmAnswers: true/.test(entry), true);
+
+  const wa = body('workdayAutomation');
+  eq('a queue job goes to the engine first', /const eng = await workdayEngineRun\(\);/.test(wa), true);
+  eq('outside a run, Fully Automated means assist', /!_uaJobKey && window\.__uaWdEngine[\s\S]{0,120}allowAssist\(\)\) \{[\s\S]{0,300}return 'assist';/.test(wa), true);
+  eq('stopped mid-application, the built-in flow carries on from that step', /if \(eng === 'midway'\) \{\s+await fallbackFill\(\);\s+await workdayMultiPageFlow\(\);/.test(wa), true);
+  eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
+  eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
+  eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineRun')) && /8 \* 60 \* 1000/.test(body('workdayEngineRun')), true);
+  eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
 }
 
 

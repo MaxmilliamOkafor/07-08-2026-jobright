@@ -32,6 +32,7 @@ const T0 = Date.now();
   if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const logs = [];
   ctx.on('page', (p) => {
+    if (process.env.LOG_TABS) { const t0 = Date.now(); setTimeout(() => logs.push('TAB opened: ' + p.url()), 1500); p.on('close', () => logs.push('TAB closed: ' + p.url())); }
     p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push((process.env.LOG_TIMES ? '+' + Math.round((Date.now() - T0) / 1000) + 's ' : '') + t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
@@ -90,6 +91,8 @@ const T0 = Date.now();
   fs.writeFileSync(path.join(require('os').tmpdir(), 'ua-e2e-out.json'), JSON.stringify({ snapshots, logs, q }, null, 1));
   console.log('last snapshot:', JSON.stringify(snapshots[snapshots.length - 1], null, 1));
   console.log('queue:', JSON.stringify(q.q));
+  // How many web tabs the run left open (a Jobright apply that opens its own tab adds one).
+  console.log('tabs:', ctx.pages().filter((pg) => /^https:/.test(pg.url())).map((pg) => new URL(pg.url()).hostname).join(','));
   // The tab can close on success before a 3s snapshot sees the thank-you page;
   // the queue's own verdict is the authority.
   const outcome = (q.q[0] && q.q[0].status) || 'unknown';
@@ -98,5 +101,6 @@ const T0 = Date.now();
   const sub = logs.map((l) => (l.match(/^SUBMITTED (.*)$/) || [])[1]).filter(Boolean).pop();
   if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
+  if (process.env.LOG_DUMP) for (const l of logs) console.log('  | ' + l);
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

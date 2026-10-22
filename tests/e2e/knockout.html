@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Cloud Data Engineer at Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto} .f{margin:14px 0} label{display:block;font-weight:600}
+input[type=text],input[type=email],input[type=tel],input[type=number],select{width:100%;padding:6px} .opt{display:inline-block;font-weight:normal;margin-right:12px}</style></head><body>
+<!-- Knockout questions, the ones a wrong answer ranks an application last for:
+     years of experience (a number box, a range dropdown, a "5+ years?" radio)
+     and "Do you hold an AWS Certified … certification?" (a radio and a select).
+     Half a second after load "another filler" puts the WRONG answers in —
+     3 years, "1-3 years", No, No — the way a guess from an autofill would.
+     The extension must leave every one as your fixed answer: 7 / Yes. -->
+<h1>Cloud Data Engineer</h1><div class="company">Acme Corp</div>
+<form id="application_form" novalidate onsubmit="return window.__validate(event)">
+  <div class="f"><label for="first_name">First Name *</label><input type="text" id="first_name" name="first_name" required></div>
+  <div class="f"><label for="last_name">Last Name *</label><input type="text" id="last_name" name="last_name" required></div>
+  <div class="f"><label for="email">Email *</label><input type="email" id="email" name="email" required></div>
+  <div class="f"><label for="phone">Phone *</label><input type="tel" id="phone" name="phone" required></div>
+  <div class="f"><label for="yrs">How many years of experience do you have with Python? *</label><input type="number" id="yrs" name="years_python" required></div>
+  <div class="f"><label for="yrs_range">Years of professional experience *</label>
+    <select id="yrs_range" name="years_range" required><option value="">Select...</option><option>Less than 1 year</option><option>1-3 years</option><option>3-5 years</option><option>5-7 years</option><option>7-10 years</option><option>10+ years</option></select></div>
+  <fieldset class="f"><legend>Do you have 5+ years of experience building data pipelines? *</legend>
+    <label class="opt"><input type="radio" name="five_plus" value="Yes" required> Yes</label><label class="opt"><input type="radio" name="five_plus" value="No"> No</label></fieldset>
+  <fieldset class="f"><legend>Do you hold an AWS Certified Solutions Architect – Associate certification? *</legend>
+    <label class="opt"><input type="radio" name="aws_sa" value="Yes" required> Yes</label><label class="opt"><input type="radio" name="aws_sa" value="No"> No</label></fieldset>
+  <div class="f"><label for="aws_de">Do you hold an AWS Certified Data Engineer certification? *</label>
+    <select id="aws_de" name="aws_de" required><option value="">Select...</option><option>Yes</option><option>No</option></select></div>
+  <div class="f"><label for="resume">Resume/CV *</label><input type="file" id="resume" name="resume" required></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<script>
+  // "Another filler" answers first — wrongly.
+  setTimeout(() => {
+    const $ = (id) => document.getElementById(id);
+    $('yrs').value = '3';
+    $('yrs_range').value = '1-3 years';
+    document.querySelector('input[name=five_plus][value=No]').checked = true;
+    document.querySelector('input[name=aws_sa][value=No]').checked = true;
+    $('aws_de').value = 'No';
+  }, 500);
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('application_form');
+    if (!f.checkValidity()) { console.log('BLOCKED invalid'); return false; }
+    const fd = new FormData(f); const out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+    return false;
+  };
+</script>
+</body></html>

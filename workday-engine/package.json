@@ -1,0 +1,14 @@
+{
+  "name": "ua-workday-engine",
+  "private": true,
+  "type": "module",
+  "description": "Workday engine (from optimhire-updates/workday-engine) + Jobright adapter, bundled into the extension as ua-wd-engine.js / ua-wd-cvtext.js",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.2",
+    "pdfjs-dist": "3.11.174",
+    "@types/chrome": "0.0.287"
+  }
+}

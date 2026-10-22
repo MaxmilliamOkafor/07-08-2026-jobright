@@ -71,16 +71,117 @@
   } catch (_) {}
   // Our own one exception: a swap may stay in front if the tab it replaces was.
   const ALLOW_FRONT = '__uaAllowFront';
+  // Marks a tab WE open, so the adoption below never mistakes it for Jobright's.
+  const OWN = '__uaOwn';
+  const JOBRIGHT_URL_RE = /^https?:\/\/([a-z0-9-]+\.)*jobright\.ai(\/|$)/i;
+  /* ── A JOB ON A JOBRIGHT PAGE, AND JOBRIGHT'S OWN APPLY TAB ─────────────────
+     A CSV row that is a Jobright job link opens jobright.ai in the job tab, and
+     pressing Apply there makes Jobright's worker open the employer's site in a
+     NEW tab. The run never followed it: the application in the new tab sat
+     unfilled, the Jobright tab stayed behind, and every job added one more —
+     "why so many tabs, after each submission do you keep opening Jobright".
+     The content script now goes to the employer's link in the same tab. If
+     Jobright opens its tab anyway, the run adopts it: the job moves to the new
+     tab (re-mapped FIRST, so closing the old one is not read as the job tab
+     being closed and the job is not put back in the queue), and the Jobright
+     tab it left is closed. */
+  async function adoptJobrightChild(child) {
+    const map = (await get(K.TABS)) || {};
+    const owners = Object.entries(map).map(([jobId, id]) => ({ jobId, id }));
+    const runner = await get('ua_runner_tab');
+    if (typeof runner === 'number') owners.push({ jobId: null, id: runner });
+    for (const o of owners) {
+      if (o.id === child.id) return false;
+      const t = await new Promise((res) => { try { chrome.tabs.get(o.id, (v) => { void chrome.runtime.lastError; res(v || null); }); } catch (_) { res(null); } });
+      if (!t || !JOBRIGHT_URL_RE.test(t.pendingUrl || t.url || '')) continue;
+      if (o.jobId) { map[o.jobId] = child.id; await set({ [K.TABS]: map }); }
+      else await set({ ua_runner_tab: child.id });
+      log('Jobright opened the application in a new tab — the run continues there and its Jobright tab is closed', 'info');
+      try { chrome.tabs.remove(o.id, () => void chrome.runtime.lastError); } catch (_) {}
+      return true;
+    }
+    return false;
+  }
+  /* ── JOBRIGHT WHEN YOU WANT IT ─────────────────────────────────────────────
+     "Even when Fully Automated is off it still fires autofill and opens the
+     sidebar — sometimes I don't want to use Jobright." The toggle gated OUR
+     automation, but Jobright's own helper still loaded itself on every page it
+     supports, opened its panel and ran its pre-autofill. So the helper is now
+     loaded into a tab only when:
+       • Fully Automated is ON, or
+       • a run owns the tab (Queue Manager job tab, or the single-tab runner), or
+       • you opened Jobright on that tab yourself — its toolbar icon, or
+         right-click → "Open Jobright on this page" (which works on ANY page, not
+         just the ATS sites Jobright recognises), or
+       • the page is jobright.ai itself.
+     Otherwise the load is skipped and the page is left exactly as it was. */
+  const USER_OPEN_KEY = 'ua_jr_user_open';
+  const _userOpened = new Set();
+  const sessionArea = () => (chrome.storage && chrome.storage.session) || null;
+  function markUserOpened(tabId) {
+    if (typeof tabId !== 'number') return;
+    _userOpened.add(tabId);
+    const area = sessionArea();
+    if (!area) return;
+    try { area.get(USER_OPEN_KEY, (d) => { void chrome.runtime.lastError; const m = (d && d[USER_OPEN_KEY]) || {}; m[tabId] = true; area.set({ [USER_OPEN_KEY]: m }, () => void chrome.runtime.lastError); }); } catch (_) {}
+  }
+  async function jobrightAllowedIn(tabId, url) {
+    if (JOBRIGHT_URL_RE.test(url || '')) return true;
+    if (_userOpened.has(tabId)) return true;
+    const d = await new Promise((r) => { try { chrome.storage.local.get(['ua_aa', K.ACTIVE, K.TABS, K.OLD_RUNNER, 'ua_runner_tab'], (v) => { void chrome.runtime.lastError; r(v || {}); }); } catch (_) { r({}); } });
+    if (d.ua_aa === true) return true;
+    if (d[K.ACTIVE] === true && Object.values(d[K.TABS] || {}).includes(tabId)) return true;
+    if (d[K.OLD_RUNNER] === true && d.ua_runner_tab === tabId) return true;
+    const area = sessionArea();
+    if (!area) return false;
+    const m = await new Promise((r) => { try { area.get(USER_OPEN_KEY, (v) => { void chrome.runtime.lastError; r((v && v[USER_OPEN_KEY]) || {}); }); } catch (_) { r({}); } });
+    if (m[tabId]) { _userOpened.add(tabId); return true; }
+    return false;
+  }
+  try {
+    if (chrome.scripting && chrome.scripting.executeScript) {
+      const rawExec = chrome.scripting.executeScript.bind(chrome.scripting);
+      chrome.scripting.executeScript = function (inj, done) {
+        const files = (inj && Array.isArray(inj.files)) ? inj.files : [];
+        const tabId = inj && inj.target && inj.target.tabId;
+        if (typeof tabId !== 'number' || !files.some((f) => /helper-app\./.test(String(f)))) return done === undefined ? rawExec(inj) : rawExec(inj, done);
+        const p = (async () => {
+          let url = '';
+          try { const t = await new Promise((r) => chrome.tabs.get(tabId, (v) => { void chrome.runtime.lastError; r(v); })); url = (t && (t.url || t.pendingUrl)) || ''; } catch (_) {}
+          if (await jobrightAllowedIn(tabId, url)) return rawExec(inj);
+          // A run may not have recorded a brand-new job tab yet: look once more.
+          if (_runOn) { await new Promise((r) => setTimeout(r, 1500)); if (await jobrightAllowedIn(tabId, url)) return rawExec(inj); }
+          return [];   // Fully Automated is off and you did not open Jobright here
+        })();
+        if (done !== undefined) { p.then((r) => done(r), () => done([])); return undefined; }
+        return p;
+      };
+    }
+    // Jobright's icon opens its helper on any page; that counts as you asking for it here.
+    if (chrome.action && chrome.action.onClicked) chrome.action.onClicked.addListener((tab) => markUserOpened(tab && tab.id));
+    if (chrome.tabs && chrome.tabs.onRemoved) chrome.tabs.onRemoved.addListener((tabId) => {
+      _userOpened.delete(tabId);
+      const area = sessionArea();
+      if (area) try { area.get(USER_OPEN_KEY, (d) => { void chrome.runtime.lastError; const m = (d && d[USER_OPEN_KEY]) || {}; if (m[tabId]) { delete m[tabId]; area.set({ [USER_OPEN_KEY]: m }, () => void chrome.runtime.lastError); } }); } catch (_) {}
+    });
+  } catch (_) {}
+
   try {
     const rawCreate = chrome.tabs.create.bind(chrome.tabs);
-    chrome.tabs.create = function (props, cb) {
-      let p = props;
+    chrome.tabs.create = function (props, done) {
+      let p = props, ours = false;
       if (p && typeof p === 'object') {
         const allowed = p[ALLOW_FRONT] === true;
-        if (ALLOW_FRONT in p) { p = Object.assign({}, p); delete p[ALLOW_FRONT]; }
+        ours = p[OWN] === true;
+        if (ALLOW_FRONT in p || OWN in p) { p = Object.assign({}, p); delete p[ALLOW_FRONT]; delete p[OWN]; }
         if (_runOn && !allowed && p.active !== false) p = Object.assign({}, p, { active: false });
       }
-      return cb === undefined ? rawCreate(p) : rawCreate(p, cb);
+      // Someone else (Jobright) opening an employer's page during a run.
+      const watch = _runOn && !ours && p && typeof p.url === 'string' && /^https?:/i.test(p.url) && !JOBRIGHT_URL_RE.test(p.url);
+      if (!watch) return done === undefined ? rawCreate(p) : rawCreate(p, done);
+      const after = (t) => { if (t && typeof t.id === 'number') adoptJobrightChild(t).catch(() => {}); };
+      if (done === undefined) return rawCreate(p).then((t) => { after(t); return t; });
+      return rawCreate(p, (t) => { after(t); done(t); });
     };
     const rawUpdate = chrome.tabs.update.bind(chrome.tabs);
     chrome.tabs.update = function (a, b, c) {
@@ -128,7 +229,7 @@
     const o = opts || {};
     const win = typeof o.windowId === 'number' ? o.windowId : await runWindow();
     if (win != null) {
-      const t = await cb((done) => chrome.tabs.create({ url, active: !!o.active, windowId: win, ...(o.index != null ? { index: o.index } : {}) }, done));
+      const t = await cb((done) => chrome.tabs.create({ url, active: !!o.active, [OWN]: true, windowId: win, ...(o.index != null ? { index: o.index } : {}) }, done));
       if (t) return t;
     }
     const w = await cb((done) => chrome.windows.create({ url, focused: false }, done));
@@ -839,6 +940,15 @@
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg || typeof msg !== 'object') return;
 
+      /* Your Workday engine (ua-wd-engine.js) reading your CV: the reader, with
+         pdf.js, is put into that tab only now, never on every page. */
+      if (msg.type === 'UA_WD_CV_LOAD') {
+        if (!sender || sender.id !== chrome.runtime.id || !sender.tab) return;
+        chrome.scripting.executeScript({ target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] }, files: ['ua-wd-cvtext.js'] })
+          .then(() => sendResponse({ ok: true }), (e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+        return true;
+      }
+
       /* A CAPTCHA (or any other human-only wall) in a background job tab. We do
          not answer it — that check exists for a reason. We make it visible and
          stop it silently eating the job: notify, mark the row, and hold the
@@ -956,7 +1066,7 @@
         setTimeout(() => {
           try { chrome.tabs.onUpdated.removeListener(onUpd); } catch (_) {}
           if (started) return;
-          chrome.tabs.create({ url, active: !!was.active, [ALLOW_FRONT]: !!was.active, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
+          chrome.tabs.create({ url, active: !!was.active, [ALLOW_FRONT]: !!was.active, [OWN]: true, windowId: was.windowId, index: (was.index != null ? was.index : undefined) }, (t) => {
             void chrome.runtime.lastError;
             // The new tab is the runner now; hand the marker over before the old
             // one goes, so no tick in between sees a run with no tab.
@@ -1040,6 +1150,7 @@
         chrome.contextMenus.create({ id: 'ua-open-panel', title: 'Jobright Queue Manager (side panel)', contexts: ['all'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-open-tab', title: 'Jobright Queue Manager (new tab)', contexts: ['all'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-add-page', title: 'Add this page to the Jobright queue', contexts: ['page'] }, () => void chrome.runtime.lastError);
+        chrome.contextMenus.create({ id: 'ua-open-jobright', title: 'Open Jobright on this page', contexts: ['page', 'frame', 'selection', 'link', 'editable'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-add-link', title: 'Add link to the Jobright queue', contexts: ['link'] }, () => void chrome.runtime.lastError);
       });
     } catch (_) {}
@@ -1060,6 +1171,10 @@
           addUrl((tab && tab.url) || info.pageUrl, { title: tab && tab.title });
         } else if (info.menuItemId === 'ua-add-link') {
           addUrl(info.linkUrl, {});
+        } else if (info.menuItemId === 'ua-open-jobright' && tab && typeof tab.id === 'number') {
+          // Exactly what Jobright's own toolbar icon does — on any page.
+          markUserOpened(tab.id);
+          try { chrome.tabs.sendMessage(tab.id, { message: 'iconClicked' }, () => void chrome.runtime.lastError); } catch (_) {}
         }
       } catch (_) {}
     });

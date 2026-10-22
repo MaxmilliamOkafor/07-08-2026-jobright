@@ -140,6 +140,7 @@ for (const text of [
   "We've received your application",
   'Application submitted',
   'Application is under review',
+  'Thank you for your job application.',          // Oracle Recruiting Cloud
 ]) eq(JSON.stringify(text), ctx.SUCCESS_TEXT_RE.test(text), true);
 
 console.log('page text that must NOT confirm a submission');
