@@ -10,6 +10,7 @@
 
    Usage: node tests/fill.test.js "<ua-enhancement.js>" "<ua-orchestrator.js>" "<manifest.json>" */
 const fs = require('fs');
+const path = require('path');
 
 let pass = 0, fail = 0;
 const eq = (name, got, want) => {
@@ -625,8 +626,11 @@ eq('and the same holds in a free-text years box', refine('0', LINUX_Q, textBox),
 eq(`the figure it falls back to is the shipped default (${shippedYears})`, shippedYears, '7');
 eq('a real answer of zero to something that is NOT a years question is kept',
   refine('0', 'How many dependents do you have?', numberBox), '0');
+// v17.23: only the figure YOU set in the profile editor ("years") overrides 7.
 eq("the candidate's own profile figure beats the default",
-  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '11' }, numberBox), '11');
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years: '11' }, numberBox), '11');
+eq('years merged in from other stored data do not',
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '2' }, numberBox), '7');
 
 // A Yes/No where a value belongs.
 eq('"Yes" is not the name of an employee',
@@ -1421,6 +1425,10 @@ const reLines = (src.match(/^  const [A-Z][A-Z0-9_]*_RE = \/.*\/[a-z]*;$/gm) || 
 if (!/ELIGIBILITY_WORD_RE/.test(reLines)) throw new Error('regex constants not found');
 new Function('exports', `
   const LOG = () => {};
+  const DEFAULTS = { years: '7' };
+  const _policyProfile = {};
+  ${body('yearsAnswer')}
+  ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
   ${body('workAuthorisationAnswer')}
@@ -2583,6 +2591,10 @@ console.log('knockout answers are the ones that do not get you rejected');
   const koCtx2 = {};
   new Function('exports', `
     ${reLines}
+    const DEFAULTS = { years: '7' };
+    const _policyProfile = {};
+    ${body('yearsAnswer')}
+    ${body('knockoutPolicy')}
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
@@ -3279,6 +3291,78 @@ console.log('v17.22: Workday speed; editing while it fills');
   eq('…focus on your own field still works', calls.join(), 'A');
   g.idle(); calls.length = 0; B.focus();
   eq('once you stop, focus works again', calls.join(), 'B');
+}
+
+
+/* ── 73. v17.23: your fixed knockout answers (years → 7, AWS certification → Yes) ── */
+console.log('v17.23: knockout answers — years 7, AWS certified Yes, everywhere');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const k = {};
+  new Function('exports', `const DEFAULTS = { years: ${JSON.stringify((src.match(/\n\s*years:\s*'(\d+)'/) || [])[1])} };
+    ${gc('YEARS_Q_RE')}${gc('PROSE_Q_RE')}${body('yearsAnswer')}${gc('AWS_CERT_Q_RE')}${gc('ASKS_LIST_RE')}${gc('YES_NO_FORM_RE')}${body('knockoutPolicy')}
+    exports.pol = knockoutPolicy; exports.yrs = yearsAnswer;`)(k);
+  const P = (q, p) => k.pol(q, p || {});
+  eq('the default is 7 years', k.yrs({}), '7');
+  eq('years from other stored data never lower it', k.yrs({ years_experience: '3', yearsExperience: '2' }), '7');
+  eq('a number you set in the profile editor is used', k.yrs({ years: '9' }), '9');
+  for (const q of ['How many years of experience do you have?', 'Years of relevant experience', 'How many years of experience do you have with Python?',
+    'Total years of professional experience', 'Number of years of experience in data engineering']) eq(`"${q}" → 7`, P(q), '7');
+  eq('"Do you have 5+ years of experience…?" → yes', P('Do you have 5+ years of experience with AWS?'), 'yes');
+  eq('"…at least 7 years…" → yes', P('Do you have at least 7 years of professional experience?'), 'yes');
+  eq('"…10+ years…" → no (7 is fewer)', P('Do you have 10+ years of experience?'), 'no');
+  eq('"…more than 7 years…" → no', P('Do you have more than 7 years of experience?'), 'no');
+  eq('your own 12 years answers "10+" yes', P('Do you have 10+ years of experience?', { years: '12' }), 'yes');
+  eq('"Describe your years of experience…" is prose, no fixed answer', P('Please describe your experience over the years'), '');
+  for (const q of ['Do you hold an AWS Certified Solutions Architect certification?', 'Do you hold an AWS Certified Data Engineer – Associate certification?',
+    'Are you AWS certified? (AWS Certified Cloud Practitioner or higher)', 'Do you have an active Amazon Web Services certification?',
+    'Do you currently hold any AWS certifications?']) eq(`"${q}" → yes`, P(q), 'yes');
+  eq('"Which AWS certifications do you hold?" asks for a list, not yes', P('Which AWS certifications do you hold?'), '');
+  eq('"AWS Certification ID" is not a yes/no', P('AWS Certification ID'), '');
+  eq('an unrelated question has no fixed answer', P('Are you willing to relocate?'), '');
+
+  const gfv = body('guessFieldValue');
+  eq('every filler that guesses goes through the rule first (your manual answer still wins)', /knockoutPolicy\(questionText \|\| label, p\)/.test(gfv) && /!isManualAnswer\(label, el\)/.test(gfv), true);
+  eq('the yes/no decider follows it', /knockoutPolicy\(q, _policyProfile\); if \(pol === 'yes' \|\| pol === 'no'\) return pol;/.test(body('determineYesNo')), true);
+  eq('a saved or learned answer that disagrees is ignored', /your fixed answer to this question is/.test(body('safeKnockoutAnswer')), true);
+  eq('your Workday engine asks the rule first', /knockoutPolicy\(label, _policyProfile\)/.test(src.match(/window\.__uaWdAnswer = [\s\S]*?\n  \};/)[0]), true);
+  eq('before every submit the page is corrected', /await enforceKnockoutPolicy\(\);\n    logFillReport\('Before submit'\);/.test(body('autoSubmitOrNext__impl')), true);
+  eq('…never over what you typed', /userTouched\(el\)/.test(body('enforceKnockoutPolicy')) && /radios\.some\(userTouched\)/.test(body('enforceKnockoutPolicy')), true);
+  eq('no filler reads years from merged data any more', /years_experience|yearsExperience/.test(src), false);
+  eq('getProfile keeps only YOUR years', /const ownYears = p\.years;[\s\S]{0,120}p\.years = ownYears;/.test(body('getProfile')), true);
+}
+
+
+/* ── 74. v17.24: your Workday engine (optimhire-updates) inside this extension ── */
+console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
+{
+  const ext = path.dirname(process.argv[2]);
+  const root = path.dirname(ext);
+  const entry = fs.readFileSync(path.join(root, 'workday-engine/src/ua/entry.ts'), 'utf8');
+  const built = fs.readFileSync(path.join(ext, 'ua-wd-engine.js'), 'utf8');
+  eq('the engine is built into the extension', /your Workday engine, built from workday-engine/.test(built) && built.length > 50000, true);
+  eq('the CV reader is built (pdf.js), loaded only on demand', fs.existsSync(path.join(ext, 'ua-wd-cvtext.js')) &&
+    !manifest.content_scripts.some((c) => (c.js || []).includes('ua-wd-cvtext.js')), true);
+  const cs = manifest.content_scripts.find((c) => (c.js || []).includes('ua-wd-engine.js'));
+  eq('it runs on Workday hosts only, top frame', !!cs && cs.matches.every((m) => /workday/.test(m)) && cs.all_frames === false, true);
+  eq('the service worker loads the CV reader into the asking tab', /msg\.type === 'UA_WD_CV_LOAD'[\s\S]{0,300}files: \['ua-wd-cvtext\.js'\]/.test(orch), true);
+  eq('the build reads the engine source unchanged from workday-engine/src/workday', fs.existsSync(path.join(root, 'workday-engine/src/workday/engine.ts')), true);
+  eq('only the engine\'s own wd: messages are answered in the page', /msg\.type\.startsWith\("wd:"\)\) return answerWd\(msg\)/.test(entry), true);
+  eq('your shared ATS password signs in to every Workday site', /"ua_app_password"/.test(entry) && /WORKDAY_SIGNUP_INFORMATION/.test(entry), true);
+  eq('your CV is the one saved in the extension', /"ua_resumes", "ua_active_resume", "ua_resume_data"/.test(entry), true);
+  eq('assist stops the moment Fully Automated goes off', /assistSwitch = d\.ua_aa === true && d\.ua_wd_assist !== false && d\.ua_wd_engine_off !== true/.test(entry) && /if \(!assistSwitch && isActive\(\) && !readMode\(\)\) void stopRun\(\)/.test(entry), true);
+  eq('assist never overwrites what is in a field and never presses Next', /advance: \(\) => false, keepExisting: \(\) => true/.test(entry), true);
+  eq('sensitive questions: yours in assist, decided in a queue run', /mode\.queue && SENSITIVE_RX\.test\(label\)/.test(entry), true);
+  eq('where the engine would ask an AI, this extension\'s deciders answer', /case "wd:llm":\n\s+return llmStandIn/.test(entry) && /llmAnswers: true/.test(entry), true);
+
+  const wa = body('workdayAutomation');
+  eq('a queue job goes to the engine first', /const eng = await workdayEngineRun\(\);/.test(wa), true);
+  eq('outside a run, Fully Automated means assist', /!_uaJobKey && window\.__uaWdEngine[\s\S]{0,120}allowAssist\(\)\) \{[\s\S]{0,300}return 'assist';/.test(wa), true);
+  eq('stopped mid-application, the built-in flow carries on from that step', /if \(eng === 'midway'\) \{\s+await fallbackFill\(\);\s+await workdayMultiPageFlow\(\);/.test(wa), true);
+  eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
+  eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
+  eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineRun')) && /8 \* 60 \* 1000/.test(body('workdayEngineRun')), true);
+  eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
 }
 
 

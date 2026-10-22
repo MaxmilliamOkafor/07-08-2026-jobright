@@ -940,6 +940,15 @@
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg || typeof msg !== 'object') return;
 
+      /* Your Workday engine (ua-wd-engine.js) reading your CV: the reader, with
+         pdf.js, is put into that tab only now, never on every page. */
+      if (msg.type === 'UA_WD_CV_LOAD') {
+        if (!sender || sender.id !== chrome.runtime.id || !sender.tab) return;
+        chrome.scripting.executeScript({ target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] }, files: ['ua-wd-cvtext.js'] })
+          .then(() => sendResponse({ ok: true }), (e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+        return true;
+      }
+
       /* A CAPTCHA (or any other human-only wall) in a background job tab. We do
          not answer it — that check exists for a reason. We make it visible and
          stop it silently eating the job: notify, mark the row, and hold the

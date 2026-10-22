@@ -65,6 +65,19 @@
     },
     {
       "matches": [
+        "https://*.myworkdayjobs.com/*",
+        "https://*.myworkdaysite.com/*",
+        "https://*.myworkday.com/*",
+        "https://*.workdayjobs.com/*"
+      ],
+      "js": [
+        "ua-wd-engine.js"
+      ],
+      "all_frames": false,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "<all_urls>"
       ],
       "js": [

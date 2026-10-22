@@ -975,6 +975,7 @@
     howHeard: 'LinkedIn',
   };
 
+  let _policyProfile = {};             // for knockoutPolicy in synchronous deciders
   async function getProfile() {
     let p = (await st.get(SK.PROF)) || {};
     // Also check OptimHire candidate data
@@ -982,10 +983,14 @@
     try {
       const cd = typeof ohData.candidateDetails === 'string' ? JSON.parse(ohData.candidateDetails) : (ohData.candidateDetails || {});
       const ud = typeof ohData.userDetails === 'string' ? JSON.parse(ohData.userDetails) : (ohData.userDetails || {});
+      const ownYears = p.years;              // only YOUR profile editor sets years
       p = { ...ud, ...cd, ...p };
+      p.years = ownYears;
     } catch (_) { }
+    _policyProfile = p;
     return p;
   }
+  try { getProfile().catch(() => {}); } catch (_) {}   // so the knockout rules see your profile from the start
 
   // ===================== SMART VALUE GUESSER =====================
   /* ── THE MESSAGE TO THE HIRING TEAM ────────────────────────────────────────
@@ -1336,10 +1341,44 @@
 
   // The candidate's own figure if they gave one, otherwise the default — never
   // zero and never blank, which are the two answers a years box must not carry.
+  /* ── YOUR KNOCKOUT ANSWERS — one rule, every ATS, every filler ─────────────
+     A wrong knockout answer ranks an application at the bottom for good, so
+     these are fixed rather than guessed:
+       • any years-of-experience question → 7 (DEFAULTS.years). The only
+         override is a number YOU put in this extension's profile editor
+         ("Years Experience"); years merged in from other stored data, a count
+         worked out from your roles (the Workday engine), or Jobright's guess
+         never lower it.
+       • "Do you have N+ years of …?" → Yes when 7 ≥ N.
+       • "Do you hold an AWS Certified … certification?" → Yes.
+     Your own manual answer to that exact question still wins; everything else
+     — saved responses, learned answers, the deciders, the Workday engine, and
+     whatever another filler typed — follows this. enforceKnockoutPolicy()
+     re-checks the page before every submit. */
   function yearsAnswer(p) {
-    const real = String((p && (p.years_experience || p.yearsExperience)) || DEFAULTS.years).trim();
-    const n = parseInt(real, 10);
-    return n > 0 ? String(n) : DEFAULTS.years;
+    const own = parseInt(String((p && p.years) || '').trim(), 10);
+    return own > 0 && own < 60 ? String(own) : DEFAULTS.years;
+  }
+  const AWS_CERT_Q_RE = /\b(aws|amazon web services)\b[^?]{0,90}\bcertif|\bcertif[^?]{0,60}\b(aws|amazon web services)\b/i;
+  const ASKS_LIST_RE = /\b(which|what|list|name|specify|describe|explain|provide|details?|when did|expir|number|id\b|credential id|date)\b/i;
+  const YES_NO_FORM_RE = /^\s*(do|did|does|are|is|have|has|can|will|would)\b|\b(do you|are you|have you)\b/i;
+  /* 'yes' | 'no' | a number of years as text | '' (no policy for this question). */
+  function knockoutPolicy(question, p) {
+    const q = String(question || '').replace(/\s+/g, ' ').trim();
+    if (!q) return '';
+    if (AWS_CERT_Q_RE.test(q) && YES_NO_FORM_RE.test(q) && !/\b(which|list|name|specify|when|expir|credential id)\b/i.test(q)) return 'yes';
+    if (YEARS_Q_RE.test(q) || /\b\d+\s*\+?\s*(\+|or more|plus)?\s*years?\b[^?]{0,40}\b(experience|exp)\b/i.test(q)) {
+      const yrs = parseInt(yearsAnswer(p), 10);
+      // "Do you have 5+ years…?" / "at least 3 years" — a yes/no on a threshold.
+      const th = q.match(/\b(?:at least|minimum(?: of)?|min\.?|over|more than)?\s*(\d{1,2})\s*(?:\+|or more|plus)?\s*(?:\+\s*)?years?\b/i);
+      if (YES_NO_FORM_RE.test(q) && !/how many|how long|number of years|total years/i.test(q) && th) {
+        const n = parseInt(th[1], 10);
+        const strictlyMore = /more than|over/i.test(th[0]);
+        return (strictlyMore ? yrs > n : yrs >= n) ? 'yes' : 'no';
+      }
+      if (/how many|how long|number of years|years of|total years|years.{0,24}experience|experience.{0,12}years/i.test(q) && !PROSE_Q_RE.test(q)) return String(yrs);
+    }
+    return '';
   }
 
   function refineAnswerForControl(val, label, p, el) {
@@ -1407,6 +1446,13 @@
     // question before — their answer must beat any generic guess) → built-in guesses →
     // fuzzy learned match as the last resort (kept last to avoid contamination).
     const questionText = el ? getFullQuestionText(el) : label;
+    {
+      const pol = knockoutPolicy(questionText || label, p) || (questionText !== label ? knockoutPolicy(label, p) : '');
+      if (pol && !isManualAnswer(label, el)) {
+        const v = pol === 'yes' ? 'Yes' : pol === 'no' ? 'No' : pol;
+        return refineAnswerForControl(v, label, p, el);
+      }
+    }
     /* Both of the FUZZY lookups are filtered — the saved-response bank and the
        fuzzy pass over learned answers. The exact learned answer between them is
        not: the user answered that precise question themselves, and their word is
@@ -1758,6 +1804,8 @@
   // Smart Yes/No determination based on question context
   function determineYesNo(questionText) {
     const q = questionText.toLowerCase();
+    // Your fixed knockout answers first (AWS certification, years thresholds).
+    { const pol = knockoutPolicy(q, _policyProfile); if (pol === 'yes' || pol === 'no') return pol; }
     // EEO/Diversity — prefer "Prefer not to say/answer"
     if (/gender|sex\b|disability|veteran|military|ethnic|race|racial|heritage|hispanic|latino/.test(q)) return 'eeo';
 
@@ -1916,6 +1964,16 @@
   function safeKnockoutAnswer(saved, questionText) {
     if (!saved) return saved;
     const s = String(saved).trim().toLowerCase();
+    {
+      const pol = knockoutPolicy(questionText, _policyProfile);
+      if (pol === 'yes' || pol === 'no') {
+        const says = /^(yes|y|true)\b/.test(s) ? 'yes' : /^(no|n|false)\b/.test(s) ? 'no' : '';
+        if (says && says !== pol) { LOG(`Ignoring a saved "${s}" — your fixed answer to this question is ${pol}`); return ''; }
+      } else if (pol && /^\d+(\.\d+)?$/.test(s) && s !== pol) {
+        LOG(`Ignoring a saved "${s}" years — your fixed answer is ${pol}`);
+        return '';
+      }
+    }
     if (!KNOCKOUT_Q_RE.test(questionText)) return saved;
     let want = '';
     try { want = determineYesNo(String(questionText).toLowerCase()); } catch (_) {}
@@ -1962,7 +2020,7 @@
 
     // 2. Experience range questions (0-3, 3-5, 5-7, 7+)
     if (/how many years|years of experience|experience.*years|how long.*work/i.test(questionText)) {
-      const yearsExp = parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years) || 9;
+      const yearsExp = parseInt(yearsAnswer(p), 10) || 7;
       let bestMatch = null, bestScore = -1;
       for (const radio of radios) {
         const text = choiceLabel(radio);
@@ -2096,7 +2154,7 @@
       }
       const hasRange = btnTexts.some(t => /\d+\s*[-–]\s*\d+|\d+\s*\+/i.test(t));
       if (hasRange && /experience|years|how (many|long)/i.test(groupText)) {
-        const yearsExp = parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years) || 9;
+        const yearsExp = parseInt(yearsAnswer(p), 10) || 7;
         let bestMatch = null, bestScore = -1;
         for (const btn of btns) {
           const score = scoreExperienceRange(btn.textContent?.trim() || '', yearsExp);
@@ -5645,6 +5703,69 @@
     return scored[0].el;
   }
 
+  /* The last word on your fixed knockout answers (see knockoutPolicy), whoever
+     filled the page — Jobright's autofill, a saved answer, a parser. Radios,
+     native selects and plain text/number boxes are corrected; anything you
+     typed or picked yourself is left alone. Returns how many it changed. */
+  async function enforceKnockoutPolicy() {
+    let fixed = 0;
+    try {
+      const p = await getProfile();
+      const yrsN = parseInt(yearsAnswer(p), 10);
+      // Text / number boxes and native selects.
+      for (const el of deepAll('input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=file]):not([type=submit]):not([type=button]),select', 300)) {
+        if (!isVisible(el) || el.disabled || el.readOnly || userTouched(el) || isTrapField(el)) continue;
+        const q = getFullQuestionText(el) || getLabel(el) || '';
+        const pol = knockoutPolicy(q, p);
+        if (!pol) continue;
+        if (el.tagName === 'SELECT') {
+          const opts = Array.from(el.options).filter((o) => o.value !== '' && !PLACEHOLDER_OPT_RE.test(o.text));
+          if (!opts.length) continue;
+          const texts = opts.map((o) => o.text.trim());
+          let i = -1;
+          if (pol === 'yes' || pol === 'no') i = optionIndexForDecision(texts, pol, q);
+          else {
+            let best = 0;
+            texts.forEach((t, k) => { const sc = scoreExperienceRange(t, yrsN); if (sc > best) { best = sc; i = k; } });
+            if (i < 0) i = texts.findIndex((t) => parseInt(t, 10) === yrsN);
+          }
+          if (i >= 0 && el.value !== opts[i].value) {
+            setSelectValue(el, opts[i].value); fixed++;
+            LOG(`Knockout answer corrected: "${q.slice(0, 60)}" → ${texts[i]}`);
+          }
+        } else if (/^\d+$/.test(pol) && isFreeTextControl(el) && el.tagName !== 'TEXTAREA') {
+          const cur = String(el.value || '').trim();
+          if (cur !== pol && !(cur && parseInt(cur, 10) === yrsN)) {
+            nativeSet(el, pol); fixed++;
+            LOG(`Knockout answer corrected: "${q.slice(0, 60)}" → ${pol}`);
+          }
+        }
+      }
+      // Yes/No radio groups.
+      const groups = new Map();
+      for (const r of deepAll('input[type=radio]', 300)) {
+        const key = r.name || (r.closest && r.closest('[role="radiogroup"],fieldset')) || r;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      }
+      for (const radios of groups.values()) {
+        if (radios.length < 2 || radios.some(userTouched)) continue;
+        if (!radios.some((r) => isVisible(r) || (r.closest && isVisible(r.closest('label') || r.parentElement)))) continue;
+        const q = getQuestionForInput(radios[0]) || '';
+        const pol = knockoutPolicy(q, p);
+        if (pol !== 'yes' && pol !== 'no') continue;
+        const texts = radios.map((r) => choiceLabel(r));
+        const i = optionIndexForDecision(texts, pol, q);
+        if (i < 0 || choiceChecked(radios[i])) continue;
+        commitChoice(radios[i]); fixed++;
+        LOG(`Knockout answer corrected: "${q.slice(0, 60)}" → ${texts[i]}`);
+        await sleep(80);
+      }
+    } catch (e) { LOG('Knockout check failed:', e?.message || e); }
+    if (fixed) noteProgress('corrected ' + fixed + ' knockout answer(s)');
+    return fixed;
+  }
+
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
   async function autoSubmitOrNext__impl() {
     LOG('Attempting auto-submit or next...');
@@ -5688,6 +5809,8 @@
         await sleep(300);
       }
     } catch (_) {}
+    // Your fixed knockout answers win over whatever filled the page.
+    await enforceKnockoutPolicy();
     logFillReport('Before submit');
     // You are changing something — let you finish, then re-check what you left.
     if (await waitWhileUserEditing()) { await guaranteeRequiredFields(); await sleep(200); }
@@ -6412,9 +6535,118 @@
   }
 
   // ===================== WORKDAY AUTOMATION (SpeedyApply-enhanced) =====================
+  /* ── YOUR WORKDAY ENGINE (workday-engine/ → ua-wd-engine.js) ──────────────
+     Copied from optimhire-updates/workday-engine (claude/jolly-fermat-8VrR3),
+     with a Jobright adapter (workday-engine/src/ua/entry.ts). It runs in this
+     same content-script world on Workday hosts and is reached through
+     window.__uaWdEngine:
+       • a queue job → the engine applies it end to end; what it cannot finish
+         comes back here and the flow below carries on from that point;
+       • Fully Automated outside a run → assist: each step filled as it appears,
+         you press Next, Review submits after a 5-second countdown you can cancel.
+     "ua_wd_engine_off: true" in storage gives Workday back to the flow below. */
+  let _uaJobKey = '';                 // the queue job this tab is applying (none outside a run)
+  let _wdAssistActive = false;        // assist has this Workday page: no automatic page walk
+  // The engine asks for YOUR answers first: saved responses and answers you gave yourself.
+  window.__uaWdAnswer = (label) => {
+    try {
+      // Your fixed knockout answers come first (years → 7, AWS certification → Yes).
+      if (!isManualAnswer(label, null)) {
+        const pol = knockoutPolicy(label, _policyProfile);
+        if (pol) return pol === 'yes' ? 'Yes' : pol === 'no' ? 'No' : pol;
+      }
+      const fromSaved = safeKnockoutAnswer(findSavedResponseMatch(label), label);
+      const exact = getLearnedAnswer(label, null, true);
+      const exactOk = exact && (isManualAnswer(label, null) ? exact : safeKnockoutAnswer(exact, label));
+      return fromSaved || exactOk || null;
+    } catch (_) { return null; }
+  };
+  window.__uaWdProgress = (page) => { try { noteProgress('Workday engine: ' + (page || 'working')); } catch (_) {} };
+  /* What the engine would have asked an AI for, decided the way every other ATS
+     is: knockouts by determineYesNo, choices by the option matchers, the rest by
+     the profile rules. Only reached after your answers and the engine's own rules. */
+  const WD_DEMOGRAPHIC_RE = /gender|\bsex\b|sexual|orientation|pronoun|ethnic|\brace\b|racial|disab|veteran|religio|hispanic|latino/i;
+  window.__uaWdGuess = async (label, kind, options) => {
+    try {
+      const p = await getProfile();
+      const texts = Array.isArray(options) ? options.filter(Boolean).map(String) : [];
+      let raw = '';
+      try { raw = guessFieldValue(label, p, null); } catch (_) { raw = guessValue(label, p) || ''; }
+      if (!texts.length) return raw && !/^n\/?a$/i.test(raw) ? raw : null;
+      const pols = texts.map(optionPolarity);
+      const binary = texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) || (texts.some((t) => /^yes$/i.test(t)) && texts.some((t) => /^no$/i.test(t))));
+      let i = -1;
+      if (binary) {
+        let dec = '';
+        try { dec = determineYesNo(String(label).toLowerCase().replace(/\s+/g, ' ')); } catch (_) {}
+        if (dec === 'eeo') dec = 'decline';
+        i = optionIndexForDecision(texts, dec, label);
+      }
+      if (i < 0 && raw) i = bestOptionIndex(texts, raw, label);
+      if (i < 0 && WD_DEMOGRAPHIC_RE.test(label)) i = texts.findIndex(isDeclineOption);
+      return i >= 0 ? texts[i] : null;
+    } catch (_) { return null; }
+  };
+  window.__uaWdPick = (value, field, options) => {
+    try { const i = bestOptionIndex((options || []).map(String), String(value || ''), String(field || '')); return i >= 0 ? options[i] : null; }
+    catch (_) { return null; }
+  };
+
+  async function workdayEngineRun() {
+    const eng = window.__uaWdEngine;
+    if (!eng || typeof eng.startJob !== 'function' || !eng.isWorkday()) return false;
+    if ((await st.get('ua_wd_engine_off')) === true) return false;
+    const id = _uaJobKey;
+    if (!id) return false;
+    const prior = eng.result(id);
+    if (prior) return workdayEngineOutcome(prior, true);
+    LOG('Workday: your Workday engine is applying to this job');
+    eng.startJob(id);
+    const res = await withBusy('Workday engine', async () => {
+      const until = Date.now() + 8 * 60 * 1000;
+      await waitUntil(() => !!eng.result(id) || eng.running(id), 1500, 150);
+      while (Date.now() < until && !autoStopped()) {
+        const r = eng.result(id);
+        if (r) return r;
+        if (!eng.running(id)) { await waitUntil(() => !!eng.result(id), 1500, 150); return eng.result(id) || { outcome: 'stopped', reason: 'the engine stopped' }; }
+        noteProgress('Workday engine: ' + (eng.page() || 'working'));
+        await sleep(700);
+      }
+      try { eng.stop(); } catch (_) {}
+      return eng.result(id) || { outcome: 'stopped', reason: autoStopped() ? 'Fully Automated turned off' : 'took longer than 8 minutes' };
+    });
+    return workdayEngineOutcome(res, false);
+  }
+  const WD_APP_STEPS = ['resumeUpload', 'myInformation', 'myExperience', 'questions', 'voluntaryDisclosures', 'selfIdentify', 'review'];
+  function workdayEngineOutcome(r, earlier) {
+    if (r.outcome === 'submitted') {
+      LOG('Workday engine: application submitted' + (earlier ? ' (before this page load)' : ''));
+      markSubmitAttempt();
+      noteProgress('submitted');
+      return 'submitted';
+    }
+    LOG(`Workday engine stopped (${r.outcome}${r.page ? ' on ' + r.page : ''})${r.reason ? ': ' + r.reason : ''} — carrying on with the built-in Workday flow`);
+    noteProgress('Workday: carrying on from the engine');
+    // Stopped inside the application: carry on from that step, not from Apply.
+    return WD_APP_STEPS.includes(r.page) ? 'midway' : false;
+  }
+
   async function workdayAutomation() {
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
+    // Fully Automated outside a run: your engine's assist fills each step as it appears.
+    if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
+      LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 5-second countdown you can cancel');
+      _wdAssistActive = true;
+      return 'assist';
+    }
+    const eng = await workdayEngineRun();
+    if (eng === 'submitted') return 'submitted';
     const p = await getProfile();
+    if (eng === 'midway') {
+      await fallbackFill();
+      await workdayMultiPageFlow();
+      return 'handed-back';
+    }
 
     /* ── Phase 1: get off the job description and into the application ───────
        This sat on an NXP job description with the Apply button in plain sight
@@ -7672,7 +7904,7 @@
     if (WD_Q.relocate.test(l)) return 'yes';
     return '';
   }
-  function wdProfileYears(p) { return parseInt(p.years_experience || p.yearsExperience || DEFAULTS.years, 10) || 0; }
+  function wdProfileYears(p) { return parseInt(yearsAnswer(p), 10) || 7; }
   /* An answer for a choice control: the option text to pick, or 'decline'. */
   function wdChooseOption(label, options, p) {
     const texts = options.map((o) => String(o));
@@ -10489,6 +10721,7 @@
       }
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       clearSubmitAttempt();   // this job has not submitted anything yet
+      _uaJobKey = String(c.id || c.url || '');
 
       /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
          This used to stack four layers of repetition on top of each other, and
@@ -10732,6 +10965,7 @@
           // a submit-click followed by an 8s grace window with no validation error. A
           // persistent validation error fast-fails instead of waiting the whole timeout.
           clearSubmitAttempt(); // no submit evidence carried over from the previous job
+          _uaJobKey = String(c.id || c.url || '');
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
@@ -14915,6 +15149,8 @@
     // multi-page forms, review/confirm screens) until it is. Gated on
     // confirmSubmitted(), not checkSuccess(): a confirmation-looking URL alone is
     // not a reason to skip pressing Submit.
+    // Workday assist owns the page: you press Next, so no page walk follows.
+    if (_wdAssistActive) return;
     if (!confirmSubmitted()) await multiPageLoop();
     } finally {
       if (!ownedElsewhere) setAutomationFlag(false);

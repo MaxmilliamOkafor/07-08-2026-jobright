@@ -3591,3 +3591,66 @@ answer as listed above.
   - **Next / Submit wait for you.** If you are editing when the run is ready to
     advance, it waits until you stop (up to 90s), checks the page again, then
     moves on. Only real key presses, clicks and pastes count as editing.
+
+## v17.23 — Knockout answers that can't rank you last: years → 7, AWS certified → Yes
+
+A wrong knockout answer can rank an application at the bottom for good, so
+these are now fixed rules instead of guesses, on every ATS and for every filler:
+
+- **Any years-of-experience question → 7**, including skill-specific ones
+  ("…with Python?"). The only override is a number you type into this
+  extension's profile editor ("Years Experience"). Years merged in from other
+  stored data, a count worked out from your roles (the Workday engine), or
+  Jobright's own guess can no longer lower it. Range dropdowns pick the range
+  containing 7.
+- **"Do you have N+ years of …?" → Yes** when 7 ≥ N.
+- **"Do you hold an AWS Certified … certification?" → Yes** (radio, dropdown or
+  pill). "Which AWS certifications…?" still gets your text answer.
+- Saved or learned answers that disagree are ignored. Your own manual answer to
+  that exact question still wins.
+- **Checked again before every submit.** Whoever filled the page (Jobright's
+  autofill, a saved answer, a parser), these answers are corrected to the rule
+  first. Fields you typed in yourself are left alone.
+
+Tested in Chromium with `tests/e2e/knockout.html`. Another filler first puts in
+3 years, "1-3 years", and No / No / No. The application went out with 7,
+"7-10 years", and Yes / Yes / Yes.
+
+## v17.24 — Your Workday engine, inside this extension
+
+Your Workday engine from `optimhire-updates` (branch
+`claude/jolly-fermat-8VrR3`, `workday-engine/`) is copied in unchanged as
+`workday-engine/src/workday` + `src/cv`. A Jobright adapter
+(`workday-engine/src/ua/entry.ts`) connects it to this extension. It is built
+(`cd workday-engine && npm install && npm run build`) into `ua-wd-engine.js`, a
+content script on Workday hosts, and `ua-wd-cvtext.js`, the CV reader with
+pdf.js, loaded into a tab only when a CV is read.
+
+- **Queue jobs on Workday** (CSV runner and Queue Manager) are applied by your
+  engine:
+  - It signs in or creates the account with your shared ATS password
+    (`ua_app_password`, else Jobright's Workday password).
+  - It uploads the CV saved in the extension, fills every step and submits.
+  - Answers come in this order: your saved/manual answers, the knockout rules
+    above, the engine's profile rules, then this extension's deciders. The
+    deciders stand in where the engine would have asked an AI.
+  - Questions the engine treats as "sensitive" (convictions, non-competes,
+    relatives, attestations, signature) are answered the way the built-in flow
+    answers them, so it doesn't pause.
+  - If the engine stops anyway, the built-in Workday flow carries on from that
+    step.
+  - On the Workday mock the whole application took **34s** (72s with the
+    built-in flow this morning, 139s before that).
+- **Assist (what you liked in SpeedyApply)**, with Fully Automated on outside a
+  run:
+  - Each step is filled the moment it appears, and nothing is pressed for you.
+    You check, edit and press Save and Continue.
+  - Each step is filled once: going Back never refills over your edits.
+  - On Review it submits after a **5-second countdown** with Submit now / Cancel.
+  - Fully Automated off stops it at once.
+- **Your roles from your CV** when the profile has none: every role, the current
+  one ticked, with descriptions, plus education, skills and languages. The CV is
+  read once and the result kept.
+- Switches (storage):
+  - `ua_wd_engine_off: true` gives Workday back to the built-in flow.
+  - `ua_wd_assist: false` turns assist off.
