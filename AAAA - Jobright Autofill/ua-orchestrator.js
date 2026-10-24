@@ -1152,6 +1152,7 @@
         chrome.contextMenus.create({ id: 'ua-add-page', title: 'Add this page to the Jobright queue', contexts: ['page'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-open-jobright', title: 'Open Jobright on this page', contexts: ['page', 'frame', 'selection', 'link', 'editable'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-add-link', title: 'Add link to the Jobright queue', contexts: ['link'] }, () => void chrome.runtime.lastError);
+        chrome.contextMenus.create({ id: 'ua-open-debugger', title: 'Jobright Debugger (every job\'s timeline & errors)', contexts: ['all'] }, () => void chrome.runtime.lastError);
       });
     } catch (_) {}
   }
@@ -1165,6 +1166,9 @@
               chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
             });
           } else chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
+        } else if (info.menuItemId === 'ua-open-debugger') {
+          if (typeof self.__uaOpenDebugger === 'function') self.__uaOpenDebugger('');
+          else chrome.tabs.create({ url: chrome.runtime.getURL('ua-debug.html') });
         } else if (info.menuItemId === 'ua-open-tab') {
           chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
         } else if (info.menuItemId === 'ua-add-page') {

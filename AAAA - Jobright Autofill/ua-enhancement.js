@@ -342,7 +342,35 @@
 
   // LOG just writes to console with a [UA] tag; the console.* hook in _dbgInstall()
   // captures it into the buffer (so there's no double-logging here).
-  const LOG = (...a) => { try { console.log('[UA]', ...a); } catch (_) {} };
+  /* ── RUN DEBUGGER: this page's part of the job recorder ────────────────────
+     While a queue job (or a Fully Automated run) is being driven here, every
+     [UA] line, stage, diagnostic and error is sent to the recorder in the
+     service worker (ua-debugger.js) in small batches, tagged with the job. When
+     the job ends, a snapshot of the page goes with it. The Debugger page shows
+     it all, per job, after the tab is long gone. */
+  const JR = { id: '', buf: [], timer: 0, url: '', urlWatch: 0 };
+  function jrLine(kind, text) {
+    if (!JR.id) return;
+    try {
+      JR.buf.push({ t: Date.now(), k: kind || '', m: String(text == null ? '' : text).slice(0, 1200) });
+      if (JR.buf.length > 600) JR.buf.splice(0, JR.buf.length - 600);
+      if (!JR.timer) JR.timer = setTimeout(jrFlush, 1000);
+    } catch (_) {}
+  }
+  function jrFlush() {
+    JR.timer = 0;
+    if (!JR.id || !JR.buf.length) return;
+    const lines = JR.buf.splice(0);
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_LINES', jobId: JR.id, lines }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+  try { window.addEventListener('pagehide', jrFlush); } catch (_) {}
+  // Other parts of this extension (your Workday engine) add their lines too.
+  try { window.__uaJrLine = (k, m) => jrLine(k, m); } catch (_) {}
+
+  const LOG = (...a) => {
+    try { console.log('[UA]', ...a); } catch (_) {}
+    if (JR.id) { try { jrLine('', a.map(_dbgFmt).join(' ')); } catch (_) {} }
+  };
 
   /* Report something to the durable recorder in the service worker. Everything
      a run learns goes through here: outcomes, the stages leading to them, the
@@ -375,6 +403,7 @@
 
   function DIAG(code, reason, extra) {
     try {
+      if (JR.id) jrLine(code === 'stage' ? 'stage' : 'diag', code === 'stage' ? String(reason || '') : `${code}${reason ? ': ' + reason : ''}`);
       chrome.runtime.sendMessage({
         type: 'UA_DIAG',
         ev: Object.assign({
@@ -409,6 +438,7 @@
          locates the fault, so take it when the browser provides one. */
       let at = '';
       try { at = ((e && e.error && e.error.stack) || '').split('\n')[1] || ''; } catch (_) {}
+      jrLine('error', `${(e && e.message) || 'script error'}${where ? ' @ ' + where + ':' + (e.lineno || '') : ''}`);
       DIAG('page.error', (e && e.message) || 'script error', {
         detail: { at: where, line: e && e.lineno, frame: at.trim().slice(0, 160) },
       });
@@ -828,10 +858,115 @@
      paths and a diagnostic that covers seven of eight exits is the kind that
      makes you trust a wrong number. New exits are covered automatically. */
   const TERMINAL = ['done', 'failed', 'timeout', 'skipped'];
+  /* ── RUN DEBUGGER: a job starts / ends on this page ───────────────────────── */
+  function jrBegin(c, mode) {
+    try {
+      JR.id = String(c.id || c.url || '');
+      if (!JR.id) return;
+      chrome.runtime.sendMessage({
+        type: 'UA_DBG_START', jobId: JR.id,
+        meta: { url: c.url || location.href, title: c.title || '', company: c.companyName || '', board: c.jobBoard || '', mode, fresh: true },
+        page: { url: location.href, ats: detectATS() || (isWorkday() ? 'Workday' : ''), title: document.title },
+      }, () => void chrome.runtime.lastError);
+      jrLine('job', `${mode} job on ${location.hostname} (${detectATS() || 'unknown ATS'})`);
+      /* Single-page ATS (Workday, SmartRecruiters…) move between steps without a
+         page load: each new address is recorded as a page all the same. */
+      if (!JR.urlWatch) {
+        JR.url = location.href;
+        JR.urlWatch = setInterval(() => {
+          if (!JR.id || location.href === JR.url) return;
+          JR.url = location.href;
+          try {
+            chrome.runtime.sendMessage({ type: 'UA_DBG_START', jobId: JR.id, page: { url: location.href, ats: detectATS() || (isWorkday() ? 'Workday' : ''), title: document.title } }, () => void chrome.runtime.lastError);
+          } catch (_) {}
+        }, 1000);
+      }
+    } catch (_) {}
+  }
+  /* What was on the page when the job ended: every field with its label, value
+     (passwords and ID numbers masked), required flag and error; the unanswered
+     required questions; error banners; the buttons on screen and which one
+     counts as Submit. This is what turns "Form filled but no Submit control was
+     found" into the button list that shows why. */
+  function jrSnapshot(status, reason) {
+    const snap = { url: location.href, title: document.title, ats: detectATS() || (isWorkday() ? 'Workday' : ''), status, reason: String(reason || ''),
+      fields: [], errors: [], missing: [], buttons: [], submitControl: '', banner: '', text: '', frames: 0, shot: status !== 'done' };
+    try {
+      const SECRET = /password|passcode|\bssn\b|social security|national insurance|\bpps\b|passport|card number|\bcvv\b|iban|routing/i;
+      const seen = new Set();
+      const els = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]),select,textarea', 300)
+        .filter((el) => !isTrapField(el) && (isVisible(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && isVisible(el.closest('label') || el.parentElement))));
+      for (const el of els.slice(0, 220)) {
+        const type = el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text');
+        let label = '';
+        try { label = (type === 'radio' || type === 'checkbox') ? (getQuestionForInput(el) || getLabel(el)) : (getFullQuestionText(el) || getLabel(el)); } catch (_) {}
+        label = String(label || el.name || el.id || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        let value = '', options;
+        if (type === 'radio') {
+          const key = 'r:' + (el.name || label);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const group = el.name ? deepAll(`input[type=radio][name="${CSS.escape(el.name)}"]`, 30) : [el];
+          const on = group.find((r) => r.checked);
+          value = on ? choiceLabel(on) : '';
+          options = group.map((r) => choiceLabel(r)).slice(0, 12);
+        } else if (type === 'checkbox') {
+          value = el.checked ? '☑ ' + (getLabel(el) || '').slice(0, 80) : '☐ ' + (getLabel(el) || '').slice(0, 80);
+        } else if (type === 'select') {
+          const o = el.options && el.options[el.selectedIndex];
+          value = o && o.value !== '' ? o.text.trim() : '';
+          options = Array.from(el.options || []).map((x) => x.text.trim()).slice(0, 15);
+        } else if (type === 'file') {
+          value = el.files && el.files[0] ? el.files[0].name : '';
+        } else {
+          value = String(el.value || '');
+          if (type === 'password' || SECRET.test(label)) value = value ? '••• (' + value.length + ' chars)' : '';
+          else value = value.slice(0, 160);
+        }
+        let error = '';
+        try { error = errorTextNear(el) || ''; } catch (_) {}
+        let required = false;
+        try { required = isFieldRequired(el); } catch (_) {}
+        snap.fields.push({ label, type, value, options, required, error: String(error).slice(0, 160), yours: userTouched(el) });
+      }
+      // Custom dropdowns (react-select, Workday, Oracle…): what they show.
+      for (const cb of deepAll('[role="combobox"],[class*="select__control" i],oj-select-single,oj-c-select-single,spl-select', 60).filter(isVisible).slice(0, 40)) {
+        let label = '';
+        try { label = comboQuestion(cb); } catch (_) {}
+        snap.fields.push({ label: String(label || '').slice(0, 200), type: 'dropdown', value: comboHasValue(cb) ? comboText(cb).slice(0, 120) : '', required: (() => { try { return isFieldRequired(cb); } catch (_) { return false; } })(), error: '' });
+      }
+      snap.errors = readFieldErrors().slice(0, 40).map((e) => ({ label: e.label, message: e.message, kind: e.kind }));
+      snap.missing = getMissingRequired().slice(0, 40).map((x) => String(x).slice(0, 200));
+      snap.banner = String(remainingErrorSummary() || '').slice(0, 400);
+      // Whatever the site itself is saying: alerts, error banners (Workday's sign-in error lives here).
+      snap.alerts = [...new Set(deepAll('[role="alert"],[aria-live="assertive"],[data-automation-id*="error" i],[class*="error" i]:not(input):not(select):not(textarea),[class*="alert" i]', 80)
+        .filter(isVisible).map((n) => String(n.textContent || '').replace(/\s+/g, ' ').trim()).filter((t) => t && t.length > 3 && t.length < 400))].slice(0, 12);
+      snap.buttons = deepAll('button,input[type=submit],input[type=button],a[role="button"],[role="button"],spl-button,oj-button', 250)
+        .filter(isVisible).map((b) => controlLabel(b)).filter((t) => t && t.length < 80).slice(0, 50);
+      const sub = findSubmitControl();
+      snap.submitControl = sub ? controlLabel(sub) : '';
+      snap.text = String((document.body && document.body.innerText) || '').slice(0, 2500);
+      snap.frames = document.querySelectorAll('iframe').length;
+    } catch (e) { snap.snapError = String((e && e.message) || e); }
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_SNAPSHOT', jobId: JR.id, snap }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+  const _jrFinished = new Set();
+  function jrFinish(status, reason) {
+    if (!JR.id) return;
+    const key = JR.id + '|' + status;
+    if (_jrFinished.has(key)) return;
+    _jrFinished.add(key);
+    jrLine('end', `${String(status).toUpperCase()}${reason ? ' — ' + reason : ''}`);
+    jrSnapshot(status, reason);
+    jrFlush();
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_END', jobId: JR.id, status, reason: reason || '' }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+
   function reportTerminalJobs() {
     try {
       for (const j of queue) {
         if (!j || !TERMINAL.includes(j.status)) continue;
+        if (JR.id && String(j.id || j.url || '') === JR.id) jrFinish(j.status, j.error || '');
         /* The mark lives ON THE JOB, which is saved to storage with the queue.
 
            It was a Set in this module, and a module lasts exactly as long as one
@@ -10806,6 +10941,7 @@
     let finalized = false, tId = null, stallIv = null, beatIv = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
+      jrFinish(status, error || '');
       clearTimeout(tId);
       _mgrDriving = false;
       setAutomationFlag(false);
@@ -10934,6 +11070,7 @@
       clearSubmitAttempt();   // this job has not submitted anything yet
       _uaJobKey = String(c.id || c.url || '');
       _authDeadEnd = '';
+      jrBegin(c, 'queue');
 
       /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
          This used to stack four layers of repetition on top of each other, and
@@ -11180,6 +11317,7 @@
           clearSubmitAttempt(); // no submit evidence carried over from the previous job
           _uaJobKey = String(c.id || c.url || '');
           _authDeadEnd = '';
+          jrBegin(c, 'queue');
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
@@ -11870,6 +12008,8 @@
 .uc-sp:hover{border-color:#4b4b52;color:#e7e7ea}
 .uc-sp.active{background:#00f0a0;border-color:#00f0a0;color:#06231a;box-shadow:0 0 0 2px rgba(0,240,160,.25)}
 .uc-actions{display:flex;gap:10px;margin-top:16px}
+.uc-dbg{display:block;width:100%;margin-top:10px;padding:7px 10px;border-radius:10px;border:1px dashed #3a3a42;background:transparent;color:#a5b4fc;font:600 12px/1.2 inherit;font-family:inherit;cursor:pointer}
+.uc-dbg:hover{background:#17171c;color:#c7d2fe}
 .uc-act{flex:1;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:700;transition:filter .15s,background .15s}
 .uc-act:hover{filter:brightness(1.08)}
 .uc-act.pause{background:#f5b13d;color:#1a1205}
@@ -12091,6 +12231,7 @@
           <button class="uc-act skip" id="uc-skip">Skip</button>
           <button class="uc-act quit" id="uc-quit">Quit</button>
         </div>
+        <button class="uc-dbg" id="uc-dbg" title="Every job's timeline, page fields, errors and screenshot">🐞 Open Debugger — see what each job did</button>
       </div>`;
       host.appendChild(ctrl);
       makeDraggableByHandle(ctrl, ctrl.querySelector('.uc-top'));
@@ -12103,6 +12244,7 @@
       ctrl.querySelector('#uc-pause').addEventListener('click', () => { if (qPaused) resumeQ(); else pauseQ(); });
       ctrl.querySelector('#uc-skip').addEventListener('click', skipJob);
       ctrl.querySelector('#uc-quit').addEventListener('click', stopQ);
+      ctrl.querySelector('#uc-dbg').addEventListener('click', () => openDebugger(JR.id ? 'job=' + encodeURIComponent(JR.id) : ''));
       ctrl.querySelectorAll('.uc-sp').forEach(btn => btn.addEventListener('click', () => setQueueSpeed(parseFloat(btn.dataset.sp) || 1)));
       /* One click turns the run's failures into something you can paste to
          someone who can fix them. Without this the reasons exist but stay
@@ -13436,12 +13578,36 @@
   /* The reason that cost the most jobs, and how many. Failures cluster: thirty
      of them are usually three causes, and knowing which one is biggest is the
      difference between fixing the run and guessing at it. */
+  // The Debugger page (ua-debug.html), opened in front by the service worker.
+  function openDebugger(hash) {
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_OPEN', hash: hash || '' }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+  /* Same rule as the Debugger page (ua-debugger.js reasonGroup). */
+  function reasonGroup(r) {
+    let s = String(r || '').trim();
+    if (!s) return 'no reason recorded';
+    s = s.split(/\s[—–]\s/)[0];
+    s = s.replace(/https?:\/\/\S+/g, '<url>')
+      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '<email>')
+      .replace(/\b[\w-]+(\.[\w-]+)*\.(com|io|net|org|eu|co|ai|jobs|uk|ie|de)\b\S*/gi, '<site>')
+      .replace(/"[^"]{1,160}"|“[^”]{1,160}”/g, '"…"')
+      .replace(/\([^)]{0,200}\)/g, '')
+      .replace(/\d+/g, 'N')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+([.,;:])/g, '$1')
+      .split(/(?<=[a-z>)\]"…])[.!?]\s+(?=[A-Z<"“🔐])/)[0]
+      .replace(/[\s.:,;]+$/, '')
+      .trim();
+    return s.slice(0, 140) || 'no reason recorded';
+  }
   function failureGroups() {
     const bad = queue.filter(j => ['failed', 'timeout'].includes(j.status) ||
       (j.status === 'skipped' && j.error && !/^Skipped by user$/i.test(j.error)));
     const by = new Map();
     for (const j of bad) {
-      const key = `${j.status}: ${j.error || 'no reason recorded'}`;
+      // Grouped by CAUSE, not by exact text: the text carries a field, a host, a
+      // number, and 120 failures used to show as 120 groups of one.
+      const key = `${j.status}: ${reasonGroup(j.error)}`;
       if (!by.has(key)) by.set(key, []);
       by.get(key).push(j.url);
     }
@@ -15511,9 +15677,12 @@
     // page only. Without this, detectATS()'s broad generic "Career" pattern (any URL with
     // /apply, /jobs, /careers) would let Fully Automated fill non-job forms.
     if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday())) {
+      // Recorded for the Debugger too, as its own entry.
+      jrBegin({ id: 'auto:' + location.hostname + location.pathname.slice(0, 80) + '@' + new Date().toISOString().slice(0, 16), url: location.href, title: document.title }, 'fully-automated');
       LOG(`Fully Automated: starting full automation for ${ats || 'Workday'}`);
       await sleep(scaled(1500, 750));
       await dispatchATSAutomation();
+      jrFinish(confirmSubmitted() ? 'done' : (_wdAssistActive ? 'assist' : 'stopped'), confirmSubmitted() ? '' : (_wdAssistActive ? 'Workday assist: you press Next' : 'Fully Automated pass ended without a confirmed submit'));
     }
     if (runnerActive) {
       // Resumes after a manual reload too: window.name carries the runner tag

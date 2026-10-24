@@ -2644,7 +2644,13 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   var LOG_KEY = "ua_wd_engine_log";
   var LOGIN_KEY = "ua_wd_login";
   var CV_KEY = "ua_wd_cv_profile";
-  var say = (msg) => console.info(`[UA][WD-Engine] ${msg}`);
+  var say = (msg) => {
+    console.info(`[UA][WD-Engine] ${msg}`);
+    try {
+      window.__uaJrLine?.("engine", msg);
+    } catch {
+    }
+  };
   var logShown = 0;
   var W = window;
   function within(p, ms) {

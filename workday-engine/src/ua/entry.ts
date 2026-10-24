@@ -61,7 +61,11 @@ interface Mode {
   jobId: string;
 }
 
-const say = (msg: string) => console.info(`[UA][WD-Engine] ${msg}`);
+const say = (msg: string) => {
+  console.info(`[UA][WD-Engine] ${msg}`);
+  // Into the job's record too (the Debugger page shows it in the timeline).
+  try { (window as unknown as { __uaJrLine?: (k: string, m: string) => void }).__uaJrLine?.("engine", msg); } catch { /* */ }
+};
 let logShown = 0;                        // engine log lines already printed (per run)
 const W = window as Any;
 

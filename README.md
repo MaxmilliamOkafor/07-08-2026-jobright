@@ -3715,3 +3715,48 @@ pressed, never **Autofill with Resume** or **Use My Last Application**:
   remove button.
 
 The Workday mock now shows all three choices and logs which one was pressed.
+
+## v17.27 — The Debugger: see what every job did, and why it failed
+
+Your run panel said **"1 applied · 3 skipped · 120 failed — Most failures: …
+(5)"**. The headline explained 5 of 120 failures, because reasons were grouped
+by their exact text, which includes a field name, a site or a number. Everything
+that led up to each failure was lost when the tab closed.
+
+**Open it** from any of these: **🐞 Open Debugger** in the run panel (it opens on
+the job that's running), **🐞 Debugger** in the Queue Manager, or right-click →
+**Jobright Debugger**.
+
+**What it shows:**
+- **Causes of failures.** Failures are grouped by cause, with the specifics taken
+  out. "Validation errors could not be resolved — First Name: required" and
+  "… — Phone: invalid" count as one cause; "Timed out after 150s" becomes
+  "Timed out after Ns". Each cause shows its count and which ATS it happens on.
+  Click one to list its jobs. The run panel's "Most failures" line uses the same
+  grouping now.
+- **Jobs.** Every queue job, newest first, filterable by outcome, ATS and text,
+  showing duration, number of log lines and reason.
+- **For each job:**
+  - **Timeline.** Every log line, each page or step it reached (URL and ATS),
+    every stage, diagnostic and error, and every step of your Workday engine,
+    timed from the start. You can filter it, or show only errors, stages and
+    pages.
+  - **Page at the end.** What the site was saying (error banners, alerts), the
+    required fields still empty, the fields the form flagged, the buttons on
+    screen, which one counted as Submit (or "none"), and every field with its
+    value. Passwords and ID numbers are masked.
+  - **Screenshot,** when the job didn't succeed and its tab was the one on
+    screen. Chrome can only capture the visible tab.
+  - **Pages visited.**
+- **Copy this job's report** and **Copy summary** give text you can paste to
+  whoever is fixing it. **Export all** saves every record as JSON.
+- **Live:** it updates while the run goes.
+
+Everything stays in this browser's extension storage, and nothing is sent
+anywhere. It keeps the last 600 jobs, up to 3,000 log lines each, and the last
+40 screenshots. **Clear** deletes it all.
+
+Tested in Chromium with these test pages: the Workday account that exists with
+another password (timeline, Workday's own error text, the sign-in form's fields,
+"Submit: none"), the Workday mock (your engine's steps in the timeline, each
+step's URL as a page), and the knockout, Greenhouse and SuccessFactors forms.

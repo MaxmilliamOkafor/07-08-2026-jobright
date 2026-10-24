@@ -1656,6 +1656,7 @@ console.log('the panel says why jobs are failing');
   const grpCtx = {};
   new Function('exports', `
     let queue = [];
+    ${body('reasonGroup')}
     ${body('failureGroups')}
     ${body('topFailureReason')}
     ${body('failureReportText')}
@@ -3425,6 +3426,49 @@ console.log('v17.26: Apply Manually, never Autofill with Resume / Use My Last Ap
   eq('your Workday engine presses Apply Manually only', /\/\/ \[ua\] Always "Apply Manually"/.test(eng) && /const btn = byAid\("applyManually"\);/.test(eng) && !/byAid\("autofillWithResume"\)/.test(eng), true);
   eq('the built engine has it', /Apply method: Apply Manually/.test(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8')) &&
     !/Autofill with Resume \(tailored CV\)/.test(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8')), true);
+}
+
+
+/* ── 77. v17.27: the run Debugger ── */
+console.log('v17.27: Debugger — every job recorded, failures grouped by cause');
+{
+  const ext = path.dirname(process.argv[2]);
+  const rd = (n) => fs.readFileSync(path.join(ext, n), 'utf8');
+  const sw = rd('ua-debugger.js'), page = rd('ua-debug.js'), html = rd('ua-debug.html'), bg = rd('static/background/index.js'), qhtml = rd('ua-queue.html'), qjs = rd('ua-queue.js');
+  const grab = (txt) => txt.match(/function reasonGroup[\s\S]*?\n  \}\n/)[0];
+  eq('the run panel and the Debugger group causes with the same rule', grab(src).replace(/\s+/g, ' '), grab(sw).replace(/\s+/g, ' '));
+  const g = new Function(grab(sw) + ';return reasonGroup;')();
+  eq('specifics come out: "— First Name: required"', g('Validation errors could not be resolved — First Name: required'), 'Validation errors could not be resolved');
+  eq('numbers fold: "Timed out after 150s"', g('Timed out after 150s'), 'Timed out after Ns');
+  eq('emails and sites fold, first sentence only', g('Workday account already exists for a@b.com on x.wd12.myworkdayjobs.com with a password the extension doesn\'t have (all 2 refused). Add it under 🔐 Site logins.'), 'Workday account already exists for <email> on <site> with a password the extension doesn\'t have');
+  eq('…so two such failures are one cause', g('Validation errors could not be resolved — Phone: invalid'), g('Validation errors could not be resolved — Email: required'));
+  eq('the run panel\'s "Most failures" uses causes, not exact text', /const key = `\$\{j\.status\}: \$\{reasonGroup\(j\.error\)\}`;/.test(body('failureGroups')), true);
+  // Recording.
+  eq('every [UA] log line goes into the job\'s record', /if \(JR\.id\) \{ try \{ jrLine\('', a\.map\(_dbgFmt\)\.join\(' '\)\); \}/.test(src), true);
+  eq('stages and diagnostics too', /if \(JR\.id\) jrLine\(code === 'stage' \? 'stage' : 'diag'/.test(body('DIAG')), true);
+  eq('page errors too', /jrLine\('error', `\$\{\(e && e\.message\) \|\| 'script error'\}/.test(src), true);
+  eq('your Workday engine\'s steps too', /__uaJrLine\?\.\("engine", msg\)/.test(fs.readFileSync(path.join(path.dirname(ext), 'workday-engine/src/ua/entry.ts'), 'utf8')), true);
+  eq('each job is started in the record (runner and Queue Manager)', (src.match(/jrBegin\(c, 'queue'\);/g) || []).length, 2);
+  eq('…and Fully Automated passes outside a run', /jrBegin\(\{ id: 'auto:'/.test(src), true);
+  eq('ended: Queue Manager finalize and the runner\'s terminal jobs', /jrFinish\(status, error \|\| ''\);/.test(src) && /jrFinish\(j\.status, j\.error \|\| ''\)/.test(body('reportTerminalJobs')), true);
+  eq('single-page steps are recorded as pages', /JR\.urlWatch = setInterval/.test(body('jrBegin')), true);
+  const snap = body('jrSnapshot');
+  eq('the end-of-job snapshot has fields, errors, empty required, alerts, buttons and the Submit pick', ['snap.fields.push', 'readFieldErrors()', 'getMissingRequired()', 'snap.alerts', 'snap.buttons', 'findSubmitControl()'].every((k) => snap.includes(k)), true);
+  eq('passwords and ID numbers are masked in it', /type === 'password' \|\| SECRET\.test\(label\)/.test(snap) && /password\|passcode\|\\bssn\\b/.test(snap), true);
+  eq('a screenshot is asked for when a job did not succeed', /shot: status !== 'done'/.test(snap), true);
+  // Service worker.
+  eq('the recorder loads in the service worker', /importScripts\("\/ua-debugger\.js"\)/.test(bg), true);
+  eq('outcomes come from the queue itself (every path that ends a job)', /changes\.ua_q/.test(sw) && /TERMINAL\.includes\(j\.status\)/.test(sw), true);
+  eq('bounded: jobs, lines per job, screenshots', /JOB_CAP = 600/.test(sw) && /LINE_CAP = 3000/.test(sw) && /SHOT_CAP = 40/.test(sw), true);
+  eq('only the tab on screen is captured', /if \(!tab \|\| !tab\.active/.test(sw), true);
+  eq('opens in front when you ask, even during a run', /__uaAllowFront: true/.test(sw), true);
+  // Page + ways in.
+  eq('the Debugger page loads its script (no inline script)', /<script src="ua-debug\.js"><\/script>/.test(html) && !/<script>[^<]/.test(html), true);
+  eq('it shows causes, jobs, timeline, page snapshot, screenshot, pages', ['renderCauses', 'renderJobs', 'renderTimeline', 'renderPage', "'shot'", "'pages'"].every((k) => page.includes(k)), true);
+  eq('copy and export for sending on', /jobReport/.test(page) && /Export all/.test(html) && /Copy summary/.test(html), true);
+  eq('a Debug button in the run panel', /id="uc-dbg"/.test(src) && /openDebugger\(/.test(src), true);
+  eq('…in the Queue Manager', /id="btnDebugger"/.test(qhtml) && /btnDebugger/.test(qjs), true);
+  eq('…and in the right-click menu', /ua-open-debugger/.test(orch), true);
 }
 
 

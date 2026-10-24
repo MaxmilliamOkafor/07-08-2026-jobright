@@ -115,5 +115,26 @@ const T0 = Date.now();
   if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
   if (process.env.LOG_DUMP) for (const l of logs) console.log('  | ' + l);
+  // DEBUG_SHOT=<dir>: open the Debugger page, print what it recorded, screenshot it.
+  if (process.env.DEBUG_SHOT) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const dbg = await ctx.newPage();
+    await dbg.setViewportSize({ width: 1500, height: 950 });
+    await dbg.goto(`chrome-extension://${extId}/ua-debug.html`);
+    await dbg.waitForTimeout(1200);
+    const rec = await dbg.evaluate(() => new Promise((r) => chrome.storage.local.get(null, (d) => {
+      const idx = d.ua_dbg_index || [];
+      r(idx.map((e) => { const x = d['ua_dbg_job:' + e.id] || {}; return { status: e.status, ats: e.ats, group: e.group, reason: (e.reason || '').slice(0, 120), lines: (x.lines || []).length, pages: (x.pages || []).length,
+        kinds: [...new Set((x.lines || []).map((l) => l.k || 'log'))].join(','), fields: x.snap ? (x.snap.fields || []).length : -1, missing: x.snap ? (x.snap.missing || []).length : -1, submit: x.snap ? x.snap.submitControl : null, shot: !!d['ua_dbg_shot:' + e.id] }; }));
+    })));
+    console.log('DEBUGGER:', JSON.stringify(rec));
+    fs.mkdirSync(process.env.DEBUG_SHOT, { recursive: true });
+    await dbg.click('.job').catch(() => {});
+    await dbg.waitForTimeout(800);
+    await dbg.screenshot({ path: path.join(process.env.DEBUG_SHOT, 'debugger-timeline.png') });
+    await dbg.click('.tabs button[data-t="page"]').catch(() => {});
+    await dbg.waitForTimeout(500);
+    await dbg.screenshot({ path: path.join(process.env.DEBUG_SHOT, 'debugger-page.png') });
+  }
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
