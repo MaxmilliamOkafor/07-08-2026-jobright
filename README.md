@@ -3760,3 +3760,63 @@ Tested in Chromium with these test pages: the Workday account that exists with
 another password (timeline, Workday's own error text, the sign-in form's fields,
 "Submit: none"), the Workday mock (your engine's steps in the timeline, each
 step's URL as a page), and the knockout, Greenhouse and SuccessFactors forms.
+
+## v17.28 — Jobright 1.25.0, the Workday guide, the ATS report, and no Jobright tab of its own
+
+### Rebased onto Jobright 1.25.0
+Their changed files are copied over (`contents`, `helper-app`, `global.css`,
+`applied-success-popup`, `ats-submission-resume`, `clearcompany-submission-attribution`,
+the service worker), our four `importScripts` lines re-appended, and the manifest merged
+by hand: version 1.25.0 and their one new content script, `field-discovery.d71b3ac3.js`
+(a passive field scanner, `https://*/*`, top frame, `document_idle`), placed before
+`contents` as in theirs. Nothing in it collides with ours (no `UA_` messages, side panel,
+`beforeunload` or new `active:!0`).
+
+### No Jobright tab opening on its own
+On an application page, Jobright opened `jobright.ai/jobs/info/<id>?plugin_tailor=1`
+("Generate Your Custom Resume") in a new tab. Its worker's `openTailorTab` now goes
+through our tab guard:
+- **You pressed Tailor / Generate Custom Resume / Cover Letter yourself:** the tab opens
+  as before. The page reports your real click (`UA_TAILOR_INTENT`), and our own clicks
+  never count.
+- **"Tailor resume" is on for a queue run:** the tab opens in the background.
+- **Anything else:** it doesn't open. Jobright is told the tab wasn't opened, and its
+  autofill carries on with your saved CV.
+
+### Workday, from the Workday Autofill Guide (27 Oct 2026)
+- **Dropdowns:** if a click doesn't open the list, or doesn't take, it presses Down and
+  then Enter. Long lists that only draw their first rows (Country, County) are searched
+  by typing the first letters and scrolling.
+- **Searchable lists (How did you hear, Skills, Phone code):** it waits for the spinner
+  and for the results to stop changing before it picks one. Then it retries with aliases
+  (AWS → "Amazon Web Services (AWS)", GCP, K8s, C#…) and a shorter word.
+- **"How did you hear" as folders:** Social Media › LinkedIn, then Job Board (› Other).
+- **Dates:** digits only on masked inputs, since a typed "/" gives "Invalid Date: 12/".
+  If Workday still shows "Invalid Date", the date is retyped once.
+- **Country defaulting to United States of America:** corrected even in assist mode.
+  Only a value you picked yourself is kept. The same applies to the phone code and
+  device type.
+- **Phone number:** digits only, without the country code or the leading 0
+  (874261508 beside Ireland +353). Italy keeps its 0.
+- **Names in capitals** from a parsed CV are written in normal case.
+- **Websites:** when the tenant has no LinkedIn box, LinkedIn goes in Websites, then
+  GitHub, then your portfolio.
+- **"You have already applied"** is recognised by the engine. The job is skipped
+  straight away, not handed to the built-in flow.
+- **"Something went wrong. Please refresh"** reloads the page and carries on, at most
+  twice per job.
+
+### Every ATS, from the ATS Test Report (27 Oct 2026)
+- **Opt-ins answered No:** "May we text you?" (Paylocity), SMS updates (ADP,
+  Teamtailor), talent community, newsletters and marketing. Required privacy or terms
+  consents are not affected; this is tested against their wording.
+- **"Current or former government official / employee?"** answered No.
+- **Before every submit,** what a resume parser did to your contact details is put
+  right: "MAXMILLIAM" becomes "Maxmilliam", and "+353: 0874261508" becomes
+  "+353874261508". This only happens when the value is yours with the wrong case or
+  format, and never to a field you edited.
+- **Recognised hosts:** Gem (`jobs.gem.com`), JOIN (`join.com/companies/…`) and Gusto
+  (`jobs.gusto.com/postings`).
+
+Not changed: CAPTCHAs, Cloudflare checks and native file pickers still need you, as
+the report says. SAP's 100-skill limit isn't trimmed automatically.

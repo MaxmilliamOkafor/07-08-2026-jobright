@@ -739,6 +739,13 @@
     { n: 'Zappyhire', p: /(^|\/\/|\.)zappyhire\.com/i },
     { n: 'Collage', p: /(^|\/\/|\.)collage\.co\//i },
     { n: 'CareerPuck', p: /(^|\/\/|\.)careerpuck\.com/i },
+    /* ── From the ATS test report (27 Oct 2026): hosts it applied on that this
+       table did not name. Gem's board is jobs.gem.com/<company>/<id> (the rule
+       above wants "jobs" after gem.com), JOIN is join.com/companies/…, and
+       Gusto's postings live on jobs.gusto.com. */
+    { n: 'Gem', p: /(^|\/\/)jobs\.gem\.com\//i },
+    { n: 'JOIN', p: /(^|\/\/)(www\.)?join\.com\/companies\//i },
+    { n: 'Gusto', p: /(^|\/\/)jobs\.gusto\.com\/(postings|boards)\//i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.
@@ -1937,6 +1944,7 @@
   const RELOCATION_RE = /\b(relocat\w*|willing to move|open to (moving|relocation|relocating)|prepared to (move|relocate)|happy to (move|relocate)|consider (moving|relocating)|able to move|move (to|for)|willing to travel|able to commute|commute to)\b/i;
 
   // Smart Yes/No determination based on question context
+  const SMS_OPTIN_RE = /\b(may|can|could) we (text|sms|send (you )?(a )?(text|sms))|\b(text|sms)\s*(message|messaging|alert|update|notification)s?\b[^?.]{0,80}\b(consent|opt.?in|receive|agree|permission|authori[sz]e)|\b(consent|opt.?in|agree|permission|authori[sz]e)\b[^?.]{0,80}(\b(text|sms)\s*(message|messaging|alert|update|notification)s?\b|\bsms\b|\btext (me|you)\b)|\b(join|subscribe to)\b[^?.]{0,40}\b(talent (community|network|pool)|newsletter|mailing list)|\bmarketing (communications?|emails?|messages?)\b/;
   function determineYesNo(questionText) {
     const q = questionText.toLowerCase();
     // Your fixed knockout answers first (AWS certification, years thresholds).
@@ -1948,6 +1956,14 @@
     // asks rather than by whether it contains the word "visa".
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
+
+    /* Opt-ins nobody asked for: "May we text you?" (Paylocity), SMS updates
+       (ADP, Teamtailor), marketing and talent-community mail. The ATS report
+       answered these No every time. Checked before the strong-No list because its
+       "authorize" escape would turn "I authorize Acme to text me" into Yes. */
+    if (SMS_OPTIN_RE.test(q)) return 'no';
+    // "Are you a current or former government official / employee?" (Mastercard, SmartRecruiters).
+    if (/\b(government|public)\s+(official|employee|servant|officer)|politically exposed|\bgovernment[- ]owned\b.*\b(employ|work)/.test(q)) return 'no';
 
     // STRONG "No" intents. These MUST take precedence over the generic yes-trigger
     // words ("will you", "can you", "do you"…) below. Previously a question like
@@ -5859,6 +5875,41 @@
      filled the page — Jobright's autofill, a saved answer, a parser. Radios,
      native selects and plain text/number boxes are corrected; anything you
      typed or picked yourself is left alone. Returns how many it changed. */
+  /* What a resume parser does to your contact details (ATS report: Paylocity,
+     SAP, BrassRing). Paylocity wrote the name as "MAXMILLIAM" and the phone as
+     "+353: 0874261508". Only those two shapes are corrected — the same name in
+     the wrong case, and your own number with a stray separator or trunk 0 — so
+     a different value somebody chose is never touched. */
+  function fixParsedContact(el, q, p) {
+    const cur = String(el.value || '').trim();
+    if (!cur) return false;
+    const label = q.toLowerCase();
+    const first = String(p.first_name || p.firstName || '').trim();
+    const last = String(p.last_name || p.lastName || '').trim();
+    let want = '';
+    if (/\b(first|given)\s*name|^first$|forename/.test(label) && !/preferred|middle/.test(label)) want = first;
+    else if (/\b(last|family)\s*name|surname/.test(label)) want = last;
+    if (want) {
+      if (cur === want || cur.toLowerCase() !== want.toLowerCase() || want === want.toUpperCase()) return false;
+      nativeSet(el, want);
+      LOG(`Corrected the case of a parsed name: "${cur}" → "${want}"`);
+      return true;
+    }
+    if (!/phone|mobile|telephone|cell/.test(label) || /code|extension|ext\b|type/.test(label)) return false;
+    const own = String(p.phone || '').replace(/\D/g, '').replace(/^0+/, '');
+    const cc = String(p.phoneCountryCode || p.phone_country_code || '').replace(/\D/g, '');
+    const nat = cc && own.startsWith(cc) ? own.slice(cc.length).replace(/^0+/, '') : own;
+    const digits = cur.replace(/\D/g, '');
+    if (nat.length < 6 || !digits.endsWith(nat)) return false;
+    const broken = /:|\+\s*\d{1,3}\s*[:\-]?\s*0/.test(cur) || /\(\s*0\s*\)/.test(cur);
+    if (!broken) return false;
+    const fixedVal = cur.startsWith('+') ? `+${digits.slice(0, digits.length - nat.length).replace(/0+$/, '')}${nat}` : nat;
+    if (fixedVal === cur) return false;
+    nativeSet(el, fixedVal);
+    LOG(`Corrected a parsed phone number: "${cur}" → "${fixedVal}"`);
+    return true;
+  }
+
   async function enforceKnockoutPolicy() {
     let fixed = 0;
     try {
@@ -5868,6 +5919,7 @@
       for (const el of deepAll('input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=file]):not([type=submit]):not([type=button]),select', 300)) {
         if (!isVisible(el) || el.disabled || el.readOnly || userTouched(el) || isTrapField(el)) continue;
         const q = getFullQuestionText(el) || getLabel(el) || '';
+        if (el.tagName !== 'SELECT' && fixParsedContact(el, q, p)) { fixed++; continue; }
         const pol = knockoutPolicy(q, p);
         if (!pol) continue;
         if (el.tagName === 'SELECT') {
@@ -6785,6 +6837,13 @@
       noteProgress('submitted');
       return 'submitted';
     }
+    /* Workday allows one application per job. Handing that back to the built-in
+       flow only spent the job's time budget on a page with nothing to fill; the
+       queue's already-applied check reads the same notice and skips the job. */
+    if (r.page === 'alreadyApplied' || /already applied/i.test(r.reason || '') || pageHasFailure()) {
+      LOG(`Workday engine: ${r.reason || 'already applied / posting closed'} — nothing to apply to`);
+      return 'closed';
+    }
     LOG(`Workday engine stopped (${r.outcome}${r.page ? ' on ' + r.page : ''})${r.reason ? ': ' + r.reason : ''} — carrying on with the built-in Workday flow`);
     noteProgress('Workday: carrying on from the engine');
     // Stopped inside the application: carry on from that step, not from Apply.
@@ -6885,6 +6944,7 @@
     {
       const eng = await workdayEngineRun();
       if (eng === 'submitted') return 'submitted';
+      if (eng === 'closed') return 'closed';
       if (eng === 'midway') {
         await fallbackFill();
         await workdayMultiPageFlow();
@@ -19548,3 +19608,30 @@ a[href*="/checkout" i],
   log('candidate-profile snapshot watcher active');
 })();
 
+
+/* ── Your own Tailor / Generate click ─────────────────────────────────────────
+   The worker refuses Jobright's tailor / cover-letter tab unless you asked for
+   it (ua-orchestrator.js, TAILOR_TAB_RE). A real click — not one of ours — on
+   Jobright's Tailor / Generate Custom Resume / Cover Letter button is that ask.
+   It only reports the click; it never acts, so it is not behind the
+   automation gate. Jobright's sidebar is an open shadow root, so composedPath
+   reaches the button. */
+(function () {
+  'use strict';
+  if (window.__uaTailorIntent) return;
+  window.__uaTailorIntent = true;
+  const ASK_RE = /tailor|custom resume|generate (my |a )?(new )?(resume|cv|cover letter)|cover letter/i;
+  document.addEventListener('click', (e) => {
+    try {
+      if (!e.isTrusted) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      const btn = path.find((n) => n && n.nodeType === 1 && (n.matches('button,a,[role="button"]') ||
+        (n.classList && (n.classList.contains('application-dashboard-tailor-resume') || n.classList.contains('external-job-generate-resume-button')))));
+      if (!btn) return;
+      const cls = btn.classList || { contains: () => false };
+      const txt = (btn.textContent || btn.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      if (!cls.contains('application-dashboard-tailor-resume') && !cls.contains('external-job-generate-resume-button') && !(txt.length < 60 && ASK_RE.test(txt))) return;
+      chrome.runtime.sendMessage({ type: 'UA_TAILOR_INTENT' }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }, true);
+})();

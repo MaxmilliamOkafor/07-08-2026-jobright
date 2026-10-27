@@ -201,6 +201,8 @@ export type PageKind =
   | "review"
   | "submitted"
   | "candidateHome"
+  | "alreadyApplied" // [ua] "You have already applied for this job"
+  | "somethingWrong" // [ua] "Something went wrong. Please refresh the page and try again."
   | "unknown";
 
 export type RunStatus = "idle" | "running" | "paused" | "review" | "done" | "error" | "filled"; // [oh] filled: assist mode

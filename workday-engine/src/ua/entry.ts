@@ -360,6 +360,13 @@ function splitPhone(raw: string, defCode: string): { code: string; national: str
   return { code: defCode, national: digits.replace(/^0+/, "") };
 }
 
+/** "MAXMILLIAM" / "o'NEILL-SMITH" → "Maxmilliam" / "O'Neill-Smith"; a name already in mixed case is left alone. */
+function properCase(name: string): string {
+  const s = String(name || "").trim();
+  if (!s || s !== s.toUpperCase() && s !== s.toLowerCase()) return s;
+  return s.toLowerCase().replace(/(^|[\s'’\-])(\p{L})/gu, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
+}
+
 function declineOr(v: string): string {
   const s = String(v || "").trim();
   return !s || /prefer not|decline|do not wish|don'?t wish|not to say/i.test(s) ? "decline" : s;
@@ -466,6 +473,8 @@ async function buildProfile(): Promise<Profile> {
       if (!p.summary) p.summary = cv.summary;
     }, () => undefined);
   }
+  // A parsed CV or an old import can hold the name in capitals ("MAXMILLIAM"): forms want "Maxmilliam".
+  for (const k of ["firstName", "lastName", "preferredName"] as const) p.personal[k] = properCase(p.personal[k] || "");
   return p;
 }
 

@@ -69,6 +69,19 @@ export const SUBMITTED_RX = rx([
   "応募が完了", "ご応募ありがとう", "申请已提交", "感谢您的申请",
 ]);
 
+/** [ua] Workday refuses a second application to the same job (NVIDIA, Workday guide §6). */
+export const ALREADY_APPLIED_RX = rx([
+  "you(?:'ve|’ve| have) already applied", "already applied (for|to) this (job|position|role)", "already submitted an application",
+  "sie haben sich bereits (auf diese stelle )?beworben", "vous avez déjà postulé", "ya (te|se) (has|ha) postulado", "ya has aplicado",
+  "você já se candidatou", "ti sei già candidato", "u heeft al gesolliciteerd", "je hebt al gesolliciteerd", "już aplikowałeś",
+]);
+
+/** [ua] Workday's transient error page/toast: refresh and try again. */
+export const SOMETHING_WRONG_RX = rx([
+  "something went wrong\\.? please refresh", "something went wrong\\.? please try again", "etwas ist schiefgelaufen", "une erreur s'est produite\\.? veuillez actualiser",
+  "algo salió mal", "algo deu errado", "qualcosa è andato storto", "er is iets misgegaan", "coś poszło nie tak",
+]);
+
 export const VERIFY_EMAIL_RX = rx([
   "verify your (email|account)", "verification (email|link)", "check your (email|inbox)", "activate your account",
   "e-?mail(-adresse)? (bestätigen|verifizieren)", "bestätigungs-?e-?mail", "konto aktivieren",
