@@ -12,6 +12,11 @@ const lib = `
   const deepAll = (sel, cap) => [...document.querySelectorAll(sel)].slice(0, cap || 500);
   const isVisible = (el) => !!el && !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
   ${src.match(/  const WD_STEP_LABELS = [^\n]*\n/)[0]}
+  ${/* workdayApplicationReady also asks wdStepKind, which reads the step names in eight languages. */ ''}
+  ${src.match(/  const wdRx = [^\n]*\n/)[0]}
+  ${src.match(/  const wdText = [^\n]*\n/)[0]}
+  ${src.match(/  const WD_STEP_PATTERNS = \[[\s\S]*?\n  \];\n/)[0]}
+  ${fn('wdStepKind')}
   const getLabel = (el) => (el.labels && el.labels[0] && el.labels[0].textContent) || '';
   const getQuestionForInput = () => '', textOfIds = () => '';
   ${['normLabel', 'safeClass', 'isSelect2Native', 'coveredBy', 'describeControl', 'workdayOnAccountWall', 'workdayApplicationReady', 'isPhoneBox', 'dialCodeBeside', 'phoneForPickerBox', 'fieldName'].map(fn).join('\n')}
