@@ -746,6 +746,8 @@
     { n: 'Gem', p: /(^|\/\/)jobs\.gem\.com\//i },
     { n: 'JOIN', p: /(^|\/\/)(www\.)?join\.com\/companies\//i },
     { n: 'Gusto', p: /(^|\/\/)jobs\.gusto\.com\/(postings|boards)\//i },
+    // Factorial's hosted careers pages: <company>.factorialhr.com/job_posting/<id>.
+    { n: 'Factorial', p: /(^|\/\/|\.)factorialhr\.(com|es|de|fr|it|pt)\/(job_posting|careers)/i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.
@@ -9241,6 +9243,35 @@
     return true;
   }
 
+  /* SuccessFactors refuses an application whose profile holds more than 100
+     skills ("You can only add up to 100 skills. Retain skills that add value") —
+     the ATS report's SAP profile held 260 from an old import. The section header
+     says "My Skills (N)"; the chips past the limit are removed from the end, so
+     the first ones (the oldest, usually the ones you added on purpose) stay. */
+  async function sfTrimSkills(limit = 100) {
+    const header = deepAll('h1,h2,h3,h4,legend,span,div,button', 1500)
+      .find((el) => isVisible(el) && el.children.length <= 3 && /^\s*my skills\s*\(\s*\d+\s*\)\s*$/i.test(el.textContent || ''));
+    const warned = /only add up to\s*(\d+)\s*skills/i.exec((document.body && document.body.innerText) || '');
+    if (warned) limit = Math.min(limit, Number(warned[1]) || limit);
+    const count = header ? Number((/\((\d+)\)/.exec(header.textContent) || [])[1]) : 0;
+    if (!header || count <= limit) return 0;
+    // The chip list is the smallest ancestor of the header holding more than `limit` remove buttons.
+    const REMOVE = 'button,[role="button"],a,span[tabindex]';
+    const isRemove = (b) => isVisible(b) && /remove|delete|clear|^\s*[x×✕]\s*$/i.test(`${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.textContent || ''}`);
+    let box = header.parentElement;
+    for (let up = 0; box && up < 8 && box.querySelectorAll(REMOVE).length <= limit; up++) box = box.parentElement;
+    if (!box) return 0;
+    const removes = Array.from(box.querySelectorAll(REMOVE)).filter(isRemove);
+    let removed = 0;
+    for (const b of removes.slice(limit).reverse()) {
+      if (removed >= count - limit) break;
+      clickEl(b); removed++;
+      if (removed % 20 === 0) await sleep(150);
+    }
+    if (removed) LOG(`SuccessFactors: removed ${removed} skill(s) over the ${limit}-skill limit (${count} → ${count - removed})`);
+    return removed;
+  }
+
   async function successFactorsAutomation() {
     LOG('SuccessFactors automation starting...');
     const p = await getProfile();
@@ -9291,6 +9322,7 @@
     }
 
     try { await sfAcceptTerms(); } catch (e) { LOG('SuccessFactors Terms of Use failed:', e?.message || e); }
+    try { await sfTrimSkills(); } catch (e) { LOG('SuccessFactors skill trim failed:', e?.message || e); }
     await fixPhoneCountryCode();
     await tailorFirstFlow();
     learnFromFilledFields();

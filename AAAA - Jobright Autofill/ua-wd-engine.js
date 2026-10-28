@@ -1542,7 +1542,13 @@
     return await chrome.runtime.sendMessage({ type: "wd:cred:get", tenantHost: host2 });
   }
   function captchaPresent() {
-    return qa('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i], [data-automation-id*="captcha" i]').some(isVisible);
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    return qa('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], iframe[title*="captcha" i]').some((f) => {
+      if (!isVisible(f) || f.closest(".grecaptcha-badge")) return false;
+      const r = f.getBoundingClientRect();
+      return r.width >= 60 && r.height >= 50 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+    });
   }
   function emailFor(ctx, creds) {
     return creds.cred?.email || ctx.profile.personal.email || creds.master?.email || "";

@@ -3820,3 +3820,29 @@ through our tab guard:
 
 Not changed: CAPTCHAs, Cloudflare checks and native file pickers still need you, as
 the report says. SAP's 100-skill limit isn't trimmed automatically.
+
+## v17.29 — lessons from the OptimHire build
+
+From the OptimHire brief (the same applicant, the same ATSs). What this build didn't have yet:
+
+- **No false CAPTCHA on Workday account pages.** The Workday engine counted any
+  `data-automation-id` containing "captcha" as a CAPTCHA. That includes
+  `noCaptchaWrapper`, Workday's wrapper around the Create Account / Sign In button on
+  every tenant. Now only a real reCAPTCHA, hCaptcha or Cloudflare frame counts, and only
+  when it is on screen and not the tiny badge. Tested in Chromium: the wrapper, the
+  badge and an off-screen frame don't count; a visible "I'm not a robot" or hCaptcha
+  does.
+- **SuccessFactors' 100-skill limit.** When "My Skills (N)" is over 100 (or the limit
+  in the "You can only add up to N skills" warning), the extra chips are removed from
+  the end, keeping the first 100. Tested in Chromium: 260 → 100, and 80 is left alone.
+- **Factorial** (`<company>.factorialhr.com/job_posting/…`) is recognised.
+
+Already covered here, from v17.25–v17.28 or earlier: Apply Manually, accounts per
+employer with lockout-safe sign-in and mailbox reset, email verification, the country
+default, phone digits, MM/YYYY digits, Down + Enter dropdowns, skill retries, "I
+currently work here", required consents ticked and opt-ins left unticked, "already
+applied" skipped, the Errors Found banner, the per-job watchdog that closes a stuck CSV
+job, opt-ins answered No, parser-mangled names and phones, and the other hosts.
+
+Left as it is: this build never presses "Autofill with Resume", even when it is the
+only choice (v17.26). The brief allows it in that case.
