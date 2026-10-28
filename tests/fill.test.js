@@ -3506,6 +3506,66 @@ console.log('v17.28: run panel sealed in its own shadow root; coexisting with Op
 }
 
 
+
+/* ── 79. v17.29: Greenhouse — CV slot, city pick, phone country; real job start ── */
+console.log('v17.29: CV never into Cover Letter; a city, not a university; phone country from the phone; true job start');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${gc('COVER_UPLOAD_RE')}${gc('CV_WORD_RE')}${gc('NOT_A_PLACE_RE')}${gc('DIAL_ISO')}${gc('DIAL_NAME')}${gc('JOB_T0_KEY')}
+    ${body('dialCodeFromPhone')}${body('isCoverLetterSlot')}${body('pickPlaceSuggestion')}${body('phoneCountryTarget')}${body('phoneCountryOptionMatches')}${body('jobStartFor')}
+    const DEFAULTS = { country: 'Ireland', phoneCountryCode: '+353' };
+    const getLabel = (el) => el.label || '';
+    const store = {}; const sessionStorage = { getItem: (k) => store[k] || null, setItem: (k, v) => { store[k] = v; } };
+    Object.assign(exports, { isCoverLetterSlot, pickPlaceSuggestion, phoneCountryTarget, phoneCountryOptionMatches, jobStartFor, store });`)(m);
+  // CV vs cover letter.
+  const box = (text, parent) => ({ innerText: text, parentElement: parent || null });
+  const inp = (o, parent) => Object.assign({ tagName: 'INPUT', name: '', id: '', getAttribute: (k) => (o.attrs || {})[k] || null, parentElement: parent }, o);
+  eq('Greenhouse id="cover_letter" is the cover letter', m.isCoverLetterSlot(inp({ id: 'cover_letter', label: 'Cover Letter Attach' }, null)), true);
+  eq('id="resume" is not', m.isCoverLetterSlot(inp({ id: 'resume', label: 'Resume/CV Attach' }, null)), false);
+  eq('an unlabelled input under a "Cover Letter Attach Dropbox" block is the cover letter',
+    m.isCoverLetterSlot(inp({}, box('Cover Letter* Attach Dropbox Google Drive Enter manually', box('Resume/CV* Attach … Cover Letter* Attach …')))), true);
+  eq('…under a "Resume/CV" block it is the CV', m.isCoverLetterSlot(inp({}, box('Resume/CV* Attach Dropbox'))), false);
+  eq('a slot for "CV and cover letter" still takes the CV', m.isCoverLetterSlot(inp({ label: 'Upload your CV and cover letter' }, null)), false);
+  eq('resumeFileInputs drops cover-letter slots before anything else', /if \(isCoverLetterSlot\(el\)\) return false;/.test(body('resumeFileInputs')), true);
+  eq('a cover-letter file on show is not taken as "CV already attached"', /if \(isCoverLetterSlot\(c\)\) continue;/.test(body('resumeAlreadyAttached')), true);
+  // City, not a university.
+  const it = (t) => ({ textContent: t });
+  const galway = [it('National University of Ireland, Galway, Ireland'), it('Galway, Ireland'), it('Galway Airport, Carnmore')];
+  eq('"Galway" picks the town, not the university listed first', m.pickPlaceSuggestion(galway, 'Galway').textContent, 'Galway, Ireland');
+  eq('"Dublin, Ireland" picks Dublin in Ireland over Dublin, CA', m.pickPlaceSuggestion([it('Dublin, CA, USA'), it('Dublin, Ireland')], 'Dublin, Ireland').textContent, 'Dublin, Ireland');
+  eq('"London" picks London, not a London street', m.pickPlaceSuggestion([it('London Road, Brighton'), it('London, UK')], 'London').textContent, 'London, UK');
+  eq('Parkville is a place (no "park" false alarm)', m.pickPlaceSuggestion([it('Parkville VIC, Australia')], 'Parkville').textContent, 'Parkville VIC, Australia');
+  eq('both pickers use it', (body('commitAutocompleteOnce').match(/pickPlaceSuggestion\(/g) || []).length, 2);
+  eq('a typed-but-unpicked city under "is required" is picked again (at most twice)',
+    /if \(!complains && \(locationAccepted\(inp\) \|\| \(_locRetries\.get\(inp\) \|\| 0\) >= 2\)\) continue;/.test(body('resolveLocationFields')), true);
+  // Phone country follows the phone.
+  eq('a +44 phone → United Kingdom, not the Ireland default', JSON.stringify(m.phoneCountryTarget({ phone: '+44 7700 900123', country: 'Ireland', phoneCountryCode: '+353' })), JSON.stringify({ code: '44', iso: 'gb', country: 'United Kingdom' }));
+  eq('a +353 phone → the profile country', m.phoneCountryTarget({ phone: '+353 87 426 1508', country: 'Ireland', phoneCountryCode: '+353' }).iso, 'ie');
+  eq('no code in the phone → the profile\'s dial code', m.phoneCountryTarget({ phone: '087 426 1508', phoneCountryCode: '+44', country: 'United Kingdom' }).country, 'United Kingdom');
+  const o = (text, attrs) => ({ textContent: text, getAttribute: (k) => (attrs || {})[k] || null });
+  const uk = { code: '44', iso: 'gb', country: 'United Kingdom' };
+  eq('intl-tel entry with data-dial-code', m.phoneCountryOptionMatches(o('United Kingdom +44', { 'data-dial-code': '44', 'data-country-code': 'gb' }), uk), true);
+  eq('Guernsey +44 is not the UK', m.phoneCountryOptionMatches(o('Guernsey +44', { 'data-dial-code': '44', 'data-country-code': 'gg' }), uk), false);
+  eq('"Ireland +353" is not +44', m.phoneCountryOptionMatches(o('Ireland +353'), uk), false);
+  eq('a location suggestion is never a phone country', m.phoneCountryOptionMatches(o('National University of Ireland, Galway, Ireland'), { code: '353', iso: 'ie', country: 'Ireland' }), false);
+  eq('a bare country-name entry matches only when it is exactly the country', m.phoneCountryOptionMatches(o('🇮🇪 Ireland'), { code: '353', iso: 'ie', country: 'Ireland' }), true);
+  const fx = body('fixPhoneCountryCode');
+  eq('the fixer no longer hard-codes Ireland', !/ireland|353|🇮🇪/i.test(fx), true);
+  eq('it only opens a selector found beside a phone box', /for \(const tel of phones\)/.test(fx) && /\$\$\(SELECTOR_SEL, scope\)/.test(fx), true);
+  eq('…and picks only from the list that click opened', /!listsBefore\.has\(l\)/.test(fx), true);
+  eq('a number the widget emptied is put back', /if \(before && !\(tel\.value \|\| ''\)\.trim\(\)\) \{ nativeSet\(tel, before\)/.test(fx), true);
+  // Real job start.
+  const now = Date.now();
+  eq('a fresh start time is believed', m.jobStartFor({ id: 'a', startedAt: now - 5000 }), now - 5000);
+  eq('a start time 17 minutes old is not (the "Timed out after 1054s" bug)', Math.abs(m.jobStartFor({ id: 'b', startedAt: now - 17 * 60000 }) - now) < 1000, true);
+  m.store.ua_job_t0 = JSON.stringify({ id: 'c', t: now - 200000 });
+  eq('after a reload, this tab\'s own first sighting of the job counts', m.jobStartFor({ id: 'c', startedAt: now - 250000 }), now - 250000);
+  eq('both timers use it', /const jobStart = jobStartFor\(c\);/.test(body('processManagedJob')) && /const jobStart = jobStartFor\(c\);/.test(body('processQ')), true);
+  eq('no timer reads the stored start directly any more', !/jobTimeoutExtension\(c\.startedAt\)/.test(src), true);
+}
+
+
 setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

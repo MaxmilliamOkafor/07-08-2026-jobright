@@ -3879,3 +3879,45 @@ could restyle it, and its styles could leak onto theirs. Now:
   profile, and the current page's in-memory log.
 - **Never passwords, site logins, tokens or your CV file.** Their key names are
   listed under `omitted`, so it is clear they exist.
+
+## v17.29 — Greenhouse: CV in the right box, a city not a university, the phone's own country; honest timeouts
+
+From the "is this you?" Greenhouse screenshot and the debug log you sent:
+
+- **Location (City) = "National University of Ireland, Galway, Ireland".** Two
+  causes, both fixed.
+  - **The phone-country fixer was the main one.** It was hard-wired to Ireland.
+    It clicked any visible button with "+digits" or "flag" in it, then the first
+    visible element anywhere on the page containing "Ireland". With the
+    location suggestions open, that was the university.
+  - Now it only opens the country picker **beside a phone box**. It only picks
+    from **the list that click opened**, and only an entry with the right dial
+    code or country code (Guernsey's +44 is not the UK). If nothing matches, it
+    closes the list.
+  - The country now comes from **the code your phone number is written with**
+    (+44 → United Kingdom), then your profile's dial code, then your country.
+    If the widget empties the number when the country changes, the number is
+    put back.
+  - Location suggestions are now scored. The entry must name the city you
+    typed, and gets credit for starting with it and for naming your country.
+    Universities, colleges, hospitals, airports, stations, hotels, streets and
+    companies lose. "Galway" → "Galway, Ireland", not the university;
+    "London" → "London, UK", not "London Road, Brighton".
+- **CV in "Cover Letter".** Greenhouse shows "Cover Letter" and "Resume/CV" with
+  identical Attach buttons, and "attach" alone made both look like the CV slot.
+  - A file box whose name, id, label or small surrounding block says cover
+    letter (motivation letter, Anschreiben…) is never given the CV. A box for
+    "CV and cover letter" still is.
+  - A cover letter already on file no longer counts as "CV already attached".
+- **"Timed out after 1054s" on jobs that had run for 90s.** In your log, 15
+  Workday jobs and several others were cut off at the first 90s check. Each
+  carried a start time 10–17 minutes old, so the runner thought they were past
+  the 8-minute ceiling and gave no "still working" extension.
+  - Both runners now use the time **this tab first saw the job**. The stored
+    start is believed only if it is at most 2 minutes earlier, which covers the
+    navigation to the job page. After a reload, the tab's own first sighting
+    still counts.
+  - Durations in the Debugger use the same start time.
+- Tests: section 79 in `tests/fill.test.js`, and `tests/e2e/greenhouse-cl.html`.
+  That page has Cover Letter above Resume/CV, a university and a street before
+  the city, and an intl-tel picker set to Ireland with a +44 profile phone.

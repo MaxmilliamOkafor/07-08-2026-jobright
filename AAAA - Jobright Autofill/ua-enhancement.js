@@ -2461,6 +2461,30 @@
     return locationAccepted(el);
   }
 
+  /* Which suggestion is the PLACE? Location typeaheads (Google Places,
+     Greenhouse's own) mix towns with universities, hospitals, airports and
+     streets, and "first one that contains the word" picked "National University
+     of Ireland, Galway, Ireland" for a city box. Score each entry: it must name
+     the city typed, gets credit for starting with it and for naming the
+     country, and loses for being an institution or a street. */
+  const NOT_A_PLACE_RE = /\b(universit|institut|academy|hospital|campus)|\b(college|school|clinic|airport|station|hotel|church|cathedral|library|museum|stadium|park|mall|shopping|centre|center|office|building|tower|plaza|street|st\.|road|rd\.|avenue|ave\.|lane|drive|boulevard|square|ltd|limited|inc|llc|plc|gmbh|company|restaurant|bar|pub|cafe)\b/i;
+  function pickPlaceSuggestion(items, value) {
+    const parts = String(value || '').toLowerCase().split(',').map(x => x.trim()).filter(Boolean);
+    const city = parts[0] || '', country = parts.length > 1 ? parts[parts.length - 1] : '';
+    let best = null, bestScore = -Infinity;
+    items.forEach((it, i) => {
+      const t = (it.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!t) return;
+      let sc = -i * 0.01;                                   // keep the widget's order as a tie-break
+      if (city && t.includes(city)) sc += 2; else if (city) sc -= 3;
+      if (city && t.startsWith(city)) sc += 3;
+      if (country && t.includes(country)) sc += 1;
+      if (NOT_A_PLACE_RE.test(t.replace(city, ''))) sc -= 6;
+      if (sc > bestScore) { bestScore = sc; best = it; }
+    });
+    return best || items[0] || null;
+  }
+
   async function commitAutocompleteOnce(el, value) {
     try {
       // Clear whatever a previous attempt left, or the new text is appended to it.
@@ -2483,8 +2507,7 @@
 
       // Prefer Google Places suggestions.
       if (pac.length) {
-        const search = value.toLowerCase();
-        const best = pac.find(it => (it.textContent || '').toLowerCase().includes(search.split(',')[0].trim())) || pac[0];
+        const best = pickPlaceSuggestion(pac, value);
         scrollIfNeeded(best);
         realClick(best);
         await sleep(400);
@@ -2505,7 +2528,7 @@
 
       // Generic typeahead / react-select / listbox.
       if (generItems.length) {
-        const match = findBestDropdownMatch(generic, value.split(',')[0].trim()) || generItems[0];
+        const match = pickPlaceSuggestion(generItems, value);
         scrollIfNeeded(match);
         realClick(match);
         await sleep(300);
@@ -2553,6 +2576,7 @@
     return country;
   }
 
+  const _locRetries = new WeakMap();
   async function resolveLocationFields() {
     const p = await getProfile();
     if (!locationQuery(p, false)) return 0;
@@ -2570,7 +2594,11 @@
         && !hasFieldValue(inp);
       if (hasFieldValue(inp) && !hasError && !/^\s*$/.test(inp.value)) {
         // Has a value but the widget may still be uncommitted — only re-commit if an error shows.
-        if (!container || !/please enter|enter your location|invalid/i.test(container.textContent || '')) continue;
+        // "Location (City) is required." under a typed-but-unpicked value counts
+        // too (Greenhouse); twice per box at most, so a static hint can't loop it.
+        const complains = container && /please enter|enter your location|invalid/i.test(container.textContent || '');
+        if (!complains && (locationAccepted(inp) || (_locRetries.get(inp) || 0) >= 2)) continue;
+        _locRetries.set(inp, (_locRetries.get(inp) || 0) + 1);
       }
       // Use the most specific label-appropriate value (city-only for pure "city" fields).
       const lbl = (getLabel(inp) || '').toLowerCase();
@@ -3970,8 +3998,33 @@
          "Remove <file>?" confirm in the first place. */
   const RESUME_FIELD_RE = /resume|résumé|cv\b|curriculum|lebenslauf|attach|upload/i;
 
+  /* Is this file input (or filename chip) the cover-letter one? Greenhouse puts
+     "Resume/CV" and "Cover Letter" side by side with identical Attach buttons, and
+     "attach" alone made both look like the CV slot — the CV went into Cover Letter.
+     Its own name/id/label decides first; failing that, the small block around it.
+     A slot that names both ("CV and cover letter") still takes the CV. */
+  const CV_WORD_RE = /resume|résumé|\bcv\b|curriculum|lebenslauf/i;
+  function isCoverLetterSlot(el) {
+    try {
+      const own = [el.name, el.id, el.getAttribute && el.getAttribute('aria-label'),
+        el.getAttribute && el.getAttribute('aria-labelledby'), el.getAttribute && el.getAttribute('data-testid'),
+        el.tagName === 'INPUT' ? getLabel(el) : ''].join(' ');
+      if (COVER_UPLOAD_RE.test(own)) return !CV_WORD_RE.test(own.replace(COVER_UPLOAD_RE, ''));
+      if (CV_WORD_RE.test(own)) return false;
+      let scope = el.parentElement;
+      for (let up = 0; up < 4 && scope; up++, scope = scope.parentElement) {
+        const t = (scope.innerText || scope.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        if (t.length > 300) break;
+        const cover = COVER_UPLOAD_RE.test(t), cv = CV_WORD_RE.test(t.replace(COVER_UPLOAD_RE, ''));
+        if (cover || cv) return cover && !cv;
+      }
+    } catch (_) {}
+    return false;
+  }
   function resumeFileInputs() {
     return deepAll('input[type="file"]', 60).filter((el) => {
+      if (isCoverLetterSlot(el)) return false;
       const hay = [el.name, el.id, el.accept, el.getAttribute('aria-label'),
         el.getAttribute('data-automation-id'), el.getAttribute('data-testid'), getLabel(el)].join(' ');
       if (RESUME_FIELD_RE.test(hay)) return true;
@@ -3996,6 +4049,7 @@
       if (!t || t.length > 200) continue;
       if (!/[\w)]\.(pdf|docx?|rtf|txt|odt)\b/i.test(t)) continue;
       if (HINT_RE.test(t)) continue;
+      if (isCoverLetterSlot(c)) continue;   // a cover letter on file is not a CV
       return true;
     }
     return false;
@@ -5447,6 +5501,25 @@
     if (!isBusy() && stalledFor() >= JOB_RECENT_PROGRESS_MS) return 0;
     return Math.min(JOB_EXTEND_MS, ceil - age);
   }
+  /* When did THIS job really start? The stored startedAt is the right answer
+     after a reload, but a run was seen carrying one 10-17 minutes old into jobs
+     that had been on screen for 90s: every check then said "past the 8-minute
+     ceiling", so working jobs got no extension and were reported as "Timed out
+     after 1054s". This tab remembers when it first saw the job, and the stored
+     value is only believed if it is at most 2 minutes earlier than that (the
+     navigation to the job page), so a stale one cannot shorten a job. */
+  const JOB_T0_KEY = 'ua_job_t0';
+  function jobStartFor(c) {
+    const now = Date.now();
+    let seen = now;
+    try {
+      const m = JSON.parse(sessionStorage.getItem(JOB_T0_KEY) || 'null');
+      if (m && m.id === c.id && m.t > 0 && m.t <= now) seen = m.t;
+      else sessionStorage.setItem(JOB_T0_KEY, JSON.stringify({ id: c.id, t: now }));
+    } catch (_) {}
+    const s = Number(c && c.startedAt) || 0;
+    return (s && s <= seen && seen - s <= 120000) ? s : seen;
+  }
   // A page whose URL or field-set changed is making progress even if nothing we
   // did caused it, so watch for that too rather than only crediting our own work.
   let _progressSignature = '';
@@ -6609,61 +6682,127 @@
     await tailorFirstFlow();
   }
 
-  // ===================== PHONE COUNTRY CODE FIXER (Ireland +353) =====================
+  // ===================== PHONE COUNTRY CODE FIXER =====================
+  /* Set the phone widget's country to the one the phone number is written
+     with (then the profile's dial code, then its country).
+
+     This used to be hard-wired to Ireland and far too loose about what it
+     clicked: any visible button with "+<digits>" or "flag" in it was opened, and
+     then the first visible element ANYWHERE on the page containing "Ireland" was
+     clicked. With Greenhouse's "Location (City)" suggestions open, that element
+     was "National University of Ireland, Galway, Ireland" — which became the
+     candidate's city. Now it only opens the selector beside a phone box, only
+     picks from the list that selector opened, and only an entry that carries the
+     right dial code or country code. Nothing matching → it closes the list. */
+  const DIAL_ISO = { 1: 'us', 7: 'ru', 20: 'eg', 27: 'za', 30: 'gr', 31: 'nl', 32: 'be', 33: 'fr', 34: 'es', 36: 'hu',
+    39: 'it', 40: 'ro', 41: 'ch', 43: 'at', 44: 'gb', 45: 'dk', 46: 'se', 47: 'no', 48: 'pl', 49: 'de', 52: 'mx', 55: 'br',
+    60: 'my', 61: 'au', 62: 'id', 63: 'ph', 64: 'nz', 65: 'sg', 66: 'th', 81: 'jp', 82: 'kr', 84: 'vn', 86: 'cn', 90: 'tr',
+    91: 'in', 92: 'pk', 212: 'ma', 233: 'gh', 234: 'ng', 254: 'ke', 351: 'pt', 352: 'lu', 353: 'ie', 354: 'is', 356: 'mt',
+    357: 'cy', 358: 'fi', 359: 'bg', 370: 'lt', 371: 'lv', 372: 'ee', 380: 'ua', 385: 'hr', 386: 'si', 420: 'cz', 421: 'sk',
+    852: 'hk', 886: 'tw', 966: 'sa', 971: 'ae', 972: 'il', 974: 'qa' };
+  const DIAL_NAME = { 1: 'United States', 31: 'Netherlands', 32: 'Belgium', 33: 'France', 34: 'Spain', 39: 'Italy', 41: 'Switzerland',
+    43: 'Austria', 44: 'United Kingdom', 45: 'Denmark', 46: 'Sweden', 47: 'Norway', 48: 'Poland', 49: 'Germany', 61: 'Australia',
+    65: 'Singapore', 91: 'India', 234: 'Nigeria', 351: 'Portugal', 353: 'Ireland', 358: 'Finland', 971: 'United Arab Emirates' };
+  function phoneCountryTarget(p) {
+    const code = (dialCodeFromPhone(p.phone) || p.phoneCountryCode || DEFAULTS.phoneCountryCode || '').replace(/\D/g, '');
+    const fromProfile = String(p.phoneCountryCode || '').replace(/\D/g, '') === code ||
+      (!p.phoneCountryCode && String(DEFAULTS.phoneCountryCode).replace(/\D/g, '') === code);
+    const country = (fromProfile && p.country) ? p.country : (DIAL_NAME[code] || p.country || DEFAULTS.country || '');
+    return { code, iso: DIAL_ISO[code] || (fromProfile && p.countryCode ? String(p.countryCode).toLowerCase() : ''), country };
+  }
+  // Does this text / element already show the target country?
+  function showsPhoneCountry(el, t) {
+    if (!el) return false;
+    const txt = [el.textContent, el.getAttribute && el.getAttribute('title'), el.getAttribute && el.getAttribute('aria-label')].join(' ');
+    if (t.code && new RegExp('\\+\\s?' + t.code + '(?!\\d)').test(txt)) return true;
+    if (t.iso && el.querySelector && el.querySelector(`.iti__flag.iti__${t.iso},.iti__${t.iso},[data-country-code="${t.iso}"]`)) return true;
+    return !!(t.country && txt.toLowerCase().includes(t.country.toLowerCase()) && !/\+\d/.test(txt));
+  }
+  // An entry in the list the selector opened that IS the target country.
+  function phoneCountryOptionMatches(it, t) {
+    const dial = (it.getAttribute('data-dial-code') || '').replace(/\D/g, '');
+    const iso = (it.getAttribute('data-country-code') || it.getAttribute('data-country') || '').toLowerCase();
+    if (iso && t.iso) return iso === t.iso;            // Guernsey shares +44 with the UK
+    if (dial || iso) return !!dial && dial === t.code;
+    const txt = (it.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!txt || txt.length > 80) return false;
+    const hasCode = /\+\s?\d/.test(txt);
+    if (hasCode) {
+      if (!new RegExp('\\+\\s?' + t.code + '(?!\\d)').test(txt)) return false;
+      // +1 / +44 / +7 are shared; prefer the named country, but take any if unnamed.
+      return !t.country || txt.toLowerCase().includes(t.country.toLowerCase()) || !/[a-z]{3}/i.test(txt.replace(/\+\s?\d+/g, ''));
+    }
+    // Names only: the whole entry must be the country name (with an optional flag).
+    return !!t.country && txt.replace(/[^\p{L} ]/gu, '').trim().toLowerCase() === t.country.toLowerCase();
+  }
   async function fixPhoneCountryCode() {
     const p = await getProfile();
-    const targetCountry = p.country || DEFAULTS.country;
-    const targetCode = p.phoneCountryCode || DEFAULTS.phoneCountryCode;
-    LOG(`Fixing phone country code to ${targetCountry} (${targetCode})`);
+    const t = phoneCountryTarget(p);
+    if (!t.code && !t.country) return;
+    let announced = false;
+    const say = (m) => { if (!announced) { LOG(`Phone country: setting it to ${t.country || '?'} (+${t.code})`); announced = true; } if (m) LOG(m); };
 
-    // Strategy 1: Workday country dropdown (data-automation-id)
+    // Strategy 1: Workday address country dropdown — follows the profile's country.
     const wdCountryBtn = $('button[data-automation-id="countryDropdown"]:not([disabled]), button[id="country--country"]:not([disabled])');
-    if (wdCountryBtn) {
-      const txt = (wdCountryBtn.textContent || '').toLowerCase();
-      if (!txt.includes(targetCountry.toLowerCase()) && !txt.includes('ireland')) {
-        await selectFromWorkdayDropdown(wdCountryBtn, targetCountry);
-      }
+    const homeCountry = p.country || DEFAULTS.country;
+    if (wdCountryBtn && homeCountry && !(wdCountryBtn.textContent || '').toLowerCase().includes(homeCountry.toLowerCase())) {
+      await selectFromWorkdayDropdown(wdCountryBtn, homeCountry);
     }
 
-    // Strategy 2: Phone country code select dropdowns
+    // Strategy 2: phone country code <select>s.
     const countrySelects = $$('select').filter(el => {
       const lbl = getLabel(el);
       return /country.?code|phone.?code|dial.?code|calling.?code|country.*phone|phone.*country/i.test(lbl || el.name || el.id || el.className);
     });
     for (const sel of countrySelects) {
-      const ieOpt = $$('option', sel).find(o =>
-        /ireland|\+353|353|IE\b/i.test(o.text) || o.value === 'IE' || o.value === '+353' || o.value === '353'
-      );
-      if (ieOpt) {
-        setSelectValue(sel, ieOpt.value);
-        LOG('Phone country code set to Ireland via select');
-      }
+      const cur = sel.options[sel.selectedIndex];
+      if (cur && phoneCountryOptionMatches(cur, t)) continue;
+      const opt = $$('option', sel).find(o => phoneCountryOptionMatches(o, t) ||
+        (t.iso && o.value.toLowerCase() === t.iso) || o.value.replace(/\D/g, '') === t.code && /^\+?\d+$/.test(o.value));
+      if (opt) { setSelectValue(sel, opt.value); say(`Phone country code set via select: ${opt.text.trim()}`); }
     }
 
-    // Strategy 3: Country flag/code button dropdowns (common in modern UIs)
-    const codeButtons = $$('button,div[role="button"],.country-code-selector,.phone-country,.iti__selected-flag,[class*="country-code"],[class*="countryCode"],[class*="dial-code"],[class*="phone-prefix"]')
-      .filter(el => isVisible(el) && /\+1|\+\d{1,3}|🇺🇸|flag/i.test(el.textContent + el.innerHTML));
-    for (const btn of codeButtons) {
-      if (btn.textContent?.includes('+353') || btn.innerHTML?.includes('🇮🇪')) continue; // Already Ireland
+    // Strategy 3: the flag / dial-code button beside a phone box (intl-tel-input and friends).
+    const phones = deepAll('input[type="tel"],input', 200).filter(el => isVisible(el) &&
+      (el.type === 'tel' || /phone|mobile|telephone|\btel\b/i.test([el.name, el.id, el.getAttribute('aria-label'), getLabel(el)].join(' '))) &&
+      !/country|code|extension|\bext\b/i.test([el.name, el.id].join(' ')));
+    const SELECTOR_SEL = '.iti__selected-flag,.iti__selected-country,.iti__flag-container button,.country-code-selector,.phone-country,' +
+      '[class*="country-code" i],[class*="countryCode" i],[class*="dial-code" i],[class*="phone-prefix" i],[class*="flag-dropdown" i],' +
+      'button[aria-label*="country" i],[role="combobox"][aria-label*="country" i]';
+    const done = new Set();
+    for (const tel of phones) {
+      let btn = null;
+      for (let scope = tel.parentElement, up = 0; scope && up < 4 && !btn; scope = scope.parentElement, up++) {
+        btn = $$(SELECTOR_SEL, scope).find(b => isVisible(b) && b !== tel && !done.has(b)) || null;
+      }
+      if (!btn) continue;
+      done.add(btn);
+      if (showsPhoneCountry(btn, t)) continue;
+      const box = btn.closest('.iti,[class*="phone" i],[class*="tel" i]') || btn.parentElement;
+      const before = tel.value;
+      const listsBefore = new Set($$('[role="listbox"],.iti__country-list,ul').filter(isVisible));
       realClick(btn);
-      await sleep(500);
-      // Look for Ireland in the opened dropdown
-      const items = $$('li,div[role="option"],a,.iti__country,.country-option,[class*="option"],[class*="menu-item"]')
-        .filter(el => isVisible(el) && /ireland|\+353|🇮🇪/i.test(el.textContent || ''));
-      if (items.length) {
-        realClick(items[0]);
-        LOG('Phone country code set to Ireland via dropdown click');
-        await sleep(300);
+      await sleep(450);
+      // Only the list this click opened: inside the widget, or a listbox that just appeared.
+      const opened = [...$$('.iti__country-list,[role="listbox"],ul', box).filter(isVisible),
+        ...$$('[role="listbox"],.iti__country-list,.iti--container ul').filter(l => isVisible(l) && !listsBefore.has(l))];
+      let pick = null;
+      for (const list of opened) {
+        pick = $$('.iti__country,[role="option"],li', list).find(it => phoneCountryOptionMatches(it, t));
+        if (pick) break;
       }
-    }
-
-    // Strategy 4: intl-tel-input library (very common)
-    const itiFlag = $('.iti__selected-flag,.iti__flag-container button');
-    if (itiFlag && !itiFlag.querySelector('.iti__flag.iti__ie')) {
-      realClick(itiFlag);
-      await sleep(500);
-      const ieItem = $('[data-country-code="ie"],.iti__country[data-country-code="ie"],li[data-dial-code="353"]');
-      if (ieItem) { realClick(ieItem); LOG('Phone country code set to Ireland via intl-tel-input'); await sleep(300); }
+      if (pick) {
+        scrollIfNeeded(pick);
+        realClick(pick);
+        await sleep(300);
+        say(`Phone country code set via the phone widget: ${(pick.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40)}`);
+        // Some widgets empty the number when the country changes; put it back.
+        if (before && !(tel.value || '').trim()) { nativeSet(tel, before); fireAll(tel, ['input', 'change']); }
+      } else {
+        try { tel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true, composed: true })); } catch (_) {}
+        if (opened.length) realClick(btn);   // close what we opened
+        DIAG('phone.country', `No ${t.country || '+' + t.code} entry in the phone country list`);
+      }
     }
   }
 
@@ -11029,7 +11168,7 @@
     setAutomationFlag(true);
     noteProgress('job started');
     // The worker's pick time, so the hard ceiling also holds across a reload of this tab.
-    const jobStart = (c.startedAt && Date.now() - c.startedAt < 30 * 60000) ? c.startedAt : Date.now();
+    const jobStart = jobStartFor(c);
     let finalized = false, tId = null, stallIv = null, beatIv = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
@@ -11039,10 +11178,10 @@
       setAutomationFlag(false);
       // Every outcome is recorded, not only the bad ones — a failure count means
       // nothing without the number of jobs the same ATS got through.
-      DIAG('job.' + status, error || '', { detail: { ms: Date.now() - (c.startedAt || Date.now()) } });
+      DIAG('job.' + status, error || '', { detail: { ms: Date.now() - jobStart } });
       // …and for the ones that did not work, what was still unanswered.
       if (status === 'failed' || status === 'timeout') reportUnansweredQuestions('when the job failed');
-      const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - (c.startedAt || Date.now()) };
+      const patch = { status, error: error || null, completedAt: Date.now(), duration: Date.now() - jobStart };
       Object.assign(c, patch);
       // Fresh read-modify-write on ua_q: parallel job tabs each hold their own copy of
       // the array, so writing the whole local copy would clobber sibling results.
@@ -11326,6 +11465,7 @@
           if (!isJobright() && c.landedHost !== location.hostname) { c.landedHost = location.hostname; saveQ(); }
           // LazyApply: start timeout timer — auto-skip if job stalls
           clearTimeout(_qTimeoutId);
+          const jobStart = jobStartFor(c);
           const onJobTimeout = async () => {
             // Guard: if the main flow already finalized this job (done/failed/skipped)
             // in the meantime, do nothing — otherwise the timeout would also call
@@ -11339,13 +11479,13 @@
               _qTimeoutId = setTimeout(onJobTimeout, 60000);
               return;
             }
-            const more = jobTimeoutExtension(c.startedAt);
+            const more = jobTimeoutExtension(jobStart);
             if (more) {
               LOG(`Queue: job cap reached but still working (${isBusy() ? _busyWhat : _lastProgressWhat}) — extending ${Math.round(more / 1000)}s`);
               _qTimeoutId = setTimeout(onJobTimeout, more);
               return;
             }
-            const took = Math.round((Date.now() - (c.startedAt || Date.now())) / 1000) || Math.round(qTimeout / 1000);
+            const took = Math.round((Date.now() - jobStart) / 1000) || Math.round(qTimeout / 1000);
             LOG(`Queue: job timed out after ${took}s — auto-skipping`);
             c.status = 'timeout';
             c.error = `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`;
@@ -11455,7 +11595,7 @@
           if (c.status !== 'applying') { return; }
 
           c.completedAt = Date.now();
-          c.duration = c.completedAt - (c.startedAt || c.completedAt);
+          c.duration = c.completedAt - jobStart;
           if (success) {
             c.status = 'done';
             qStats.completed++;
