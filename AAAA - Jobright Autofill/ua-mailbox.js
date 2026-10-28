@@ -193,7 +193,9 @@
       if (w) from.push('from:' + w.split(/\s+/)[0]);
     }
     if (from.length) terms.push('(' + from.join(' OR ') + ')');
-    terms.push('(verify OR verification OR confirm OR "confirm your email" OR activate OR "one-time" OR code)');
+    // A password reset you asked for (Workday's "Forgot your password?") is the one other kind.
+    if (hints && hints.kind === 'reset') terms.push('(reset OR "forgot" OR password)');
+    else terms.push('(verify OR verification OR confirm OR "confirm your email" OR activate OR "one-time" OR code)');
     terms.push('newer_than:1h');
     return terms.join(' ');
   }
@@ -222,7 +224,7 @@
   /* A link is only ever offered when its host belongs to the ATS or employer we
      are already on. Inboxes contain phishing, and an unattended agent that opens
      any link in any recent mail is a liability. */
-  function pickLink(text, hosts) {
+  function pickLink(text, hosts, kind) {
     const urls = String(text || '').match(/https?:\/\/[^\s"'<>)\]]+/g) || [];
     const allow = (hosts || []).map((h) => String(h || '').replace(/^www\./, '').toLowerCase()).filter(Boolean);
     for (const raw of urls) {
@@ -232,7 +234,7 @@
       const host = u.hostname.replace(/^www\./, '').toLowerCase();
       const ok = allow.some((a) => host === a || host.endsWith('.' + a) || a.endsWith('.' + host));
       if (!ok) continue;
-      if (!/verify|confirm|activate|token|validate|account|register/i.test(raw)) continue;
+      if (!(kind === 'reset' ? /reset|password|token|recover/i : /verify|confirm|activate|token|validate|account|register/i).test(raw)) continue;
       return raw;
     }
     return null;
@@ -260,8 +262,9 @@
       const subject = headerOf(msg.payload, 'subject');
       const body = collectBody(msg.payload, []).join('\n');
       const haystack = subject + '\n' + body;
-      const link = pickLink(haystack, hints && hints.hosts);
-      const m = haystack.match(CODE_RE) || haystack.match(BARE_CODE_RE);
+      const link = pickLink(haystack, hints && hints.hosts, hints && hints.kind);
+      // A reset is only ever a link; a "code" in a reset mail is not ours to type anywhere.
+      const m = hints && hints.kind === 'reset' ? null : (haystack.match(CODE_RE) || haystack.match(BARE_CODE_RE));
       const code = m ? m[1] : null;
       if (link || code) {
         log(`Verification mail found for ${(hints && hints.hosts || []).join(', ') || 'this job'} — ${link ? 'link' : 'code'}`);
@@ -403,11 +406,13 @@
           try { hosts.push(new URL(sender.tab.url).hostname); } catch (_) {}
         }
         if (!hosts.length) return sendResponse({ ok: false, reason: 'no-hosts' });
-        const hints = { hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0 };
+        const kind = msg.kind === 'reset' ? 'reset' : '';
+        const hints = { hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0, kind };
         try {
           let r = apiOn ? await findVerification(hints) : { ok: false, reason: 'not-connected' };
-          // The API route is not set up, or found nothing yet: try the signed-in Gmail.
-          if (!r.ok && feedOn) r = await findViaGmailSession(hints);
+          // The API route is not set up, or found nothing yet: try the signed-in Gmail
+          // (codes only — the feed carries no links, so never for a reset).
+          if (!r.ok && feedOn && !kind) r = await findViaGmailSession(hints);
           sendResponse(r);
         } catch (e) { sendResponse({ ok: false, reason: String(e.message || e) }); }
       })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });

@@ -5,7 +5,7 @@
 import { anyAid, byAid, isVisible, q, qa, text } from "./dom.js";
 import { sel, type AidKey } from "./selectors.js";
 import type { JobPosting, PageKind } from "./types.js";
-import { NEXT_TEXT_RX, STEP_PATTERNS, SUBMIT_RX, SUBMITTED_RX, VERIFY_EMAIL_RX, detectLanguage, urlLanguage } from "./i18n.js";
+import { ALREADY_APPLIED_RX, NEXT_TEXT_RX, SOMETHING_WRONG_RX, STEP_PATTERNS, SUBMIT_RX, SUBMITTED_RX, VERIFY_EMAIL_RX, detectLanguage, urlLanguage } from "./i18n.js";
 
 const WORKDAY_HOST_RX = /(^|\.)(myworkdayjobs|myworkdaysite|myworkday|workdayjobs)\.com$/i;
 
@@ -79,6 +79,9 @@ export function detectPage(): PageKind {
 
   if (SUBMITTED_RX.test(body) && !next)
     return "submitted";
+  // [ua] Before the posting check: the posting is still on screen behind the notice.
+  if (ALREADY_APPLIED_RX.test(body) && !anyAid("progressActive")) return "alreadyApplied";
+  if (SOMETHING_WRONG_RX.test(body) && !qa('[data-automation-id^="formField-"]').some(isVisible)) return "somethingWrong";
 
   if (anyAid("verifyPassword") || anyAid("createAccountSubmit")) return "createAccount";
   if (anyAid("signInSubmit") || (anyAid("password") && anyAid("email"))) return "signIn";

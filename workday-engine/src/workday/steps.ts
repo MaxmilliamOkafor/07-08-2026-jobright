@@ -76,13 +76,41 @@ async function translateChoice(ctx: Ctx, c: HTMLElement, value: string): Promise
   }
 }
 
+/**
+ * [ua] Fields a person has typed in or picked from (trusted events only). In assist
+ * mode those stay as they are; everything else is the form's own default.
+ */
+const touched = new WeakSet<HTMLElement>();
+if (typeof document !== "undefined") {
+  const mark = (e: Event) => {
+    if (!e.isTrusted) return;
+    const c = (e.target as HTMLElement | null)?.closest?.<HTMLElement>('[data-automation-id^="formField-"]');
+    if (c) touched.add(c);
+  };
+  for (const t of ["keydown", "mousedown", "paste"]) document.addEventListener(t, mark, true);
+}
+
+/**
+ * [ua] Values a tenant pre-selects that are wrong for you unless you chose them:
+ * Country / Territory defaults to "United States of America" on some sites
+ * (Workday guide §6), and the phone code and device type follow it.
+ */
+const TENANT_DEFAULTS = new Set<AidKey>(["country", "phoneCode", "phoneType"]);
+
+/** [ua] Same text, different case ("MAXMILLIAM" from a CV parse): never what you meant. */
+function caseOnly(a: string, b: string): boolean {
+  return a !== b && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 async function fill(ctx: Ctx, key: AidKey, value: string | undefined, root: ParentNode = document): Promise<boolean> {
   const el = field(key, root);
   if (!el) return false;
   const c = containerOf(el);
   handled.add(c);
   if (!value) return false;
-  if (hooks.keepExisting?.() && readValue(kindOf(c) === "none" ? el : c)) return true; // [oh] yours stays
+  const existing = readValue(kindOf(c) === "none" ? el : c);
+  const keep = existing && (touched.has(c) || (!TENANT_DEFAULTS.has(key) && !caseOnly(existing, value)));
+  if (hooks.keepExisting?.() && keep) return true; // [oh] yours stays
   await pace(ctx);
   let ok = await writeValue(kindOf(c) === "none" ? el : c, value).catch((e) => {
     if (e instanceof NeedsHuman) return false;
@@ -213,6 +241,57 @@ function dateContainer(block: HTMLElement, which: "start" | "end"): HTMLElement 
 
 /* ---------------- My Information ---------------- */
 
+/**
+ * [ua] The number as Workday wants it beside a Country Phone Code: digits only,
+ * without the country code or the trunk 0 ("+353 087 426 1508" → "874261508").
+ * Italy (+39) keeps its leading 0, which is part of the number there.
+ */
+export function nationalNumber(raw: string, countryCode = ""): string {
+  const s = String(raw || "").trim();
+  const cc = countryCode.replace(/\D/g, "");
+  let d = s.replace(/\D/g, "");
+  const international = /^(\+|00)/.test(s);
+  if (international && s.startsWith("00")) d = d.slice(2);
+  if (international && cc && d.startsWith(cc)) d = d.slice(cc.length);
+  else if (international) {
+    // No code to compare with: drop the code written before the first separator ("+44 7700…").
+    const m = s.match(/^\(?(?:\+|00)\s*(\d{1,3})\)?[\s.\-)]/);
+    if (m) d = d.slice(m[1].length);
+  }
+  if (cc !== "39") d = d.replace(/^0+/, "");
+  return d;
+}
+
+/**
+ * [ua] "How Did You Hear About Us?" on tenants with a folder-style list: open the
+ * category your source sits in, then the source; failing that, a job board
+ * (Workday guide §3/§5: "LinkedIn, else Job Board").
+ */
+async function sourceFallback(ctx: Ctx, c: HTMLElement): Promise<boolean> {
+  const src = ctx.profile.answers.source;
+  // Your source inside its category first; then a job board, taking "Other" (or its
+  // first entry) when the board is itself a folder.
+  const paths: [string[], boolean][] = [
+    [["Social Media", src], false],
+    [["Social Networking", src], false],
+    [["Job Board", src], false],
+    [["Online Job Board", src], false],
+    [["Internet", src], false],
+    [["Job Board", "Other"], true],
+    [["Online Job Board", "Other"], true],
+    [["Job Posting", "Other"], true],
+    [["Website", "Other"], true],
+  ];
+  for (const [path, fallbackFirst] of paths) {
+    if (await multiselectPick(c, path[path.length - 1], { path, min: 0.75, fallbackFirst })) {
+      ctx.log(`How did you hear about us → ${multiselectSelected(c).join(", ") || path.join(" › ")}`);
+      return true;
+    }
+  }
+  for (const v of ["Job Board", "Online Job Board", "Social Media", "Internet"]) if (await selectDropdown(c, v, 0.75)) return true;
+  return false;
+}
+
 export async function myInformation(ctx: Ctx): Promise<void> {
   const me = ctx.profile.personal;
   const sourceEl = field("source");
@@ -221,7 +300,7 @@ export async function myInformation(ctx: Ctx): Promise<void> {
     handled.add(c);
     if (!readValue(c) && ctx.profile.answers.source) {
       await pace(ctx);
-      const ok = (await multiselectPick(c, ctx.profile.answers.source)) || (await selectDropdown(c, ctx.profile.answers.source));
+      const ok = (await multiselectPick(c, ctx.profile.answers.source)) || (await selectDropdown(c, ctx.profile.answers.source)) || (await sourceFallback(ctx, c));
       if (!ok && isRequired(c)) ctx.flag(labelOf(c) || "How did you hear about us", `No option like "${ctx.profile.answers.source}"`);
     }
   }
@@ -262,7 +341,7 @@ export async function myInformation(ctx: Ctx): Promise<void> {
       if (!ok) ctx.flag("Country Phone Code", `No option like "${want}"`);
     }
   }
-  await fill(ctx, "phoneNumber", me.phone.number.replace(/^\+\d+\s*/, ""));
+  await fill(ctx, "phoneNumber", nationalNumber(me.phone.number, me.phone.countryCode));
   const email = field("email");
   if (email && !readValue(containerOf(email))) await fill(ctx, "email", me.email);
 }
@@ -438,7 +517,8 @@ export async function myExperience(ctx: Ctx): Promise<void> {
 
   await uploadDocuments(ctx);
 
-  const sites = [p.personal.website, p.personal.github].filter(Boolean);
+  // [ua] No LinkedIn box on this tenant: LinkedIn goes in Websites, first (Workday guide §3).
+  const sites = [field("linkedin") ? "" : p.personal.linkedin, p.personal.github, p.personal.website].filter(Boolean);
   const web = section("webSection", /^(websites?|webseiten?|sites? web|sitios web|sites|siti web|websites?|strony)/iu);
   if (web && sites.length) {
     const bs = await ensureBlockCount(ctx, web, "urlF", sites.length);

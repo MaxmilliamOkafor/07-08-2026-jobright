@@ -21,8 +21,20 @@ async function getCreds(host: string): Promise<CredReply> {
   return (await chrome.runtime.sendMessage({ type: "wd:cred:get", tenantHost: host })) as CredReply;
 }
 
+/**
+ * [ua] Only a real challenge frame counts. `data-automation-id="noCaptchaWrapper"`
+ * is Workday's wrapper around the Create Account / Sign In BUTTON on every tenant,
+ * and matching "captcha" in automation ids paused every account page for nothing.
+ * The invisible reCAPTCHA (tiny or off-screen frame) asks nothing either.
+ */
 function captchaPresent(): boolean {
-  return qa('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i], [data-automation-id*="captcha" i]').some(isVisible);
+  const vw = window.innerWidth || 1;
+  const vh = window.innerHeight || 1;
+  return qa<HTMLIFrameElement>('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], iframe[title*="captcha" i]').some((f) => {
+    if (!isVisible(f) || f.closest(".grecaptcha-badge")) return false;
+    const r = f.getBoundingClientRect();
+    return r.width >= 60 && r.height >= 50 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+  });
 }
 
 function emailFor(ctx: Ctx, creds: CredReply): string {

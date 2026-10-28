@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jobright Debugger</title>
+<style>
+:root{--bg:#0d0e12;--panel:#14161c;--panel2:#191c24;--line:#262a35;--txt:#e6e8ef;--mut:#8b90a0;--acc:#7c8cff;--ok:#34d399;--bad:#f87171;--warn:#fbbf24;--sk:#a3a3a3;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px/1.45 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+button{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:#3a4050} button.acc{background:var(--acc);border-color:var(--acc);color:#fff} button.danger{color:var(--bad)}
+input,select{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 9px}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+header h1{font-size:15px;margin:0 8px 0 0;font-weight:700}
+.stats{display:flex;gap:8px;flex-wrap:wrap}
+.stat{padding:3px 9px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:12px;cursor:pointer}
+.stat b{font-weight:700} .stat.on{outline:2px solid var(--acc)}
+.grow{flex:1}
+main{display:grid;grid-template-columns:300px 420px 1fr;height:calc(100% - 54px);min-height:0}
+section{border-right:1px solid var(--line);overflow:auto;min-height:0}
+section h2{position:sticky;top:0;margin:0;padding:10px 14px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
+.cause{padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.cause:hover{background:var(--panel2)} .cause.on{background:#1d2133;box-shadow:inset 3px 0 var(--acc)}
+.cause .n{float:right;font-weight:700;color:var(--bad)} .cause .ats{margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
+.chip{font-size:11px;padding:1px 6px;border-radius:6px;background:#22263a;color:#c7cdf5}
+.filters{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);position:sticky;top:37px;background:var(--bg);z-index:1;flex-wrap:wrap}
+.filters input{flex:1;min-width:120px}
+.job{padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;display:grid;grid-template-columns:10px 1fr;gap:8px}
+.job:hover{background:var(--panel2)} .job.on{background:#1d2133}
+.dot{width:9px;height:9px;border-radius:50%;margin-top:5px;background:var(--mut)}
+.s-done .dot{background:var(--ok)} .s-failed .dot,.s-timeout .dot{background:var(--bad)} .s-skipped .dot{background:var(--sk)} .s-applying .dot{background:var(--warn);animation:p 1.2s infinite}
+@keyframes p{50%{opacity:.3}}
+.job .t1{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job .t2{color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job .t3{color:#f0a35e;font-size:12px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+#detail{border-right:0}
+.empty{padding:40px;color:var(--mut);text-align:center}
+.dh{padding:14px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.dh h3{margin:0 0 4px;font-size:16px} .dh a{color:var(--acc);word-break:break-all;font-size:12px}
+.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;text-transform:uppercase;margin-right:6px}
+.b-done{background:#0f3b2c;color:var(--ok)} .b-failed,.b-timeout{background:#3b1414;color:var(--bad)} .b-skipped{background:#2a2a2a;color:#ccc} .b-applying{background:#3b2f0b;color:var(--warn)}
+.reason{margin-top:8px;padding:8px 10px;border-radius:8px;background:#211717;border:1px solid #4a2222;color:#fca5a5;white-space:pre-wrap}
+.meta{color:var(--mut);font-size:12px;margin-top:6px}
+.tabs{display:flex;gap:4px;padding:8px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:1;flex-wrap:wrap}
+.tabs button.on{background:#232842;border-color:var(--acc)}
+.pane{padding:10px 16px}
+.tl{font-family:var(--mono);font-size:12px}
+.tl .r{display:grid;grid-template-columns:62px 64px 1fr;gap:8px;padding:2px 0;border-bottom:1px dashed #1c1f28}
+.tl .o{color:var(--mut)} .tl .k{font-size:10px;font-weight:700;text-transform:uppercase;color:#9aa3c7}
+.tl .m{white-space:pre-wrap;word-break:break-word}
+.k-error .m,.k-error .k{color:var(--bad)} .k-end .m{color:var(--warn);font-weight:700} .k-page .m{color:#93c5fd} .k-stage .m{color:#c4b5fd} .k-diag .m{color:#f0a35e} .k-engine .m{color:#86efac} .k-job .m{color:#93c5fd}
+.tl .pg{margin:10px 0 4px;color:#93c5fd;font-weight:700;font-family:var(--mono)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600;position:sticky;top:44px;background:var(--bg)}
+tr.miss td{background:#2a1515} tr.err td{background:#2a1a10}
+td.v{font-family:var(--mono);word-break:break-word} td.l{max-width:320px}
+.yes{color:var(--warn)} .muted{color:var(--mut)}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0}
+.box h4{margin:0 0 6px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.box ul{margin:0;padding-left:18px}
+pre{white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:12px;margin:0}
+img.shot{max-width:100%;border:1px solid var(--line);border-radius:8px}
+.btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.hint{color:var(--mut);font-size:12px;padding:10px 14px}
+@media (max-width:1100px){main{grid-template-columns:240px 320px 1fr}}
+</style></head>
+<body>
+<header>
+  <h1>🐞 Jobright Debugger</h1>
+  <div class="stats" id="stats"></div>
+  <div class="grow"></div>
+  <label class="muted" style="font-size:12px"><input type="checkbox" id="live" checked> live</label>
+  <button id="copySummary" title="Copy the run summary: counts and every cause, with example jobs">Copy summary</button>
+  <button id="exportAll" title="Download every job record as one JSON file (to keep, or to send to whoever is fixing it)">Export all</button>
+  <button class="danger" id="clear" title="Delete every recorded job">Clear</button>
+</header>
+<main>
+  <section id="causesSec"><h2>Causes of failures</h2><div id="causes"></div>
+    <p class="hint">Failures are grouped by cause: the reason with its specifics (field, site, number) taken out. Click one to see its jobs.</p></section>
+  <section id="jobsSec"><h2 id="jobsTitle">Jobs</h2>
+    <div class="filters">
+      <input id="q" placeholder="Search URL, company, reason, log…">
+      <select id="ats"><option value="">All ATS</option></select>
+      <select id="status"><option value="">All outcomes</option><option value="bad">Failed + timeout</option><option value="failed">Failed</option><option value="timeout">Timeout</option><option value="skipped">Skipped</option><option value="done">Applied</option><option value="applying">Running</option></select>
+    </div>
+    <div id="jobs"></div></section>
+  <section id="detail"><div class="empty">Pick a job to see everything it did:<br>its timeline, the page as it ended, and a screenshot.</div></section>
+</main>
+<script src="ua-debug.js"></script>
+</body></html>

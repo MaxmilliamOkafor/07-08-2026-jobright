@@ -3654,3 +3654,195 @@ pdf.js, loaded into a tab only when a CV is read.
 - Switches (storage):
   - `ua_wd_engine_off: true` gives Workday back to the built-in flow.
   - `ua_wd_assist: false` turns assist off.
+
+## v17.25 — Workday accounts made before, lockouts, resets; "applied" means applied
+
+Your screenshot: a Workday site said *"You may have entered the wrong email
+address or password or your account might be locked"*. The account already
+existed (made earlier by hand or by another tool) with a different password.
+The run sat on "Processing…" and the queue then showed **1 applied** although
+nothing was submitted.
+
+**The counts.** A press of Sign In or Create Account was recorded as
+"submitted". After a grace period with no recognised error and no application
+form on screen, that counted as an application. Now:
+- Pressing Sign In or Create Account is never recorded as submitting.
+- Nothing counts as applied while a sign-in or create-account form is on screen.
+- Workday's Sign In button is never pressed as the application's Submit.
+
+An application form that itself asks for a password (SuccessFactors) still counts.
+
+**What happens on a Workday site now:**
+
+| Situation | What it does |
+|---|---|
+| New site | Creates the account with your shared ATS password. |
+| "Account already exists" | Signs in. Passwords are tried in this order: your 🔐 site login for that employer, **the password that worked on this site before**, the shared ATS password, Jobright's Workday password. |
+| A password works | It is **remembered for that site**, used first next time, and used by your Workday engine if a session expires mid-application. |
+| Passwords refused | At most **4 refusals per site per day**, staying under Workday's lockout (usually 5). |
+| "Account locked" | No more attempts. |
+| None of the passwords work, and your Gmail is connected through the API | "Forgot your password?" → reads the reset email → sets the password to your shared ATS password → signs in. The link is only followed when it points back to the same Workday site. |
+| None of the passwords work otherwise | The job **fails immediately, with the reason** ("account already exists for … on … with a password the extension doesn't have — add it under 🔐 Site logins…"). It is not left on "Processing…" and not counted as applied. Later jobs on that site fail fast the same way, without further sign-in attempts, until you add or change a password. |
+| Account not verified | The existing mailbox path reads the verification email. |
+
+Your Workday engine now starts after the sign-in, which stays with this
+extension because it knows every saved password, the lockout limit and the
+reset. If the engine stops quietly on a page, that is noticed within seconds
+and the built-in flow carries on.
+
+Tested in Chromium with `tests/e2e/workday-auth.html`:
+- An account made earlier with an unknown password: two sign-in attempts, then
+  the job failed in 27s with the reason above. Not counted as applied.
+- An account whose password is Jobright's: sign-in on the second password,
+  then submitted.
+- The full Workday mock: create account → your engine → submitted in 39s.
+
+## v17.26 — "Start Your Application": always "Apply Manually"
+
+On Workday's choice box (your CDW screenshot) only **Apply Manually** is ever
+pressed, never **Autofill with Resume** or **Use My Last Application**:
+
+- **Your Workday engine:** it used to press "Autofill with Resume" whenever it had
+  a CV. It now presses only "Apply Manually". This is the one line changed in the
+  copied engine source, marked `[ua]` in `workday-engine/src/workday/engine.ts`.
+- **The built-in flow** already pressed "Apply Manually" by its id. Two gaps are
+  closed:
+  - The generic Apply-button finder matched any `data-automation-id` containing
+    "apply", which includes `useMyLastApplication`. It now skips both buttons.
+  - Their labels are excluded as Apply labels.
+- **The click layer refuses both buttons** by id and by label, whichever part of
+  this extension tries to press them, in the same way it refuses an attachment's
+  remove button.
+
+The Workday mock now shows all three choices and logs which one was pressed.
+
+## v17.27 — The Debugger: see what every job did, and why it failed
+
+Your run panel said **"1 applied · 3 skipped · 120 failed — Most failures: …
+(5)"**. The headline explained 5 of 120 failures, because reasons were grouped
+by their exact text, which includes a field name, a site or a number. Everything
+that led up to each failure was lost when the tab closed.
+
+**Open it** from any of these: **🐞 Open Debugger** in the run panel (it opens on
+the job that's running), **🐞 Debugger** in the Queue Manager, or right-click →
+**Jobright Debugger**.
+
+**What it shows:**
+- **Causes of failures.** Failures are grouped by cause, with the specifics taken
+  out. "Validation errors could not be resolved — First Name: required" and
+  "… — Phone: invalid" count as one cause; "Timed out after 150s" becomes
+  "Timed out after Ns". Each cause shows its count and which ATS it happens on.
+  Click one to list its jobs. The run panel's "Most failures" line uses the same
+  grouping now.
+- **Jobs.** Every queue job, newest first, filterable by outcome, ATS and text,
+  showing duration, number of log lines and reason.
+- **For each job:**
+  - **Timeline.** Every log line, each page or step it reached (URL and ATS),
+    every stage, diagnostic and error, and every step of your Workday engine,
+    timed from the start. You can filter it, or show only errors, stages and
+    pages.
+  - **Page at the end.** What the site was saying (error banners, alerts), the
+    required fields still empty, the fields the form flagged, the buttons on
+    screen, which one counted as Submit (or "none"), and every field with its
+    value. Passwords and ID numbers are masked.
+  - **Screenshot,** when the job didn't succeed and its tab was the one on
+    screen. Chrome can only capture the visible tab.
+  - **Pages visited.**
+- **Copy this job's report** and **Copy summary** give text you can paste to
+  whoever is fixing it. **Export all** saves every record as JSON.
+- **Live:** it updates while the run goes.
+
+Everything stays in this browser's extension storage, and nothing is sent
+anywhere. It keeps the last 600 jobs, up to 3,000 log lines each, and the last
+40 screenshots. **Clear** deletes it all.
+
+Tested in Chromium with these test pages: the Workday account that exists with
+another password (timeline, Workday's own error text, the sign-in form's fields,
+"Submit: none"), the Workday mock (your engine's steps in the timeline, each
+step's URL as a page), and the knockout, Greenhouse and SuccessFactors forms.
+
+## v17.28 — Jobright 1.25.0, the Workday guide, the ATS report, and no Jobright tab of its own
+
+### Rebased onto Jobright 1.25.0
+Their changed files are copied over (`contents`, `helper-app`, `global.css`,
+`applied-success-popup`, `ats-submission-resume`, `clearcompany-submission-attribution`,
+the service worker), our four `importScripts` lines re-appended, and the manifest merged
+by hand: version 1.25.0 and their one new content script, `field-discovery.d71b3ac3.js`
+(a passive field scanner, `https://*/*`, top frame, `document_idle`), placed before
+`contents` as in theirs. Nothing in it collides with ours (no `UA_` messages, side panel,
+`beforeunload` or new `active:!0`).
+
+### No Jobright tab opening on its own
+On an application page, Jobright opened `jobright.ai/jobs/info/<id>?plugin_tailor=1`
+("Generate Your Custom Resume") in a new tab. Its worker's `openTailorTab` now goes
+through our tab guard:
+- **You pressed Tailor / Generate Custom Resume / Cover Letter yourself:** the tab opens
+  as before. The page reports your real click (`UA_TAILOR_INTENT`), and our own clicks
+  never count.
+- **"Tailor resume" is on for a queue run:** the tab opens in the background.
+- **Anything else:** it doesn't open. Jobright is told the tab wasn't opened, and its
+  autofill carries on with your saved CV.
+
+### Workday, from the Workday Autofill Guide (27 Oct 2026)
+- **Dropdowns:** if a click doesn't open the list, or doesn't take, it presses Down and
+  then Enter. Long lists that only draw their first rows (Country, County) are searched
+  by typing the first letters and scrolling.
+- **Searchable lists (How did you hear, Skills, Phone code):** it waits for the spinner
+  and for the results to stop changing before it picks one. Then it retries with aliases
+  (AWS → "Amazon Web Services (AWS)", GCP, K8s, C#…) and a shorter word.
+- **"How did you hear" as folders:** Social Media › LinkedIn, then Job Board (› Other).
+- **Dates:** digits only on masked inputs, since a typed "/" gives "Invalid Date: 12/".
+  If Workday still shows "Invalid Date", the date is retyped once.
+- **Country defaulting to United States of America:** corrected even in assist mode.
+  Only a value you picked yourself is kept. The same applies to the phone code and
+  device type.
+- **Phone number:** digits only, without the country code or the leading 0
+  (874261508 beside Ireland +353). Italy keeps its 0.
+- **Names in capitals** from a parsed CV are written in normal case.
+- **Websites:** when the tenant has no LinkedIn box, LinkedIn goes in Websites, then
+  GitHub, then your portfolio.
+- **"You have already applied"** is recognised by the engine. The job is skipped
+  straight away, not handed to the built-in flow.
+- **"Something went wrong. Please refresh"** reloads the page and carries on, at most
+  twice per job.
+
+### Every ATS, from the ATS Test Report (27 Oct 2026)
+- **Opt-ins answered No:** "May we text you?" (Paylocity), SMS updates (ADP,
+  Teamtailor), talent community, newsletters and marketing. Required privacy or terms
+  consents are not affected; this is tested against their wording.
+- **"Current or former government official / employee?"** answered No.
+- **Before every submit,** what a resume parser did to your contact details is put
+  right: "MAXMILLIAM" becomes "Maxmilliam", and "+353: 0874261508" becomes
+  "+353874261508". This only happens when the value is yours with the wrong case or
+  format, and never to a field you edited.
+- **Recognised hosts:** Gem (`jobs.gem.com`), JOIN (`join.com/companies/…`) and Gusto
+  (`jobs.gusto.com/postings`).
+
+Not changed: CAPTCHAs, Cloudflare checks and native file pickers still need you, as
+the report says. SAP's 100-skill limit isn't trimmed automatically.
+
+## v17.29 — lessons from the OptimHire build
+
+From the OptimHire brief (the same applicant, the same ATSs). What this build didn't have yet:
+
+- **No false CAPTCHA on Workday account pages.** The Workday engine counted any
+  `data-automation-id` containing "captcha" as a CAPTCHA. That includes
+  `noCaptchaWrapper`, Workday's wrapper around the Create Account / Sign In button on
+  every tenant. Now only a real reCAPTCHA, hCaptcha or Cloudflare frame counts, and only
+  when it is on screen and not the tiny badge. Tested in Chromium: the wrapper, the
+  badge and an off-screen frame don't count; a visible "I'm not a robot" or hCaptcha
+  does.
+- **SuccessFactors' 100-skill limit.** When "My Skills (N)" is over 100 (or the limit
+  in the "You can only add up to N skills" warning), the extra chips are removed from
+  the end, keeping the first 100. Tested in Chromium: 260 → 100, and 80 is left alone.
+- **Factorial** (`<company>.factorialhr.com/job_posting/…`) is recognised.
+
+Already covered here, from v17.25–v17.28 or earlier: Apply Manually, accounts per
+employer with lockout-safe sign-in and mailbox reset, email verification, the country
+default, phone digits, MM/YYYY digits, Down + Enter dropdowns, skill retries, "I
+currently work here", required consents ticked and opt-ins left unticked, "already
+applied" skipped, the Errors Found banner, the per-job watchdog that closes a stuck CSV
+job, opt-ins answered No, parser-mangled names and phones, and the other hosts.
+
+Left as it is: this build never presses "Autofill with Resume", even when it is the
+only choice (v17.26). The brief allows it in that case.

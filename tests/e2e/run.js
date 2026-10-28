@@ -33,7 +33,7 @@ const T0 = Date.now();
   const logs = [];
   ctx.on('page', (p) => {
     if (process.env.LOG_TABS) { const t0 = Date.now(); setTimeout(() => logs.push('TAB opened: ' + p.url()), 1500); p.on('close', () => logs.push('TAB closed: ' + p.url())); }
-    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|verification|code/i.test(t)) logs.push((process.env.LOG_TIMES ? '+' + Math.round((Date.now() - T0) / 1000) + 's ' : '') + t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
+    p.on('console', (m) => { const t = m.text(); if (/\[UA|UA\]|Jobright|automation|Multi-page|fill|SUBMITTED|SRSTATE|SIGNEDIN|PIN_ACCEPTED|FX_|APPLY_CHOICE|verification|code/i.test(t)) logs.push((process.env.LOG_TIMES ? '+' + Math.round((Date.now() - T0) / 1000) + 's ' : '') + t.slice(0, /^SUBMITTED /.test(t) ? 3000 : 300)); });
     p.on('pageerror', (e) => logs.push('PAGEERROR ' + e.message));
   });
 
@@ -80,6 +80,19 @@ const T0 = Date.now();
         // The Workday mock exposes its own state: where the application got to.
         mock: window.__mock ? { route: window.__mock.route, step: window.__mock.step, data: window.__mock.data, files: window.__mock.files } : undefined };
     }).catch((e) => ({ err: e.message }));
+    // MUT_PROBE=1: what keeps changing the page (an engine waiting for quiet never gets it).
+    if (process.env.MUT_PROBE) {
+      const m = await jobPage.evaluate(() => {
+        if (!window.__mutProbe) {
+          window.__mutProbe = { n: 0, who: {} };
+          new MutationObserver((list) => { for (const r of list) { window.__mutProbe.n++; const t = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+            const k = (t && (t.id ? '#' + t.id : t.tagName + (t.className && typeof t.className === 'string' ? '.' + t.className.split(' ')[0] : ''))) + ':' + r.type + (r.attributeName ? '@' + r.attributeName : '');
+            window.__mutProbe.who[k] = (window.__mutProbe.who[k] || 0) + 1; } }).observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+        }
+        const p = window.__mutProbe; const top = Object.entries(p.who).sort((a, b) => b[1] - a[1]).slice(0, 4); p.who = {}; const n = p.n; p.n = 0; return { n, top };
+      }).catch(() => null);
+      if (m) logs.push('MUT ' + JSON.stringify(m));
+    }
     snapshots.push(s);
     if (s.submitted || (s.body && /thank you/i.test(s.body))) break;
   }
@@ -102,5 +115,26 @@ const T0 = Date.now();
   if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
   if (process.env.LOG_DUMP) for (const l of logs) console.log('  | ' + l);
+  // DEBUG_SHOT=<dir>: open the Debugger page, print what it recorded, screenshot it.
+  if (process.env.DEBUG_SHOT) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const dbg = await ctx.newPage();
+    await dbg.setViewportSize({ width: 1500, height: 950 });
+    await dbg.goto(`chrome-extension://${extId}/ua-debug.html`);
+    await dbg.waitForTimeout(1200);
+    const rec = await dbg.evaluate(() => new Promise((r) => chrome.storage.local.get(null, (d) => {
+      const idx = d.ua_dbg_index || [];
+      r(idx.map((e) => { const x = d['ua_dbg_job:' + e.id] || {}; return { status: e.status, ats: e.ats, group: e.group, reason: (e.reason || '').slice(0, 120), lines: (x.lines || []).length, pages: (x.pages || []).length,
+        kinds: [...new Set((x.lines || []).map((l) => l.k || 'log'))].join(','), fields: x.snap ? (x.snap.fields || []).length : -1, missing: x.snap ? (x.snap.missing || []).length : -1, submit: x.snap ? x.snap.submitControl : null, shot: !!d['ua_dbg_shot:' + e.id] }; }));
+    })));
+    console.log('DEBUGGER:', JSON.stringify(rec));
+    fs.mkdirSync(process.env.DEBUG_SHOT, { recursive: true });
+    await dbg.click('.job').catch(() => {});
+    await dbg.waitForTimeout(800);
+    await dbg.screenshot({ path: path.join(process.env.DEBUG_SHOT, 'debugger-timeline.png') });
+    await dbg.click('.tabs button[data-t="page"]').catch(() => {});
+    await dbg.waitForTimeout(500);
+    await dbg.screenshot({ path: path.join(process.env.DEBUG_SHOT, 'debugger-page.png') });
+  }
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

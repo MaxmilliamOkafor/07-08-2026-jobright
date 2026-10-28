@@ -342,7 +342,35 @@
 
   // LOG just writes to console with a [UA] tag; the console.* hook in _dbgInstall()
   // captures it into the buffer (so there's no double-logging here).
-  const LOG = (...a) => { try { console.log('[UA]', ...a); } catch (_) {} };
+  /* ── RUN DEBUGGER: this page's part of the job recorder ────────────────────
+     While a queue job (or a Fully Automated run) is being driven here, every
+     [UA] line, stage, diagnostic and error is sent to the recorder in the
+     service worker (ua-debugger.js) in small batches, tagged with the job. When
+     the job ends, a snapshot of the page goes with it. The Debugger page shows
+     it all, per job, after the tab is long gone. */
+  const JR = { id: '', buf: [], timer: 0, url: '', urlWatch: 0 };
+  function jrLine(kind, text) {
+    if (!JR.id) return;
+    try {
+      JR.buf.push({ t: Date.now(), k: kind || '', m: String(text == null ? '' : text).slice(0, 1200) });
+      if (JR.buf.length > 600) JR.buf.splice(0, JR.buf.length - 600);
+      if (!JR.timer) JR.timer = setTimeout(jrFlush, 1000);
+    } catch (_) {}
+  }
+  function jrFlush() {
+    JR.timer = 0;
+    if (!JR.id || !JR.buf.length) return;
+    const lines = JR.buf.splice(0);
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_LINES', jobId: JR.id, lines }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+  try { window.addEventListener('pagehide', jrFlush); } catch (_) {}
+  // Other parts of this extension (your Workday engine) add their lines too.
+  try { window.__uaJrLine = (k, m) => jrLine(k, m); } catch (_) {}
+
+  const LOG = (...a) => {
+    try { console.log('[UA]', ...a); } catch (_) {}
+    if (JR.id) { try { jrLine('', a.map(_dbgFmt).join(' ')); } catch (_) {} }
+  };
 
   /* Report something to the durable recorder in the service worker. Everything
      a run learns goes through here: outcomes, the stages leading to them, the
@@ -375,6 +403,7 @@
 
   function DIAG(code, reason, extra) {
     try {
+      if (JR.id) jrLine(code === 'stage' ? 'stage' : 'diag', code === 'stage' ? String(reason || '') : `${code}${reason ? ': ' + reason : ''}`);
       chrome.runtime.sendMessage({
         type: 'UA_DIAG',
         ev: Object.assign({
@@ -409,6 +438,7 @@
          locates the fault, so take it when the browser provides one. */
       let at = '';
       try { at = ((e && e.error && e.error.stack) || '').split('\n')[1] || ''; } catch (_) {}
+      jrLine('error', `${(e && e.message) || 'script error'}${where ? ' @ ' + where + ':' + (e.lineno || '') : ''}`);
       DIAG('page.error', (e && e.message) || 'script error', {
         detail: { at: where, line: e && e.lineno, frame: at.trim().slice(0, 160) },
       });
@@ -709,6 +739,15 @@
     { n: 'Zappyhire', p: /(^|\/\/|\.)zappyhire\.com/i },
     { n: 'Collage', p: /(^|\/\/|\.)collage\.co\//i },
     { n: 'CareerPuck', p: /(^|\/\/|\.)careerpuck\.com/i },
+    /* ── From the ATS test report (27 Oct 2026): hosts it applied on that this
+       table did not name. Gem's board is jobs.gem.com/<company>/<id> (the rule
+       above wants "jobs" after gem.com), JOIN is join.com/companies/…, and
+       Gusto's postings live on jobs.gusto.com. */
+    { n: 'Gem', p: /(^|\/\/)jobs\.gem\.com\//i },
+    { n: 'JOIN', p: /(^|\/\/)(www\.)?join\.com\/companies\//i },
+    { n: 'Gusto', p: /(^|\/\/)jobs\.gusto\.com\/(postings|boards)\//i },
+    // Factorial's hosted careers pages: <company>.factorialhr.com/job_posting/<id>.
+    { n: 'Factorial', p: /(^|\/\/|\.)factorialhr\.(com|es|de|fr|it|pt)\/(job_posting|careers)/i },
     { n: 'Teamtailor', p: /\/jobs\/\d{5,}-[a-z0-9-]+/i },
 
     // Personio serves from personio.com as well as .de, as /careers/<uuid>.
@@ -828,10 +867,115 @@
      paths and a diagnostic that covers seven of eight exits is the kind that
      makes you trust a wrong number. New exits are covered automatically. */
   const TERMINAL = ['done', 'failed', 'timeout', 'skipped'];
+  /* ── RUN DEBUGGER: a job starts / ends on this page ───────────────────────── */
+  function jrBegin(c, mode) {
+    try {
+      JR.id = String(c.id || c.url || '');
+      if (!JR.id) return;
+      chrome.runtime.sendMessage({
+        type: 'UA_DBG_START', jobId: JR.id,
+        meta: { url: c.url || location.href, title: c.title || '', company: c.companyName || '', board: c.jobBoard || '', mode, fresh: true },
+        page: { url: location.href, ats: detectATS() || (isWorkday() ? 'Workday' : ''), title: document.title },
+      }, () => void chrome.runtime.lastError);
+      jrLine('job', `${mode} job on ${location.hostname} (${detectATS() || 'unknown ATS'})`);
+      /* Single-page ATS (Workday, SmartRecruiters…) move between steps without a
+         page load: each new address is recorded as a page all the same. */
+      if (!JR.urlWatch) {
+        JR.url = location.href;
+        JR.urlWatch = setInterval(() => {
+          if (!JR.id || location.href === JR.url) return;
+          JR.url = location.href;
+          try {
+            chrome.runtime.sendMessage({ type: 'UA_DBG_START', jobId: JR.id, page: { url: location.href, ats: detectATS() || (isWorkday() ? 'Workday' : ''), title: document.title } }, () => void chrome.runtime.lastError);
+          } catch (_) {}
+        }, 1000);
+      }
+    } catch (_) {}
+  }
+  /* What was on the page when the job ended: every field with its label, value
+     (passwords and ID numbers masked), required flag and error; the unanswered
+     required questions; error banners; the buttons on screen and which one
+     counts as Submit. This is what turns "Form filled but no Submit control was
+     found" into the button list that shows why. */
+  function jrSnapshot(status, reason) {
+    const snap = { url: location.href, title: document.title, ats: detectATS() || (isWorkday() ? 'Workday' : ''), status, reason: String(reason || ''),
+      fields: [], errors: [], missing: [], buttons: [], submitControl: '', banner: '', text: '', frames: 0, shot: status !== 'done' };
+    try {
+      const SECRET = /password|passcode|\bssn\b|social security|national insurance|\bpps\b|passport|card number|\bcvv\b|iban|routing/i;
+      const seen = new Set();
+      const els = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]),select,textarea', 300)
+        .filter((el) => !isTrapField(el) && (isVisible(el) || ((el.type === 'radio' || el.type === 'checkbox') && el.closest && isVisible(el.closest('label') || el.parentElement))));
+      for (const el of els.slice(0, 220)) {
+        const type = el.tagName === 'SELECT' ? 'select' : el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text');
+        let label = '';
+        try { label = (type === 'radio' || type === 'checkbox') ? (getQuestionForInput(el) || getLabel(el)) : (getFullQuestionText(el) || getLabel(el)); } catch (_) {}
+        label = String(label || el.name || el.id || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        let value = '', options;
+        if (type === 'radio') {
+          const key = 'r:' + (el.name || label);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const group = el.name ? deepAll(`input[type=radio][name="${CSS.escape(el.name)}"]`, 30) : [el];
+          const on = group.find((r) => r.checked);
+          value = on ? choiceLabel(on) : '';
+          options = group.map((r) => choiceLabel(r)).slice(0, 12);
+        } else if (type === 'checkbox') {
+          value = el.checked ? '☑ ' + (getLabel(el) || '').slice(0, 80) : '☐ ' + (getLabel(el) || '').slice(0, 80);
+        } else if (type === 'select') {
+          const o = el.options && el.options[el.selectedIndex];
+          value = o && o.value !== '' ? o.text.trim() : '';
+          options = Array.from(el.options || []).map((x) => x.text.trim()).slice(0, 15);
+        } else if (type === 'file') {
+          value = el.files && el.files[0] ? el.files[0].name : '';
+        } else {
+          value = String(el.value || '');
+          if (type === 'password' || SECRET.test(label)) value = value ? '••• (' + value.length + ' chars)' : '';
+          else value = value.slice(0, 160);
+        }
+        let error = '';
+        try { error = errorTextNear(el) || ''; } catch (_) {}
+        let required = false;
+        try { required = isFieldRequired(el); } catch (_) {}
+        snap.fields.push({ label, type, value, options, required, error: String(error).slice(0, 160), yours: userTouched(el) });
+      }
+      // Custom dropdowns (react-select, Workday, Oracle…): what they show.
+      for (const cb of deepAll('[role="combobox"],[class*="select__control" i],oj-select-single,oj-c-select-single,spl-select', 60).filter(isVisible).slice(0, 40)) {
+        let label = '';
+        try { label = comboQuestion(cb); } catch (_) {}
+        snap.fields.push({ label: String(label || '').slice(0, 200), type: 'dropdown', value: comboHasValue(cb) ? comboText(cb).slice(0, 120) : '', required: (() => { try { return isFieldRequired(cb); } catch (_) { return false; } })(), error: '' });
+      }
+      snap.errors = readFieldErrors().slice(0, 40).map((e) => ({ label: e.label, message: e.message, kind: e.kind }));
+      snap.missing = getMissingRequired().slice(0, 40).map((x) => String(x).slice(0, 200));
+      snap.banner = String(remainingErrorSummary() || '').slice(0, 400);
+      // Whatever the site itself is saying: alerts, error banners (Workday's sign-in error lives here).
+      snap.alerts = [...new Set(deepAll('[role="alert"],[aria-live="assertive"],[data-automation-id*="error" i],[class*="error" i]:not(input):not(select):not(textarea),[class*="alert" i]', 80)
+        .filter(isVisible).map((n) => String(n.textContent || '').replace(/\s+/g, ' ').trim()).filter((t) => t && t.length > 3 && t.length < 400))].slice(0, 12);
+      snap.buttons = deepAll('button,input[type=submit],input[type=button],a[role="button"],[role="button"],spl-button,oj-button', 250)
+        .filter(isVisible).map((b) => controlLabel(b)).filter((t) => t && t.length < 80).slice(0, 50);
+      const sub = findSubmitControl();
+      snap.submitControl = sub ? controlLabel(sub) : '';
+      snap.text = String((document.body && document.body.innerText) || '').slice(0, 2500);
+      snap.frames = document.querySelectorAll('iframe').length;
+    } catch (e) { snap.snapError = String((e && e.message) || e); }
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_SNAPSHOT', jobId: JR.id, snap }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+  const _jrFinished = new Set();
+  function jrFinish(status, reason) {
+    if (!JR.id) return;
+    const key = JR.id + '|' + status;
+    if (_jrFinished.has(key)) return;
+    _jrFinished.add(key);
+    jrLine('end', `${String(status).toUpperCase()}${reason ? ' — ' + reason : ''}`);
+    jrSnapshot(status, reason);
+    jrFlush();
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_END', jobId: JR.id, status, reason: reason || '' }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+
   function reportTerminalJobs() {
     try {
       for (const j of queue) {
         if (!j || !TERMINAL.includes(j.status)) continue;
+        if (JR.id && String(j.id || j.url || '') === JR.id) jrFinish(j.status, j.error || '');
         /* The mark lives ON THE JOB, which is saved to storage with the queue.
 
            It was a Set in this module, and a module lasts exactly as long as one
@@ -1802,6 +1946,7 @@
   const RELOCATION_RE = /\b(relocat\w*|willing to move|open to (moving|relocation|relocating)|prepared to (move|relocate)|happy to (move|relocate)|consider (moving|relocating)|able to move|move (to|for)|willing to travel|able to commute|commute to)\b/i;
 
   // Smart Yes/No determination based on question context
+  const SMS_OPTIN_RE = /\b(may|can|could) we (text|sms|send (you )?(a )?(text|sms))|\b(text|sms)\s*(message|messaging|alert|update|notification)s?\b[^?.]{0,80}\b(consent|opt.?in|receive|agree|permission|authori[sz]e)|\b(consent|opt.?in|agree|permission|authori[sz]e)\b[^?.]{0,80}(\b(text|sms)\s*(message|messaging|alert|update|notification)s?\b|\bsms\b|\btext (me|you)\b)|\b(join|subscribe to)\b[^?.]{0,40}\b(talent (community|network|pool)|newsletter|mailing list)|\bmarketing (communications?|emails?|messages?)\b/;
   function determineYesNo(questionText) {
     const q = questionText.toLowerCase();
     // Your fixed knockout answers first (AWS certification, years thresholds).
@@ -1813,6 +1958,14 @@
     // asks rather than by whether it contains the word "visa".
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
+
+    /* Opt-ins nobody asked for: "May we text you?" (Paylocity), SMS updates
+       (ADP, Teamtailor), marketing and talent-community mail. The ATS report
+       answered these No every time. Checked before the strong-No list because its
+       "authorize" escape would turn "I authorize Acme to text me" into Yes. */
+    if (SMS_OPTIN_RE.test(q)) return 'no';
+    // "Are you a current or former government official / employee?" (Mastercard, SmartRecruiters).
+    if (/\b(government|public)\s+(official|employee|servant|officer)|politically exposed|\bgovernment[- ]owned\b.*\b(employ|work)/.test(q)) return 'no';
 
     // STRONG "No" intents. These MUST take precedence over the generic yes-trigger
     // words ("will you", "can you", "do you"…) below. Previously a question like
@@ -3663,7 +3816,12 @@
   function isDestructiveControl(el) {
     try {
       if (!el || !el.getAttribute) return false;
+      // Workday's "Autofill with Resume" / "Use My Last Application": never pressed —
+      // "Apply Manually" is the only choice taken on "Start Your Application".
+      const aid = el.getAttribute('data-automation-id') || (el.closest && el.closest('[data-automation-id]') && el.closest('[data-automation-id]').getAttribute('data-automation-id')) || '';
+      if (/^(autofillWithResume|useMyLastApplication|useLastApplication)$/i.test(aid)) return true;
       const name = controlName(el);
+      if (/^\s*(autofill with (my )?(resume|cv)|use my last application)\s*$/i.test(name)) return true;
       if (DESTRUCTIVE_NAME_RE.test(name)) return true;
       // An icon-only control anywhere near an uploaded file. Checked across shadow
       // boundaries, and the icon may live inside the button's own shadow root.
@@ -5312,7 +5470,17 @@
     try { return (managedIdFromTab() || '') || normalizeUrl(location.href).replace(/[?#].*$/, ''); }
     catch (_) { return location.origin + location.pathname; }
   }
+  /* A sign-in / create-account form on screen and no application with it: the
+     button pressed there is Sign In, not Submit. Counting it as one turned a
+     Workday job stuck on "wrong email or password" into "1 applied". */
+  function onAuthWallOnly() {
+    try {
+      if (isWorkday() && workdayOnAccountWall()) return true;
+      return deepAll('input[type=password]', 6).some(isVisible) && !hasApplicationForm();
+    } catch (_) { return false; }
+  }
   function markSubmitAttempt() {
+    if (onAuthWallOnly()) { LOG('Pressed a sign-in / account button — not counted as submitting the application'); return; }
     _lastSubmitAt = Date.now();
     const mark = { key: submitJobKey(), ts: _lastSubmitAt, origin: location.origin };
     _submitMark = mark;
@@ -5339,6 +5507,7 @@
   // "no Submit control" usually means the form has another page or the button sits
   // in a frame we did not reach; "no confirmation" means it probably did send.
   function submitFailureReason(validationStuck) {
+    if (_authDeadEnd) return _authDeadEnd;
     if (validationStuck) { const e = remainingErrorSummary(); return 'Validation errors could not be resolved' + (e ? ' — ' + e : ''); }
     if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
     return 'Submit was clicked but no confirmation appeared';
@@ -5562,6 +5731,7 @@
      be marked done — the "it skips to the next one without submitting" report. */
   function confirmSubmitted() {
     if (hardSuccessSignal()) return true;                       // the page says so
+    if (onAuthWallOnly()) return false;                         // still signing in: nothing was sent
     if (!submitAttempted()) return false;                       // we never pressed submit
     if (softSuccessSignal()) return true;                       // pressed + confirmation URL
     // Pressed, the grace window elapsed, no validation error came back, and the
@@ -5707,6 +5877,41 @@
      filled the page — Jobright's autofill, a saved answer, a parser. Radios,
      native selects and plain text/number boxes are corrected; anything you
      typed or picked yourself is left alone. Returns how many it changed. */
+  /* What a resume parser does to your contact details (ATS report: Paylocity,
+     SAP, BrassRing). Paylocity wrote the name as "MAXMILLIAM" and the phone as
+     "+353: 0874261508". Only those two shapes are corrected — the same name in
+     the wrong case, and your own number with a stray separator or trunk 0 — so
+     a different value somebody chose is never touched. */
+  function fixParsedContact(el, q, p) {
+    const cur = String(el.value || '').trim();
+    if (!cur) return false;
+    const label = q.toLowerCase();
+    const first = String(p.first_name || p.firstName || '').trim();
+    const last = String(p.last_name || p.lastName || '').trim();
+    let want = '';
+    if (/\b(first|given)\s*name|^first$|forename/.test(label) && !/preferred|middle/.test(label)) want = first;
+    else if (/\b(last|family)\s*name|surname/.test(label)) want = last;
+    if (want) {
+      if (cur === want || cur.toLowerCase() !== want.toLowerCase() || want === want.toUpperCase()) return false;
+      nativeSet(el, want);
+      LOG(`Corrected the case of a parsed name: "${cur}" → "${want}"`);
+      return true;
+    }
+    if (!/phone|mobile|telephone|cell/.test(label) || /code|extension|ext\b|type/.test(label)) return false;
+    const own = String(p.phone || '').replace(/\D/g, '').replace(/^0+/, '');
+    const cc = String(p.phoneCountryCode || p.phone_country_code || '').replace(/\D/g, '');
+    const nat = cc && own.startsWith(cc) ? own.slice(cc.length).replace(/^0+/, '') : own;
+    const digits = cur.replace(/\D/g, '');
+    if (nat.length < 6 || !digits.endsWith(nat)) return false;
+    const broken = /:|\+\s*\d{1,3}\s*[:\-]?\s*0/.test(cur) || /\(\s*0\s*\)/.test(cur);
+    if (!broken) return false;
+    const fixedVal = cur.startsWith('+') ? `+${digits.slice(0, digits.length - nat.length).replace(/0+$/, '')}${nat}` : nat;
+    if (fixedVal === cur) return false;
+    nativeSet(el, fixedVal);
+    LOG(`Corrected a parsed phone number: "${cur}" → "${fixedVal}"`);
+    return true;
+  }
+
   async function enforceKnockoutPolicy() {
     let fixed = 0;
     try {
@@ -5716,6 +5921,7 @@
       for (const el of deepAll('input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=file]):not([type=submit]):not([type=button]),select', 300)) {
         if (!isVisible(el) || el.disabled || el.readOnly || userTouched(el) || isTrapField(el)) continue;
         const q = getFullQuestionText(el) || getLabel(el) || '';
+        if (el.tagName !== 'SELECT' && fixParsedContact(el, q, p)) { fixed++; continue; }
         const pol = knockoutPolicy(q, p);
         if (!pol) continue;
         if (el.tagName === 'SELECT') {
@@ -5769,6 +5975,8 @@
   // ===================== AUTO-SUBMIT / NEXT PAGE =====================
   async function autoSubmitOrNext__impl() {
     LOG('Attempting auto-submit or next...');
+    // Workday's sign-in form is the account step's job; its "Sign In" is not a Submit.
+    if (isWorkday() && workdayOnAccountWall()) { LOG('Workday sign-in / create-account form — left to the account step'); return false; }
 
     // First: learn from the filled page before navigating away
     await learnFromPage();
@@ -6573,6 +6781,12 @@
       let raw = '';
       try { raw = guessFieldValue(label, p, null); } catch (_) { raw = guessValue(label, p) || ''; }
       if (!texts.length) return raw && !/^n\/?a$/i.test(raw) ? raw : null;
+      // Any language first ("Wurden Sie jemals … verurteilt?" → Nein): the Workday chooser.
+      try {
+        const c = wdChooseOption(label, texts, p);
+        if (c === 'decline') { const d = texts.find((t) => WD_DECLINE_RX.test(t)); if (d) return d; }
+        else if (c) return c;
+      } catch (_) {}
       const pols = texts.map(optionPolarity);
       const binary = texts.length <= 3 && ((pols.includes(1) && pols.includes(-1)) || (texts.some((t) => /^yes$/i.test(t)) && texts.some((t) => /^no$/i.test(t))));
       let i = -1;
@@ -6625,6 +6839,13 @@
       noteProgress('submitted');
       return 'submitted';
     }
+    /* Workday allows one application per job. Handing that back to the built-in
+       flow only spent the job's time budget on a page with nothing to fill; the
+       queue's already-applied check reads the same notice and skips the job. */
+    if (r.page === 'alreadyApplied' || /already applied/i.test(r.reason || '') || pageHasFailure()) {
+      LOG(`Workday engine: ${r.reason || 'already applied / posting closed'} — nothing to apply to`);
+      return 'closed';
+    }
     LOG(`Workday engine stopped (${r.outcome}${r.page ? ' on ' + r.page : ''})${r.reason ? ': ' + r.reason : ''} — carrying on with the built-in Workday flow`);
     noteProgress('Workday: carrying on from the engine');
     // Stopped inside the application: carry on from that step, not from Apply.
@@ -6639,14 +6860,7 @@
       _wdAssistActive = true;
       return 'assist';
     }
-    const eng = await workdayEngineRun();
-    if (eng === 'submitted') return 'submitted';
     const p = await getProfile();
-    if (eng === 'midway') {
-      await fallbackFill();
-      await workdayMultiPageFlow();
-      return 'handed-back';
-    }
 
     /* ── Phase 1: get off the job description and into the application ───────
        This sat on an NXP job description with the Apply button in plain sight
@@ -6708,17 +6922,35 @@
        the account step (fillWorkdayCreateAccount bounds its own attempts) and
        clear an emailed code if one is asked for. */
     {
-      const until = Date.now() + 45000;
-      while (workdayOnAccountWall() && Date.now() < until && !autoStopped()) {
+      let until = Date.now() + 45000;
+      while ((workdayOnAccountWall() || wdResetActive()) && Date.now() < until && !autoStopped() && !_authDeadEnd) {
         if (detectEmailVerificationWall()) await resolveEmailVerification(60000);
         if ((await fillWorkdayCreateAccount(true)) === 'stop' && workdayOnAccountWall()) break;
-        await waitUntil(() => !workdayOnAccountWall() || workdayApplicationReady(), scaled(4000, 2000), 250);
+        // A password reset waits on an email: give it its own time, as work.
+        if (wdResetActive()) { until = Math.max(until, Date.now() + 15000); noteProgress('Workday: resetting the password'); }
+        await waitUntil(() => (!workdayOnAccountWall() && !wdResetActive()) || workdayApplicationReady(), scaled(4000, 2000), 250);
       }
-      if (workdayOnAccountWall()) {
+      if (workdayOnAccountWall() || wdResetActive()) {
         LOG('Workday: still on the sign-in / create-account step — not filling the account page as if it were the application');
-        DIAG('workday.auth.stuck', 'still on the account step after signing in');
-        try { reportNeedsHuman('Workday sign-in'); } catch (_) {}
+        DIAG('workday.auth.stuck', _authDeadEnd || 'still on the account step after signing in');
+        // A job that cannot get past the sign-in fails now, with the reason — it is not left "Processing…".
+        if (!_authDeadEnd) _authDeadEnd = 'Workday sign-in did not complete' + (workdayAuthErrorText() ? ': ' + workdayAuthErrorText().slice(0, 120) : '');
         return;
+      }
+      await wdAuthSucceeded();
+    }
+
+    /* Your Workday engine applies from here. The sign-in above stays ours: it
+       knows every saved password, remembers which one works where, stops
+       before a lockout and can reset through your mailbox. */
+    {
+      const eng = await workdayEngineRun();
+      if (eng === 'submitted') return 'submitted';
+      if (eng === 'closed') return 'closed';
+      if (eng === 'midway') {
+        await fallbackFill();
+        await workdayMultiPageFlow();
+        return 'handed-back';
       }
     }
 
@@ -9011,6 +9243,35 @@
     return true;
   }
 
+  /* SuccessFactors refuses an application whose profile holds more than 100
+     skills ("You can only add up to 100 skills. Retain skills that add value") —
+     the ATS report's SAP profile held 260 from an old import. The section header
+     says "My Skills (N)"; the chips past the limit are removed from the end, so
+     the first ones (the oldest, usually the ones you added on purpose) stay. */
+  async function sfTrimSkills(limit = 100) {
+    const header = deepAll('h1,h2,h3,h4,legend,span,div,button', 1500)
+      .find((el) => isVisible(el) && el.children.length <= 3 && /^\s*my skills\s*\(\s*\d+\s*\)\s*$/i.test(el.textContent || ''));
+    const warned = /only add up to\s*(\d+)\s*skills/i.exec((document.body && document.body.innerText) || '');
+    if (warned) limit = Math.min(limit, Number(warned[1]) || limit);
+    const count = header ? Number((/\((\d+)\)/.exec(header.textContent) || [])[1]) : 0;
+    if (!header || count <= limit) return 0;
+    // The chip list is the smallest ancestor of the header holding more than `limit` remove buttons.
+    const REMOVE = 'button,[role="button"],a,span[tabindex]';
+    const isRemove = (b) => isVisible(b) && /remove|delete|clear|^\s*[x×✕]\s*$/i.test(`${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.textContent || ''}`);
+    let box = header.parentElement;
+    for (let up = 0; box && up < 8 && box.querySelectorAll(REMOVE).length <= limit; up++) box = box.parentElement;
+    if (!box) return 0;
+    const removes = Array.from(box.querySelectorAll(REMOVE)).filter(isRemove);
+    let removed = 0;
+    for (const b of removes.slice(limit).reverse()) {
+      if (removed >= count - limit) break;
+      clickEl(b); removed++;
+      if (removed % 20 === 0) await sleep(150);
+    }
+    if (removed) LOG(`SuccessFactors: removed ${removed} skill(s) over the ${limit}-skill limit (${count} → ${count - removed})`);
+    return removed;
+  }
+
   async function successFactorsAutomation() {
     LOG('SuccessFactors automation starting...');
     const p = await getProfile();
@@ -9061,6 +9322,7 @@
     }
 
     try { await sfAcceptTerms(); } catch (e) { LOG('SuccessFactors Terms of Use failed:', e?.message || e); }
+    try { await sfTrimSkills(); } catch (e) { LOG('SuccessFactors skill trim failed:', e?.message || e); }
     await fixPhoneCountryCode();
     await tailorFirstFlow();
     learnFromFilledFields();
@@ -10211,6 +10473,7 @@
   async function workdayPasswordCandidates() {
     const out = [];
     try { const site = await siteLogin(); if (site && site.password) out.push(site.password); } catch (_) {}
+    try { const mem = (await st.get(WD_SITE_PW_KEY)) || {}; const k = accountKeyFor(location.hostname); if (mem[k]) out.push(mem[k]); } catch (_) {}
     try { const shared = await st.get('ua_app_password'); if (shared) out.push(shared); } catch (_) {}
     try {
       // Jobright's own Workday sign-up password ("Your Autofill information → Sign-up Information").
@@ -10270,8 +10533,171 @@
     return true;
   }
 
+  /* ── AN ACCOUNT THAT ALREADY EXISTS, LOCKOUTS, RESETS ──────────────────────
+     Scenarios on a Workday tenant, and what happens in each:
+       • New site → Create Account with your shared ATS password.
+       • "Account already exists" → Sign In; the saved passwords are tried in
+         order: your 🔐 site login, the password that worked HERE before, the
+         shared ATS password, Jobright's Workday password.
+       • The one that works is remembered for this site (and for your engine).
+       • Every one refused, or "account locked" → no more tries (Workday locks an
+         account after a handful of failures, and a locked account fails every
+         later job there too). At most WD_MAX_FAILS refusals per site per day.
+       • Then, if your Gmail is connected through the API (it can read the reset
+         link): "Forgot your password?" → the reset email → a new password = your
+         shared ATS password → sign in. The link is only followed when it points
+         back to this same Workday site.
+       • Otherwise the job FAILS at once with the reason ("account exists with a
+         different password — add it under 🔐 Site logins…"), and later jobs on the
+         same site fail fast the same way instead of trying again, until a
+         password you add changes the list.
+       • Unverified account → the verification email (existing mailbox path).
+     Nothing here is ever counted as "applied" (see onAuthWallOnly). */
+  const WD_SITE_PW_KEY = 'ua_wd_site_pw';        // { site: password that worked there }
+  const WD_FAIL_KEY = 'ua_wd_signin_fails';       // { site: { n, at } } refused sign-ins
+  const WD_UNKNOWN_KEY = 'ua_wd_pw_unknown';      // { site: { at, cand } } no saved password works
+  const WD_MAX_FAILS = 4;
+  const WD_LOCKED_RE = /\blocked\b|too many (failed |unsuccessful )?(attempts|tries|sign.?in)|temporarily (disabled|blocked|unavailable)|account (is )?(disabled|suspended)/i;
+  const WD_FORGOT_RE = /forgot (your |my )?password|reset (your |my )?password|trouble signing in|can.?t sign in/i;
+  let _authDeadEnd = '';                          // why this job cannot get past the sign-in
+
+  function wdCandHash(cands) {
+    let h = 0;
+    for (const ch of cands.join('\u0001')) h = (h * 31 + ch.charCodeAt(0)) | 0;
+    return cands.length + ':' + (h >>> 0).toString(36);   // which passwords, never the passwords
+  }
+  async function wdSiteRecord(key, update) {
+    const all = (await st.get(key)) || {};
+    const k = accountKeyFor(location.hostname);
+    if (update === undefined) return all[k] || null;
+    if (update === null) delete all[k]; else all[k] = update;
+    await st.set(key, all);
+    return all[k] || null;
+  }
+  async function wdNoteRefused() {
+    const cur = await wdSiteRecord(WD_FAIL_KEY);
+    const fresh = cur && Date.now() - cur.at < 24 * 3600 * 1000 ? cur : { n: 0, at: Date.now() };
+    return (await wdSiteRecord(WD_FAIL_KEY, { n: fresh.n + 1, at: Date.now() })).n;
+  }
+  async function wdRefusedCount() {
+    const cur = await wdSiteRecord(WD_FAIL_KEY);
+    return cur && Date.now() - cur.at < 24 * 3600 * 1000 ? cur.n : 0;
+  }
+  /* Past the wall: remember what worked, forget the failures. */
+  async function wdAuthSucceeded() {
+    try {
+      const auth = wdAuthState();
+      if (auth.lastPw) await wdSiteRecord(WD_SITE_PW_KEY, auth.lastPw);
+      await wdSiteRecord(WD_FAIL_KEY, null);
+      await wdSiteRecord(WD_UNKNOWN_KEY, null);
+      if (auth.reset) { auth.reset = null; wdAuthSave(); }
+    } catch (_) {}
+  }
+  function wdResetActive() {
+    try { const r = wdAuthState().reset; return !!(r && r.step && r.step !== 'done' && Date.now() - (r.at || 0) < 6 * 60 * 1000); } catch (_) { return false; }
+  }
+  function mailboxStatus() {
+    return new Promise((res) => {
+      try { chrome.runtime.sendMessage({ type: 'UA_MAIL_STATUS' }, (r) => { void chrome.runtime.lastError; res(r || {}); }); }
+      catch (_) { res({}); }
+    });
+  }
+  function askMailboxForReset(since) {
+    return new Promise((res) => {
+      try {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', kind: 'reset', hosts: [location.hostname], companies: [], since }, (r) => {
+          void chrome.runtime.lastError; res(r || { ok: false });
+        });
+      } catch (_) { res({ ok: false }); }
+    });
+  }
+  /* No saved password gets in. Reset through your mailbox if it can read the
+     link; otherwise stop the job with a reason you can act on. */
+  async function wdPasswordDeadEnd(why, candidates) {
+    const auth = wdAuthState();
+    const email = await getAppEmail();
+    if (!auth.reset) {
+      const mb = await mailboxStatus();
+      const forgot = $$('a,button,[role="button"]').filter(isVisible).find((b) => WD_FORGOT_RE.test((b.textContent || '').trim()) && (b.textContent || '').length < 60)
+        || deepOne('[data-automation-id="forgotPasswordLink"]');
+      if (mb.enabled && mb.connected && forgot) {
+        auth.reset = { step: 'requested', at: Date.now() }; wdAuthSave();
+        LOG(`Workday: ${why} — resetting the password through your mailbox (${mb.address || 'Gmail'})`);
+        realClick(forgot);
+        return 'working';
+      }
+    }
+    await wdSiteRecord(WD_UNKNOWN_KEY, { at: Date.now(), cand: wdCandHash(candidates) });
+    _authDeadEnd = `Workday account already exists for ${email} on ${location.hostname} with a password the extension doesn't have (${why}). ` +
+      'Add it under 🔐 Site logins in the Queue Manager, or reset it there with "Forgot your password?" to your shared ATS password' +
+      ' — or connect Gmail (API) in the Queue Manager so the extension can reset it itself.';
+    LOG('Workday: ' + _authDeadEnd);
+    DIAG('workday.password-mismatch', why, { detail: { tried: candidates.length } });
+    return 'stop';
+  }
+  /* The reset pages: email → (the email) → new password. */
+  async function wdResetStep() {
+    const auth = wdAuthState();
+    const r = auth.reset;
+    if (!r || r.step === 'done') return null;
+    const pw = $$('input[type=password]').filter(isVisible);
+    const emailBox = $$('input[type=email],input[type=text]').filter(isVisible)
+      .find((i) => /e-?mail/i.test((getLabel(i) || '') + (i.name || '') + (i.id || '') + (i.getAttribute('data-automation-id') || '')));
+    const press = () => {
+      const b = $$('button,[role="button"],input[type=submit]').filter((x) => isVisible(x) && !x.disabled)
+        .find((x) => /^(submit|reset( password)?|send( (reset )?(link|email))?|continue|next|save|change password|set password|update password)\b/i.test(((x.textContent || x.value || '') + '').trim()));
+      if (b) { pressWorkdayButton(b); return true; }
+      return false;
+    };
+    // The new-password page (from the emailed link): two password boxes, no email box.
+    if (pw.length >= 2 && !emailBox) {
+      const newPw = await getAppPassword();
+      for (const f of pw) if (f.value !== newPw) reactTypeValue(f, newPw);
+      if (press()) {
+        auth.lastPw = newPw; auth.reset = { step: 'done', at: Date.now() }; auth.idx = 0; auth.triedSignIn = false; wdAuthSave();
+        await wdSiteRecord(WD_SITE_PW_KEY, newPw);
+        await wdSiteRecord(WD_FAIL_KEY, null);
+        await wdSiteRecord(WD_UNKNOWN_KEY, null);
+        LOG('Workday: new password set from the reset email — signing in with it');
+      }
+      return 'working';
+    }
+    if (r.step === 'requested') {
+      if (emailBox && !pw.length) {
+        const email = await getAppEmail();
+        if (emailBox.value !== email) reactTypeValue(emailBox, email);
+        if (press()) { auth.reset = { step: 'sent', at: Date.now(), since: Date.now() - 30000 }; wdAuthSave(); LOG('Workday: password reset requested — waiting for the email'); }
+      }
+      return 'working';
+    }
+    if (r.step === 'sent') {
+      noteProgress('Workday: waiting for the password reset email');
+      const m = await askMailboxForReset(r.since);
+      if (m && m.ok && m.link) {
+        let u = null;
+        try { u = new URL(m.link); } catch (_) {}
+        if (u && u.protocol === 'https:' && u.hostname === location.hostname) {
+          auth.reset = { step: 'link', at: Date.now() }; wdAuthSave();
+          LOG('Workday: reset email found — opening its link');
+          location.assign(u.href);
+          return 'working';
+        }
+      }
+      if (Date.now() - r.at > 3 * 60 * 1000) {
+        auth.reset = { step: 'done', at: Date.now() }; wdAuthSave();
+        _authDeadEnd = `Workday account already exists on ${location.hostname} with another password, and the reset email did not arrive within 3 minutes. Reset it from your inbox to your shared ATS password, or add it under 🔐 Site logins.`;
+        LOG('Workday: ' + _authDeadEnd);
+        return 'stop';
+      }
+      return 'working';
+    }
+    return 'working';
+  }
+
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
+    if (_authDeadEnd) return 'stop';
+    if (submit && wdAuthState().reset) { const rs = await wdResetStep(); if (rs) return rs; }
     let pwFields = $$('input[type=password]').filter(isVisible);
     if (!pwFields.length) return 'stop'; // not on a create-account / sign-in page
     const email = await getAppEmail();
@@ -10338,23 +10764,34 @@
       if (toSignIn && isVisible(toSignIn)) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: account already created here — switching to Sign In'); realClick(toSignIn); return 'working'; }
     }
 
+    /* Locked: no more attempts at all — each one would only extend the lock. */
+    if (WD_LOCKED_RE.test(errText) && !/might be locked/i.test(errText)) return wdPasswordDeadEnd('the account is locked', candidates);
+    /* A site where none of these passwords worked before, and the list has not
+       changed since: fail fast instead of spending attempts towards a lockout. */
+    if (onSignIn && !auth.triedSignIn && !auth.reset) {
+      const unk = await wdSiteRecord(WD_UNKNOWN_KEY);
+      if (unk && unk.cand === wdCandHash(candidates) && Date.now() - unk.at < 7 * 24 * 3600 * 1000) {
+        return wdPasswordDeadEnd('none of the saved passwords worked here last time', candidates);
+      }
+    }
     /* A refused sign-in on a tenant that DOES have an account: the password is
-       not the one we tried. Next candidate — never back to Create Account. */
+       not the one we tried. Next candidate — never back to Create Account —
+       within a per-site budget that stays under Workday's lockout. */
     if (onSignIn && wrongCredErr && auth.exists && auth.triedSignIn) {
-      if (auth.idx + 1 < candidates.length) {
+      const refused = await wdNoteRefused();
+      if (auth.idx + 1 < candidates.length && refused < WD_MAX_FAILS) {
         auth.idx++; auth.triedSignIn = false; wdAuthSave();
         LOG(`Workday: that password was refused — trying saved password ${auth.idx + 1} of ${candidates.length}`);
         for (const f of pwFields) reactTypeValue(f, candidates[auth.idx]);
         return 'working';
       }
-      LOG('Workday: an account exists here, and every saved password was refused — add this employer under 🔐 Site logins in the Queue Manager');
-      DIAG('workday.password-mismatch', 'account exists with a different password', { detail: { tried: candidates.length } });
-      try { reportNeedsHuman('Workday account exists with a different password — add it under Site logins'); } catch (_) {}
-      return 'stop';
+      auth.triedSignIn = false; wdAuthSave();
+      return wdPasswordDeadEnd(refused >= WD_MAX_FAILS ? `${refused} sign-ins refused today — stopping before Workday locks the account` : `all ${candidates.length} saved passwords were refused`, candidates);
     }
     // Self-correct the form mode based on the error text (covers accounts created outside
     // the extension, or a stale record).
     if (onSignIn && wrongCredErr && !auth.exists) {
+      if (auth.triedSignIn) { auth.triedSignIn = false; wdAuthSave(); await wdNoteRefused(); }
       const toCreate = inFormLink(/create account|sign ?up|new user|don'?t have an account/i);
       if (toCreate) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: Sign In rejected (no account yet) — switching to Create Account'); realClick(toCreate); return 'working'; }
     }
@@ -10395,6 +10832,7 @@
       if (!createBtn.disabled && createBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
+        auth.lastPw = pw; wdAuthSave();
         pressWorkdayButton(createBtn);
         /* Record it NOW, not only if the watcher later happens to see the
            My Information page. The run frequently navigates on before that
@@ -10411,7 +10849,7 @@
       if (!signInBtn.disabled && signInBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: signing in with saved password ${Math.min(auth.idx, candidates.length - 1) + 1} of ${candidates.length} (action ${_wdActions}/${WD_MAX_ACTIONS})`);
-        auth.triedSignIn = true; wdAuthSave();
+        auth.triedSignIn = true; auth.lastPw = pw; wdAuthSave();
         pressWorkdayButton(signInBtn);
         await markAccountCreated(location.hostname);   // an account we can sign into exists
       }
@@ -10595,6 +11033,7 @@
     let finalized = false, tId = null, stallIv = null, beatIv = null;
     const finalize = async (status, error) => {
       if (finalized) return; finalized = true;
+      jrFinish(status, error || '');
       clearTimeout(tId);
       _mgrDriving = false;
       setAutomationFlag(false);
@@ -10722,6 +11161,8 @@
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       clearSubmitAttempt();   // this job has not submitted anything yet
       _uaJobKey = String(c.id || c.url || '');
+      _authDeadEnd = '';
+      jrBegin(c, 'queue');
 
       /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
          This used to stack four layers of repetition on top of each other, and
@@ -10746,6 +11187,7 @@
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
         if (attempt === 0) {
           await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation', 0);
+          if (_authDeadEnd) break;        // cannot get past the sign-in: fail now, with the reason
         } else {
           /* Second and final attempt: top up whatever is still empty and press
              the button again. No driver, no page walk — if the first pass could
@@ -10966,9 +11408,12 @@
           // persistent validation error fast-fails instead of waiting the whole timeout.
           clearSubmitAttempt(); // no submit evidence carried over from the previous job
           _uaJobKey = String(c.id || c.url || '');
+          _authDeadEnd = '';
+          jrBegin(c, 'queue');
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
+            if (_authDeadEnd) break;      // cannot get past the sign-in: fail now, with the reason
             // Verify submission (poll for a confirmation signal).
             await withBusy('verifying submission', async () => {
             for (let check = 0; check < 6; check++) {
@@ -11655,6 +12100,8 @@
 .uc-sp:hover{border-color:#4b4b52;color:#e7e7ea}
 .uc-sp.active{background:#00f0a0;border-color:#00f0a0;color:#06231a;box-shadow:0 0 0 2px rgba(0,240,160,.25)}
 .uc-actions{display:flex;gap:10px;margin-top:16px}
+.uc-dbg{display:block;width:100%;margin-top:10px;padding:7px 10px;border-radius:10px;border:1px dashed #3a3a42;background:transparent;color:#a5b4fc;font:600 12px/1.2 inherit;font-family:inherit;cursor:pointer}
+.uc-dbg:hover{background:#17171c;color:#c7d2fe}
 .uc-act{flex:1;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:700;transition:filter .15s,background .15s}
 .uc-act:hover{filter:brightness(1.08)}
 .uc-act.pause{background:#f5b13d;color:#1a1205}
@@ -11876,6 +12323,7 @@
           <button class="uc-act skip" id="uc-skip">Skip</button>
           <button class="uc-act quit" id="uc-quit">Quit</button>
         </div>
+        <button class="uc-dbg" id="uc-dbg" title="Every job's timeline, page fields, errors and screenshot">🐞 Open Debugger — see what each job did</button>
       </div>`;
       host.appendChild(ctrl);
       makeDraggableByHandle(ctrl, ctrl.querySelector('.uc-top'));
@@ -11888,6 +12336,7 @@
       ctrl.querySelector('#uc-pause').addEventListener('click', () => { if (qPaused) resumeQ(); else pauseQ(); });
       ctrl.querySelector('#uc-skip').addEventListener('click', skipJob);
       ctrl.querySelector('#uc-quit').addEventListener('click', stopQ);
+      ctrl.querySelector('#uc-dbg').addEventListener('click', () => openDebugger(JR.id ? 'job=' + encodeURIComponent(JR.id) : ''));
       ctrl.querySelectorAll('.uc-sp').forEach(btn => btn.addEventListener('click', () => setQueueSpeed(parseFloat(btn.dataset.sp) || 1)));
       /* One click turns the run's failures into something you can paste to
          someone who can fix them. Without this the reasons exist but stay
@@ -13221,12 +13670,36 @@
   /* The reason that cost the most jobs, and how many. Failures cluster: thirty
      of them are usually three causes, and knowing which one is biggest is the
      difference between fixing the run and guessing at it. */
+  // The Debugger page (ua-debug.html), opened in front by the service worker.
+  function openDebugger(hash) {
+    try { chrome.runtime.sendMessage({ type: 'UA_DBG_OPEN', hash: hash || '' }, () => void chrome.runtime.lastError); } catch (_) {}
+  }
+  /* Same rule as the Debugger page (ua-debugger.js reasonGroup). */
+  function reasonGroup(r) {
+    let s = String(r || '').trim();
+    if (!s) return 'no reason recorded';
+    s = s.split(/\s[—–]\s/)[0];
+    s = s.replace(/https?:\/\/\S+/g, '<url>')
+      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '<email>')
+      .replace(/\b[\w-]+(\.[\w-]+)*\.(com|io|net|org|eu|co|ai|jobs|uk|ie|de)\b\S*/gi, '<site>')
+      .replace(/"[^"]{1,160}"|“[^”]{1,160}”/g, '"…"')
+      .replace(/\([^)]{0,200}\)/g, '')
+      .replace(/\d+/g, 'N')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+([.,;:])/g, '$1')
+      .split(/(?<=[a-z>)\]"…])[.!?]\s+(?=[A-Z<"“🔐])/)[0]
+      .replace(/[\s.:,;]+$/, '')
+      .trim();
+    return s.slice(0, 140) || 'no reason recorded';
+  }
   function failureGroups() {
     const bad = queue.filter(j => ['failed', 'timeout'].includes(j.status) ||
       (j.status === 'skipped' && j.error && !/^Skipped by user$/i.test(j.error)));
     const by = new Map();
     for (const j of bad) {
-      const key = `${j.status}: ${j.error || 'no reason recorded'}`;
+      // Grouped by CAUSE, not by exact text: the text carries a field, a host, a
+      // number, and 120 failures used to show as 120 groups of one.
+      const key = `${j.status}: ${reasonGroup(j.error)}`;
       if (!by.has(key)) by.set(key, []);
       by.get(key).push(j.url);
     }
@@ -13378,7 +13851,7 @@
   /* Things that read like Apply but are not: the already-applied state, a filter,
      a save/share affordance, a sign-in wall, a link back to the listing. Clicking
      any of them wastes a click and can navigate off the job entirely. */
-  const APPLY_BAD_RE = /already applied|you have applied|application (sent|submitted|received)|how to apply|apply filter|apply filters|apply changes|apply coupon|save (this )?job|share (this )?job|refer a friend|job alert|create (an )?alert|sign ?in|log ?in|create (an )?account|register now|^applied$|^apply later$|view (all )?(other )?jobs|see (all|other) jobs|similar jobs|back to (jobs|search|results)|report this|withdraw/i;
+  const APPLY_BAD_RE = /autofill with (my )?(resume|cv)|use my last application|autofill (this )?application|already applied|you have applied|application (sent|submitted|received)|how to apply|apply filter|apply filters|apply changes|apply coupon|save (this )?job|share (this )?job|refer a friend|job alert|create (an )?alert|sign ?in|log ?in|create (an )?account|register now|^applied$|^apply later$|view (all )?(other )?jobs|see (all|other) jobs|similar jobs|back to (jobs|search|results)|report this|withdraw/i;
 
   function isApplyLabel(text) {
     const t = normLabel(text);
@@ -13392,6 +13865,11 @@
      aggregators — one per "other jobs at this company" row). Prefer the real
      primary action. Enumerated deeply, so an apply button inside a web component
      or a same-origin frame is found, and our own sidebar is excluded. */
+  /* Workday's "Start Your Application" choices: only "Apply Manually" is ever
+     pressed. "Autofill with Resume" (Workday's own CV parse) and "Use My Last
+     Application" bring in wrong data — and "useMyLastApplication" contains
+     "apply", so the [data-automation-id*="apply"] selector below could take it. */
+  const WD_NEVER_PRESS_AID_RE = /^(autofillWithResume|useMyLastApplication|useLastApplication)$/i;
   function findApplyButton() {
     const known = ['.jobs-apply-button', 'button.jobs-apply-button--top-card', '#indeedApplyButton',
       '#applyButtonLinkContainer a', 'button[data-testid*="apply" i]', 'a[data-testid*="apply" i]',
@@ -13399,7 +13877,7 @@
       'button[aria-label*="apply" i]', 'a[aria-label*="apply" i]', 'spl-button[data-test*="apply" i]'];
     for (const sel of known) {
       for (const el of deepAll(sel, 8)) {
-        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent))) return el;
+        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent)) && !WD_NEVER_PRESS_AID_RE.test(el.getAttribute('data-automation-id') || '')) return el;
       }
     }
     const cands = deepAll('button,a[role="button"],a,[role="button"],input[type=button],input[type=submit],spl-button,oj-button', 400)
@@ -15291,9 +15769,12 @@
     // page only. Without this, detectATS()'s broad generic "Career" pattern (any URL with
     // /apply, /jobs, /careers) would let Fully Automated fill non-job forms.
     if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday())) {
+      // Recorded for the Debugger too, as its own entry.
+      jrBegin({ id: 'auto:' + location.hostname + location.pathname.slice(0, 80) + '@' + new Date().toISOString().slice(0, 16), url: location.href, title: document.title }, 'fully-automated');
       LOG(`Fully Automated: starting full automation for ${ats || 'Workday'}`);
       await sleep(scaled(1500, 750));
       await dispatchATSAutomation();
+      jrFinish(confirmSubmitted() ? 'done' : (_wdAssistActive ? 'assist' : 'stopped'), confirmSubmitted() ? '' : (_wdAssistActive ? 'Workday assist: you press Next' : 'Fully Automated pass ended without a confirmed submit'));
     }
     if (runnerActive) {
       // Resumes after a manual reload too: window.name carries the runner tag
@@ -19159,3 +19640,30 @@ a[href*="/checkout" i],
   log('candidate-profile snapshot watcher active');
 })();
 
+
+/* ── Your own Tailor / Generate click ─────────────────────────────────────────
+   The worker refuses Jobright's tailor / cover-letter tab unless you asked for
+   it (ua-orchestrator.js, TAILOR_TAB_RE). A real click — not one of ours — on
+   Jobright's Tailor / Generate Custom Resume / Cover Letter button is that ask.
+   It only reports the click; it never acts, so it is not behind the
+   automation gate. Jobright's sidebar is an open shadow root, so composedPath
+   reaches the button. */
+(function () {
+  'use strict';
+  if (window.__uaTailorIntent) return;
+  window.__uaTailorIntent = true;
+  const ASK_RE = /tailor|custom resume|generate (my |a )?(new )?(resume|cv|cover letter)|cover letter/i;
+  document.addEventListener('click', (e) => {
+    try {
+      if (!e.isTrusted) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      const btn = path.find((n) => n && n.nodeType === 1 && (n.matches('button,a,[role="button"]') ||
+        (n.classList && (n.classList.contains('application-dashboard-tailor-resume') || n.classList.contains('external-job-generate-resume-button')))));
+      if (!btn) return;
+      const cls = btn.classList || { contains: () => false };
+      const txt = (btn.textContent || btn.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      if (!cls.contains('application-dashboard-tailor-resume') && !cls.contains('external-job-generate-resume-button') && !(txt.length < 60 && ASK_RE.test(txt))) return;
+      chrome.runtime.sendMessage({ type: 'UA_TAILOR_INTENT' }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }, true);
+})();

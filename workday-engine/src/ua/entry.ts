@@ -61,7 +61,12 @@ interface Mode {
   jobId: string;
 }
 
-const say = (msg: string) => console.info(`[UA][WD-Engine] ${msg}`);
+const say = (msg: string) => {
+  console.info(`[UA][WD-Engine] ${msg}`);
+  // Into the job's record too (the Debugger page shows it in the timeline).
+  try { (window as unknown as { __uaJrLine?: (k: string, m: string) => void }).__uaJrLine?.("engine", msg); } catch { /* */ }
+};
+let logShown = 0;                        // engine log lines already printed (per run)
 const W = window as Any;
 
 function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
@@ -123,10 +128,20 @@ function makePassword(): string {
 
 /** One e-mail + password for every Workday site: the extension's shared ATS
  *  password (ua_app_password), else Jobright's Workday password, else a new one (kept). */
+/* The site key ua-enhancement uses (acme.wd3.myworkdayjobs.com → acme.myworkdayjobs.com). */
+function siteKey(host = location.hostname): string {
+  return host.toLowerCase().replace(/^www\./, "").replace(/\.wd\d+\./, ".").replace(/\.myworkdaysite\.com$/, ".myworkdayjobs.com");
+}
+
 async function workdayLogin(): Promise<{ email: string; password: string; login: Any }> {
-  const d = await ST.get([LOGIN_KEY, "ua_app_password", "ua_app_email", "WORKDAY_SIGNUP_INFORMATION"]);
+  const d = await ST.get([LOGIN_KEY, "ua_app_password", "ua_app_email", "WORKDAY_SIGNUP_INFORMATION", "ua_ats_logins", "ua_wd_site_pw"]);
   const login: Any = Object.assign({ sites: {} }, d[LOGIN_KEY] || {});
-  let password = d.ua_app_password || "";
+  const k = siteKey();
+  // Your 🔐 site login for this employer, then the password that worked here before.
+  const site = (d.ua_ats_logins || {})[k];
+  if (site && site.email && site.password) return { email: site.email, password: site.password, login: { ...login, sites: { ...login.sites, [tenantHost()]: { state: "account" } } } };
+  const known = (d.ua_wd_site_pw || {})[k];
+  let password = known || d.ua_app_password || "";
   if (!password) {
     try {
       const jr = typeof d.WORKDAY_SIGNUP_INFORMATION === "string" ? JSON.parse(d.WORKDAY_SIGNUP_INFORMATION) : d.WORKDAY_SIGNUP_INFORMATION;
@@ -185,6 +200,12 @@ async function answerWd(msg: Any): Promise<unknown> {
       return llmStandIn(String(msg.prompt || ""));
     case "wd:progress":
       try { W.__uaWdProgress?.(msg.state?.page || ""); } catch { /* */ }
+      // The engine's own log, line by line, in the console (and so in diagnostics).
+      try {
+        const log: Any[] = (msg.state && msg.state.log) || [];
+        for (const l of log.slice(Math.max(0, Math.min(logShown, log.length)))) say(`${l.level && l.level !== "info" ? l.level + ": " : ""}${l.msg}`);
+        logShown = log.length;
+      } catch { /* */ }
       return undefined;
     default:                 // wd:notify, wd:jobCaptured
       return undefined;
@@ -339,6 +360,13 @@ function splitPhone(raw: string, defCode: string): { code: string; national: str
   return { code: defCode, national: digits.replace(/^0+/, "") };
 }
 
+/** "MAXMILLIAM" / "o'NEILL-SMITH" → "Maxmilliam" / "O'Neill-Smith"; a name already in mixed case is left alone. */
+function properCase(name: string): string {
+  const s = String(name || "").trim();
+  if (!s || s !== s.toUpperCase() && s !== s.toLowerCase()) return s;
+  return s.toLowerCase().replace(/(^|[\s'’\-])(\p{L})/gu, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
+}
+
 function declineOr(v: string): string {
   const s = String(v || "").trim();
   return !s || /prefer not|decline|do not wish|don'?t wish|not to say/i.test(s) ? "decline" : s;
@@ -445,6 +473,8 @@ async function buildProfile(): Promise<Profile> {
       if (!p.summary) p.summary = cv.summary;
     }, () => undefined);
   }
+  // A parsed CV or an old import can hold the name in capitals ("MAXMILLIAM"): forms want "Maxmilliam".
+  for (const k of ["firstName", "lastName", "preferredName"] as const) p.personal[k] = properCase(p.personal[k] || "");
   return p;
 }
 
@@ -525,6 +555,7 @@ async function hostAnswer(label: string, kind: ControlKind, options: string[], m
 /* ---------------- run lifecycle ---------------- */
 
 async function installHooks(mode: Mode): Promise<void> {
+  logShown = 0;
   const profile = await buildProfile();
   let cv: Promise<StoredDoc | undefined> | null = null;
   accountNoted = false;
@@ -544,6 +575,8 @@ async function installHooks(mode: Mode): Promise<void> {
 const AUTH_PAGES: PageKind[] = ["signIn", "createAccount", "verifyEmail"];
 let accountNoted = false;
 let lastPage = "";
+let lastActive = 0;                      // last moment the engine's loop was seen running
+let bootUntil = 0;                       // a reload is resuming a job: give it time to start
 
 function onPage(run: RunState) {
   lastPage = run.page;
@@ -599,6 +632,7 @@ async function startJob(jobId: string): Promise<void> {
   }
   const mode: Mode = { queue: true, submit: true, startedAt: Date.now(), jobId: id };
   writeMode(mode);
+  bootUntil = Date.now() + 30_000;          // the app may still be rendering; the loop starts after it
   say(`applying (queue job ${id.slice(0, 40)})`);
   try {
     for (let i = 0; i < 40 && !hasWorkdayApp(); i++) await new Promise((r) => setTimeout(r, 500));   // the app may still be rendering
@@ -617,8 +651,22 @@ W.__uaWdEngine = {
   isWorkday: () => TOP && isWorkdayHost(),
   startJob: (jobId: string) => void startJob(jobId),
   result: (jobId: string) => readResult(String(jobId || "")),
-  /** Still working on this job (or resuming it after a reload). */
-  running: (jobId: string) => { const m = readMode(); return (!!m && m.jobId === String(jobId || "") && !m.assist) || (isActive() && !!m); },
+  /** Still working on this job (or about to resume it after a reload). A run
+   *  that ended without reporting (the engine stops quietly on, e.g., a Submit
+   *  button outside Review) is recorded here as "stopped" on its page, so the
+   *  host carries on instead of waiting for an outcome that never comes. */
+  running: (jobId: string) => {
+    const id = String(jobId || "");
+    if (isActive()) { lastActive = Date.now(); return true; }
+    const m = readMode();
+    if (!m || m.jobId !== id || m.assist) return false;
+    // The loop ran for this job and has ended → stopped after a moment; not started yet → give it time.
+    const ran = lastActive >= m.startedAt;
+    if (ran ? Date.now() - lastActive < 2500 : (Date.now() < bootUntil || Date.now() - m.startedAt < 8000)) return true;
+    clearMode();
+    if (!readResult(id)) writeResult({ jobId: id, outcome: "stopped", page: lastPage || detectPage(), at: Date.now(), reason: "the engine stopped on this page without finishing" });
+    return false;
+  },
   page: () => lastPage || detectPage(),
   stop: () => { clearMode(); void stopRun(); },
   /** Fully Automated is on outside a run here: assist takes the Workday steps. */
@@ -700,6 +748,7 @@ if (TOP && isWorkdayHost()) {
   const boot = (tries = 0) => {
     const mode = readMode();
     if (!mode || mode.assist) return;
+    if (!tries) bootUntil = Date.now() + 35_000;
     if (!hasWorkdayApp()) {
       if (tries < 60) setTimeout(() => boot(tries + 1), 500);
       return;

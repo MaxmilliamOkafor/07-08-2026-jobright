@@ -7,7 +7,10 @@
      (Jobright's own Workday sign-up password), not the extension's shared one. -->
 <div id="app"></div>
 <script>
-  const ACCOUNT = { email: 'max.test@example.com', password: 'JobrightPass1!' };
+  // ?acct_pw=… : the account was made earlier with a password the extension may not know.
+  const ACCOUNT = { email: 'max.test@example.com', password: new URLSearchParams(location.search).get('acct_pw') || 'JobrightPass1!' };
+  // Like Workday: five refused sign-ins lock the account (kept across reloads of this tab).
+  const fails = () => +(sessionStorage.getItem('fx_fails') || 0);
   const app = document.getElementById('app');
   const signIn = (err) => { app.innerHTML = `
     <div data-automation-id="authenticationContainer"><h2>Sign In</h2>
@@ -20,8 +23,11 @@
     document.getElementById('go').onclick = () => {
       const em = document.getElementById('em').value, pw = document.getElementById('pw').value;
       window.__tries = (window.__tries || []).concat(['signin:' + pw]);
+      if (fails() >= 5) { console.log('FX_LOCKED'); return signIn('Your account has been locked. Use Forgot your password? to unlock it.'); }
       if (em === ACCOUNT.email && pw === ACCOUNT.password) return application();
-      signIn('Wrong email address or password. After 5 failed attempts your account will be locked.');
+      sessionStorage.setItem('fx_fails', String(fails() + 1));
+      console.log('FX_SIGNIN_REFUSED ' + fails());
+      signIn('You may have entered the wrong email address or password or your account might be locked.');
     }; };
   const create = (err) => { app.innerHTML = `
     <div data-automation-id="authenticationContainer"><h2>Create Account</h2>

@@ -553,6 +553,8 @@
   $('btnExport').addEventListener('click', exportCsv);
   $('btnCopyFails').addEventListener('click', copyFailures);
   $('btnDiag').addEventListener('click', extractDiagnostics);
+  // The Debugger: every job's timeline, fields and errors (ua-debug.html).
+  $('btnDebugger').addEventListener('click', () => { try { chrome.tabs.create({ url: chrome.runtime.getURL('ua-debug.html') }); } catch (_) { window.open('ua-debug.html', '_blank'); } });
   // Verification codes from the signed-in Gmail (see ua-mailbox.js, findViaGmailSession).
   get('ua_mail_gmail_session').then((v) => { $('optGmailSession').checked = v === true; });
   $('optGmailSession').addEventListener('change', async (e) => {

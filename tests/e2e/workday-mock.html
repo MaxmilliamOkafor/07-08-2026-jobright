@@ -288,7 +288,8 @@ function JobPage({ onApply }) {
         "div",
         { role: "dialog" },
         h("a", { "data-automation-id": "autofillWithResume", href: "#", onClick: (e) => (e.preventDefault(), onApply("autofill")) }, t("Autofill with Resume")),
-        h("a", { "data-automation-id": "applyManually", href: "#", onClick: (e) => (e.preventDefault(), onApply("manual")) }, t("Apply Manually"))
+        h("a", { "data-automation-id": "applyManually", href: "#", onClick: (e) => (e.preventDefault(), onApply("manual")) }, t("Apply Manually")),
+        h("a", { "data-automation-id": "useMyLastApplication", href: "#", onClick: (e) => (e.preventDefault(), onApply("last")) }, t("Use My Last Application"))
       )
   );
 }
@@ -509,7 +510,8 @@ function App() {
   useEffect(() => {
     if (route !== "job") history.replaceState(null, "", `${JOB_PATH}/apply/autofillWithResume`);
   }, [route]);
-  if (route === "job") return h(JobPage, { onApply: () => setRoute("auth") });
+  // Which "Start Your Application" choice was pressed (only "manual" is right).
+  if (route === "job") return h(JobPage, { onApply: (how) => { console.log("APPLY_CHOICE " + how); window.__applyChoice = how; setRoute("auth"); } });
   if (route === "auth") return h(AuthPage, { onDone: () => setRoute("resume") });
   if (route === "resume") return h(ResumePage, { files, setFiles, onContinue: () => setRoute("wizard") });
   if (route === "submitted") return h("main", null, h("h2", null, t("Application Submitted")), h("p", null, t("Thank you for applying.")));

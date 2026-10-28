@@ -227,10 +227,11 @@ async function handlePage(ctx: Ctx, page: PageKind): Promise<StepResult> {
     }
     case "applyMethod": {
       await waitForExternalDocs(ctx);
-      const hasCv = !!pickCv(ctx);
-      const btn = (hasCv && byAid("autofillWithResume")) || byAid("applyManually") || byAid("autofillWithResume");
-      if (!btn) throw new NeedsHuman("Choose how to apply, then click Resume.");
-      ctx.log(hasCv ? "Apply method: Autofill with Resume (tailored CV)" : "Apply method: Apply Manually");
+      // [ua] Always "Apply Manually" — never "Autofill with Resume" or "Use My Last Application"
+      // (Workday's parse of the CV and an old application both bring in wrong data).
+      const btn = byAid("applyManually");
+      if (!btn) throw new NeedsHuman("Choose \"Apply Manually\", then click Resume.");
+      ctx.log("Apply method: Apply Manually");
       await humanClick(btn);
       await waitStable(600);
       return "next";
@@ -277,6 +278,21 @@ async function handlePage(ctx: Ctx, page: PageKind): Promise<StepResult> {
       return "stop";
     case "candidateHome":
       throw new NeedsHuman("You're on your candidate home page. Open the job (or the draft under My Applications), then click Resume.");
+    case "alreadyApplied":
+      // [ua] Workday blocks a second application to the same job: nothing to fill, nothing to retry.
+      throw new Error("You have already applied for this job (Workday allows one application per job)");
+    case "somethingWrong": {
+      // [ua] "Something went wrong. Please refresh the page and try again." — refresh, at most twice per job.
+      const k = `ua-wd-refresh|${location.pathname}`;
+      const n = Number(sessionStorage.getItem(k) || 0);
+      if (n >= 2) throw new Error("Workday kept saying \"Something went wrong\" after two refreshes");
+      sessionStorage.setItem(k, String(n + 1));
+      ctx.log("Workday said \"Something went wrong\" — refreshing the page", "warn");
+      await ctx.save();
+      location.reload();
+      await sleep(10000);
+      return "stop";
+    }
     default:
       ctx.run.attempts++;
       if (ctx.run.attempts > 5) throw new NeedsHuman("Unrecognised page. Move to the next step yourself, then click Resume.");

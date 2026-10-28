@@ -780,6 +780,28 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('after the run, behaviour is back to normal', env.chrome.__lastCreate.active, true);
   }
 
+  console.log('\nJobright\'s tailor tab opens only when you ask for it');
+  {
+    const env = makeChrome();
+    load(env);
+    await tick();
+    const TAILOR = 'https://jobright.ai/jobs/info/6adfaee39e3e874dbfbaf13b?plugin_tailor=1&jr_id=6adfaee39e3e874dbfbaf13b';
+    const count = () => env.tabs.size;
+    let before = count();
+    const t1 = await new Promise((r) => env.chrome.tabs.create({ url: TAILOR }, r));
+    eq('opened on its own: no tab', count(), before);
+    eq('and Jobright is told it was not opened', t1, undefined);
+    await env.chrome.tabs.create({ url: TAILOR.replace('plugin_tailor', 'plugin_cover_letter') }).then(() => 'opened', () => 'refused').then((v) => eq('the cover-letter tab, promise form: refused', v, 'refused'));
+    env.listeners.msg.forEach((l) => l({ type: 'UA_TAILOR_INTENT' }, { tab: { id: 7 } }, () => {}));
+    before = count();
+    const t2 = await new Promise((r) => env.chrome.tabs.create({ url: TAILOR }, r));
+    eq('after your own Tailor click: it opens', count(), before + 1);
+    eq('and Jobright gets the tab', !!(t2 && t2.id), true);
+    before = count();
+    await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobright.ai/jobs/info/abc' }, r));
+    eq('a plain Jobright job page is not affected', count(), before + 1);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

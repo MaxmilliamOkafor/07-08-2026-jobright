@@ -113,6 +113,31 @@
     "申请已提交",
     "感谢您的申请"
   ]);
+  var ALREADY_APPLIED_RX = rx([
+    "you(?:'ve|’ve| have) already applied",
+    "already applied (for|to) this (job|position|role)",
+    "already submitted an application",
+    "sie haben sich bereits (auf diese stelle )?beworben",
+    "vous avez déjà postulé",
+    "ya (te|se) (has|ha) postulado",
+    "ya has aplicado",
+    "você já se candidatou",
+    "ti sei già candidato",
+    "u heeft al gesolliciteerd",
+    "je hebt al gesolliciteerd",
+    "już aplikowałeś"
+  ]);
+  var SOMETHING_WRONG_RX = rx([
+    "something went wrong\\.? please refresh",
+    "something went wrong\\.? please try again",
+    "etwas ist schiefgelaufen",
+    "une erreur s'est produite\\.? veuillez actualiser",
+    "algo salió mal",
+    "algo deu errado",
+    "qualcosa è andato storto",
+    "er is iets misgegaan",
+    "coś poszło nie tak"
+  ]);
   var VERIFY_EMAIL_RX = rx([
     "verify your (email|account)",
     "verification (email|link)",
@@ -540,8 +565,8 @@
     pageSelfId: ["applyFlowSelfIdentifyPage", "selfIdentificationPage"],
     pageReview: ["applyFlowReviewPage", "reviewJobApplicationPage"]
   };
-  function sel(key) {
-    return AID[key].map((id) => `[data-automation-id="${id}"]`).join(",");
+  function sel(key2) {
+    return AID[key2].map((id) => `[data-automation-id="${id}"]`).join(",");
   }
   var LABELS = {
     firstName: Q.firstName,
@@ -611,15 +636,15 @@
   function q(selector, root2 = document) {
     return root2.querySelector(selector);
   }
-  function byAid(key, root2 = document) {
-    for (const id of AID[key]) {
+  function byAid(key2, root2 = document) {
+    for (const id of AID[key2]) {
       const hit = qa(`[data-automation-id="${id}"]`, root2).find(isVisible);
       if (hit) return hit;
     }
     return null;
   }
-  function anyAid(key, root2 = document) {
-    return qa(sel(key), root2).some(isVisible);
+  function anyAid(key2, root2 = document) {
+    return qa(sel(key2), root2).some(isVisible);
   }
   async function waitFor(fn, timeoutMs = 8e3, everyMs = 100) {
     const start = Date.now();
@@ -669,10 +694,10 @@
     if (/\*/.test(text(container.querySelector("legend, label")))) return true;
     return !!container.querySelector('[aria-required="true"], [required]');
   }
-  function field(key, root2 = document) {
-    const hit = byAid(key, root2);
+  function field(key2, root2 = document) {
+    const hit = byAid(key2, root2);
     if (hit) return hit;
-    const rx2 = LABELS[key];
+    const rx2 = LABELS[key2];
     if (!rx2) return null;
     for (const c of qa('[data-automation-id^="formField-"]', root2)) {
       if (!isVisible(c)) continue;
@@ -836,24 +861,75 @@
     const t = text(b);
     return /^select one$|^select$/i.test(t) ? "" : t;
   }
+  function key(el, k) {
+    const code = k.length === 1 ? /\d/.test(k) ? `Digit${k}` : `Key${k.toUpperCase()}` : k;
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: k, code, bubbles: true, cancelable: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { key: k, code, bubbles: true }));
+  }
+  function optionIn(list, wanted, min) {
+    const opts = qa('[role="option"]', list).filter((o) => text(o) && !/^select one$/i.test(text(o)));
+    return wanted === "decline" ? opts.find((o) => DECLINE_RX2.test(text(o))) ?? null : bestMatch(opts, wanted, min);
+  }
+  async function findInLongList(btn, wanted, min) {
+    let list = openListbox(btn);
+    if (!list || wanted === "decline") return null;
+    const typed = norm(wanted).replace(/[^a-z0-9 ]/g, "").slice(0, 4);
+    for (const ch of typed) key(list, ch);
+    await sleep(250);
+    list = openListbox(btn) ?? list;
+    let m = optionIn(list, wanted, min);
+    for (let i = 0; !m && i < 40 && list.scrollHeight > list.clientHeight; i++) {
+      const before = list.scrollTop;
+      list.scrollTop = before + Math.max(120, list.clientHeight - 20);
+      list.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await sleep(60);
+      m = optionIn(list, wanted, min);
+      if (list.scrollTop === before) break;
+    }
+    return m;
+  }
   async function selectDropdown(target, wanted, min = 0.6) {
     const btn = dropdownButton(target);
     if (!btn) return false;
     const current = dropdownValue(target);
     if (current && (wanted === "decline" ? DECLINE_RX2.test(current) : similarity(wanted, current) >= 0.92)) return true;
     if (!openListbox(btn)) await humanClick(btn);
-    const list = await waitFor(() => openListbox(btn), 4e3).catch(() => null);
+    let list = await waitFor(() => openListbox(btn), 4e3).catch(() => null);
+    if (!list) {
+      btn.focus();
+      key(btn, "ArrowDown");
+      list = await waitFor(() => openListbox(btn), 2e3).catch(() => null);
+    }
     if (!list) return false;
-    const opts = qa('[role="option"]', list).filter((o) => text(o) && !/^select one$/i.test(text(o)));
-    const match = wanted === "decline" ? opts.find((o) => DECLINE_RX2.test(text(o))) ?? null : bestMatch(opts, wanted, min);
+    const match = optionIn(list, wanted, min) ?? await findInLongList(btn, wanted, min);
     if (!match) {
       await closeListbox(btn);
       return false;
     }
+    const wantText = text(match);
+    match.scrollIntoView?.({ block: "nearest" });
     await humanClick(match);
     await sleep(120);
     await waitStable(250, 4e3);
-    return !!dropdownValue(target);
+    if (dropdownValue(target) && similarity(wantText, dropdownValue(target)) >= 0.85) return true;
+    if (!openListbox(btn)) {
+      btn.focus();
+      key(btn, "ArrowDown");
+      await waitFor(() => openListbox(btn), 2e3).catch(() => null);
+    }
+    const l2 = openListbox(btn);
+    if (l2) {
+      const opts = qa('[role="option"]', l2);
+      const idx = opts.findIndex((o) => text(o) === wantText);
+      if (idx >= 0) {
+        opts[idx].focus?.();
+        for (let i = 0; i <= idx; i++) key(document.activeElement instanceof HTMLElement ? document.activeElement : l2, "ArrowDown");
+        key(document.activeElement instanceof HTMLElement ? document.activeElement : opts[idx], "Enter");
+        await sleep(150);
+        await waitStable(250, 4e3);
+      } else await closeListbox(btn);
+    }
+    return !!dropdownValue(target) && similarity(wantText, dropdownValue(target)) >= 0.85;
   }
   function dropdownOptions(btn) {
     const list = openListbox(btn);
@@ -874,35 +950,83 @@
   function visibleOptions() {
     return qa(sel("promptOption")).filter(isVisible);
   }
+  function spinning() {
+    return qa(sel("spinner")).some(isVisible) || qa('[data-automation-id*="oading"], [aria-busy="true"]').some(isVisible);
+  }
+  async function settledOptions(timeout = 6e3) {
+    const end = Date.now() + timeout;
+    let last = "";
+    let stableSince = Date.now();
+    while (Date.now() < end) {
+      const o = visibleOptions();
+      const sig = o.map(text).join("|");
+      if (sig !== last) {
+        last = sig;
+        stableSince = Date.now();
+      }
+      if (o.length && !spinning() && Date.now() - stableSince >= 300) return o;
+      await sleep(100);
+    }
+    return visibleOptions();
+  }
+  var MULTI_ALIASES = [
+    [/^aws$|amazon web services/i, ["Amazon Web Services (AWS)", "AWS", "Amazon Web Services"]],
+    [/^gcp$|google cloud/i, ["Google Cloud Platform (GCP)", "Google Cloud Platform", "GCP"]],
+    [/^azure$|microsoft azure/i, ["Microsoft Azure", "Azure"]],
+    [/^k8s$|^kubernetes$/i, ["Kubernetes"]],
+    [/^js$|^javascript$/i, ["JavaScript"]],
+    [/^ts$|^typescript$/i, ["TypeScript"]],
+    [/^golang$|^go$/i, ["Go (Programming Language)", "Go", "Golang"]],
+    [/^c#$|^csharp$/i, ["C# (Programming Language)", "C#"]],
+    [/^c\+\+$/i, ["C++ (Programming Language)", "C++"]],
+    [/^ci\/?cd$/i, ["Continuous Integration and Continuous Delivery (CI/CD)", "CI/CD", "Continuous Integration"]],
+    [/^ml$|^machine learning$/i, ["Machine Learning"]],
+    [/^ai$|^artificial intelligence$/i, ["Artificial Intelligence (AI)", "Artificial Intelligence"]],
+    [/^sql$/i, ["SQL (Programming Language)", "SQL"]],
+    [/^linkedin$/i, ["LinkedIn", "LinkedIn Jobs", "LinkedIn.com"]]
+  ];
+  function searchTerms(wanted) {
+    const out = [wanted];
+    for (const [rx2, alts] of MULTI_ALIASES) if (rx2.test(wanted.trim())) out.push(...alts);
+    const first = wanted.replace(/\(.*?\)/g, "").trim().split(/\s+/)[0];
+    if (first && first.length >= 3 && first !== wanted) out.push(first);
+    return [...new Set(out)];
+  }
   async function multiselectPick(target, wanted, opts = {}) {
     const min = opts.min ?? 0.6;
     if (multiselectSelected(target).some((s) => similarity(wanted, s) >= 0.85)) return true;
     const input = q(sel("searchBox"), target) ?? q("input", target);
     if (!input) return false;
-    await humanClick(input);
-    setNativeValue(input, wanted);
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
-    await sleep(250);
-    for (let depth = 0; depth < 3; depth++) {
-      const options = await waitFor(() => {
-        const o = visibleOptions();
-        return o.length ? o : null;
-      }, 4e3).catch(() => []);
-      if (!options.length) break;
-      let match = bestMatch(options, wanted, min);
-      if (!match && opts.fallbackFirst) match = options[0];
-      if (!match) break;
-      await humanClick(match);
+    const path = opts.path?.length ? opts.path : [wanted];
+    const terms = opts.noRetry || opts.path ? [path[0]] : searchTerms(wanted);
+    const before = multiselectSelected(target).length;
+    for (const term of terms) {
+      await humanClick(input);
+      setNativeValue(input, opts.path ? "" : term);
+      if (!opts.path) input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
       await sleep(250);
-      if (multiselectSelected(target).length) {
-        blur(input);
-        return true;
+      for (let depth = 0; depth < 3; depth++) {
+        const options = await settledOptions(depth ? 4e3 : 6e3);
+        if (!options.length) break;
+        const want = opts.path ? path[Math.min(depth, path.length - 1)] : wanted;
+        let match = bestMatch(options, want, min) ?? (term !== wanted ? bestMatch(options, term, Math.max(min, 0.85)) : null);
+        if (!match && opts.fallbackFirst && (!opts.path || depth >= path.length - 1)) match = options[0];
+        if (!match) break;
+        const picked = text(match);
+        await humanClick(match);
+        await sleep(250);
+        if (spinning()) await settledOptions(3e3);
+        if (multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(picked, s) >= 0.85)) {
+          blur(input);
+          return true;
+        }
       }
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await sleep(80);
     }
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     blur(input);
     await sleep(80);
-    return multiselectSelected(target).some((s) => similarity(wanted, s) >= 0.6);
+    return multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(wanted, s) >= 0.6);
   }
   function radios(target) {
     return qa('input[type="radio"], [role="radio"]', target);
@@ -990,10 +1114,32 @@
     if (day && d) ok = await setSegment(day, d) && ok;
     if (year && y) ok = await setSegment(year, y) && ok;
     if (!month && !year) {
-      return setText(target, [m, d, y].filter(Boolean).join("/"));
+      const input = inputIn(target);
+      const masked = !!input && /mm|yyyy|dd/i.test(input.placeholder || input.getAttribute("aria-placeholder") || "");
+      const v = [m, d, y].filter(Boolean).join(masked ? "" : "/");
+      const done = await setText(target, v);
+      if (done && !invalidDate(target)) return true;
+      return setText(target, [m, d, y].filter(Boolean).join(masked ? "/" : "")).then((r) => r && !invalidDate(target));
     }
     if (year) blur(year);
+    if (ok && invalidDate(target)) {
+      if (month && m) {
+        setNativeValue(month, "");
+        ok = await setSegment(month, m);
+      }
+      if (year && y) {
+        setNativeValue(year, "");
+        ok = await setSegment(year, y) && ok;
+        blur(year);
+      }
+      await sleep(80);
+      ok = ok && !invalidDate(target);
+    }
     return ok;
+  }
+  function invalidDate(target) {
+    const c = target.closest('[data-automation-id^="formField-"]') ?? target;
+    return qa(sel("errorMessage"), c).filter(isVisible).some((e) => /invalid date|ungültiges datum|date non valide|date invalide|fecha no válida|fecha inválida|data non valida|data inválida|ongeldige datum|nieprawidłowa data/i.test(text(e)));
   }
   function dateValue(target) {
     const y = q(sel("dateYear"), target)?.value ?? "";
@@ -1131,6 +1277,8 @@
     const next = nextButton();
     if (SUBMITTED_RX.test(body) && !next)
       return "submitted";
+    if (ALREADY_APPLIED_RX.test(body) && !anyAid("progressActive")) return "alreadyApplied";
+    if (SOMETHING_WRONG_RX.test(body) && !qa('[data-automation-id^="formField-"]').some(isVisible)) return "somethingWrong";
     if (anyAid("verifyPassword") || anyAid("createAccountSubmit")) return "createAccount";
     if (anyAid("signInSubmit") || anyAid("password") && anyAid("email")) return "signIn";
     if (anyAid("signInWithEmail") && !anyAid("progressActive")) return "signIn";
@@ -1146,7 +1294,7 @@
       ["pageMyInfo", "myInformation"],
       ["pageAutofill", "resumeUpload"]
     ];
-    for (const [key, kind] of PAGES) if (anyAid(key)) return kind;
+    for (const [key2, kind] of PAGES) if (anyAid(key2)) return kind;
     const step = activeStepName();
     if (step) {
       if (isSubmitButton(next)) return "review";
@@ -1236,17 +1384,17 @@
     masterCoverLetter: "wd:masterCoverLetter",
     answers: "wd:answerBank",
     apps: "wd:applications",
-    job: (key) => `wd:job:${key}`,
+    job: (key2) => `wd:job:${key2}`,
     lastJob: (host2) => `wd:lastJob:${host2}`,
-    docs: (key) => `wd:docs:${key}`,
+    docs: (key2) => `wd:docs:${key2}`,
     run: (host2) => `wd:run:${host2}`
   };
-  async function get(key) {
-    const out = await chrome.storage.local.get(key);
-    return out?.[key];
+  async function get(key2) {
+    const out = await chrome.storage.local.get(key2);
+    return out?.[key2];
   }
-  async function set(key, value) {
-    await chrome.storage.local.set({ [key]: value });
+  async function set(key2, value) {
+    await chrome.storage.local.set({ [key2]: value });
   }
   function emptyProfile() {
     return {
@@ -1322,8 +1470,8 @@
     await set(K.job(job.key), job);
     await set(K.lastJob(job.tenantHost), job.key);
   }
-  async function getJob(key) {
-    return get(K.job(key));
+  async function getJob(key2) {
+    return get(K.job(key2));
   }
   async function getLastJobKey(host2) {
     return get(K.lastJob(host2));
@@ -1394,7 +1542,13 @@
     return await chrome.runtime.sendMessage({ type: "wd:cred:get", tenantHost: host2 });
   }
   function captchaPresent() {
-    return qa('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i], [data-automation-id*="captcha" i]').some(isVisible);
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    return qa('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"], iframe[title*="captcha" i]').some((f) => {
+      if (!isVisible(f) || f.closest(".grecaptcha-badge")) return false;
+      const r = f.getBoundingClientRect();
+      return r.width >= 60 && r.height >= 50 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+    });
   }
   function emailFor(ctx, creds) {
     return creds.cred?.email || ctx.profile.personal.email || creds.master?.email || "";
@@ -1408,8 +1562,8 @@
     }
     return false;
   }
-  async function submit(key, label) {
-    const btn = byAid(key) ?? buttonByText(label);
+  async function submit(key2, label) {
+    const btn = byAid(key2) ?? buttonByText(label);
     if (!btn) throw new NeedsHuman("Couldn't find the submit button on the sign-in form.");
     await humanClick(btn);
     await sleep(400);
@@ -1725,13 +1879,28 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       return false;
     }
   }
-  async function fill(ctx, key, value, root2 = document) {
-    const el = field(key, root2);
+  var touched = /* @__PURE__ */ new WeakSet();
+  if (typeof document !== "undefined") {
+    const mark = (e) => {
+      if (!e.isTrusted) return;
+      const c = e.target?.closest?.('[data-automation-id^="formField-"]');
+      if (c) touched.add(c);
+    };
+    for (const t of ["keydown", "mousedown", "paste"]) document.addEventListener(t, mark, true);
+  }
+  var TENANT_DEFAULTS = /* @__PURE__ */ new Set(["country", "phoneCode", "phoneType"]);
+  function caseOnly(a, b) {
+    return a !== b && a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+  async function fill(ctx, key2, value, root2 = document) {
+    const el = field(key2, root2);
     if (!el) return false;
     const c = containerOf(el);
     handled.add(c);
     if (!value) return false;
-    if (hooks.keepExisting?.() && readValue(kindOf(c) === "none" ? el : c)) return true;
+    const existing = readValue(kindOf(c) === "none" ? el : c);
+    const keep = existing && (touched.has(c) || !TENANT_DEFAULTS.has(key2) && !caseOnly(existing, value));
+    if (hooks.keepExisting?.() && keep) return true;
     await pace(ctx);
     let ok = await writeValue(kindOf(c) === "none" ? el : c, value).catch((e) => {
       if (e instanceof NeedsHuman) return false;
@@ -1739,7 +1908,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     });
     if (!ok && ["dropdown", "radio", "checkboxGroup"].includes(kindOf(c))) ok = await translateChoice(ctx, c, value);
     if (!ok) {
-      const label = labelOf(c) || key;
+      const label = labelOf(c) || key2;
       if (isRequired(c)) ctx.flag(label, `Couldn't set "${value}"`);
       else ctx.log(`Skipped optional "${label}" (couldn't set "${value}")`, "warn");
     }
@@ -1748,8 +1917,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   function bulletsText(bullets) {
     return bullets.map((b) => `• ${b.replace(/^[•\-*]\s*/, "")}`).join("\n");
   }
-  function section(key, heading2) {
-    const byId = byAid(key);
+  function section(key2, heading2) {
+    const byId = byAid(key2);
     if (byId) return byId;
     const h = qa("h2, h3, h4, legend, [role='heading']").find((e) => isVisible(e) && heading2.test(text(e)));
     return h ? h.closest("section, fieldset, [role='group'], div[data-automation-id]") ?? h.parentElement : null;
@@ -1830,6 +1999,42 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const rx2 = which === "start" ? /^(from|start|first year|von|beginn|de$|du|début|desde|inicio|início|da$|dal|inizio|van|begin|od|開始|开始)/iu : /^(to|end|last year|graduation|bis|ende|à$|au|fin|hasta|até|término|a$|al|fine|tot|eind|do|終了|结束)/iu;
     return qa('[data-automation-id^="formField-"]', block).find((c) => isVisible(c) && rx2.test(labelOf(c)) && kindOf(c) === "date") ?? null;
   }
+  function nationalNumber(raw, countryCode = "") {
+    const s = String(raw || "").trim();
+    const cc = countryCode.replace(/\D/g, "");
+    let d = s.replace(/\D/g, "");
+    const international = /^(\+|00)/.test(s);
+    if (international && s.startsWith("00")) d = d.slice(2);
+    if (international && cc && d.startsWith(cc)) d = d.slice(cc.length);
+    else if (international) {
+      const m = s.match(/^\(?(?:\+|00)\s*(\d{1,3})\)?[\s.\-)]/);
+      if (m) d = d.slice(m[1].length);
+    }
+    if (cc !== "39") d = d.replace(/^0+/, "");
+    return d;
+  }
+  async function sourceFallback(ctx, c) {
+    const src = ctx.profile.answers.source;
+    const paths = [
+      [["Social Media", src], false],
+      [["Social Networking", src], false],
+      [["Job Board", src], false],
+      [["Online Job Board", src], false],
+      [["Internet", src], false],
+      [["Job Board", "Other"], true],
+      [["Online Job Board", "Other"], true],
+      [["Job Posting", "Other"], true],
+      [["Website", "Other"], true]
+    ];
+    for (const [path, fallbackFirst] of paths) {
+      if (await multiselectPick(c, path[path.length - 1], { path, min: 0.75, fallbackFirst })) {
+        ctx.log(`How did you hear about us → ${multiselectSelected(c).join(", ") || path.join(" › ")}`);
+        return true;
+      }
+    }
+    for (const v of ["Job Board", "Online Job Board", "Social Media", "Internet"]) if (await selectDropdown(c, v, 0.75)) return true;
+    return false;
+  }
   async function myInformation(ctx) {
     const me = ctx.profile.personal;
     const sourceEl = field("source");
@@ -1838,7 +2043,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       handled.add(c);
       if (!readValue(c) && ctx.profile.answers.source) {
         await pace(ctx);
-        const ok = await multiselectPick(c, ctx.profile.answers.source) || await selectDropdown(c, ctx.profile.answers.source);
+        const ok = await multiselectPick(c, ctx.profile.answers.source) || await selectDropdown(c, ctx.profile.answers.source) || await sourceFallback(ctx, c);
         if (!ok && isRequired(c)) ctx.flag(labelOf(c) || "How did you hear about us", `No option like "${ctx.profile.answers.source}"`);
       }
     }
@@ -1875,7 +2080,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         if (!ok) ctx.flag("Country Phone Code", `No option like "${want}"`);
       }
     }
-    await fill(ctx, "phoneNumber", me.phone.number.replace(/^\+\d+\s*/, ""));
+    await fill(ctx, "phoneNumber", nationalNumber(me.phone.number, me.phone.countryCode));
     const email = field("email");
     if (email && !readValue(containerOf(email))) await fill(ctx, "email", me.email);
   }
@@ -2034,7 +2239,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       ctx.log(`Skills: ${added} added`);
     }
     await uploadDocuments(ctx);
-    const sites = [p.personal.website, p.personal.github].filter(Boolean);
+    const sites = [field("linkedin") ? "" : p.personal.linkedin, p.personal.github, p.personal.website].filter(Boolean);
     const web = section("webSection", /^(websites?|webseiten?|sites? web|sitios web|sites|siti web|websites?|strony)/iu);
     if (web && sites.length) {
       const bs = await ensureBlockCount(ctx, web, "urlF", sites.length);
@@ -2053,8 +2258,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     await waitStable(1200, 3e4);
   }
-  async function eeo(ctx, key, pref, label) {
-    const el = field(key);
+  async function eeo(ctx, key2, pref, label) {
+    const el = field(key2);
     if (!el) return;
     const c = containerOf(el);
     handled.add(c);
@@ -2429,10 +2634,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       }
       case "applyMethod": {
         await waitForExternalDocs(ctx);
-        const hasCv = !!pickCv(ctx);
-        const btn = hasCv && byAid("autofillWithResume") || byAid("applyManually") || byAid("autofillWithResume");
-        if (!btn) throw new NeedsHuman("Choose how to apply, then click Resume.");
-        ctx.log(hasCv ? "Apply method: Autofill with Resume (tailored CV)" : "Apply method: Apply Manually");
+        const btn = byAid("applyManually");
+        if (!btn) throw new NeedsHuman('Choose "Apply Manually", then click Resume.');
+        ctx.log("Apply method: Apply Manually");
         await humanClick(btn);
         await waitStable(600);
         return "next";
@@ -2479,6 +2683,19 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         return "stop";
       case "candidateHome":
         throw new NeedsHuman("You're on your candidate home page. Open the job (or the draft under My Applications), then click Resume.");
+      case "alreadyApplied":
+        throw new Error("You have already applied for this job (Workday allows one application per job)");
+      case "somethingWrong": {
+        const k = `ua-wd-refresh|${location.pathname}`;
+        const n = Number(sessionStorage.getItem(k) || 0);
+        if (n >= 2) throw new Error('Workday kept saying "Something went wrong" after two refreshes');
+        sessionStorage.setItem(k, String(n + 1));
+        ctx.log('Workday said "Something went wrong" — refreshing the page', "warn");
+        await ctx.save();
+        location.reload();
+        await sleep(1e4);
+        return "stop";
+      }
       default:
         ctx.run.attempts++;
         if (ctx.run.attempts > 5) throw new NeedsHuman("Unrecognised page. Move to the next step yourself, then click Resume.");
@@ -2645,7 +2862,14 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   var LOG_KEY = "ua_wd_engine_log";
   var LOGIN_KEY = "ua_wd_login";
   var CV_KEY = "ua_wd_cv_profile";
-  var say = (msg) => console.info(`[UA][WD-Engine] ${msg}`);
+  var say = (msg) => {
+    console.info(`[UA][WD-Engine] ${msg}`);
+    try {
+      window.__uaJrLine?.("engine", msg);
+    } catch {
+    }
+  };
+  var logShown = 0;
   var W = window;
   function within(p, ms) {
     return Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
@@ -2704,10 +2928,17 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const r = crypto.getRandomValues(new Uint32Array(12));
     return "Ua" + Array.from(r, (n) => abc[n % abc.length]).join("") + "!7q";
   }
+  function siteKey(host2 = location.hostname) {
+    return host2.toLowerCase().replace(/^www\./, "").replace(/\.wd\d+\./, ".").replace(/\.myworkdaysite\.com$/, ".myworkdayjobs.com");
+  }
   async function workdayLogin() {
-    const d = await ST.get([LOGIN_KEY, "ua_app_password", "ua_app_email", "WORKDAY_SIGNUP_INFORMATION"]);
+    const d = await ST.get([LOGIN_KEY, "ua_app_password", "ua_app_email", "WORKDAY_SIGNUP_INFORMATION", "ua_ats_logins", "ua_wd_site_pw"]);
     const login = Object.assign({ sites: {} }, d[LOGIN_KEY] || {});
-    let password = d.ua_app_password || "";
+    const k = siteKey();
+    const site = (d.ua_ats_logins || {})[k];
+    if (site && site.email && site.password) return { email: site.email, password: site.password, login: { ...login, sites: { ...login.sites, [tenantHost()]: { state: "account" } } } };
+    const known = (d.ua_wd_site_pw || {})[k];
+    let password = known || d.ua_app_password || "";
     if (!password) {
       try {
         const jr = typeof d.WORKDAY_SIGNUP_INFORMATION === "string" ? JSON.parse(d.WORKDAY_SIGNUP_INFORMATION) : d.WORKDAY_SIGNUP_INFORMATION;
@@ -2765,6 +2996,12 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       case "wd:progress":
         try {
           W.__uaWdProgress?.(msg.state?.page || "");
+        } catch {
+        }
+        try {
+          const log = msg.state && msg.state.log || [];
+          for (const l of log.slice(Math.max(0, Math.min(logShown, log.length)))) say(`${l.level && l.level !== "info" ? l.level + ": " : ""}${l.msg}`);
+          logShown = log.length;
         } catch {
         }
         return void 0;
@@ -2944,6 +3181,11 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     return { code: defCode, national: digits.replace(/^0+/, "") };
   }
+  function properCase(name) {
+    const s = String(name || "").trim();
+    if (!s || s !== s.toUpperCase() && s !== s.toLowerCase()) return s;
+    return s.toLowerCase().replace(new RegExp("(^|[\\s'’\\-])(\\p{L})", "gu"), (_m, sep, ch) => sep + ch.toUpperCase());
+  }
   function declineOr(v) {
     const s = String(v || "").trim();
     return !s || /prefer not|decline|do not wish|don'?t wish|not to say/i.test(s) ? "decline" : s;
@@ -3045,6 +3287,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         if (!p.summary) p.summary = cv.summary;
       }, () => void 0);
     }
+    for (const k of ["firstName", "lastName", "preferredName"]) p.personal[k] = properCase(p.personal[k] || "");
     return p;
   }
   async function savedCv() {
@@ -3110,6 +3353,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
   }
   async function installHooks(mode) {
+    logShown = 0;
     const profile = await buildProfile();
     let cv = null;
     accountNoted = false;
@@ -3128,6 +3372,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   var AUTH_PAGES = ["signIn", "createAccount", "verifyEmail"];
   var accountNoted = false;
   var lastPage = "";
+  var lastActive = 0;
+  var bootUntil = 0;
   function onPage(run) {
     lastPage = run.page;
     if (!accountNoted && !AUTH_PAGES.includes(run.page) && run.done.some((p) => p === "signIn" || p === "createAccount")) {
@@ -3187,6 +3433,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     const mode = { queue: true, submit: true, startedAt: Date.now(), jobId: id };
     writeMode(mode);
+    bootUntil = Date.now() + 3e4;
     say(`applying (queue job ${id.slice(0, 40)})`);
     try {
       for (let i = 0; i < 40 && !hasWorkdayApp(); i++) await new Promise((r) => setTimeout(r, 500));
@@ -3202,10 +3449,23 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     isWorkday: () => TOP && isWorkdayHost(),
     startJob: (jobId) => void startJob(jobId),
     result: (jobId) => readResult(String(jobId || "")),
-    /** Still working on this job (or resuming it after a reload). */
+    /** Still working on this job (or about to resume it after a reload). A run
+     *  that ended without reporting (the engine stops quietly on, e.g., a Submit
+     *  button outside Review) is recorded here as "stopped" on its page, so the
+     *  host carries on instead of waiting for an outcome that never comes. */
     running: (jobId) => {
+      const id = String(jobId || "");
+      if (isActive()) {
+        lastActive = Date.now();
+        return true;
+      }
       const m = readMode();
-      return !!m && m.jobId === String(jobId || "") && !m.assist || isActive() && !!m;
+      if (!m || m.jobId !== id || m.assist) return false;
+      const ran = lastActive >= m.startedAt;
+      if (ran ? Date.now() - lastActive < 2500 : Date.now() < bootUntil || Date.now() - m.startedAt < 8e3) return true;
+      clearMode();
+      if (!readResult(id)) writeResult({ jobId: id, outcome: "stopped", page: lastPage || detectPage(), at: Date.now(), reason: "the engine stopped on this page without finishing" });
+      return false;
     },
     page: () => lastPage || detectPage(),
     stop: () => {
@@ -3274,9 +3534,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         return;
       }
       if (!ASSIST_PAGES2.includes(page)) return;
-      const key = `${page}|${activeStepName()}|${location.pathname}`;
-      if (assisted.has(key)) return;
-      assisted.add(key);
+      const key2 = `${page}|${activeStepName()}|${location.pathname}`;
+      if (assisted.has(key2)) return;
+      assisted.add(key2);
       say(`assist: filling ${page}`);
       const mode = { queue: false, submit: false, assist: true, startedAt: Date.now(), jobId: "" };
       void installHooks(mode).then(() => startRun(null));
@@ -3296,6 +3556,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const boot = (tries = 0) => {
       const mode = readMode();
       if (!mode || mode.assist) return;
+      if (!tries) bootUntil = Date.now() + 35e3;
       if (!hasWorkdayApp()) {
         if (tries < 60) setTimeout(() => boot(tries + 1), 500);
         return;

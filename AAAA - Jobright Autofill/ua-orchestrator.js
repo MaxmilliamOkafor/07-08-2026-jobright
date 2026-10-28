@@ -166,9 +166,45 @@
     });
   } catch (_) {}
 
+  /* Jobright's "tailor your resume" / "cover letter" tab: jobright.ai/jobs/info/<id>
+     ?plugin_tailor=1 (or plugin_cover_letter=1), opened beside the application
+     by its worker's openTailorTab. You asked for no Jobright tab to appear on its
+     own. It opens only when you pressed Tailor / Generate yourself (the page tells
+     us, see UA_TAILOR_INTENT), or when you turned on tailoring for queue runs —
+     and then in the background. Refused, Jobright's own catch reports "not
+     opened" and its autofill carries on with your saved CV. */
+  const TAILOR_TAB_RE = /^https:\/\/([a-z0-9-]+\.)*(jobright\.ai|jobright-internal\.com)\/jobs\/info\/[^?#]+\?[^#]*\bplugin_(tailor|cover_letter)=1/i;
+  let _tailorIntentAt = 0;
+  try {
+    chrome.runtime.onMessage.addListener((msg, sender) => {
+      if (msg && msg.type === 'UA_TAILOR_INTENT' && sender && sender.tab) _tailorIntentAt = Date.now();
+    });
+  } catch (_) {}
+  async function tailorTabAllowed() {
+    if (Date.now() - _tailorIntentAt < 15000) return 'yes';
+    try {
+      const d = await new Promise((r) => chrome.storage.local.get('ua_queue_tailor', (v) => { void chrome.runtime.lastError; r(v || {}); }));
+      if (_runOn && d.ua_queue_tailor === true) return 'background';
+    } catch (_) {}
+    return 'no';
+  }
+
   try {
     const rawCreate = chrome.tabs.create.bind(chrome.tabs);
     chrome.tabs.create = function (props, done) {
+      if (props && typeof props === 'object' && props[OWN] !== true && typeof props.url === 'string' && TAILOR_TAB_RE.test(props.url)) {
+        const decided = tailorTabAllowed().then((how) => {
+          if (how === 'no') {
+            console.log('[UA] Jobright tailor tab not opened (you did not ask for it):', props.url);
+            throw new Error('Jobright tailor tab blocked: not requested');
+          }
+          const p = Object.assign({}, props, how === 'background' ? { active: false } : {});
+          return new Promise((res, rej) => rawCreate(p, (t) => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res(t))));
+        });
+        if (done === undefined) return decided;
+        decided.then((t) => done(t), () => done(undefined));
+        return undefined;
+      }
       let p = props, ours = false;
       if (p && typeof p === 'object') {
         const allowed = p[ALLOW_FRONT] === true;
@@ -1152,6 +1188,7 @@
         chrome.contextMenus.create({ id: 'ua-add-page', title: 'Add this page to the Jobright queue', contexts: ['page'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-open-jobright', title: 'Open Jobright on this page', contexts: ['page', 'frame', 'selection', 'link', 'editable'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-add-link', title: 'Add link to the Jobright queue', contexts: ['link'] }, () => void chrome.runtime.lastError);
+        chrome.contextMenus.create({ id: 'ua-open-debugger', title: 'Jobright Debugger (every job\'s timeline & errors)', contexts: ['all'] }, () => void chrome.runtime.lastError);
       });
     } catch (_) {}
   }
@@ -1165,6 +1202,9 @@
               chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
             });
           } else chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
+        } else if (info.menuItemId === 'ua-open-debugger') {
+          if (typeof self.__uaOpenDebugger === 'function') self.__uaOpenDebugger('');
+          else chrome.tabs.create({ url: chrome.runtime.getURL('ua-debug.html') });
         } else if (info.menuItemId === 'ua-open-tab') {
           chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
         } else if (info.menuItemId === 'ua-add-page') {
