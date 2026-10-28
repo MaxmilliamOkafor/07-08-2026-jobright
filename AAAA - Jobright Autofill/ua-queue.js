@@ -553,6 +553,22 @@
   $('btnExport').addEventListener('click', exportCsv);
   $('btnCopyFails').addEventListener('click', copyFailures);
   $('btnDiag').addEventListener('click', extractDiagnostics);
+  // One file with everything the Debugger and the recorder have.
+  $('btnDebugDl').addEventListener('click', () => {
+    const b = $('btnDebugDl'), t = b.textContent;
+    b.textContent = 'Preparing…';
+    chrome.runtime.sendMessage({ type: 'UA_DBG_BUNDLE', page: { url: location.href, userAgent: navigator.userAgent } }, (r) => {
+      void chrome.runtime.lastError;
+      if (r && r.ok && r.json) {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([r.json], { type: 'application/json' }));
+        a.download = r.name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+        b.textContent = 'Saved ✓';
+      } else b.textContent = 'Could not prepare it';
+      setTimeout(() => (b.textContent = t), 2500);
+    });
+  });
   // The Debugger: every job's timeline, fields and errors (ua-debug.html).
   $('btnDebugger').addEventListener('click', () => { try { chrome.tabs.create({ url: chrome.runtime.getURL('ua-debug.html') }); } catch (_) { window.open('ua-debug.html', '_blank'); } });
   // Verification codes from the signed-in Gmail (see ua-mailbox.js, findViaGmailSession).

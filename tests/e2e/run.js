@@ -135,6 +135,17 @@ const T0 = Date.now();
     await dbg.click('.tabs button[data-t="page"]').catch(() => {});
     await dbg.waitForTimeout(500);
     await dbg.screenshot({ path: path.join(process.env.DEBUG_SHOT, 'debugger-page.png') });
+    // The one-click download: what is in the file, and that no password is.
+    const [dl] = await Promise.all([dbg.waitForEvent('download', { timeout: 15000 }).catch(() => null), dbg.click('#exportAll')]);
+    if (dl) {
+      const file = path.join(process.env.DEBUG_SHOT, await dl.suggestedFilename());
+      await dl.saveAs(file);
+      const txt = fs.readFileSync(file, 'utf8');
+      const j = JSON.parse(txt);
+      console.log('BUNDLE:', JSON.stringify({ name: path.basename(file), kb: Math.round(txt.length / 1024), keys: Object.keys(j), summary: { ...j.summary, causes: (j.summary.causes || []).map((c) => c.cause + ' x' + c.count) },
+        jobs: j.jobs.length, jobLines: j.jobs.map((x) => x.record && x.record.lines.length), hasDiag: j.diagnosticsReport.length > 0, logs: Object.keys(j.logs), settings: Object.keys(j.settings),
+        omitted: j.omitted.filter((k) => !/Jobright/.test(k)), passwordInFile: /SharedPass123!|JobrightPass1!/.test(txt) }));
+    } else console.log('BUNDLE: no download');
   }
   await ctx.close(); process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

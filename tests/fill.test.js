@@ -3465,10 +3465,44 @@ console.log('v17.27: Debugger — every job recorded, failures grouped by cause'
   // Page + ways in.
   eq('the Debugger page loads its script (no inline script)', /<script src="ua-debug\.js"><\/script>/.test(html) && !/<script>[^<]/.test(html), true);
   eq('it shows causes, jobs, timeline, page snapshot, screenshot, pages', ['renderCauses', 'renderJobs', 'renderTimeline', 'renderPage', "'shot'", "'pages'"].every((k) => page.includes(k)), true);
-  eq('copy and export for sending on', /jobReport/.test(page) && /Export all/.test(html) && /Copy summary/.test(html), true);
+  eq('copy and export for sending on', /jobReport/.test(page) && /Download everything/.test(html) && /Copy summary/.test(html), true);
   eq('a Debug button in the run panel', /id="uc-dbg"/.test(src) && /openDebugger\(/.test(src), true);
   eq('…in the Queue Manager', /id="btnDebugger"/.test(qhtml) && /btnDebugger/.test(qjs), true);
   eq('…and in the right-click menu', /ua-open-debugger/.test(orch), true);
+}
+
+
+/* ── 78. v17.28: alongside other extensions; one-click debug download ── */
+console.log('v17.28: run panel sealed in its own shadow root; coexisting with OptimHire; download everything');
+{
+  const ext = path.dirname(process.argv[2]);
+  const rd = (n) => fs.readFileSync(path.join(ext, n), 'utf8');
+  const sw = rd('ua-debugger.js');
+  // Sealed panel.
+  const eo = body('ensureOverlay');
+  eq('the run panel is a custom element with a CLOSED shadow root', /document\.createElement\('ua-run-panel'\)/.test(eo) && /attachShadow\(\{ mode: 'closed' \}\)/.test(eo), true);
+  eq('its styles are inside it, not in the page', /style\.textContent = UC_PANEL_CSS/.test(eo) && !/#ua-ctrl-card\{width:300px/.test(body('injectCSS')), true);
+  eq('the page cannot restyle the host either (all:initial !important)', /all:initial!important;position:fixed!important/.test(eo), true);
+  eq('every lookup of its parts goes through the shadow root', !/document\.getElementById\('(uc-[\w-]+|ua-ctrl)'\)/.test(src) && /function ucEl\(id\)/.test(src), true);
+  eq('…and an element with the same id in the page is never taken for ours', /_ucShadow\.getElementById\(id\)\) \|\| null/.test(body('ucEl')), true);
+  eq('this extension\'s own scans skip it', /#ua-ctrl,ua-run-panel,/.test(src), true);
+  // Generic hide rules only where we are applying.
+  const css = body('injectCSS');
+  eq('generic "paywall / review popup" hide rules only on a tab this extension is applying in',
+    /html\[data-ua-auto="1"\] \[class\*="paywall"\]/.test(css) && /html\[data-ua-auto="1"\] \[class\*="review-popup"\]/.test(css) && !/\n\[class\*="paywall"\]/.test(css), true);
+  // Not filling a page another extension is filling.
+  eq('Fully Automated stands down where your OptimHire build is working', /otherAutofillDriving\(\) \|\| \(await waitUntil\(otherAutofillDriving, 2500, 250\)\)/.test(src) && /standing down here/.test(src), true);
+  eq('…recognised by its own elements', ['#oh-csv-overlay-host', '#oh-autofill-banner', '#wd-autopilot-overlay', '#oh-wd-submit-countdown', '#optimhire-resume-score-record'].every((k) => src.includes(k)), true);
+  // One-click download.
+  eq('a "Download debug log" button in the Jobright sidebar card', /id="ua-sb-dl"/.test(src) && /querySelector\('#ua-sb-dl'\)\?\.addEventListener\('click', \(e\) => downloadDebugBundle/.test(src), true);
+  eq('…in the run panel', /id="uc-dl"/.test(src), true);
+  eq('…on the Debugger page and in the Queue Manager', /UA_DBG_BUNDLE/.test(rd('ua-debug.js')) && /Download everything/.test(rd('ua-debug.html')) && /btnDebugDl/.test(rd('ua-queue.html')) && /UA_DBG_BUNDLE/.test(rd('ua-queue.js')), true);
+  eq('the page adds its own in-memory log to the file', /log: _dbgBuf\.slice\(-2000\)/.test(body('downloadDebugBundle')), true);
+  const secret = new RegExp(sw.match(/const SECRET_KEY_RE = \/(.*)\/i;/)[1], 'i');
+  for (const k of ['ua_app_password', 'WORKDAY_SIGNUP_INFORMATION', 'ua_ats_logins', 'ua_wd_site_pw', 'ua_resume_data', 'ua_resumes', 'ua_mail_token', 'ua_mail_client_id']) eq(`"${k}" never goes in the file`, secret.test(k), true);
+  for (const k of ['ua_q', 'ua_mgr_log', 'ua_diag_events', 'ua_wd_engine_log', 'ua_profile']) eq(`"${k}" does`, secret.test(k), false);
+  eq('the file has the summary by cause, every job record with its screenshot, and the diagnostics report',
+    /causes: Object\.entries\(causes\)/.test(sw) && /record: all\[REC\(e\.id\)\] \|\| null, screenshot: all\[SHOT\(e\.id\)\]/.test(sw) && /self\.__uaDiagReport/.test(sw), true);
 }
 
 

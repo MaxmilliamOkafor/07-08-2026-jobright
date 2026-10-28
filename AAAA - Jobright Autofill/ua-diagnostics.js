@@ -352,6 +352,9 @@
     return out.join('\n');
   }
 
+  // The Debugger's one-file download includes this report.
+  self.__uaDiagReport = () => report();
+
   async function clear() {
     await serial(() => set({ [K.AGG]: {}, [K.EVENTS]: [], [K.QUESTIONS]: {}, [K.BOARDS]: {} }));
   }

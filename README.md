@@ -3846,3 +3846,36 @@ job, opt-ins answered No, parser-mangled names and phones, and the other hosts.
 
 Left as it is: this build never presses "Autofill with Resume", even when it is the
 only choice (v17.26). The brief allows it in that case.
+
+## v17.28 — Alongside OptimHire without getting in each other's way; one-click debug log
+
+**The run panel came out transparent over the form** (your Ashby screenshot,
+with your OptimHire build running beside it). The panel was an ordinary `<div>`
+styled by page-wide CSS (`.uc-*`), so another extension's styles or the page's
+could restyle it, and its styles could leak onto theirs. Now:
+- The panel lives in **its own sealed shadow root** (`<ua-run-panel>`, closed)
+  with its styles inside. No page or extension CSS reaches in, and ours doesn't
+  leak out. Other extensions' page scanners can't see or press its Pause, Skip
+  or Quit.
+- Tested on a page whose CSS makes every div transparent, every button unstyled
+  and the panel's old class names magenta. The panel looks the same as anywhere
+  else (`tests/e2e/runner-panel.js`).
+- The generic hide rules ("paywall", "review popup", "upgrade modal" class names)
+  apply only on a tab this extension is applying in. Before, they hid such
+  elements on every page, another extension's included.
+- **Fully Automated stands down on a page your OptimHire build is already
+  working on.** It recognises OptimHire's run panel, autofill banner, Workday
+  engine overlay and Review countdown. This extension's own queue tabs are
+  unaffected.
+
+**One click to download everything:**
+- **⬇ Download debug log** is in the Jobright sidebar card (under Queue Manager)
+  and in the run panel.
+- It's also **⬇ Download debug log** in the Queue Manager and **⬇ Download
+  everything** in the Debugger.
+- The file contains the summary with failures by cause, every job's full record
+  (timeline, pages, page snapshot, screenshot), the diagnostics report, the
+  queue, the Queue Manager, Workday engine and mailbox logs, settings, your
+  profile, and the current page's in-memory log.
+- **Never passwords, site logins, tokens or your CV file.** Their key names are
+  listed under `omitted`, so it is clear they exist.

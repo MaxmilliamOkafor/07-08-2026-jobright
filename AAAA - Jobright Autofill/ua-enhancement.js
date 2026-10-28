@@ -3873,7 +3873,7 @@
 
      One predicate, applied at the single point every deep query goes through. */
   const OWN_UI_SEL = 'plasmo-csui,[id^="plasmo-"],[data-plasmo],#jobright-helper-id,' +
-    '.jobright-helper-content-container,#ua-ctrl,#ua-drawer,#ua-captcha-banner,' +
+    '.jobright-helper-content-container,#ua-ctrl,ua-run-panel,#ua-drawer,#ua-captcha-banner,' +
     '[id^="ua-"],[class^="ua-"],#ua-dual-action-buttons';
   function isOwnUi(el) {
     let node = el;
@@ -12051,9 +12051,11 @@
 .ant-modal-root:has(.popup-modal-actions){display:none!important}
 /* Hide review/feedback prompts after submission */
 .ant-modal-root:has(.good-reviews-popup-text),.ant-modal-root:has(.good-reviews-popup-title),.ant-modal-root:has(.leave-review-button),.ant-modal-root:has(.leave-review-text),.ant-modal-root:has(.CriticizeReviewsModal),.ant-modal-root:has(.GoodReviewsModel){display:none!important}
-[class*="review-popup"],[class*="review-modal"],[class*="feedback-modal"],[class*="good-reviews"],[class*="leave-review"]{display:none!important}
+/* Only on a tab this extension is applying in: these names are generic, and another
+   extension's own popups (or the page's) must not vanish because of them. */
+html[data-ua-auto="1"] [class*="review-popup"],html[data-ua-auto="1"] [class*="review-modal"],html[data-ua-auto="1"] [class*="feedback-modal"],html[data-ua-auto="1"] [class*="good-reviews"],html[data-ua-auto="1"] [class*="leave-review"]{display:none!important}
 /* Hide Simplify paywall/upgrade prompts */
-[class*="paywall"],[class*="upgrade-modal"],[class*="coin-required"],[class*="token-required"],[class*="premium-gate"]{display:none!important}
+html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrade-modal"],html[data-ua-auto="1"] [class*="coin-required"],html[data-ua-auto="1"] [class*="token-required"],html[data-ua-auto="1"] [class*="premium-gate"]{display:none!important}
 
 /* === DRAGGABLE FAB === */
 #ua-fab{position:fixed;bottom:28px;right:28px;width:48px;height:48px;border-radius:50%;border:none;cursor:grab;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#00c985,#00b377);box-shadow:0 2px 12px rgba(0,201,133,.4);z-index:2147483647;transition:box-shadow .2s;user-select:none;-webkit-user-select:none;touch-action:none}
@@ -12069,45 +12071,7 @@
 #ua-fab-add .ico{width:18px;height:18px}
 
 /* === AUTOMATION IN PROGRESS PANEL (matches Jobright 1.14.0 dark UI) === */
-/* Anchored to the LEFT edge — Jobright's own sidebar (with the field checklist) lives on
-   the RIGHT, so a right-anchored overlay sat right on top of it. Left keeps both readable.
-   Still draggable; a saved position overrides this. */
-/* !important throughout: this panel lives in the host page's DOM, and a site
-   whose CSS says div{display:none!important} or clamps z-index would otherwise
-   hide the only Pause/Skip/Quit controls the run has. */
-#ua-ctrl{position:fixed!important;top:80px;left:20px;right:auto;z-index:2147483647!important;display:none;visibility:visible!important;opacity:1!important;font-family:'Inter',system-ui,-apple-system,sans-serif}
-#ua-ctrl.show{display:block!important}
-#ua-ctrl-card{width:300px;background:#0e0e0f;border:1px solid #232325;border-radius:14px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:#e7e7ea}
-.uc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.uc-title{font-size:14px;font-weight:700;color:#fff;letter-spacing:.1px}
-.uc-count{font-size:11px;font-weight:700;color:#cfcfd4;background:#1c1c1f;border:1px solid #2c2c30;border-radius:8px;padding:3px 9px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.uc-pos{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:13px;font-size:13px;color:#e7e7ea}
-.uc-pos-co{font-size:11px;font-weight:600;color:#cfcfd4;background:#1c1c1f;border:1px solid #2c2c30;border-radius:7px;padding:2px 8px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.uc-bar{margin-top:12px;height:5px;border-radius:4px;background:#2a2a2d;overflow:hidden}
-.uc-bar-fill{height:100%;width:0%;border-radius:4px;background:linear-gradient(90deg,#00a86b,#00e58f);transition:width .4s ease}
-.uc-proc{margin-top:11px;font-size:12px;font-weight:600;color:#4ea1ff}
-.uc-proc.paused{color:#fbbf24}
-.uc-stats{display:flex;gap:10px;margin-top:9px;font-size:11px;color:#9aa0a6}
-.uc-stat b{font-variant-numeric:tabular-nums;font-weight:800}
-.uc-stat.ok b{color:#34d399}.uc-stat.sk b{color:#9aa0a6}.uc-stat.fa b{color:#f87171}
-.uc-why{margin-top:7px;font-size:11px;line-height:1.35;color:#f0a35e;cursor:pointer;word-break:break-word}
-.uc-why:hover{text-decoration:underline}
-.uc-why.copied{color:#34d399}
-.uc-speed{display:flex;align-items:center;gap:6px;margin-top:14px}
-.uc-speed-l{font-size:12px;font-weight:600;color:#bfbfc4;margin-right:2px}
-.uc-sp{min-width:38px;height:28px;padding:0 9px;border-radius:14px;border:1px solid #34343a;background:transparent;color:#bfbfc4;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
-.uc-sp:hover{border-color:#00f0a0;color:#e7e7ea}
-.uc-sp:hover{border-color:#4b4b52;color:#e7e7ea}
-.uc-sp.active{background:#00f0a0;border-color:#00f0a0;color:#06231a;box-shadow:0 0 0 2px rgba(0,240,160,.25)}
-.uc-actions{display:flex;gap:10px;margin-top:16px}
-.uc-dbg{display:block;width:100%;margin-top:10px;padding:7px 10px;border-radius:10px;border:1px dashed #3a3a42;background:transparent;color:#a5b4fc;font:600 12px/1.2 inherit;font-family:inherit;cursor:pointer}
-.uc-dbg:hover{background:#17171c;color:#c7d2fe}
-.uc-act{flex:1;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:700;transition:filter .15s,background .15s}
-.uc-act:hover{filter:brightness(1.08)}
-.uc-act.pause{background:#f5b13d;color:#1a1205}
-.uc-act.resume{background:#34d399;color:#04120c}
-.uc-act.skip{background:transparent;color:#e7e7ea;border:1px solid #3a3a40}
-.uc-act.quit{background:#000;color:#fff;border:1px solid #2c2c30}
+/* The run panel's styles live in its own shadow root now (UC_PANEL_CSS). */
 
 /* === DRAWER === */
 #ua-drawer{position:fixed;display:none;width:380px;max-height:520px;background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.14);flex-direction:column;overflow:hidden;border:1px solid #e5e7eb;z-index:2147483647;font-family:system-ui,-apple-system,sans-serif;font-size:13px;color:#111827}
@@ -12288,6 +12252,64 @@
   // Build (or re-build) the "Automation In Progress" control panel. Idempotent and
   // safe to call very early (document_start) and repeatedly — this is what keeps the
   // Skip/Pause/Quit controls constantly visible across every page navigation.
+  /* ── THE RUN PANEL LIVES IN ITS OWN SEALED SHADOW ROOT ─────────────────────
+     It used to be a <div> in the page with its styles in the page's CSS
+     (.uc-*), which works only while nothing else on the page uses those names
+     or restyles divs and buttons. With another autofill extension running its
+     own "Automation In Progress" panel beside it, one restyled the other — the
+     panel lost its card and came out transparent over the form. Now: a custom
+     element with a CLOSED shadow root holding the panel and its styles. No page
+     or extension CSS reaches in, ours does not leak out, and other extensions'
+     page scanners cannot find (or press) its Pause / Skip / Quit buttons. */
+  const UC_PANEL_CSS = `:host{all:initial}
+/* Anchored to the LEFT edge — Jobright's own sidebar (with the field checklist) lives on
+   the RIGHT, so a right-anchored overlay sat right on top of it. Left keeps both readable.
+   Still draggable; a saved position overrides this. */
+/* !important throughout: this panel lives in the host page's DOM, and a site
+   whose CSS says div{display:none!important} or clamps z-index would otherwise
+   hide the only Pause/Skip/Quit controls the run has. */
+#ua-ctrl{position:fixed!important;top:80px;left:20px;right:auto;z-index:2147483647!important;display:none;visibility:visible!important;opacity:1!important;font-family:'Inter',system-ui,-apple-system,sans-serif}
+#ua-ctrl.show{display:block!important}
+#ua-ctrl-card{width:300px;background:#0e0e0f;border:1px solid #232325;border-radius:14px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:#e7e7ea}
+.uc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.uc-title{font-size:14px;font-weight:700;color:#fff;letter-spacing:.1px}
+.uc-count{font-size:11px;font-weight:700;color:#cfcfd4;background:#1c1c1f;border:1px solid #2c2c30;border-radius:8px;padding:3px 9px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.uc-pos{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:13px;font-size:13px;color:#e7e7ea}
+.uc-pos-co{font-size:11px;font-weight:600;color:#cfcfd4;background:#1c1c1f;border:1px solid #2c2c30;border-radius:7px;padding:2px 8px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.uc-bar{margin-top:12px;height:5px;border-radius:4px;background:#2a2a2d;overflow:hidden}
+.uc-bar-fill{height:100%;width:0%;border-radius:4px;background:linear-gradient(90deg,#00a86b,#00e58f);transition:width .4s ease}
+.uc-proc{margin-top:11px;font-size:12px;font-weight:600;color:#4ea1ff}
+.uc-proc.paused{color:#fbbf24}
+.uc-stats{display:flex;gap:10px;margin-top:9px;font-size:11px;color:#9aa0a6}
+.uc-stat b{font-variant-numeric:tabular-nums;font-weight:800}
+.uc-stat.ok b{color:#34d399}.uc-stat.sk b{color:#9aa0a6}.uc-stat.fa b{color:#f87171}
+.uc-why{margin-top:7px;font-size:11px;line-height:1.35;color:#f0a35e;cursor:pointer;word-break:break-word}
+.uc-why:hover{text-decoration:underline}
+.uc-why.copied{color:#34d399}
+.uc-speed{display:flex;align-items:center;gap:6px;margin-top:14px}
+.uc-speed-l{font-size:12px;font-weight:600;color:#bfbfc4;margin-right:2px}
+.uc-sp{min-width:38px;height:28px;padding:0 9px;border-radius:14px;border:1px solid #34343a;background:transparent;color:#bfbfc4;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
+.uc-sp:hover{border-color:#00f0a0;color:#e7e7ea}
+.uc-sp:hover{border-color:#4b4b52;color:#e7e7ea}
+.uc-sp.active{background:#00f0a0;border-color:#00f0a0;color:#06231a;box-shadow:0 0 0 2px rgba(0,240,160,.25)}
+.uc-actions{display:flex;gap:10px;margin-top:16px}
+.uc-dbg-row{display:flex;gap:8px;margin-top:10px}
+.uc-dbg-row .uc-dbg{margin-top:0;flex:1}
+.uc-dbg{display:block;width:100%;margin-top:10px;padding:7px 10px;border-radius:10px;border:1px dashed #3a3a42;background:transparent;color:#a5b4fc;font:600 12px/1.2 inherit;font-family:inherit;cursor:pointer}
+.uc-dbg:hover{background:#17171c;color:#c7d2fe}
+.uc-act{flex:1;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:700;transition:filter .15s,background .15s}
+.uc-act:hover{filter:brightness(1.08)}
+.uc-act.pause{background:#f5b13d;color:#1a1205}
+.uc-act.resume{background:#34d399;color:#04120c}
+.uc-act.skip{background:transparent;color:#e7e7ea;border:1px solid #3a3a40}
+.uc-act.quit{background:#000;color:#fff;border:1px solid #2c2c30}
+
+`;
+  let _ucHost = null, _ucShadow = null;
+  // An element of OUR run panel by id (never the page's: an id there is not ours).
+  function ucEl(id) {
+    try { return (_ucShadow && _ucHost && _ucHost.isConnected && _ucShadow.getElementById(id)) || null; } catch (_) { return null; }
+  }
   function ensureOverlay() {
     try {
       if (window.self !== window.top) return null;
@@ -12297,9 +12319,16 @@
          document_start before <body> exists. */
       const host = document.documentElement || document.body;
       if (!host) return null;
-      let ctrl = document.getElementById('ua-ctrl');
-      if (ctrl && ctrl.isConnected) return ctrl;
-      injectCSS(); // ensure .uc-* styles exist
+      let ctrl = ucEl('ua-ctrl');
+      if (ctrl) return ctrl;
+      injectCSS(); // the page-level rules this extension still needs (not the panel's)
+      _ucHost = document.createElement('ua-run-panel');
+      // Fixed and out of the page's flow; everything the page could inherit is reset.
+      _ucHost.setAttribute('style', 'all:initial!important;position:fixed!important;top:0!important;left:0!important;width:0!important;height:0!important;z-index:2147483647!important;display:block!important;contain:style!important');
+      _ucShadow = _ucHost.attachShadow({ mode: 'closed' });
+      const style = document.createElement('style');
+      style.textContent = UC_PANEL_CSS;
+      _ucShadow.appendChild(style);
       ctrl = document.createElement('div'); ctrl.id = 'ua-ctrl';
       ctrl.innerHTML = `<div id="ua-ctrl-card">
         <div class="uc-top">
@@ -12323,9 +12352,10 @@
           <button class="uc-act skip" id="uc-skip">Skip</button>
           <button class="uc-act quit" id="uc-quit">Quit</button>
         </div>
-        <button class="uc-dbg" id="uc-dbg" title="Every job's timeline, page fields, errors and screenshot">🐞 Open Debugger — see what each job did</button>
+        <div class="uc-dbg-row"><button class="uc-dbg" id="uc-dbg" title="Every job's timeline, page fields, errors and screenshot">🐞 Open Debugger</button><button class="uc-dbg" id="uc-dl" title="One file with everything: every job's timeline, page snapshot and screenshot, failures by cause, the queue, logs and settings (no passwords)">⬇ Download log</button></div>
       </div>`;
-      host.appendChild(ctrl);
+      _ucShadow.appendChild(ctrl);
+      host.appendChild(_ucHost);
       makeDraggableByHandle(ctrl, ctrl.querySelector('.uc-top'));
       st.get('ua_ctrl_pos').then(p => {
         if (!p || !p.left) return;
@@ -12337,6 +12367,7 @@
       ctrl.querySelector('#uc-skip').addEventListener('click', skipJob);
       ctrl.querySelector('#uc-quit').addEventListener('click', stopQ);
       ctrl.querySelector('#uc-dbg').addEventListener('click', () => openDebugger(JR.id ? 'job=' + encodeURIComponent(JR.id) : ''));
+      ctrl.querySelector('#uc-dl').addEventListener('click', (e) => downloadDebugBundle(e.currentTarget));
       ctrl.querySelectorAll('.uc-sp').forEach(btn => btn.addEventListener('click', () => setQueueSpeed(parseFloat(btn.dataset.sp) || 1)));
       /* One click turns the run's failures into something you can paste to
          someone who can fix them. Without this the reasons exist but stay
@@ -13160,7 +13191,7 @@
         const host = (s.getRootNode && s.getRootNode().host) || null;
         if (host && host.style && host.style.display === 'none') host.style.display = '';
       }
-      const ctrl = document.getElementById('ua-ctrl');
+      const ctrl = ucEl('ua-ctrl');
       if (ctrl && qActive && isRunnerTab()) ctrl.classList.add('show');
     } catch (_) {}
   }
@@ -13260,6 +13291,10 @@
       </div>
       <button id="ua-sb-start" style="${greenBtn}">Start Applying</button>
       <button id="ua-sb-mgr" style="${greenBtn};background:#161925;color:#6ee7b7;border:1px solid #2c2c30" title="Docked queue manager: runs jobs in parallel background tabs and stays in place while you browse">🗂 Queue Manager (parallel tabs)</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="ua-sb-dl" style="${ghostBtn};flex:1" title="One file with everything the Debugger and the recorder have: every job's timeline, page snapshot and screenshot, failures by cause, the queue, logs and settings (no passwords)">⬇ Download debug log</button>
+        <button id="ua-sb-dbg" style="${ghostBtn};flex:0 0 auto" title="Open the Debugger">🐞 Debugger</button>
+      </div>
       <button id="ua-sb-stop" style="${greenBtn};background:#000;color:#fff;border:1px solid #2c2c30;display:none">Stop</button>
       <div id="ua-sb-runrow" style="display:none;gap:8px;margin-top:8px">
         <button id="ua-sb-pause" style="${ghostBtn};flex:1">Pause</button>
@@ -13341,6 +13376,8 @@
       LOG(`Added ${urls.length} URLs from sidebar`);
     });
     wrap.querySelector('#ua-sb-start').addEventListener('click', () => { if (!queue.some(j => j.status === 'pending')) { alert('Queue is empty — upload a CSV or paste job URLs first.'); return; } startQ(); });
+    wrap.querySelector('#ua-sb-dl')?.addEventListener('click', (e) => downloadDebugBundle(e.currentTarget));
+    wrap.querySelector('#ua-sb-dbg')?.addEventListener('click', () => openDebugger(''));
     wrap.querySelector('#ua-sb-mgr')?.addEventListener('click', () => {
       // Ask the service worker to open it: a content script's window.open of an
       // extension URL is blocked outright by some sites' CSP, which made this
@@ -13570,7 +13607,7 @@
   function setQueueSpeed(s) {
     qSpeed = s; qSpeedFactor = speedFactorFor(s);
     try { st.set('ua_q_speed', qSpeed); } catch (_) {}
-    const ov = document.getElementById('ua-ctrl');
+    const ov = ucEl('ua-ctrl');
     if (ov) ov.querySelectorAll('.uc-sp').forEach(b => b.classList.toggle('active', parseFloat(b.dataset.sp) === qSpeed));
     paintSidebarSpeed();
     LOG('Queue speed set to ' + qSpeed + 'x (wait factor ' + qSpeedFactor + ')');
@@ -13579,18 +13616,18 @@
   // LazyApply-style completion summary shown in the overlay when a run finishes.
   let _summaryTimer = null;
   function showCompletionSummary() {
-    const ctrl = document.getElementById('ua-ctrl');
+    const ctrl = ucEl('ua-ctrl');
     if (!ctrl) return;
     const done = queue.filter(j => j.status === 'done').length;
     const skipped = queue.filter(j => j.status === 'skipped').length;
     const failed = queue.filter(j => ['failed', 'timeout'].includes(j.status)).length;
-    const set = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
+    const set = (id, txt) => { const e = ucEl(id); if (e) e.textContent = txt; };
     const title = ctrl.querySelector('.uc-title'); if (title) title.textContent = '✅ Automation Complete';
     set('uc-count', `${queue.length} total`);
     set('uc-pos', 'All jobs processed');
-    const co = document.getElementById('uc-pos-co'); if (co) co.style.display = 'none';
-    const bar = document.getElementById('uc-bar'); if (bar) bar.style.width = '100%';
-    const proc = document.getElementById('uc-proc');
+    const co = ucEl('uc-pos-co'); if (co) co.style.display = 'none';
+    const bar = ucEl('uc-bar'); if (bar) bar.style.width = '100%';
+    const proc = ucEl('uc-proc');
     if (proc) { proc.textContent = `${done} applied · ${skipped} skipped · ${failed} failed`; proc.classList.remove('paused'); proc.style.color = '#34d399'; }
     set('uc-ok', done); set('uc-sk', skipped); set('uc-fa', failed);
     const runrow = ctrl.querySelector('.uc-actions'); // keep Quit to dismiss
@@ -13601,9 +13638,9 @@
 
   function updateCtrl() {
     updateSidebarUI(); // keep the in-native-sidebar bulk-apply controls in sync
-    const ctrl = document.getElementById('ua-ctrl');
+    const ctrl = ucEl('ua-ctrl');
     if (!ctrl) return;
-    const pauseBtn = document.getElementById('uc-pause');
+    const pauseBtn = ucEl('uc-pause');
     // Only show the run overlay in the dedicated runner tab.
     if (qActive && isRunnerTab()) {
       ctrl.classList.add('show');
@@ -13612,19 +13649,19 @@
       // The "current" job is the one applying, else the next pending, else last done.
       const current = queue.find(j => j.status === 'applying') || queue.find(j => j.status === 'pending');
       const curIndex = current ? queue.indexOf(current) + 1 : Math.min(dn + 1, total);
-      const countEl = document.getElementById('uc-count');
+      const countEl = ucEl('uc-count');
       if (countEl) countEl.textContent = `Job ${Math.min(curIndex, total)} of ${total}`;
-      const posEl = document.getElementById('uc-pos');
-      const coEl = document.getElementById('uc-pos-co');
+      const posEl = ucEl('uc-pos');
+      const coEl = ucEl('uc-pos-co');
       if (posEl) posEl.textContent = current ? `Position at ${current.companyName || shortBoardName(current)}` : 'Finishing up…';
       if (coEl) {
         const co = current && (current.companyName || current.jobBoard);
         if (co) { coEl.textContent = co; coEl.style.display = ''; } else { coEl.style.display = 'none'; }
       }
-      const bar = document.getElementById('uc-bar');
+      const bar = ucEl('uc-bar');
       if (bar) bar.style.width = (total ? Math.round((dn / total) * 100) : 0) + '%';
       // Live LazyApply-style counters.
-      const okEl = document.getElementById('uc-ok'), skEl = document.getElementById('uc-sk'), faEl = document.getElementById('uc-fa');
+      const okEl = ucEl('uc-ok'), skEl = ucEl('uc-sk'), faEl = ucEl('uc-fa');
       if (okEl) okEl.textContent = queue.filter(j => j.status === 'done').length;
       if (skEl) skEl.textContent = queue.filter(j => j.status === 'skipped').length;
       if (faEl) faEl.textContent = queue.filter(j => ['failed', 'timeout'].includes(j.status)).length;
@@ -13632,7 +13669,7 @@
          and not whoever you show it to. Every failure already recorded a reason;
          they were only ever readable in the side panel, which is not the thing
          on screen during a run. Put the commonest one here, where it is. */
-      const whyEl = document.getElementById('uc-why');
+      const whyEl = ucEl('uc-why');
       if (whyEl) {
         const top = topFailureReason();
         if (top) {
@@ -13641,7 +13678,7 @@
           whyEl.style.display = '';
         } else whyEl.style.display = 'none';
       }
-      const proc = document.getElementById('uc-proc');
+      const proc = ucEl('uc-proc');
       if (proc) {
         /* A run that is waiting on you must say so, or it reads as "Processing…"
            forever and looks like a hang. This is the same information the
@@ -13670,6 +13707,38 @@
   /* The reason that cost the most jobs, and how many. Failures cluster: thirty
      of them are usually three causes, and knowing which one is biggest is the
      difference between fixing the run and guessing at it. */
+  /* Another autofill extension driving this tab. These are your OptimHire build's
+     own elements: its CSV run panel, its autofill banner, its Workday engine's
+     overlay and Review countdown, its resume screen. */
+  const OTHER_DRIVER_SEL = '#oh-csv-overlay-host,#oh-autofill-banner,#wd-autopilot-overlay,#oh-wd-submit-countdown,#optimhire-resume-score-record';
+  function otherAutofillDriving() {
+    try { return !!document.querySelector(OTHER_DRIVER_SEL); } catch (_) { return false; }
+  }
+  /* ONE CLICK, EVERYTHING: the service worker gathers the whole record (every
+     job's timeline, page snapshot and screenshot; failures by cause; the
+     diagnostics report; the queue; logs; settings — never passwords, logins or
+     your CV file), this page adds its own in-memory log, and it is saved as one
+     .json file. */
+  function downloadDebugBundle(btn) {
+    const label = btn && btn.textContent;
+    if (btn) btn.textContent = 'Preparing…';
+    const done = (txt) => { if (btn) { btn.textContent = txt; setTimeout(() => { btn.textContent = label; }, 2500); } };
+    try {
+      chrome.runtime.sendMessage({ type: 'UA_DBG_BUNDLE', page: { url: location.href, title: document.title, userAgent: navigator.userAgent, log: _dbgBuf.slice(-2000) } }, (r) => {
+        void chrome.runtime.lastError;
+        if (!r || !r.ok || !r.json) return done('Could not prepare it');
+        try {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([r.json], { type: 'application/json' }));
+          a.download = r.name || 'jobright-debug.json';
+          (document.body || document.documentElement).appendChild(a);
+          a.click();
+          setTimeout(() => { try { URL.revokeObjectURL(a.href); a.remove(); } catch (_) {} }, 3000);
+          done('Saved ✓');
+        } catch (_) { done('Could not save it'); }
+      });
+    } catch (_) { done('Could not prepare it'); }
+  }
   // The Debugger page (ua-debug.html), opened in front by the service worker.
   function openDebugger(hash) {
     try { chrome.runtime.sendMessage({ type: 'UA_DBG_OPEN', hash: hash || '' }, () => void chrome.runtime.lastError); } catch (_) {}
@@ -15768,7 +15837,15 @@
     // Gate the auto-run on `eligible` too: on a real ATS host / genuine job-application
     // page only. Without this, detectATS()'s broad generic "Career" pattern (any URL with
     // /apply, /jobs, /careers) would let Fully Automated fill non-job forms.
-    if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday())) {
+    /* Another autofill extension already working on this page (your OptimHire
+       build: its run panel, its autofill banner, its Workday engine) — Fully
+       Automated stands down here rather than filling the same form at the same
+       time. Our own queue tabs are unaffected; this is only the "fill whatever ATS
+       page I open" mode. Its markers appear a moment after load, so look twice. */
+    if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday()) &&
+        (otherAutofillDriving() || (await waitUntil(otherAutofillDriving, 2500, 250)))) {
+      LOG('Fully Automated: another autofill extension (OptimHire) is already working on this page — standing down here');
+    } else if (autoApply && !runnerActive && !mgrJob && eligible && (ats || isWorkday())) {
       // Recorded for the Debugger too, as its own entry.
       jrBegin({ id: 'auto:' + location.hostname + location.pathname.slice(0, 80) + '@' + new Date().toISOString().slice(0, 16), url: location.href, title: document.title }, 'fully-automated');
       LOG(`Fully Automated: starting full automation for ${ats || 'Workday'}`);
@@ -15860,7 +15937,7 @@
     let _earlyTries = 0;
     const _early = setInterval(() => {
       ensureOverlay();
-      const el = document.getElementById('ua-ctrl');
+      const el = ucEl('ua-ctrl');
       if (++_earlyTries > 25 || (el && el.isConnected)) clearInterval(_early);
     }, 150);
   } else {
