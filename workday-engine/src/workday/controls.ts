@@ -269,7 +269,7 @@ async function settledOptions(timeout = 6000): Promise<HTMLElement[]> {
       last = sig;
       stableSince = Date.now();
     }
-    if (o.length && !spinning() && Date.now() - stableSince >= 300) return o;
+    if (o.length && !spinning() && Date.now() - stableSince >= 200) return o;
     await sleep(100);
   }
   return visibleOptions();
@@ -309,6 +309,20 @@ export function searchTerms(wanted: string): string[] {
  * ("Social Media" → "LinkedIn"); `fallbackFirst` takes the first row of the
  * last level when nothing matches.
  */
+/** [ua] Chips the search added that aren't what we asked for (Workday's Enter
+ *  picks the first hit), removed again — newest first, only ones added now. */
+async function dropWrongPicks(target: HTMLElement, before: number, wanted: string, term: string, min: number): Promise<void> {
+  const items = qa(sel("selectedItem"), target);
+  for (const it of items.slice(before).reverse()) {
+    const t = text(it);
+    if (similarity(wanted, t) >= min || (term && similarity(term, t) >= Math.max(min, 0.85))) continue;
+    const del = q<HTMLElement>('[data-automation-id="DELETE_charm"]', it) ?? q<HTMLElement>('[aria-label*="remove" i], [aria-label*="delete" i]', it);
+    if (!del) continue;
+    await humanClick(del);
+    await sleep(150);
+  }
+}
+
 export async function multiselectPick(
   target: HTMLElement,
   wanted: string,
@@ -326,6 +340,7 @@ export async function multiselectPick(
     setNativeValue(input, opts.path ? "" : term);
     if (!opts.path) input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
     await sleep(250);
+    if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, wanted, term, min);
     for (let depth = 0; depth < 3; depth++) {
       const options = await settledOptions(depth ? 4000 : 6000);
       if (!options.length) break;
@@ -337,6 +352,7 @@ export async function multiselectPick(
       await humanClick(match);
       await sleep(250);
       if (spinning()) await settledOptions(3000);
+      if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, picked, "", 0.85);
       // A single-choice prompt (phone code) replaces its chip, so the count alone can't tell.
       if (multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(picked, s) >= 0.85)) {
         blur(input);
@@ -347,6 +363,8 @@ export async function multiselectPick(
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await sleep(80);
   }
+  // [ua] Leftover search text with no chip made Workday drop the whole entry on save.
+  if (input.value) setNativeValue(input, "");
   blur(input);
   await sleep(80);
   return multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(wanted, s) >= 0.6);
@@ -356,7 +374,7 @@ function radios(target: HTMLElement): HTMLElement[] {
   return qa('input[type="radio"], [role="radio"]', target);
 }
 
-function optionLabel(input: HTMLElement): string {
+export function optionLabel(input: HTMLElement): string {
   if (input.id) {
     const l = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
     if (l) return text(l);
@@ -439,6 +457,37 @@ async function setSegment(seg: HTMLInputElement, value: string): Promise<boolean
     seg.focus();
     await chrome.runtime.sendMessage({ type: "wd:trustedType", text: value });
     await sleep(80);
+  }
+  // [ua] Workday's date segments ignore synthetic digit keys and can silently revert a
+  // natively-set value, but they do honour ArrowUp/ArrowDown. Nudge once so the
+  // value goes through Workday's own handler, then step to the target if needed.
+  const target = Number(want);
+  if (Number.isFinite(target) && target > 0) {
+    const arrow = (up: boolean) => {
+      const k = up ? "ArrowUp" : "ArrowDown", kc = up ? 38 : 40;
+      for (const t of ["keydown", "keyup"]) {
+        const e = new KeyboardEvent(t, { key: k, code: k, bubbles: true, cancelable: true });
+        Object.defineProperty(e, "keyCode", { get: () => kc });
+        Object.defineProperty(e, "which", { get: () => kc });
+        seg.dispatchEvent(e);
+      }
+    };
+    seg.focus();
+    if (clean() === want) {
+      arrow(true);
+      await sleep(15);
+      arrow(false);
+      await sleep(15);
+    }
+    if (!clean()) {
+      arrow(true);
+      await sleep(20);
+    }
+    for (let i = 0; i < 120 && clean() !== want; i++) {
+      const cur = Number(clean() || 0);
+      arrow(cur < target);
+      await sleep(12);
+    }
   }
   return clean() === want;
 }

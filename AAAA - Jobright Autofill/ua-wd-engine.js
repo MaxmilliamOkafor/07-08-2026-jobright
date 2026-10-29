@@ -708,7 +708,7 @@
   async function humanClick(el) {
     checkAbort();
     el.scrollIntoView({ block: "center", inline: "nearest" });
-    await sleep(60);
+    await sleep(25);
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
@@ -764,7 +764,7 @@
     let score = 0;
     for (const el of els) {
       const s = similarity(wanted, text(el));
-      if (s > score) {
+      if (s > score || s === score && best && s > 0 && text(el).length < text(best).length) {
         score = s;
         best = el;
       }
@@ -964,7 +964,7 @@
         last = sig;
         stableSince = Date.now();
       }
-      if (o.length && !spinning() && Date.now() - stableSince >= 300) return o;
+      if (o.length && !spinning() && Date.now() - stableSince >= 200) return o;
       await sleep(100);
     }
     return visibleOptions();
@@ -992,6 +992,17 @@
     if (first && first.length >= 3 && first !== wanted) out.push(first);
     return [...new Set(out)];
   }
+  async function dropWrongPicks(target, before, wanted, term, min) {
+    const items = qa(sel("selectedItem"), target);
+    for (const it of items.slice(before).reverse()) {
+      const t = text(it);
+      if (similarity(wanted, t) >= min || term && similarity(term, t) >= Math.max(min, 0.85)) continue;
+      const del = q('[data-automation-id="DELETE_charm"]', it) ?? q('[aria-label*="remove" i], [aria-label*="delete" i]', it);
+      if (!del) continue;
+      await humanClick(del);
+      await sleep(150);
+    }
+  }
   async function multiselectPick(target, wanted, opts = {}) {
     const min = opts.min ?? 0.6;
     if (multiselectSelected(target).some((s) => similarity(wanted, s) >= 0.85)) return true;
@@ -1005,6 +1016,7 @@
       setNativeValue(input, opts.path ? "" : term);
       if (!opts.path) input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
       await sleep(250);
+      if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, wanted, term, min);
       for (let depth = 0; depth < 3; depth++) {
         const options = await settledOptions(depth ? 4e3 : 6e3);
         if (!options.length) break;
@@ -1016,6 +1028,7 @@
         await humanClick(match);
         await sleep(250);
         if (spinning()) await settledOptions(3e3);
+        if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, picked, "", 0.85);
         if (multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(picked, s) >= 0.85)) {
           blur(input);
           return true;
@@ -1024,6 +1037,7 @@
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await sleep(80);
     }
+    if (input.value) setNativeValue(input, "");
     blur(input);
     await sleep(80);
     return multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(wanted, s) >= 0.6);
@@ -1101,6 +1115,34 @@
       seg.focus();
       await chrome.runtime.sendMessage({ type: "wd:trustedType", text: value });
       await sleep(80);
+    }
+    const target = Number(want);
+    if (Number.isFinite(target) && target > 0) {
+      const arrow = (up) => {
+        const k = up ? "ArrowUp" : "ArrowDown", kc = up ? 38 : 40;
+        for (const t of ["keydown", "keyup"]) {
+          const e = new KeyboardEvent(t, { key: k, code: k, bubbles: true, cancelable: true });
+          Object.defineProperty(e, "keyCode", { get: () => kc });
+          Object.defineProperty(e, "which", { get: () => kc });
+          seg.dispatchEvent(e);
+        }
+      };
+      seg.focus();
+      if (clean() === want) {
+        arrow(true);
+        await sleep(15);
+        arrow(false);
+        await sleep(15);
+      }
+      if (!clean()) {
+        arrow(true);
+        await sleep(20);
+      }
+      for (let i = 0; i < 120 && clean() !== want; i++) {
+        const cur = Number(clean() || 0);
+        arrow(cur < target);
+        await sleep(12);
+      }
     }
     return clean() === want;
   }
@@ -1532,7 +1574,7 @@
 
   // src/workday/context.ts
   async function pace(ctx) {
-    await sleep(ctx.settings.fieldDelayMs + Math.floor(Math.random() * 60));
+    await sleep(ctx.settings.fieldDelayMs + Math.floor(Math.random() * 15));
   }
   function addFlag(run, f) {
     if (!run.flags.some((x) => x.label === f.label && x.page === f.page)) run.flags.push(f);
@@ -1976,8 +2018,18 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         break;
       }
       const before = bs.length;
+      const grew = () => blocks(sectionEl, anchor).length > before;
       await humanClick(add);
-      await waitFor(() => blocks(sectionEl, anchor).length > before, 6e3).catch(() => null);
+      let ok = await waitFor(grew, 2500).then(() => true, () => false);
+      for (let attempt = 0; !ok && attempt < 3; attempt++) {
+        await waitStable(300, 5e3);
+        const fresh = addButton(sectionEl);
+        if (!fresh) break;
+        fresh.scrollIntoView({ block: "center" });
+        await sleep(150);
+        fresh.click();
+        ok = await waitFor(grew, 3500).then(() => true, () => false);
+      }
       await waitStable(300, 5e3);
       bs = blocks(sectionEl, anchor);
     }
@@ -2129,6 +2181,36 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const bullets = ctx.docs?.tailored?.roles[w.id] ?? w.bullets;
     await fill(ctx, "descriptionF", bulletsText(bullets), block);
   }
+  var SPECIALISED_DEGREE_RX = /\b(m\.?\s?p\.?\s?h|public health|m\.?\s?b\.?\s?a|business admin|m\.?\s?f\.?\s?a|b\.?\s?f\.?\s?a|fine arts|m\.?\s?s\.?\s?w|b\.?\s?s\.?\s?w|social work|m\.?\s?ed\b|b\.?\s?ed\b|of education|m\.?\s?p\.?\s?a|public admin|ll\.?\s?[bm]\b|of laws|m\.?\s?arch|b\.?\s?arch|architecture|m\.?\s?d\b|medicine|m\.?\s?p\.?\s?p|public policy|m\.?\s?div|divinity|m\.?\s?h\.?\s?a|health admin|m\.?\s?s\.?\s?n|b\.?\s?s\.?\s?n|nursing|music|m\.?\s?a\.?\s?t\b|teaching|physical therapy|pharm|dental|veterinar|j\.?\s?d\b|juris)/i;
+  function degreeLevel(t) {
+    const s = t.toLowerCase();
+    if (/\b(ph\.?\s?d|doctor|doctorate|d\.?\s?phil)/.test(s)) return "doctor";
+    if (/\bmaster|\bm\.?\s?sc?\b|\bm\.?\s?a\b|\bm\.?\s?eng\b|\bm\.?\s?res\b|\bmba\b|\bmph\b|\bm\.?\s?s\.?\b/.test(s)) return "master";
+    if (/\bbachelor|\bb\.?\s?sc?\b|\bb\.?\s?a\b|\bb\.?\s?eng\b|\bb\.?\s?s\.?\b|undergraduate/.test(s)) return "bachelor";
+    if (/\bassociate/.test(s)) return "associate";
+    return "";
+  }
+  function pickDegreeOption(options, wanted) {
+    const w = String(wanted || "").trim();
+    const lvl = degreeLevel(w);
+    const generic = /^(master'?s?|masters|bachelor'?s?|bachelors|doctorate|ph\.?\s?d|associate'?s?)(\s+degree)?$/i.test(w) || /^(m\.?\s?sc?|b\.?\s?sc?|m\.?\s?a|b\.?\s?a|m\.?\s?eng|b\.?\s?eng)\.?$/i.test(w);
+    if (!lvl || !generic) return null;
+    const arts = /^(m|b)\.?\s?a\.?$/i.test(w);
+    let best = null, top = -1;
+    for (const o of options) {
+      if (degreeLevel(o) !== lvl || SPECIALISED_DEGREE_RX.test(o)) continue;
+      const plain = o.replace(/\(.*?\)/g, "").trim();
+      let sc = 0;
+      if (/^(master|bachelor|doctor|associate)'?s?(\s+degree)?$/i.test(plain) || /'?s degree$/i.test(plain)) sc += 3;
+      if (/science|\b[mb]\.?\s?s\.?c?\b/i.test(o)) sc += arts ? 1 : 2;
+      if (/\barts?\b|\b[mb]\.?\s?a\b/i.test(o)) sc += arts ? 2 : 0;
+      if (sc > top) {
+        top = sc;
+        best = o;
+      }
+    }
+    return best;
+  }
   async function fillEducation(ctx, block, e) {
     const school = field("schoolF", block);
     if (school) {
@@ -2141,7 +2223,13 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       }
       if (!ok) ctx.flag(`School: ${e.school}`, "Not in the tenant's school list");
     }
-    await fill(ctx, "degreeF", e.degree, block);
+    let degree = e.degree;
+    const degEl = field("degreeF", block);
+    if (degEl && degree && kindOf(containerOf(degEl)) === "dropdown") {
+      const pick2 = pickDegreeOption(await optionsOf(containerOf(degEl)).catch(() => []), degree);
+      if (pick2) degree = pick2;
+    }
+    await fill(ctx, "degreeF", degree, block);
     const fos = field("fieldF", block);
     if (fos && e.field) {
       const c = containerOf(fos);
@@ -2197,6 +2285,21 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       }
     }
   }
+  async function verifyBlocks(ctx, sectionEl, anchor, items, fillFn) {
+    for (let pass = 0; pass < 2; pass++) {
+      await waitStable(150, 2e3);
+      const bs = await ensureBlockCount(ctx, sectionEl, anchor, items.length);
+      let fixed = 0;
+      for (let i = 0; i < Math.min(bs.length, items.length); i++) {
+        const a = field(anchor, bs[i]);
+        if (a && readValue(containerOf(a))) continue;
+        await fillFn(ctx, bs[i], items[i]);
+        fixed++;
+      }
+      if (!fixed) return;
+      ctx.log(`Re-filled ${fixed} ${anchor === "jobTitleF" ? "work" : "education"} entr(ies) that came back empty`, "warn");
+    }
+  }
   async function myExperience(ctx) {
     await hooks.beforeExperience?.();
     const p = ctx.profile;
@@ -2204,6 +2307,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (work && p.work.length) {
       const bs = await ensureBlockCount(ctx, work, "jobTitleF", p.work.length);
       for (let i = 0; i < Math.min(bs.length, p.work.length); i++) await fillWork(ctx, bs[i], p.work[i]);
+      await verifyBlocks(ctx, work, "jobTitleF", p.work, fillWork);
       ctx.log(`Work experience: ${p.work.length} role(s) filled`);
       await markCurrentRole(ctx, work);
     } else if (work) {
@@ -2215,6 +2319,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       const anchor = q(sel("schoolF"), edu) ? "schoolF" : "degreeF";
       const bs = await ensureBlockCount(ctx, edu, anchor, p.education.length);
       for (let i = 0; i < Math.min(bs.length, p.education.length); i++) await fillEducation(ctx, bs[i], p.education[i]);
+      await verifyBlocks(ctx, edu, anchor, p.education, fillEducation);
       ctx.log(`Education: ${p.education.length} entr(ies) filled`);
     } else if (edu && hooks.autoSubmit?.()) {
       await pruneIncomplete(ctx, edu, q(sel("schoolF"), edu) ? "schoolF" : "degreeF");
@@ -2314,20 +2419,30 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   async function selfIdentify(ctx) {
     const name = `${ctx.profile.personal.firstName} ${ctx.profile.personal.lastName}`.trim();
     await fill(ctx, "selfIdName", name);
-    const dateEl = field("selfIdDate");
+    const dateEl = field("selfIdDate") ?? q('[id$="dateSignedOn-dateSectionMonth-input"], [id$="dateSignedOn-dateSectionYear-input"]');
     if (dateEl) {
       const c = containerOf(dateEl);
       handled.add(c);
       const d = /* @__PURE__ */ new Date();
-      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if (!readValue(c)) await setDate(c, iso);
+      const mm = String(d.getMonth() + 1).padStart(2, "0"), dd = String(d.getDate()).padStart(2, "0"), yyyy = String(d.getFullYear());
+      const iso = `${yyyy}-${mm}-${dd}`;
+      const seg = (s) => (q(sel(s), c)?.value || "").replace(/^0+/, "");
+      const isToday = () => seg("dateMonth") === String(+mm) && (!q(sel("dateDay"), c) || seg("dateDay") === String(+dd)) && seg("dateYear") === yyyy;
+      for (let i = 0; i < 2 && !isToday(); i++) await setDate(c, iso);
+      if (!isToday()) ctx.flag("Self-identification date", `Couldn't set today's date (${mm}/${dd}/${yyyy})`);
     }
     const dis = field("disability");
     if (dis) {
       const c = containerOf(dis);
       handled.add(c);
       const pref = ctx.profile.eeo.disability;
-      const wanted = pref === "yes" ? "Yes, I have a disability" : pref === "no" ? "No, I do not have a disability" : "decline";
+      const wanted = pref === "yes" ? "Yes, I have a disability, or have had one in the past" : pref === "no" ? "No, I do not have a disability and have not had one in the past" : "decline";
+      for (const b of qa('input[type="checkbox"], [role="checkbox"]', c)) {
+        const on = b.checked || b.getAttribute("aria-checked") === "true";
+        const l = optionLabel(b);
+        const right = wanted === "decline" ? DECLINE_RX2.test(l) : similarity(wanted, l) >= 0.85;
+        if (on && !right) await setCheckbox(b, false);
+      }
       const ok = await checkInGroup(c, wanted) || await selectRadio(c, wanted);
       if (!ok) ctx.flag("Disability status", "Couldn't select your saved choice");
     }
@@ -2708,11 +2823,17 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       case "somethingWrong": {
         const k = `ua-wd-refresh|${location.pathname}`;
         const n = Number(sessionStorage.getItem(k) || 0);
-        if (n >= 2) throw new Error('Workday kept saying "Something went wrong" after two refreshes');
+        if (n >= 2) throw new Error('Workday kept saying "Something went wrong" — skipping this job');
         sessionStorage.setItem(k, String(n + 1));
-        ctx.log('Workday said "Something went wrong" — refreshing the page', "warn");
         await ctx.save();
-        location.reload();
+        const posting = location.href.replace(/\/apply(\/.*)?(\?.*)?$/, "");
+        if (n === 1 && posting !== location.href) {
+          ctx.log('Workday still says "Something went wrong" — reopening the job posting', "warn");
+          location.href = posting;
+        } else {
+          ctx.log('Workday said "Something went wrong" — refreshing the page', "warn");
+          location.reload();
+        }
         await sleep(1e4);
         return "stop";
       }
@@ -2773,6 +2894,15 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     ctx.log("Submitting the application");
     await humanClick(btn);
     await sleep(500);
+    const moved = () => detectPage() !== "review" || errorMessages().length > 0;
+    if (!await waitFor(moved, 3e3, 200).then(() => true, () => false)) {
+      const again = nextButton();
+      if (again && isSubmitButton(again)) {
+        ctx.log("Submit click didn't register — retrying with a native click", "warn");
+        again.click();
+        await sleep(500);
+      }
+    }
     const outcome = await waitFor(() => detectPage() === "submitted" ? "done" : errorMessages().length ? "error" : null, 3e4, 250).catch(
       () => "timeout"
     );
@@ -3181,7 +3311,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         current: !!(w.is_current ?? w.current ?? w.currently_working ?? w.currently_work_here) || !end && /present|current|now/i.test(String(endRaw)),
         bullets: String(w.description ?? w.summary ?? w.responsibilities ?? "").split(/\n+|•/).map((x) => x.replace(/^[\s\-*]+/, "").trim()).filter(Boolean).slice(0, 6)
       };
-    }).filter((w) => w.title && w.company && w.start);
+    }).filter((w) => w.title && w.company);
     const education = listOf(s, ["education", "educations", "education_history", "academics", "qualifications"]).map((e, i) => ({
       id: `e${i + 1}`,
       school: pick(e, "school", "school_name", "institution", "institute", "university", "college"),
@@ -3339,11 +3469,11 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         previouslyWorkedHere: false
       },
       eeo: {
-        gender: declineOr(pick(s, "gender")),
-        hispanicOrLatino: "decline",
-        ethnicity: declineOr(pick(s, "ethnicity", "race")),
-        veteran: declineOr(pick(s, "veteran")),
-        disability: yesNoDecline(pick(s, "disability"))
+        gender: declineOr(pick(s, "gender", "sex")),
+        hispanicOrLatino: yesNoDecline(pick(s, "hispanic_latino", "hispanicOrLatino", "hispanic", "latino")),
+        ethnicity: declineOr(pick(s, "ethnicity", "race", "race_ethnicity")),
+        veteran: declineOr(pick(s, "veteran", "veteran_status", "veteranStatus")),
+        disability: yesNoDecline(pick(s, "disability", "disability_status", "disabilityStatus", "has_disability"))
       }
     });
     const imported = await getProfile().catch(() => null);
@@ -3352,7 +3482,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       const fillIn = (a, b) => {
         for (const k of Object.keys(b)) {
           if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k])) fillIn(a[k] ??= {}, b[k]);
-          else if (a[k] === "" || a[k] == null || Array.isArray(a[k]) && !a[k].length) a[k] = b[k];
+          else if (a[k] === "" || a[k] == null || Array.isArray(a[k]) && !a[k].length || a[k] === "decline" && b[k] && b[k] !== "decline") a[k] = b[k];
         }
       };
       fillIn(p, base);
@@ -3414,11 +3544,11 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     llmAnswers: true,
     // answered by this extension's deciders (llmStandIn), not an AI
     trustedInputFallback: false,
-    fieldDelayMs: 40,
+    fieldDelayMs: 15,
     fallbackToMasterCv: true,
     externalAutoRequest: false
   };
-  var ASSIST_SETTINGS = () => ({ ...SETTINGS, fieldDelayMs: 10 });
+  var ASSIST_SETTINGS = () => ({ ...SETTINGS, fieldDelayMs: 5 });
   async function hostAnswer(label, kind, options, mode) {
     try {
       const f = W.__uaWdAnswer;
@@ -3583,10 +3713,12 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     readCv: () => readCvProfile(),
     /** Workday's month/year date boxes take keystrokes, not a value: the built-in
      *  flow uses this to put a month next to a year-only date ("MM/2021"). */
-    setDate: (field2, ym2) => setDate(field2, ym2).catch(() => false)
+    setDate: (field2, ym2) => setDate(field2, ym2).catch(() => false),
+    /** "Masters" → the plain master's option, never a specialised one (M.P.H., M.B.A.…). */
+    pickDegree: (options, wanted) => pickDegreeOption(options, wanted)
   };
   if (TOP && isWorkdayHost()) {
-    const submitCountdown = (seconds = 5) => {
+    const submitCountdown = (seconds = 3) => {
       if (!document.body) return;
       const host2 = document.createElement("div");
       host2.id = "ua-wd-submit-countdown";

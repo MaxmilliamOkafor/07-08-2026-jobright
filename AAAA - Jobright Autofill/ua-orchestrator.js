@@ -291,7 +291,7 @@
      ua-enhancement.js): a tab that is busy, or progressed within this window, is
      still working, and may run up to the hard ceiling. */
   const JOB_RECENT_PROGRESS_MS = 30 * 1000;
-  const JOB_HARD_CEIL_MS = 8 * 60 * 1000;
+  const JOB_HARD_CEIL_MS = 5 * 60 * 1000;
   const LOG_CAP = 200;
   const DEFAULTS = {
     skipApplied: true,

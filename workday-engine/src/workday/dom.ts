@@ -140,7 +140,7 @@ export function field(key: AidKey, root: ParentNode = document): HTMLElement | n
 export async function humanClick(el: HTMLElement): Promise<void> {
   checkAbort();
   el.scrollIntoView({ block: "center", inline: "nearest" });
-  await sleep(60);
+  await sleep(25);
   const r = el.getBoundingClientRect();
   const x = r.left + r.width / 2;
   const y = r.top + r.height / 2;
@@ -210,7 +210,9 @@ export function bestMatch<T extends HTMLElement>(els: T[], wanted: string, min =
   let score = 0;
   for (const el of els) {
     const s = similarity(wanted, text(el));
-    if (s > score) {
+    // [ua] On a tie prefer the plainer option ("Black or African American" over
+    // "Black or African American: Afro Caribbean") — the closest, not the first.
+    if (s > score || (s === score && best && s > 0 && text(el).length < text(best).length)) {
       score = s;
       best = el;
     }

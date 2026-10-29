@@ -219,8 +219,10 @@ console.log('per-job cap extends while working');
   eq('busy at 150s → 45s more', mk(true, 0, 150000)(now - 150000), 45000);
   eq('progressed 10s ago → 45s more', mk(false, 10000, 150000)(now - 150000), 45000);
   eq('idle 40s, not busy → expire', mk(false, 40000, 150000)(now - 150000), 0);
-  eq('busy at the 8 min ceiling → expire', mk(true, 0, 150000)(now - 8 * 60000), 0);
-  const near = mk(true, 0, 150000)(now - (8 * 60000 - 10000));
+  // The ceiling is whatever the extension ships (5 min since your 12.4 build).
+  const CEIL = Number((m[0].match(/JOB_HARD_CEIL_MS = (\d+) \* 60 \* 1000/) || [])[1]) * 60000;
+  eq('busy at the ceiling → expire', mk(true, 0, 150000)(now - CEIL), 0);
+  const near = mk(true, 0, 150000)(now - (CEIL - 10000));
   eq('near the ceiling → only the time left', near > 0 && near <= 10000, true);
   eq('both run modes use it',
     (src.match(/jobTimeoutExtension\(/g) || []).length >= 3, true);
@@ -623,14 +625,14 @@ for (const [val, why] of [
   ['about eight', 'prose a number box cannot parse'],
 ]) eq(`${why} never reaches a years box`, refine(val, LINUX_Q, numberBox), shippedYears);
 eq('and the same holds in a free-text years box', refine('0', LINUX_Q, textBox), shippedYears);
-eq(`the figure it falls back to is the shipped default (${shippedYears})`, shippedYears, '7');
+eq(`the figure it falls back to is the shipped default (${shippedYears})`, shippedYears, (src.match(/\n\s*years:\s*'(\d+)'/) || [])[1]);
 eq('a real answer of zero to something that is NOT a years question is kept',
   refine('0', 'How many dependents do you have?', numberBox), '0');
 // v17.23: only the figure YOU set in the profile editor ("years") overrides 7.
 eq("the candidate's own profile figure beats the default",
   shapeCtx.refineAnswerForControl('0', LINUX_Q, { years: '11' }, numberBox), '11');
 eq('years merged in from other stored data do not',
-  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '2' }, numberBox), '7');
+  shapeCtx.refineAnswerForControl('0', LINUX_Q, { years_experience: '2' }, numberBox), shippedYears);
 
 // A Yes/No where a value belongs.
 eq('"Yes" is not the name of an employee',
@@ -3307,15 +3309,17 @@ console.log('v17.23: knockout answers — years 7, AWS certified Yes, everywhere
     ${gc('YEARS_Q_RE')}${gc('PROSE_Q_RE')}${body('yearsAnswer')}${gc('AWS_CERT_Q_RE')}${gc('ASKS_LIST_RE')}${gc('YES_NO_FORM_RE')}${body('knockoutPolicy')}
     exports.pol = knockoutPolicy; exports.yrs = yearsAnswer;`)(k);
   const P = (q, p) => k.pol(q, p || {});
-  eq('the default is 7 years', k.yrs({}), '7');
-  eq('years from other stored data never lower it', k.yrs({ years_experience: '3', yearsExperience: '2' }), '7');
+  // The default is whatever DEFAULTS.years ships (7 on Oct 28; 9 in your 12.4 build).
+  const Y = (src.match(/\n\s*years:\s*'(\d+)'/) || [])[1];
+  eq(`the default is ${Y} years`, k.yrs({}), Y);
+  eq('years from other stored data never lower it', k.yrs({ years_experience: '3', yearsExperience: '2' }), Y);
   eq('a number you set in the profile editor is used', k.yrs({ years: '9' }), '9');
   for (const q of ['How many years of experience do you have?', 'Years of relevant experience', 'How many years of experience do you have with Python?',
-    'Total years of professional experience', 'Number of years of experience in data engineering']) eq(`"${q}" → 7`, P(q), '7');
+    'Total years of professional experience', 'Number of years of experience in data engineering']) eq(`"${q}" → ${Y}`, P(q), Y);
   eq('"Do you have 5+ years of experience…?" → yes', P('Do you have 5+ years of experience with AWS?'), 'yes');
   eq('"…at least 7 years…" → yes', P('Do you have at least 7 years of professional experience?'), 'yes');
   eq('"…10+ years…" → no (7 is fewer)', P('Do you have 10+ years of experience?'), 'no');
-  eq('"…more than 7 years…" → no', P('Do you have more than 7 years of experience?'), 'no');
+  eq(`"…more than 7 years…" → ${+Y > 7 ? 'yes' : 'no'}`, P('Do you have more than 7 years of experience?'), +Y > 7 ? 'yes' : 'no');
   eq('your own 12 years answers "10+" yes', P('Do you have 10+ years of experience?', { years: '12' }), 'yes');
   eq('"Describe your years of experience…" is prose, no fixed answer', P('Please describe your experience over the years'), '');
   for (const q of ['Do you hold an AWS Certified Solutions Architect certification?', 'Do you hold an AWS Certified Data Engineer – Associate certification?',
@@ -3365,7 +3369,7 @@ console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
   eq('stopped mid-application, the built-in flow carries on from that step', /if \(eng === 'midway'\) \{\s+await fallbackFill\(\);\s+await workdayMultiPageFlow\(\);/.test(wa), true);
   eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
   eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
-  eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineWait')) && /8 \* 60 \* 1000/.test(body('workdayEngineWait')) && /workdayEngineWait\(eng, id\)/.test(body('workdayEngineRun')), true);
+  eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineWait')) && /[58] \* 60 \* 1000/.test(body('workdayEngineWait')) && /workdayEngineWait\(eng, id\)/.test(body('workdayEngineRun')), true);
   eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
 }
 

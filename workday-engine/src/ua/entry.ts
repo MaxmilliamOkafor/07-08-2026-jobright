@@ -39,6 +39,7 @@ import { getProfile as getEngineProfile, normalizeProfile } from "../workday/sto
 import { setHooks, type Outcome } from "../workday/ohHooks.js";
 import { setDate, type ControlKind } from "../workday/controls.js";
 import { SENSITIVE_RX } from "../workday/answers.js";
+import { pickDegreeOption } from "../workday/steps.js";
 import { DEFAULT_WD_SETTINGS, type PageKind, type Profile, type RunState, type StoredDoc, type WorkdaySettings } from "../workday/types.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -367,7 +368,7 @@ function historyFrom(s: Any): Pick<Profile, "work" | "education"> {
           .slice(0, 6),
       };
     })
-    .filter((w) => w.title && w.company && w.start);
+    .filter((w) => w.title && w.company);
   const education = listOf(s, ["education", "educations", "education_history", "academics", "qualifications"])
     .map((e, i) => ({
       id: `e${i + 1}`,
@@ -490,11 +491,11 @@ async function buildProfile(): Promise<Profile> {
       previouslyWorkedHere: false,
     },
     eeo: {
-      gender: declineOr(pick(s, "gender")),
-      hispanicOrLatino: "decline",
-      ethnicity: declineOr(pick(s, "ethnicity", "race")),
-      veteran: declineOr(pick(s, "veteran")),
-      disability: yesNoDecline(pick(s, "disability")),
+      gender: declineOr(pick(s, "gender", "sex")),
+      hispanicOrLatino: yesNoDecline(pick(s, "hispanic_latino", "hispanicOrLatino", "hispanic", "latino")),
+      ethnicity: declineOr(pick(s, "ethnicity", "race", "race_ethnicity")),
+      veteran: declineOr(pick(s, "veteran", "veteran_status", "veteranStatus")),
+      disability: yesNoDecline(pick(s, "disability", "disability_status", "disabilityStatus", "has_disability")),
     },
   } as any);
   // A full profile imported into the engine's own store (the standalone
@@ -505,7 +506,7 @@ async function buildProfile(): Promise<Profile> {
     const fillIn = (a: Any, b: Any) => {
       for (const k of Object.keys(b)) {
         if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k])) fillIn((a[k] ??= {}), b[k]);
-        else if (a[k] === "" || a[k] == null || (Array.isArray(a[k]) && !a[k].length)) a[k] = b[k];
+        else if (a[k] === "" || a[k] == null || (Array.isArray(a[k]) && !a[k].length) || (a[k] === "decline" && b[k] && b[k] !== "decline")) a[k] = b[k];
       }
     };
     fillIn(p, base);
@@ -573,11 +574,11 @@ const SETTINGS: WorkdaySettings = {
   requireDocApproval: false,
   llmAnswers: true,                 // answered by this extension's deciders (llmStandIn), not an AI
   trustedInputFallback: false,
-  fieldDelayMs: 40,
+  fieldDelayMs: 15,
   fallbackToMasterCv: true,
   externalAutoRequest: false,
 };
-const ASSIST_SETTINGS = (): WorkdaySettings => ({ ...SETTINGS, fieldDelayMs: 10 });
+const ASSIST_SETTINGS = (): WorkdaySettings => ({ ...SETTINGS, fieldDelayMs: 5 });
 
 /* ---------------- answers: yours first ---------------- */
 
@@ -747,13 +748,15 @@ W.__uaWdEngine = {
   /** Workday's month/year date boxes take keystrokes, not a value: the built-in
    *  flow uses this to put a month next to a year-only date ("MM/2021"). */
   setDate: (field: HTMLElement, ym: string) => setDate(field, ym).catch(() => false),
+  /** "Masters" → the plain master's option, never a specialised one (M.P.H., M.B.A.…). */
+  pickDegree: (options: string[], wanted: string) => pickDegreeOption(options, wanted),
 };
 
 /* ---------------- wiring ---------------- */
 
 if (TOP && isWorkdayHost()) {
   /* Assist, on Review: "Submitting your application in 5…" with Cancel, then Submit. */
-  const submitCountdown = (seconds = 5) => {
+  const submitCountdown = (seconds = 3) => {
     if (!document.body) return;
     const host = document.createElement("div");
     host.id = "ua-wd-submit-countdown";

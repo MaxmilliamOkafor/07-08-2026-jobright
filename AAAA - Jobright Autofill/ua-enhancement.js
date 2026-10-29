@@ -1111,7 +1111,7 @@
     // Seven, not five: this is the number typed into "how many years of X?" on
     // every ATS that asks, and a screening filter looking for a minimum never
     // prefers the smaller answer.
-    years: '7', salary: '80000', notice: '2 weeks', availability: 'Immediately',
+    years: '9', salary: '60000', notice: '1 month', availability: '1 month notice',
     noDeadlines: 'No — I have no deadlines or timeline constraints at the moment.',
     country: 'Ireland', phoneCountryCode: '+353', countryCode: 'IE',
     cover: 'I am excited to apply for this role. My background and skills make me an excellent candidate and I look forward to contributing to your team.',
@@ -1509,7 +1509,7 @@
     if (/clearance.?level/.test(l)) return p.clearance_level || '';
     if (/address.?(line)?.*2|apt|suite|unit|apartment|floor|building/.test(l)) return p.address_line_2 || '';
     if (/city.*(state|region)|location.*(city|metro)|current.?location|based.?in/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
-    if (/notice.?period|how.*soon|days.?notice/.test(l)) return p.notice_period || '2 weeks';
+    if (/notice.?period|how.*soon|days.?notice/.test(l)) return p.notice_period || DEFAULTS.notice;
     if (/visa.?status|immigration.?status|work.?status/.test(l)) return p.visa_status || DEFAULTS.authorized;
     if (/skills|technical.?skills|key.?skills/.test(l)) return p.skills || '';
     if (/\bprefix\b|salutation|honorific/.test(l)) return p.prefix || '';
@@ -5731,7 +5731,7 @@
      that is genuinely going nowhere still expires on the first check, as before. */
   const JOB_EXTEND_MS = 45000;
   const JOB_RECENT_PROGRESS_MS = 30000;
-  const JOB_HARD_CEIL_MS = 8 * 60 * 1000;
+  const JOB_HARD_CEIL_MS = 5 * 60 * 1000;
   function jobTimeoutExtension(startedAt) {
     const age = Date.now() - (startedAt || Date.now());
     const ceil = Math.max(JOB_HARD_CEIL_MS, qTimeout);
@@ -7059,7 +7059,7 @@
   }
 
   // Helper: select value from Workday popup dropdown
-  async function selectFromWorkdayDropdown(btn, value) {
+  async function selectFromWorkdayDropdown(btn, value, chooser) {
     if (!btn) return false;
     // Handle <select> elements directly
     if (btn.tagName === 'SELECT') {
@@ -7073,7 +7073,9 @@
       $('[role="listbox"]:not([hidden])') || $('ul[role="listbox"]');
     if (!popup) return false;
     const items = $$('[data-automation-id="menuItem"],li[role="option"],li[role="menuitem"],li', popup);
-    const match = items.find(i => i.textContent?.toLowerCase().includes(value.toLowerCase()));
+    let match = null;
+    if (chooser) { try { const pick = chooser(items.map((i) => (i.textContent || '').trim())); if (pick) match = items.find((i) => (i.textContent || '').trim() === pick) || null; } catch (_) {} }
+    if (!match) match = items.find(i => i.textContent?.toLowerCase().includes(value.toLowerCase()));
     if (match) { realClick(match); await sleep(300); return true; }
     // Try search input within popup
     const searchInput = popup.querySelector('input[type="text"],input[type="search"]') ||
@@ -7142,7 +7144,7 @@
        • a queue job → the engine applies it end to end; what it cannot finish
          comes back here and the flow below carries on from that point;
        • Fully Automated outside a run → assist: each step filled as it appears,
-         you press Next, Review submits after a 5-second countdown you can cancel.
+         you press Next, Review submits after a 3-second countdown you can cancel.
      "ua_wd_engine_off: true" in storage gives Workday back to the flow below. */
   let _uaJobKey = '';                 // the queue job this tab is applying (none outside a run)
   let _wdAssistActive = false;        // assist has this Workday page: no automatic page walk
@@ -7222,17 +7224,28 @@
   }
   function workdayEngineWait(eng, id) {
     return withBusy('Workday engine', async () => {
-      const until = Date.now() + 8 * 60 * 1000;
+      const until = Date.now() + 5 * 60 * 1000;
+      // Stuck detector: the same step with no change on the page for 90s means the
+      // engine is looping on something it can't fix — stop it so the job moves on.
+      const STUCK_MS = 90 * 1000;
+      let lastSig = '', lastChange = Date.now();
+      const pageSig = () => { try { return (eng.page() || '') + '|' + document.querySelectorAll('input,textarea,button,[data-automation-id]').length + '|' + (location.href || ''); } catch (_) { return ''; } };
       await waitUntil(() => !!eng.result(id) || eng.running(id), 1500, 150);
       while (Date.now() < until && !autoStopped()) {
         const r = eng.result(id);
         if (r) return r;
         if (!eng.running(id)) { await waitUntil(() => !!eng.result(id), 1500, 150); return eng.result(id) || { outcome: 'stopped', reason: 'the engine stopped' }; }
+        const sig = pageSig();
+        if (sig !== lastSig) { lastSig = sig; lastChange = Date.now(); }
+        else if (Date.now() - lastChange > STUCK_MS) {
+          try { eng.stop(); } catch (_) {}
+          return eng.result(id) || { outcome: 'stopped', page: eng.page(), reason: 'stuck on ' + (eng.page() || 'this step') + ' for 90s' };
+        }
         noteProgress('Workday engine: ' + (eng.page() || 'working'));
-        await sleep(700);
+        await sleep(500);
       }
       try { eng.stop(); } catch (_) {}
-      return eng.result(id) || { outcome: 'stopped', reason: autoStopped() ? 'Fully Automated turned off' : 'took longer than 8 minutes' };
+      return eng.result(id) || { outcome: 'stopped', reason: autoStopped() ? 'Fully Automated turned off' : 'took longer than 5 minutes' };
     });
   }
   /* The engine paused on one step (a question it could not answer — "How Did
@@ -7270,6 +7283,11 @@
     /* Workday allows one application per job. Handing that back to the built-in
        flow only spent the job's time budget on a page with nothing to fill; the
        queue's already-applied check reads the same notice and skips the job. */
+    // Workday's own error page that refreshing didn't fix: nothing to fill — skip, don't stall.
+    if (r.page === 'somethingWrong' || /something went wrong/i.test(r.reason || '')) {
+      LOG(`Workday engine: ${r.reason || 'Workday error page'} — skipping this job`);
+      return 'closed';
+    }
     if (r.page === 'alreadyApplied' || /already applied/i.test(r.reason || '') || pageHasFailure()) {
       LOG(`Workday engine: ${r.reason || 'already applied / posting closed'} — nothing to apply to`);
       return 'closed';
@@ -7284,7 +7302,7 @@
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
     // Fully Automated outside a run: your engine's assist fills each step as it appears.
     if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
-      LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 5-second countdown you can cancel');
+      LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 3-second countdown you can cancel');
       _wdAssistActive = true;
       return 'assist';
     }
@@ -7631,7 +7649,7 @@
     if (degreeInput && !degreeInput.value) nativeSet(degreeInput, degree);
     // Degree dropdown button
     const degreeBtn = $('button[data-automation-id="degree"]:not([disabled])');
-    if (degreeBtn) await selectFromWorkdayDropdown(degreeBtn, degree);
+    if (degreeBtn) await selectFromWorkdayDropdown(degreeBtn, degree, (texts) => (window.__uaWdEngine && typeof window.__uaWdEngine.pickDegree === 'function') ? window.__uaWdEngine.pickDegree(texts, p.degree || degree) : null);
     // Field of study / Major
     const majorInput = $('input[data-automation-id="fieldOfStudy"], [data-automation-id="formField-fieldOfStudy"] input, input[data-automation-id="major"]');
     if (majorInput && !majorInput.value && p.major) nativeSet(majorInput, p.major);
@@ -8400,7 +8418,7 @@
     return out;
   }
   /* wanted: display text, or 'decline' for the decline-to-answer option. */
-  async function wdSelectDropdown(c, wanted, min) {
+  async function wdSelectDropdown(c, wanted, min, chooser) {
     const btn = wdDropdownBtn(c);
     if (!btn || !wanted) return false;
     const cur = wdDropdownValue(c);
@@ -8410,7 +8428,10 @@
     const list = wdOpenListbox(btn);
     if (!list) return false;
     const opts = Array.from(list.querySelectorAll('[role="option"]')).filter((o) => wdText(o) && !/^select one$/i.test(wdText(o)));
-    const i = wanted === 'decline' ? opts.findIndex((o) => WD_DECLINE_RX.test(wdText(o))) : wdBestIndex(opts.map(wdText), wanted, min);
+    // A chooser that knows the field better (the degree picker) goes first.
+    let i = -1;
+    if (chooser) { try { const pick = chooser(opts.map(wdText)); if (pick) i = opts.findIndex((o) => wdText(o) === pick); } catch (_) {} }
+    if (i < 0) i = wanted === 'decline' ? opts.findIndex((o) => WD_DECLINE_RX.test(wdText(o))) : wdBestIndex(opts.map(wdText), wanted, min);
     if (i < 0) { await wdCloseListbox(btn); return false; }
     await wdClick(opts[i]);
     await sleep(150);
@@ -8778,7 +8799,9 @@
           if (ok) n++;
         }
         const degree = wdField(b, ['degree', 'formField-degree']);
-        if (degree && !wdReadValue(degree) && e.degree && await wdSelectDropdown(degree, mapDegree(e.degree), 0.5)) n++;
+        // "Masters" → the plain master's / Master of Science, never "M.P.H." (the engine's degree picker).
+        const pickDeg = (texts) => (window.__uaWdEngine && typeof window.__uaWdEngine.pickDegree === 'function') ? window.__uaWdEngine.pickDegree(texts, e.degree) : null;
+        if (degree && !wdReadValue(degree) && e.degree && await wdSelectDropdown(degree, mapDegree(e.degree), 0.5, pickDeg)) n++;
         const field = wdField(b, ['fieldOfStudy', 'formField-fieldOfStudy']);
         if (field && !wdReadValue(field) && e.field && (wdKind(field) === 'multiselect' ? await wdMultiselectPick(field, e.field) : await wdWriteText(field, e.field))) n++;
         const gpa = wdField(b, ['gradeAverage', 'formField-gradeAverage']);
@@ -13028,9 +13051,9 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
             <label style="font-size:10px;color:#6b7280;white-space:nowrap">Job timeout:</label>
             <select id="ua-timeout" style="padding:4px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:10px;flex:1">
               <option value="60000">60s</option>
-              <option value="90000" selected>90s (Default)</option>
+              <option value="90000">90s</option>
               <option value="120000">120s</option>
-              <option value="180000">180s</option>
+              <option value="180000" selected>180s (Default)</option>
               <option value="300000">300s</option>
             </select>
           </div>
@@ -16727,12 +16750,12 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     { keywords: ['legal', 'age', 'work'], response: 'Yes' },
 
     // ===== AVAILABILITY / START =====
-    { keywords: ['available', 'start'], response: 'Immediately' },
-    { keywords: ['when', 'start', 'work'], response: 'Within 2 weeks' },
-    { keywords: ['earliest', 'start', 'date'], response: 'Immediately' },
-    { keywords: ['notice', 'period'], response: '2 weeks' },
-    { keywords: ['days', 'notice', 'required'], response: '14' },
-    { keywords: ['can', 'start', 'immediately'], response: 'Yes' },
+    { keywords: ['available', 'start'], response: '1 month notice' },
+    { keywords: ['when', 'start', 'work'], response: 'Within 1 month' },
+    { keywords: ['earliest', 'start', 'date'], response: '1 month from offer' },
+    { keywords: ['notice', 'period'], response: '1 month' },
+    { keywords: ['days', 'notice', 'required'], response: '30' },
+    { keywords: ['can', 'start', 'immediately'], response: 'No' },
     { keywords: ['available', 'full', 'time'], response: 'Yes' },
     { keywords: ['available', 'part', 'time'], response: 'Yes' },
     { keywords: ['available', 'contract'], response: 'Yes' },
@@ -16760,32 +16783,29 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     { keywords: ['rotating', 'shift'], response: 'Yes' },
 
     // ===== COMPENSATION =====
-    { keywords: ['desired', 'salary'], response: '80000' },
-    { keywords: ['expected', 'salary'], response: '80000' },
-    { keywords: ['salary', 'expectation'], response: '80000' },
-    { keywords: ['minimum', 'salary'], response: '70000' },
-    { keywords: ['current', 'salary'], response: '75000' },
-    { keywords: ['hourly', 'rate'], response: '40' },
-    { keywords: ['compensation', 'requirement'], response: 'Negotiable based on full package' },
+    { keywords: ['desired', 'salary'], response: '60000' },
+    { keywords: ['expected', 'salary'], response: '60000' },
+    { keywords: ['salary', 'expectation'], response: '60000' },
+        { keywords: ['current', 'salary'], response: '50000' },
+        { keywords: ['compensation', 'requirement'], response: 'Negotiable based on full package' },
     { keywords: ['salary', 'negotiable'], response: 'Yes' },
 
     // ===== EDUCATION =====
-    { keywords: ['highest', 'degree'], response: "Bachelor's Degree" },
-    { keywords: ['education', 'level'], response: "Bachelor's Degree" },
+    { keywords: ['highest', 'degree'], response: "Master's Degree" },
+    { keywords: ['education', 'level'], response: "Master's Degree" },
     { keywords: ['completed', 'degree'], response: 'Yes' },
     { keywords: ['graduated', 'college'], response: 'Yes' },
     { keywords: ['high', 'school', 'diploma'], response: 'Yes' },
     { keywords: ['field', 'study'], response: 'Computer Science' },
     { keywords: ['major'], response: 'Computer Science' },
-    { keywords: ['gpa'], response: '3.6' },
+    { keywords: ['gpa'], response: '3.90' },
 
     // ===== EXPERIENCE =====
-    { keywords: ['years', 'experience'], response: '7' },
-    { keywords: ['years', 'professional', 'experience'], response: '7' },
-    { keywords: ['total', 'years', 'experience'], response: '7' },
-    { keywords: ['relevant', 'experience'], response: '7 years' },
-    { keywords: ['management', 'experience'], response: '3 years' },
-    { keywords: ['leadership', 'experience'], response: 'Yes' },
+    { keywords: ['years', 'experience'], response: '9' },
+    { keywords: ['years', 'professional', 'experience'], response: '9' },
+    { keywords: ['total', 'years', 'experience'], response: '9' },
+    { keywords: ['relevant', 'experience'], response: '9 years' },
+        { keywords: ['leadership', 'experience'], response: 'Yes' },
 
     // ===== SKILLS / PROFICIENCY =====
     { keywords: ['english', 'proficiency'], response: 'Fluent' },
@@ -16845,24 +16865,36 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     { keywords: ['where', 'see', 'yourself', '5', 'years'], response: 'Leading technical initiatives, mentoring junior engineers, and continuing to deepen my expertise while driving high-impact outcomes for the business.' },
     { keywords: ['tell', 'about', 'yourself'], response: 'I am an experienced professional with a strong track record of delivering results in fast-paced environments. I combine technical depth with collaborative leadership and focus on building reliable, scalable solutions.' },
     { keywords: ['cover', 'letter'], response: 'I am excited to apply for this role. My background and experience align closely with the requirements, and I am confident I can deliver meaningful impact from day one. I look forward to contributing to your team and would welcome the chance to discuss further.' },
-    { keywords: ['additional', 'information'], response: 'I am available to start within two weeks and am fully authorized to work without sponsorship. I am happy to provide references or complete any assessments as needed.' },
-    { keywords: ['anything', 'else', 'share'], response: 'Thank you for considering my application. I am very enthusiastic about this opportunity and am confident my skills and experience match what you are looking for.' },
+        { keywords: ['anything', 'else', 'share'], response: 'Thank you for considering my application. I am very enthusiastic about this opportunity and am confident my skills and experience match what you are looking for.' },
 
     // ===== CERTIFICATIONS =====
-    { keywords: ['professional', 'certifications'], response: 'AWS Certified Solutions Architect, Certified Scrum Master' },
+    { keywords: ['professional', 'certifications'], response: 'AWS Certified Solutions Architect – Professional, Certified Kubernetes Administrator (CKA)' },
     { keywords: ['driver', 'license', 'valid'], response: 'Yes' },
-    { keywords: ['security', 'clearance'], response: 'None' },
-
+    
     // ===== PREFERRED CONTACT =====
     { keywords: ['preferred', 'contact', 'method'], response: 'Email' },
     { keywords: ['best', 'time', 'contact'], response: 'Anytime during business hours' },
   ];
 
+  // Corrections for answers an earlier seed wrote into storage (v1.5.4). Only entries still
+  // holding the old seeded value are touched, so anything you edited yourself is kept.
+  const SEED_FIXES = [{"sig": "available|start", "old": "Immediately", "new": "1 month notice"}, {"sig": "start|when|work", "old": "Within 2 weeks", "new": "Within 1 month"}, {"sig": "date|earliest|start", "old": "Immediately", "new": "1 month from offer"}, {"sig": "notice|period", "old": "2 weeks", "new": "1 month"}, {"sig": "days|notice|required", "old": "14", "new": "30"}, {"sig": "can|immediately|start", "old": "Yes", "new": "No"}, {"sig": "desired|salary", "old": "80000", "new": "60000"}, {"sig": "expected|salary", "old": "80000", "new": "60000"}, {"sig": "expectation|salary", "old": "80000", "new": "60000"}, {"sig": "minimum|salary", "old": "70000", "new": null}, {"sig": "current|salary", "old": "75000", "new": "50000"}, {"sig": "hourly|rate", "old": "40", "new": null}, {"sig": "degree|highest", "old": "Bachelor's Degree", "new": "Master's Degree"}, {"sig": "education|level", "old": "Bachelor's Degree", "new": "Master's Degree"}, {"sig": "gpa", "old": "3.6", "new": "3.90"}, {"sig": "experience|years", "old": "7", "new": "9"}, {"sig": "experience|professional|years", "old": "7", "new": "9"}, {"sig": "experience|total|years", "old": "7", "new": "9"}, {"sig": "experience|relevant", "old": "7 years", "new": "9 years"}, {"sig": "experience|management", "old": "3 years", "new": null}, {"sig": "certifications|professional", "old": "AWS Certified Solutions Architect, Certified Scrum Master", "new": "AWS Certified Solutions Architect – Professional, Certified Kubernetes Administrator (CKA)"}, {"sig": "clearance|security", "old": "None", "new": null}, {"sig": "additional|information", "old": "I am available to start within two weeks and am fully authorized to work without sponsorship. I am happy to provide references or complete any assessments as needed.", "new": null}];
   async function seedOnce() {
     try {
       const flag = await new Promise(r => chrome.storage.local.get(SEEDED_FLAG, d => r(d[SEEDED_FLAG])));
-      if (flag === '1.5.4') { LOG('Seed bank already installed'); return; }
-      const existing = await new Promise(r => chrome.storage.local.get(SEED_KEY, d => r(d[SEED_KEY] || [])));
+      if (flag === '1.5.5') { LOG('Seed bank already installed'); return; }
+      let existing = await new Promise(r => chrome.storage.local.get(SEED_KEY, d => r(d[SEED_KEY] || [])));
+      let fixed = 0;
+      existing = existing.filter((e) => {
+        const sig = (e.keywords || []).slice().sort().join('|');
+        const f = SEED_FIXES.find((x) => x.sig === sig && String(e.response) === x.old);
+        if (!f) return true;
+        fixed++;
+        if (f.new == null) return false;
+        e.response = f.new; e.updatedAt = Date.now();
+        return true;
+      });
+      if (fixed) LOG(`Corrected ${fixed} seeded answers that didn't match your profile`);
       const existingSigs = new Set(existing.map(e => (e.keywords || []).slice().sort().join('|')));
       let added = 0;
       for (const entry of SEED) {
@@ -16871,7 +16903,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         existing.push({ keywords: entry.keywords, response: entry.response, appearances: 1, createdAt: Date.now(), updatedAt: Date.now(), seeded: true });
         added++;
       }
-      await new Promise(r => chrome.storage.local.set({ [SEED_KEY]: existing, [SEEDED_FLAG]: '1.5.4' }, r));
+      await new Promise(r => chrome.storage.local.set({ [SEED_KEY]: existing, [SEEDED_FLAG]: '1.5.5' }, r));
       LOG(`Seeded ${added} knockout responses (total ${existing.length})`);
     } catch (e) { LOG('Seed error:', e.message); }
   }
@@ -17266,10 +17298,12 @@ Result: Shipped my first production change in week three and my notes doc became
     // Fallback: type into input
     if (inputEl) {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      const answer = /salary|pay|rate/i.test(q) ? '80000'
-                   : /years|experience/i.test(q) ? '7'
-                   : /start|available/i.test(q) ? 'Immediately'
-                   : 'Yes';
+      // (DEFAULTS lives in another closure — keep these in step with it)
+      const answer = /salary|pay|rate/i.test(q) ? '60000'
+                   : /years|experience/i.test(q) ? '9'
+                   : /start|available/i.test(q) ? '1 month notice'
+                   : '';
+      if (!answer) return false;   // unknown question: leave it for you rather than invent "Yes"
       setter?.call(inputEl, answer);
       inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
