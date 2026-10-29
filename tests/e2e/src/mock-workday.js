@@ -461,6 +461,27 @@ function App() {
   const [files, setFiles] = useState([]);
   const [data, setData] = useState({ work: PARSED_WORK.map((w) => ({ ...w, k: nextId() })), edu: [] });
   window.__mock = { route, step, data, files };
+  /* ?sa=1 — a stand-in for SpeedyApply: its <speedyapply-autofill> element on the
+     page, and each step filled ~1s after it shows with recognisably different
+     values ("SA Role at SA Co"), never pressing Next itself (its "Auto click next
+     page" off). The account page is left alone (no account in its settings). */
+  const SA = (() => { try { if (new URLSearchParams(location.search).has("sa")) sessionStorage.setItem("mockSA", "1"); return sessionStorage.getItem("mockSA") === "1"; } catch (_) { return false; } })();
+  useEffect(() => {
+    if (!SA) return;
+    if (!document.querySelector("speedyapply-autofill")) document.documentElement.appendChild(document.createElement("speedyapply-autofill"));
+    const fills = {
+      0: { source: ["LinkedIn"], prev: "No", country: "United Kingdom", first: "Sa", last: "Filled", city: "London", phoneType: "Mobile", phoneCode: ["United Kingdom (+44)"], phone: "7700900123" },
+      1: { work: [{ k: nextId(), jobTitle: "SA Role", company: "SA Co", location: "London", current: true, start: { m: "1", y: "2020" }, end: {}, description: "" }] },
+      2: { qAuth: "Yes", qSponsor: "No", qSalary: "60000", qCrim: "No", qYears: "9" },
+      3: { gender: "Prefer not to say", eth: "Prefer not to say", vet: "I am not a protected veteran", agree: true },
+      4: { siName: "Sa Filled", siDate: { m: "1", d: "1", y: "2026" }, dis: "I do not want to answer" },
+    };
+    const id = setTimeout(() => {
+      if (route === "resume") { setFiles(["SA_CV.pdf"]); console.log("FX_SA resume"); }
+      if (route === "wizard" && fills[step]) { setData((p) => ({ ...p, ...fills[step] })); console.log("FX_SA step " + step); }
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [route, step]);
   useEffect(() => {
     if (route !== "job") history.replaceState(null, "", `${JOB_PATH}/apply/autofillWithResume`);
   }, [route]);

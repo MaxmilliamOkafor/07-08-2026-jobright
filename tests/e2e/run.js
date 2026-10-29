@@ -97,7 +97,7 @@ const T0 = Date.now();
     if (s.submitted || (s.body && /thank you/i.test(s.body))) break;
   }
   // The page submits a few seconds before the job reports back — wait for the verdict.
-  const readQ = () => panel.evaluate(async () => new Promise((r) => chrome.storage.local.get(null, (d) => r({ q: (d.ua_mgr_queue || d.ua_q || []).map((j) => ({ status: j.status, reason: j.reason || j.error || j.result, stage: j.stage })) , keys: Object.keys(d) }))));
+  const readQ = () => panel.evaluate(async () => new Promise((r) => chrome.storage.local.get(null, (d) => r({ q: (d.ua_mgr_queue || d.ua_q || []).map((j) => ({ status: j.status, reason: j.reason || j.error || j.result, stage: j.stage })) , keys: Object.keys(d) })))).catch((e) => ({ q: [], keys: [], err: String(e && e.message || e).slice(0, 120) }));
   let q = await readQ();
   for (let i = 0; i < 20 && q.q[0] && q.q[0].status === 'applying' && Date.now() - t0 < WAIT + 20000; i++) { await new Promise((r) => setTimeout(r, 1000)); q = await readQ(); }
   if (jobPage) await jobPage.screenshot({ path: path.join(require('os').tmpdir(), 'ua-e2e-shot.png'), fullPage: true }).catch(() => {});

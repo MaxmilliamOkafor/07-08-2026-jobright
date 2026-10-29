@@ -106,7 +106,10 @@ export async function handleSignIn(ctx: Ctx): Promise<void> {
 
   const errs = errorMessages().map((e) => e.text).join(" ");
   if (AUTH_FAILED_RX.test(errs) || LOCKED_RX.test(errs)) {
-    if (LOCKED_RX.test(errs)) throw new NeedsHuman("This account is locked. Reset the password from the sign-in page, then click Resume.");
+    // [ua] "You may have entered the wrong email address or password or your account
+    // might be locked" is Workday's ordinary wrong-password message, not a lock.
+    const maybe = /\b(might|may) be locked\b/i.test(errs);
+    if (LOCKED_RX.test(errs) && !maybe) throw new NeedsHuman("This account is locked. Reset the password from the sign-in page, then click Resume.");
     ctx.log(`Sign-in rejected: ${errs}`, "warn");
     if (!creds.cred && ctx.run.createAttempts < 2) {
       const create = byAid("createAccountLink");
