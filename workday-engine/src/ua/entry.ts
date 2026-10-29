@@ -279,6 +279,18 @@ function jobrightProfile(raw: unknown): Any {
     linkedin: str(pi.linkedin_link || pi.linkedin),
     github: str(pi.github_link || pi.github_url), website: str(pi.personal_site_link || pi.personal_site),
   };
+  // Every role, not just the first: the engine adds one Work Experience per role.
+  const work = (Array.isArray(e.workExperience) ? e.workExperience : []).map((w: Any) => ({
+    title: str(w.job_title), company: str(w.organization), location: str(w.location),
+    start_date: str(w.dates?.start_date), end_date: str(w.dates?.completion_date), is_current: !!w.dates?.is_current,
+    description: Array.isArray(w.job_descriptions) ? w.job_descriptions.join("\n") : str(w.summary),
+  })).filter((w: Any) => w.title && w.company);
+  if (work.length) out.work_experience = work;
+  const edu = (Array.isArray(e.education) ? e.education : []).map((x: Any) => ({
+    school: str(x.organization), degree: str(x.accreditation), gpa: str(x.gpa),
+    start_date: str(x.dates?.start_date), end_date: str(x.dates?.completion_date),
+  })).filter((x: Any) => x.school);
+  if (edu.length) out.education = edu;
   for (const k of Object.keys(out)) if (out[k] === "") delete out[k];
   return out;
 }

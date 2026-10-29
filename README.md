@@ -4030,3 +4030,27 @@ Tests:
 - `tests/e2e/bamboohr.html` submitted with Country United Kingdom, ZIP the
   postcode, the street address, a real date, and References right.
 - Workday mock, Greenhouse, knockout and form pages still submit.
+
+## v17.32 — Workday: every role gets its own Work Experience ("Add Another")
+
+**Only the first role went in on Workday; Accenture, Citi and the rest were never
+added.** Since v17.30 your roles come from Jobright's own profile. The engine
+reads them in its own format, but the built-in Workday filler reads
+`work_experiences` (title / company / from / to / current). That list was never
+filled from Jobright's profile, so the built-in filler saw one role, the flat
+"current job", and never pressed "Add Another". It's the filler that handles My
+Experience whenever the engine has handed back.
+- Jobright's roles are now in both formats, so both fillers add one Work
+  Experience per role (deleting parser leftovers) and fill title, company,
+  location, current-role tick, From/To and description.
+- The engine's own fallback mapping carries every role and school too.
+- My Experience counts as work for the 15-second stall watchdog. Adding four
+  roles with dates takes longer than that, and the job was being dropped
+  mid-page.
+
+Tested on the Workday mock, which starts with three junk "parsed" entries. A
+profile holding only an email, plus Jobright's profile with four roles,
+submitted `Meta (01/2023–now) · SolimHealth (08/2022–12/2022) · Accenture
+(03/2021–07/2022) · Citi (08/2017–03/2021)`. That held with the engine and with
+the engine off (built-in filler only). The mock now prints the roles it received
+on submit. Unit tests: section 82.

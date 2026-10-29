@@ -324,7 +324,11 @@ function Wizard({ data, setData, step, setStep, files, setFiles, onSubmit }) {
     const errs = (required[step] ?? []).filter(([, , ok]) => !ok());
     setErrors(errs);
     if (errs.length) return;
-    if (step === 5) return onSubmit();
+    if (step === 5) {
+      // For the harness: what went in, one role per line of the review.
+      console.log("SUBMITTED " + JSON.stringify({ work: work.map((w) => `${w.jobTitle} at ${w.company} (${w.start?.m || "?"}/${w.start?.y || "?"}-${w.current ? "now" : (w.end?.m || "?") + "/" + (w.end?.y || "?")})`) }));
+      return onSubmit();
+    }
     setStep(step + 1);
   };
 

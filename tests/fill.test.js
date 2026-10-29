@@ -3689,6 +3689,28 @@ console.log('v17.31: Jobright stays out of our Workday jobs; engine resumes; sig
 }
 
 
+
+/* ── 82. v17.32: every Workday role, not just the first ── */
+console.log('v17.32: Workday adds a Work Experience per role from Jobright\'s profile (Accenture, Citi, …)');
+{
+  const m = {};
+  new Function('exports', `${body('profileFromJobright')}${body('wdParseYM')}${body('wdWorkEntries')} Object.assign(exports, { profileFromJobright, wdWorkEntries });`)(m);
+  const jr = m.profileFromJobright({ personalInfo: { firstName: 'M' }, workExperience: [
+    { job_title: 'Senior Software Engineer', organization: 'Meta', dates: { start_date: '2023-01', is_current: true } },
+    { job_title: 'AI Product Manager', organization: 'SolimHealth', dates: { start_date: '2022-08', completion_date: '2022-12' } },
+    { job_title: 'Senior Solutions Architect', organization: 'Accenture', dates: { start_date: '2021-03', completion_date: '2022-07' } },
+    { job_title: 'Senior Data Analyst', organization: 'Citi', dates: { start_date: 'Aug 2017', completion_date: 'Mar 2021' } },
+  ] });
+  const roles = m.wdWorkEntries(jr);
+  eq('the built-in Workday filler sees all 4 roles (it saw only Meta)', roles.map((r) => r.company).join(', '), 'Meta, SolimHealth, Accenture, Citi');
+  eq('…with their dates', roles.map((r) => `${r.start.m}/${r.start.y}-${r.current ? 'now' : r.end.m + '/' + r.end.y}`).join(' '), '01/2023-now 08/2022-12/2022 03/2021-07/2022 8/2017-3/2021');
+  eq('…so wdMyExperience presses "Add Another" up to that count', /wdEnsureBlocks\(work, \['jobTitle', 'formField-jobTitle'\], roles\.length\)/.test(body('wdMyExperience')), true);
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), '../workday-engine/src/ua/entry.ts'), 'utf8');
+  eq('the engine\'s own fallback mapping carries every role too', /if \(work\.length\) out\.work_experience = work;/.test(eng), true);
+  eq('My Experience is work, not a stall, for the 15s watchdog', /withBusy\('filling My Experience'/.test(body('workdayMultiPageFlow')), true);
+}
+
+
 setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

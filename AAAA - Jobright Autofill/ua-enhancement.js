@@ -1156,6 +1156,11 @@
     })).filter((w) => w.title && w.company);
     if (work.length) {
       out.work_experience = work;
+      /* The same roles in the shape the built-in Workday filler reads
+         (wdWorkEntries: title/company/from/to/current). Without it that filler
+         saw one role — the flat "current job" — and never pressed "Add Another"
+         for Accenture, Citi and the rest. */
+      out.work_experiences = work.map((w) => ({ title: w.title, company: w.company, location: w.location, from: w.start_date, to: w.is_current ? '' : w.end_date, description: w.description, current: w.is_current }));
       out.current_title = work[0].title; out.current_company = work[0].company;
     }
     const edu = (Array.isArray(e.education) ? e.education : []).map((x) => ({
@@ -8952,11 +8957,14 @@
         await workdayFillModernInfo(p);
         await fixPhoneCountryCode();
       } else if (/MyExp/.test(currentPageType)) {
-        await workdayFillEducation(p);
-        await workdayFillExperience(p);
-        await workdayFillModernHistory(p);
-        await workdayFillLanguage(p);
-        await wdFillMissingMonths();
+        // Work, not a stall: a role per "Add Another" with real dates outlasts the 15s watchdog.
+        await withBusy('filling My Experience', async () => {
+          await workdayFillEducation(p);
+          await workdayFillExperience(p);
+          await workdayFillModernHistory(p);
+          await workdayFillLanguage(p);
+          await wdFillMissingMonths();
+        });
       } else if (/Questions|Supplementary/.test(currentPageType)) {
         await workdayFillQuestions(p);
         await workdayFillLinks(p);
