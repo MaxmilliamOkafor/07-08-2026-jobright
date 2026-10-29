@@ -21,7 +21,7 @@ export interface Ctx extends AnswerCtx {
 }
 
 export async function pace(ctx: Ctx): Promise<void> {
-  await sleep(ctx.settings.fieldDelayMs + Math.floor(Math.random() * 60));
+  await sleep(ctx.settings.fieldDelayMs + Math.floor(Math.random() * 15));
 }
 
 export function addFlag(run: RunState, f: Flag) {

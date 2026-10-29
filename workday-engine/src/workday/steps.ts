@@ -3,6 +3,7 @@
  * that answers whatever the tenant added on top.
  */
 import {
+  DECLINE_RX,
   NeedsHuman,
   buttonByText,
   byAid,
@@ -24,6 +25,7 @@ import {
   kindOf,
   multiselectPick,
   multiselectSelected,
+  optionLabel,
   optionsOf,
   readValue,
   selectDropdown,
@@ -178,8 +180,21 @@ async function ensureBlockCount(ctx: Ctx, sectionEl: HTMLElement, anchor: AidKey
       break;
     }
     const before = bs.length;
+    const grew = () => blocks(sectionEl, anchor).length > before;
+    // [ua] Workday re-renders the form when focus leaves a field, which can replace the
+    // "Add Another" button between pointerdown and click and swallow the click.
+    // Try the synthetic click, then re-find the button and use a native .click().
     await humanClick(add);
-    await waitFor(() => blocks(sectionEl, anchor).length > before, 6000).catch(() => null);
+    let ok = await waitFor(grew, 2500).then(() => true, () => false);
+    for (let attempt = 0; !ok && attempt < 3; attempt++) {
+      await waitStable(300, 5000);
+      const fresh = addButton(sectionEl);
+      if (!fresh) break;
+      fresh.scrollIntoView({ block: "center" });
+      await sleep(150);
+      fresh.click();
+      ok = await waitFor(grew, 3500).then(() => true, () => false);
+    }
     await waitStable(300, 5000);
     bs = blocks(sectionEl, anchor);
   }
@@ -374,6 +389,40 @@ async function fillWork(ctx: Ctx, block: HTMLElement, w: WorkEntry) {
   await fill(ctx, "descriptionF", bulletsText(bullets), block);
 }
 
+/* [ua] "Masters" picked "M.P.H. (Master's Public Health)" — the closest text, and
+   the wrong degree. A generic level ("Masters", "Master's", "MSc", "Bachelors")
+   takes the plain option of that level, or Master/Bachelor of Science, and never
+   a specialised one (public health, business administration, fine arts, social
+   work, education, law, nursing…). A specific degree is matched as written. */
+const SPECIALISED_DEGREE_RX = /\b(m\.?\s?p\.?\s?h|public health|m\.?\s?b\.?\s?a|business admin|m\.?\s?f\.?\s?a|b\.?\s?f\.?\s?a|fine arts|m\.?\s?s\.?\s?w|b\.?\s?s\.?\s?w|social work|m\.?\s?ed\b|b\.?\s?ed\b|of education|m\.?\s?p\.?\s?a|public admin|ll\.?\s?[bm]\b|of laws|m\.?\s?arch|b\.?\s?arch|architecture|m\.?\s?d\b|medicine|m\.?\s?p\.?\s?p|public policy|m\.?\s?div|divinity|m\.?\s?h\.?\s?a|health admin|m\.?\s?s\.?\s?n|b\.?\s?s\.?\s?n|nursing|music|m\.?\s?a\.?\s?t\b|teaching|physical therapy|pharm|dental|veterinar|j\.?\s?d\b|juris)/i;
+function degreeLevel(t: string): string {
+  const s = t.toLowerCase();
+  if (/\b(ph\.?\s?d|doctor|doctorate|d\.?\s?phil)/.test(s)) return "doctor";
+  if (/\bmaster|\bm\.?\s?sc?\b|\bm\.?\s?a\b|\bm\.?\s?eng\b|\bm\.?\s?res\b|\bmba\b|\bmph\b|\bm\.?\s?s\.?\b/.test(s)) return "master";
+  if (/\bbachelor|\bb\.?\s?sc?\b|\bb\.?\s?a\b|\bb\.?\s?eng\b|\bb\.?\s?s\.?\b|undergraduate/.test(s)) return "bachelor";
+  if (/\bassociate/.test(s)) return "associate";
+  return "";
+}
+export function pickDegreeOption(options: string[], wanted: string): string | null {
+  const w = String(wanted || "").trim();
+  const lvl = degreeLevel(w);
+  const generic = /^(master'?s?|masters|bachelor'?s?|bachelors|doctorate|ph\.?\s?d|associate'?s?)(\s+degree)?$/i.test(w) ||
+    /^(m\.?\s?sc?|b\.?\s?sc?|m\.?\s?a|b\.?\s?a|m\.?\s?eng|b\.?\s?eng)\.?$/i.test(w);
+  if (!lvl || !generic) return null;
+  const arts = /^(m|b)\.?\s?a\.?$/i.test(w);
+  let best: string | null = null, top = -1;
+  for (const o of options) {
+    if (degreeLevel(o) !== lvl || SPECIALISED_DEGREE_RX.test(o)) continue;
+    const plain = o.replace(/\(.*?\)/g, "").trim();
+    let sc = 0;
+    if (/^(master|bachelor|doctor|associate)'?s?(\s+degree)?$/i.test(plain) || /'?s degree$/i.test(plain)) sc += 3;
+    if (/science|\b[mb]\.?\s?s\.?c?\b/i.test(o)) sc += arts ? 1 : 2;
+    if (/\barts?\b|\b[mb]\.?\s?a\b/i.test(o)) sc += arts ? 2 : 0;
+    if (sc > top) { top = sc; best = o; }
+  }
+  return best;
+}
+
 async function fillEducation(ctx: Ctx, block: HTMLElement, e: EducationEntry) {
   const school = field("schoolF", block);
   if (school) {
@@ -386,7 +435,13 @@ async function fillEducation(ctx: Ctx, block: HTMLElement, e: EducationEntry) {
     }
     if (!ok) ctx.flag(`School: ${e.school}`, "Not in the tenant's school list");
   }
-  await fill(ctx, "degreeF", e.degree, block);
+  let degree = e.degree;
+  const degEl = field("degreeF", block);
+  if (degEl && degree && kindOf(containerOf(degEl)) === "dropdown") {
+    const pick = pickDegreeOption(await optionsOf(containerOf(degEl)).catch(() => [] as string[]), degree);
+    if (pick) degree = pick;
+  }
+  await fill(ctx, "degreeF", degree, block);
   const fos = field("fieldF", block);
   if (fos && e.field) {
     const c = containerOf(fos);
@@ -447,6 +502,24 @@ async function uploadDocuments(ctx: Ctx) {
   }
 }
 
+/** [ua] Workday sometimes re-renders an entry blank after the next one is added:
+ *  check each one's anchor field and fill any that came back empty (twice at most). */
+async function verifyBlocks<T>(ctx: Ctx, sectionEl: HTMLElement, anchor: AidKey, items: T[], fillFn: (ctx: Ctx, b: HTMLElement, item: T) => Promise<void>): Promise<void> {
+  for (let pass = 0; pass < 2; pass++) {
+    await waitStable(150, 2000);
+    const bs = await ensureBlockCount(ctx, sectionEl, anchor, items.length);
+    let fixed = 0;
+    for (let i = 0; i < Math.min(bs.length, items.length); i++) {
+      const a = field(anchor, bs[i]);
+      if (a && readValue(containerOf(a))) continue;
+      await fillFn(ctx, bs[i], items[i]);
+      fixed++;
+    }
+    if (!fixed) return;
+    ctx.log(`Re-filled ${fixed} ${anchor === "jobTitleF" ? "work" : "education"} entr(ies) that came back empty`, "warn");
+  }
+}
+
 export async function myExperience(ctx: Ctx): Promise<void> {
   await hooks.beforeExperience?.(); // [oh]
   const p = ctx.profile;
@@ -455,6 +528,7 @@ export async function myExperience(ctx: Ctx): Promise<void> {
   if (work && p.work.length) {
     const bs = await ensureBlockCount(ctx, work, "jobTitleF", p.work.length);
     for (let i = 0; i < Math.min(bs.length, p.work.length); i++) await fillWork(ctx, bs[i], p.work[i]);
+    await verifyBlocks(ctx, work, "jobTitleF", p.work, fillWork);
     ctx.log(`Work experience: ${p.work.length} role(s) filled`);
     await markCurrentRole(ctx, work); // [oh]
   } else if (work) {
@@ -467,6 +541,7 @@ export async function myExperience(ctx: Ctx): Promise<void> {
     const anchor: AidKey = q(sel("schoolF"), edu) ? "schoolF" : "degreeF";
     const bs = await ensureBlockCount(ctx, edu, anchor, p.education.length);
     for (let i = 0; i < Math.min(bs.length, p.education.length); i++) await fillEducation(ctx, bs[i], p.education[i]);
+    await verifyBlocks(ctx, edu, anchor, p.education, fillEducation);
     ctx.log(`Education: ${p.education.length} entr(ies) filled`);
   } else if (edu && hooks.autoSubmit?.()) {
     await pruneIncomplete(ctx, edu, q(sel("schoolF"), edu) ? "schoolF" : "degreeF"); // [oh]
@@ -584,20 +659,33 @@ export async function voluntaryDisclosures(ctx: Ctx): Promise<void> {
 export async function selfIdentify(ctx: Ctx): Promise<void> {
   const name = `${ctx.profile.personal.firstName} ${ctx.profile.personal.lastName}`.trim();
   await fill(ctx, "selfIdName", name);
-  const dateEl = field("selfIdDate");
+  // [ua] Some tenants give the signature date no automation id on its container.
+  const dateEl = field("selfIdDate") ?? q<HTMLElement>('[id$="dateSignedOn-dateSectionMonth-input"], [id$="dateSignedOn-dateSectionYear-input"]');
   if (dateEl) {
     const c = containerOf(dateEl);
     handled.add(c);
     const d = new Date();
-    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    if (!readValue(c)) await setDate(c, iso);
+    const mm = String(d.getMonth() + 1).padStart(2, "0"), dd = String(d.getDate()).padStart(2, "0"), yyyy = String(d.getFullYear());
+    const iso = `${yyyy}-${mm}-${dd}`;
+    const seg = (s: AidKey) => (q<HTMLInputElement>(sel(s), c)?.value || "").replace(/^0+/, "");
+    const isToday = () => seg("dateMonth") === String(+mm) && (!q(sel("dateDay"), c) || seg("dateDay") === String(+dd)) && seg("dateYear") === yyyy;
+    for (let i = 0; i < 2 && !isToday(); i++) await setDate(c, iso);
+    if (!isToday()) ctx.flag("Self-identification date", `Couldn't set today's date (${mm}/${dd}/${yyyy})`);
   }
   const dis = field("disability");
   if (dis) {
     const c = containerOf(dis);
     handled.add(c);
     const pref = ctx.profile.eeo.disability;
-    const wanted = pref === "yes" ? "Yes, I have a disability" : pref === "no" ? "No, I do not have a disability" : "decline";
+    // [ua] The CC-305 wording in full, so the closest option is the right one.
+    const wanted = pref === "yes" ? "Yes, I have a disability, or have had one in the past" : pref === "no" ? "No, I do not have a disability and have not had one in the past" : "decline";
+    // Untick anything already ticked that isn't the saved choice (only one box may be checked).
+    for (const b of qa<HTMLInputElement>('input[type="checkbox"], [role="checkbox"]', c)) {
+      const on = b.checked || b.getAttribute("aria-checked") === "true";
+      const l = optionLabel(b);
+      const right = wanted === "decline" ? DECLINE_RX.test(l) : similarity(wanted, l) >= 0.85;
+      if (on && !right) await setCheckbox(b, false);
+    }
     const ok = (await checkInGroup(c, wanted)) || (await selectRadio(c, wanted));
     if (!ok) ctx.flag("Disability status", "Couldn't select your saved choice");
   }

@@ -4054,3 +4054,41 @@ submitted `Meta (01/2023–now) · SolimHealth (08/2022–12/2022) · Accenture
 (03/2021–07/2022) · Citi (08/2017–03/2021)`. That held with the engine and with
 the engine off (built-in filler only). The mock now prints the roles it received
 on submit. Unit tests: section 82.
+
+## v17.33 — Your 12.4 edits merged in; degree picker ("Masters" ≠ "M.P.H.")
+
+**Your 12.4 copy.** It was the 8ff9ccf build plus edits of your own. They're all
+in the repo now, alongside v17.32's "Add Another" fix (which 12.4 didn't have).
+- **Your answers:** 9 years, 60000 salary, 1-month notice, Master's degree, GPA
+  3.90, AWS/CKA certifications.
+- **Seed answers:** they come from the same defaults, and the seed bank (1.5.5)
+  corrects old seeded answers you never edited.
+- **Timing:**
+  - 5-minute job ceiling (`JOB_HARD_CEIL_MS`), and a 5-minute Workday-engine
+    limit with a 90-second "stuck on the same step" stop.
+  - 180s default job timeout.
+  - 3-second Review countdown.
+- **Errors:** Workday's "Something went wrong" page is skipped. The second time,
+  the engine reopens the posting.
+- **Workday engine improvements** (made in the built bundle, now ported to
+  `workday-engine/src` so a rebuild keeps them):
+  - Dates are entered with arrow keys (Workday ignores typed digits).
+  - "Add Another" and Submit are retried with a native click when Workday
+    swallows the first click.
+  - Work/education entries that come back blank are re-filled.
+  - Multiselect picks that aren't what was asked are removed, and leftover
+    search text is cleared.
+  - On a tie, the plainer option wins.
+  - The self-ID date is checked, and disability uses the full CC-305 wording.
+  - Every role is kept even without a start date, with richer EEO profile keys.
+  - Faster pacing (15 ms per field).
+
+**"M.P.H. (Master's Public Health)" for "Masters".** Closest-text matching
+picked a specialised degree.
+- A generic level ("Masters", "Master's", "MSc", "Bachelors", "PhD") now takes
+  the plain option of that level ("Master's Degree"), else Master/Bachelor of
+  Science. It never takes a specialised one (public health, business
+  administration, fine arts, social work, education, law, nursing…).
+- A specific degree in your profile is matched as written.
+- This applies in the engine and both built-in Workday education fillers
+  (`__uaWdEngine.pickDegree`).
