@@ -37,7 +37,7 @@ import { autoResume, isActive, startRun, stopRun } from "../workday/engine.js";
 import { activeStepName, detectPage, hasWorkdayApp, isWorkdayHost, tenantHost } from "../workday/detect.js";
 import { getProfile as getEngineProfile, normalizeProfile } from "../workday/store.js";
 import { setHooks, type Outcome } from "../workday/ohHooks.js";
-import type { ControlKind } from "../workday/controls.js";
+import { setDate, type ControlKind } from "../workday/controls.js";
 import { SENSITIVE_RX } from "../workday/answers.js";
 import { DEFAULT_WD_SETTINGS, type PageKind, type Profile, type RunState, type StoredDoc, type WorkdaySettings } from "../workday/types.js";
 
@@ -274,7 +274,9 @@ function jobrightProfile(raw: unknown): Any {
     first_name: str(pi.firstName), last_name: str(pi.lastName), preferred_name: str(pi.preferredFirstName),
     email: str(pi.email), phone: str(pi.phone_number), phoneCountryCode: cc ? `+${cc}` : "",
     city: str(loc.city), state: str(loc.state || e.state), country: str(loc.country), postal_code: str(loc.postCode),
-    address: str(e.addressLine), linkedin: str(pi.linkedin_link || pi.linkedin),
+    address: str(e.addressLine).split(/\s*[\r\n]+\s*/)[0],
+    address_line_2: str(e.addressLine).split(/\s*[\r\n]+\s*/).slice(1).filter(Boolean).join(", "),
+    linkedin: str(pi.linkedin_link || pi.linkedin),
     github: str(pi.github_link || pi.github_url), website: str(pi.personal_site_link || pi.personal_site),
   };
   for (const k of Object.keys(out)) if (out[k] === "") delete out[k];
@@ -443,8 +445,9 @@ async function buildProfile(): Promise<Profile> {
       email: pick(s, "email", "email_address"),
       phone: { countryName: DIAL[ph.code] || country, countryCode: ph.code ? `+${ph.code}` : "", number: ph.national, deviceType: "Mobile" },
       address: {
-        line1: pick(s, "address", "address_line_1", "address1", "street"),
-        line2: pick(s, "address_line_2", "address2"),
+        // One line each: a line break in a saved address made Workday's box refuse it.
+        line1: pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/)[0],
+        line2: pick(s, "address_line_2", "address2") || pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/).slice(1).join(", "),
         city: pick(s, "city"),
         region: pick(s, "state", "region", "province", "county"),
         postalCode: pick(s, "postal_code", "zip", "postcode"),
@@ -678,12 +681,34 @@ async function startJob(jobId: string): Promise<void> {
   }
 }
 
+/** Hand the job back to the engine on the page now showing. The engine paused
+ *  on an earlier step (a question it could not answer); the built-in flow
+ *  answered it and moved on, and from here the engine is the better filler. */
+async function resumeJob(jobId: string): Promise<void> {
+  const id = String(jobId || "");
+  const r = readResult(id);
+  if (!id || !r || r.outcome === "submitted" || isActive()) return;
+  try { sessionStorage.removeItem(RESULT_KEY); } catch { /* storage blocked */ }
+  const mode: Mode = { queue: true, submit: true, startedAt: Date.now(), jobId: id };
+  writeMode(mode);
+  bootUntil = Date.now() + 30_000;
+  say(`resuming on ${detectPage()} (queue job ${id.slice(0, 40)})`);
+  try {
+    await installHooks(mode);
+    await startRun(null);
+  } catch (e) {
+    clearMode();
+    writeResult({ jobId: id, outcome: "error", reason: (e as Error)?.message || String(e), at: Date.now() });
+  }
+}
+
 /* ---------------- the bridge ua-enhancement uses ---------------- */
 
 W.__uaWdEngine = {
   version: 1,
   isWorkday: () => TOP && isWorkdayHost(),
   startJob: (jobId: string) => void startJob(jobId),
+  resume: (jobId: string) => void resumeJob(jobId),
   result: (jobId: string) => readResult(String(jobId || "")),
   /** Still working on this job (or about to resume it after a reload). A run
    *  that ended without reporting (the engine stops quietly on, e.g., a Submit
@@ -707,6 +732,9 @@ W.__uaWdEngine = {
   allowAssist: () => { assistAllowed = true; return assistOn(); },
   assistOn,
   readCv: () => readCvProfile(),
+  /** Workday's month/year date boxes take keystrokes, not a value: the built-in
+   *  flow uses this to put a month next to a year-only date ("MM/2021"). */
+  setDate: (field: HTMLElement, ym: string) => setDate(field, ym).catch(() => false),
 };
 
 /* ---------------- wiring ---------------- */

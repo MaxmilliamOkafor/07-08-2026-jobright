@@ -3958,3 +3958,75 @@ From the Motorola Solutions (Workday) screenshot and the debug log you sent
   - The Greenhouse page submitted, with the name, the phone on UK, London and
     the CV in Resume/CV.
   - Tests: section 80 in `tests/fill.test.js`.
+
+## v17.31 — One filler per Workday page; sign-in screens without ids; location everywhere; no "Add this job first"
+
+From your Motorola PDF and the two debug logs (Oct 29: 0 applied, 15 Workday
+timeouts):
+
+**Typos and slowness on My Information.** Jobright 1.25 starts its **own**
+Workday autofill the moment sign-in goes through ("Please stay on the Workday
+page while Autofill fills out the form"). On a queue job our Workday engine was
+filling the same page, so both typed into the same boxes.
+- Jobright's code (bundled here) now asks first, and on a tab our queue or
+  engine is driving it stays out.
+- Our flow no longer presses Jobright's Autofill, or runs the tailor detour, on
+  Workday when the engine is there. On NVIDIA, F5 and Clario the run had waited
+  on it until the job timed out.
+- Your own clicks on Jobright's Autofill button work as before.
+
+**"Unrecognised page" on 9 tenants** (NVIDIA, F5, Cisco, VSP, Clario,
+Fullsteam, Insulet, Ansira, RTX). These were sign-in screens whose Email and
+Password boxes have no Workday automation ids.
+- The engine now recognises them by their boxes: one password box means Sign
+  In, two mean Create Account.
+- It fills them and presses the form's own Submit, not the "Sign In" tab.
+- The account watcher no longer says "account step passed" while a password box
+  is on screen.
+
+**The engine comes back after a hand-back.** It paused on My Information (a
+question it couldn't answer), the built-in flow answered it, and then the
+built-in flow kept every later page. Now the next step goes back to the engine,
+up to 4 times per job.
+
+**My Experience mess** (10 Work Experience entries, "MM/2021"):
+- The old filler pressed the first "Add" button on the page on every pass. Now
+  it adds a first entry only when the section has none, uses only that
+  section's Add, and does it once.
+- A date with a year and no month gets one: January for From, December for To.
+  It goes in through the engine's date setter.
+- The "From/To" fallback only matches labels that are exactly From / To. It
+  used to match any label containing "to".
+
+**My Information:**
+- "Phone Extension" no longer gets your phone number.
+- An address saved with a line break ("21 Mount Andrew Crescent⏎Lucan") is
+  split into Address Line 1 and Line 2. Workday's box refused it before.
+
+**Location, on every ATS** (your BambooHR screenshot):
+- ZIP / postcode boxes are never treated as place searches. ZIP had got
+  "Dublin, Dublin, IE".
+- A plain street "Address" box isn't one either, unless it really is an
+  autocomplete. It had got "Dublin, Ireland".
+- A Country box left on the site's default ("United States") is switched to
+  your country, never over a choice you made. Native selects and custom
+  dropdowns are both handled, including ones with a search box.
+- "Date Available" / start date in a date box gets a date: today plus your
+  notice, in the box's own format. It used to get "Immediately", which BambooHR
+  refused.
+- "References (Name, Company, and Contact Info)" gets "Available upon request",
+  not your employer.
+
+**"Add this job first"** never shows. It is answered "Not Now", so nothing is
+added to your Jobright account.
+
+**cover-letter.txt** came from this extension. When a site *requires* a cover
+letter file and none is saved, the tailored cover-letter text is attached. It
+is now a PDF named after you (`Maxmilliam_Okafor_Cover_Letter.pdf`), and a .txt
+only where the box takes no PDF.
+
+Tests:
+- Section 81 in `tests/fill.test.js`.
+- `tests/e2e/bamboohr.html` submitted with Country United Kingdom, ZIP the
+  postcode, the street address, a real date, and References right.
+- Workday mock, Greenhouse, knockout and form pages still submit.

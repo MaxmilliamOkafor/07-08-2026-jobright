@@ -1140,7 +1140,11 @@
       preferred_name: str(pi.preferredFirstName), email: str(pi.email), phone: str(pi.phone_number),
       phoneCountryCode: cc ? '+' + cc : '',
       city: str(loc.city), state: str(loc.state || e.state), country: str(loc.country), county: str(loc.county),
-      postal_code: str(loc.postCode), address: str(e.addressLine),
+      postal_code: str(loc.postCode),
+      // "21 Mount Andrew Crescent\nLucan": a one-line box cannot hold the line
+      // break, so the first line is Address Line 1 and the rest Address Line 2.
+      address: str(e.addressLine).split(/\s*[\r\n]+\s*/)[0],
+      address_line_2: str(e.addressLine).split(/\s*[\r\n]+\s*/).slice(1).filter(Boolean).join(', '),
       linkedin: str(pi.linkedin_link || pi.linkedin), github: str(pi.github_link || pi.github_url),
       website: str(pi.personal_site_link || pi.personal_site),
     };
@@ -1303,8 +1307,28 @@
   /* "Today's date" as a FREE TEXT box (SmartRecruiters puts one under the
      signature field). Match whatever format the field advertises rather than
      guessing — a date in the wrong order is silently wrong, not obviously so. */
-  function todayForField(el) {
+  /* A date box asked "Date Available" / "Start date" got the words of your
+     availability ("Immediately", "2 weeks") and refused them — BambooHR's
+     "Please fill in this field." stopped the submit. A date box gets a date:
+     today plus your notice (two weeks if none), in the box's own format. */
+  function looksLikeDateBox(el) {
+    try {
+      if (!el || el.tagName !== 'INPUT') return false;
+      if (el.type === 'date') return true;
+      const hint = [el.placeholder, el.getAttribute('aria-placeholder'), el.getAttribute('data-format'), el.className, el.getAttribute('autocomplete')].join(' ');
+      return /mm\s*[-/.]\s*dd|dd\s*[-/.]\s*mm|yyyy|date-?picker|datepicker|calendar|bday/i.test(hint) ||
+        !!(el.closest && el.closest('[class*="datepicker" i],[class*="DatePicker"],[class*="date-picker" i],[class*="fab-DatePicker"]'));
+    } catch (_) { return false; }
+  }
+  function availableDateFor(el, p) {
+    let days = 14;
+    try { const n = toDays((p && (p.notice_period || p.notice)) || ''); if (n >= 0) days = n; } catch (_) {}
+    if (/immediate/i.test(String((p && p.availability) || ''))) days = Math.min(days, 7);
+    return todayForField(el, days);
+  }
+  function todayForField(el, plusDays) {
     const d = new Date();
+    if (plusDays) d.setDate(d.getDate() + plusDays);
     const p2 = (n) => String(n).padStart(2, '0');
     const DD = p2(d.getDate()), MM = p2(d.getMonth() + 1), YYYY = String(d.getFullYear());
     let hint = '';
@@ -1378,6 +1402,8 @@
     if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type|descri|responsib|dut(y|ies)|summary|achievement|accomplish/.test(l)) return p.current_title || p.title || '';
     // Dropped bare "org" — a 3-letter fragment that could match unrelated labels
     // (e.g. a "yourname.org" website hint) and stuff the company name into them.
+    // "References (Name, Company, and Contact Info)" is not your employer: it got "Meta".
+    if (/\b(references?|referees?)\b/.test(l) && !/number|phone|email/.test(l)) return 'Available upon request';
     if (/company|employer|current.?company/.test(l)) return p.current_company || p.company || '';
     // CRITICAL: these were \bfrom\b / \bto\b — matching the word "from"/"to" ANYWHERE
     // in a label, which fired on completely unrelated questions like "Are you willing
@@ -1585,6 +1611,7 @@
     let v = String(val == null ? '' : val).trim();
     // Resolved here because the format depends on the control, not the question.
     if (v === '__TODAY__') return todayForField(el);
+    if (v && !/\d/.test(v) && /availab|start|join|begin/i.test(String(label || '')) && looksLikeDateBox(el)) return availableDateFor(el, p);
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
@@ -2473,9 +2500,15 @@
     // empty one got "London, United Kingdom" on Oracle.
     if (/address\s*(line\s*)?[2-4]\b|\bline\s*[2-4]\b|address2|addressline[2-4]|apartment|\bapt\b|suite|flat\b/i.test(hay) &&
       !/(^|\W)pac-target-input(\W|$)/.test(el.className || '')) return false;
-    return /location|city|town|address|where.*(live|based)|postal|zip|metro|region/i.test(hay) ||
-      el.getAttribute('autocomplete') === 'address-level2' ||
-      /(^|\W)(pac-target-input)(\W|$)/.test(el.className || '');
+    const pac = /(^|\W)(pac-target-input)(\W|$)/.test(el.className || '');
+    /* A ZIP / postcode box is never a place search: "Dublin, Dublin, IE" went
+       into BambooHR's ZIP. A plain street-address box isn't either — it got
+       "Dublin, Ireland" — unless it really is an autocomplete. */
+    if (/\b(zip|postal|post ?code|postcode|eircode|plz|code postal)\b/i.test(hay) && !pac) return false;
+    const looksSearch = pac || el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-autocomplete') || !!el.getAttribute('list');
+    if (/\b(address|street)\b/i.test(hay) && !/\b(city|town|location)\b/i.test(hay) && !looksSearch) return false;
+    return /location|city|town|address|where.*(live|based)|metro|region/i.test(hay) ||
+      el.getAttribute('autocomplete') === 'address-level2' || pac;
   }
 
   // Type a value char-by-char so JS-driven autocompletes fire their keyup handlers.
@@ -3474,6 +3507,24 @@
      133ms was being clamped back up, so the top speed was barely distinguishable
      from the one below it. */
   let _mgrDriving = false;                       // a Queue Manager job owns this tab
+  /* Jobright 1.25 starts its OWN Workday autofill the moment sign-in or account
+     creation goes through ("Please stay on the Workday page while Autofill fills
+     out the form"). On a queue job our Workday engine is already filling that
+     page, and the two typing into the same boxes at once is where the typos on
+     My Information came from — and Jobright's extra work-history entries.
+     helper-app asks this before it starts (our patch there); true = this tab's
+     Workday job is ours, so Jobright stays out of it. Your own clicks on
+     Jobright's Autofill button are not affected. */
+  try {
+    globalThis.__uaOwnsAutofill = (target) => {
+      if (target && !/workday/i.test(String(target))) return false;
+      try {
+        const m = JSON.parse(sessionStorage.getItem('uaWdRun') || 'null');
+        if (m && !m.assist && Date.now() - (m.startedAt || 0) < 20 * 60000) return true;
+      } catch (_) {}
+      try { return isRunnerTab() || _mgrDriving || (isWorkday() && isBusy()); } catch (_) { return false; }
+    };
+  } catch (_) {}
   const queueDriving = () => (qActive && !qPaused) || _mgrDriving;
   const sleep = ms => new Promise(r => setTimeout(r, Math.max(25, ms * (queueDriving() ? qSpeedFactor : 1))));
   // Scale a fixed delay the same way, for the waits that are not plain sleeps.
@@ -4169,6 +4220,46 @@
     return null;
   }
 
+  /* The smallest honest PDF: Helvetica 11pt, wrapped at the page width, as
+     many pages as it takes. Text outside Latin-1 is simplified (curly quotes,
+     dashes) or dropped, because the standard fonts only cover that set. */
+  function textToPdf(text) {
+    const clean = String(text || '').replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2013\u2014]/g, '-').replace(/\u2026/g, '...').replace(/\u2022/g, '-').replace(/[^\n\x20-\x7E\xA0-\xFF]/g, '');
+    const MAX = 92, lines = [];
+    for (const para of clean.split(/\r?\n/)) {
+      if (!para.trim()) { lines.push(''); continue; }
+      let cur = '';
+      for (const w of para.split(/\s+/)) {
+        if ((cur + ' ' + w).trim().length > MAX) { lines.push(cur); cur = w; } else cur = (cur + ' ' + w).trim();
+      }
+      if (cur) lines.push(cur);
+    }
+    const PER = 52, pages = [];
+    for (let i = 0; i < Math.max(1, lines.length); i += PER) pages.push(lines.slice(i, i + PER));
+    const esc = (t) => t.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    const objs = [];
+    const add = (body) => { objs.push(body); return objs.length; };
+    const catalog = add(''), pagesId = add(''), font = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+    const kids = [];
+    for (const pg of pages) {
+      const stream = 'BT /F1 11 Tf 14 TL 56 780 Td ' + pg.map((l) => `(${esc(l)}) Tj T*`).join(' ') + ' ET';
+      const content = add(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+      kids.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${content} 0 R >>`));
+    }
+    objs[catalog - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`;
+    objs[pagesId - 1] = `<< /Type /Pages /Kids [${kids.map((k) => k + ' 0 R').join(' ')}] /Count ${kids.length} >>`;
+    let out = '%PDF-1.4\n';
+    const offs = [];
+    objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+    const xref = out.length;
+    out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join('');
+    out += `trailer\n<< /Size ${objs.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF`;
+    const bytes = new Uint8Array(out.length);
+    for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+
   async function satisfyCoverLetter(p) {
     const block = coverLetterBlock();
     if (!block || !isVisible(block)) return false;
@@ -4212,13 +4303,21 @@
     const input = deepQueryAll('input[type="file"]', block, 10)[0];
     if (input) {
       try {
-        const file = new File([letter], 'cover-letter.txt', { type: 'text/plain' });
+        /* A PDF named after you ("Maxmilliam_Okafor_Cover_Letter.pdf") — a
+           "cover-letter.txt" looked like what it was. Plain text only where the
+           box says it takes no PDF. */
+        const accept = String(input.getAttribute('accept') || '').toLowerCase();
+        const pdfOk = !accept || /pdf|application\/\*|\*\/\*/.test(accept);
+        const who = [p.first_name || p.firstName, p.last_name || p.lastName].filter(Boolean).join('_').replace(/[^\w-]+/g, '_') || 'Cover';
+        const file = pdfOk
+          ? new File([textToPdf(letter)], `${who}_Cover_Letter.pdf`, { type: 'application/pdf' })
+          : new File([letter], `${who}_Cover_Letter.txt`, { type: 'text/plain' });
         const dt = new DataTransfer();
         dt.items.add(file);
         input.files = dt.files;
         fireAll(input, ['input', 'change']);
-        LOG('Cover letter is required — attached one as a .txt');
-        DIAG('cover.attached', 'Required cover letter attached as text/plain');
+        LOG(`Cover letter is required — attached ${file.name}`);
+        DIAG('cover.attached', `Required cover letter attached as ${file.type}`);
         return true;
       } catch (e) { LOG('Could not attach the cover letter:', e?.message || e); }
     }
@@ -5198,11 +5297,89 @@
 
   // ===================== FALLBACK FORM FILLER =====================
   // Fills fields that Jobright autofill missed
+  /* ── COUNTRY BOXES LEFT ON THE SITE'S DEFAULT ─────────────────────────────
+     BambooHR (and plenty of others) open with Country = "United States". It
+     "has a value", so nothing ever changed it, and the State list then offered
+     only US states. A Country box showing a different country from yours is
+     switched to yours — unless you changed it yourself. Phone-code, citizenship,
+     birth and "which countries can you work in" questions are not this. */
+  const COUNTRY_ALIASES = { 'united states': ['us', 'usa', 'united states of america', 'u.s.', 'u.s.a.'], 'united kingdom': ['uk', 'gb', 'great britain', 'britain', 'england'], ireland: ['ie', 'republic of ireland', 'éire'] };
+  function sameCountry(a, b) {
+    const n = (t) => String(t || '').replace(/\(.*?\)|\+\d+/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const x = n(a), y = n(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    for (const [k, al] of Object.entries(COUNTRY_ALIASES)) {
+      const set = [k, ...al];
+      if (set.includes(x) && set.includes(y)) return true;
+    }
+    return false;
+  }
+  function isCountryQuestion(t) {
+    const s = String(t || '').replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+    return !!s && s.length <= 60 && /\bcountry\b|\bland\b|\bpays\b|\bpaís\b/i.test(s) &&
+      !/phone|dial|calling|code|citizen|national|countries|origin|birth|issu|passport|other than|work in|authori|sponsor|visa|tax/i.test(s);
+  }
+  function isCountryName(t) {
+    const s = String(t || '').replace(/\s+/g, ' ').trim();
+    return s.length > 1 && s.length < 40 && !/select|choose|please|search|--/i.test(s);
+  }
+  async function forceDropdownTo(combo, want) {
+    const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const findOpts = () => {
+      const lb = listboxFor(combo);
+      const o = lb ? visibleOptions(lb) : [];
+      return o.length ? o : deepAll('[role="option"],[role="menuitem"],li[class*="option" i],div[class*="option" i]', 400).filter(isVisible);
+    };
+    const match = () => findOpts().find((o) => sameCountry(comboText(o), want));
+    const before = new Set(deepAll('input', 400));
+    triggerMouse(combo);
+    await sleep(400);
+    let pick = match();
+    if (!pick) {
+      const search = deepAll('input', 400).find((i) => isVisible(i) && !before.has(i) && i.type !== 'hidden') ||
+        deepAll('input[type="search"],input[placeholder*="search" i]', 60).find(isVisible);
+      if (search) {
+        try { search.focus({ preventScroll: true }); nativeSet(search, want); } catch (_) {}
+        await sleep(600);
+        pick = match();
+      }
+    }
+    if (!pick) {
+      try { document.activeElement && document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true, composed: true })); } catch (_) {}
+      return false;
+    }
+    triggerMouse(pick);
+    await sleep(350);
+    return sameCountry(comboText(combo), want) || norm(comboText(combo)).includes(norm(want));
+  }
+  async function fixCountryDefaults(p) {
+    const want = String((p && p.country) || DEFAULTS.country || '').trim();
+    if (!want) return 0;
+    let n = 0;
+    for (const sel of deepAll('select', 80).filter(isVisible)) {
+      if (userTouched(sel) || !isCountryQuestion(getLabel(sel) || sel.name || sel.id)) continue;
+      const cur = (sel.options[sel.selectedIndex] || {}).text || '';
+      if (!isCountryName(cur) || sameCountry(cur, want)) continue;
+      const opt = Array.from(sel.options).find((o) => sameCountry(o.text, want) || sameCountry(o.value, want));
+      if (opt) { setSelectValue(sel, opt.value); n++; LOG(`Country was "${cur.trim()}" — set to ${opt.text.trim()}`); }
+    }
+    const combos = deepAll('[role="combobox"],[aria-haspopup="listbox"],[class*="select__control" i],[class*="SelectToggle" i],[class*="fab-Select" i],.MuiSelect-root,.ant-select', 80).filter(isVisible);
+    for (const combo of combos) {
+      if (userTouched(combo) || !isCountryQuestion(comboQuestion(combo))) continue;
+      const cur = comboText(combo);
+      if (!isCountryName(cur) || sameCountry(cur, want)) continue;
+      if (await forceDropdownTo(combo, want)) { n++; LOG(`Country was "${cur}" — set to ${want}`); }
+    }
+    return n;
+  }
+
   async function fallbackFill__impl() {
     LOG('Fallback fill starting — catching missed fields');
     const p = await getProfile();
     await loadAnswerBank();
     let filled = 0;
+    try { filled += await fixCountryDefaults(p); } catch (_) {}
 
     // Text inputs & textareas — only unfilled ones
     const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]),textarea')
@@ -7036,7 +7213,10 @@
     if (prior) return workdayEngineOutcome(prior, true);
     LOG('Workday: your Workday engine is applying to this job');
     eng.startJob(id);
-    const res = await withBusy('Workday engine', async () => {
+    return workdayEngineOutcome(await workdayEngineWait(eng, id), false);
+  }
+  function workdayEngineWait(eng, id) {
+    return withBusy('Workday engine', async () => {
       const until = Date.now() + 8 * 60 * 1000;
       await waitUntil(() => !!eng.result(id) || eng.running(id), 1500, 150);
       while (Date.now() < until && !autoStopped()) {
@@ -7049,7 +7229,30 @@
       try { eng.stop(); } catch (_) {}
       return eng.result(id) || { outcome: 'stopped', reason: autoStopped() ? 'Fully Automated turned off' : 'took longer than 8 minutes' };
     });
-    return workdayEngineOutcome(res, false);
+  }
+  /* The engine paused on one step (a question it could not answer — "How Did
+     You Hear About Us?" with no LinkedIn option on Motorola) and the built-in
+     flow answered it and moved on. It used to keep every later page too, and
+     those are where it went wrong (ten Work Experience entries, dates without a
+     month). Once the step on screen is a different one, the engine takes over
+     again — up to 4 times a job, so two fillers can't ping-pong forever. */
+  const _wdResumes = new Map();
+  const wdStepKey = (s) => String(s || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 5);
+  async function workdayEngineResume() {
+    const eng = window.__uaWdEngine, id = _uaJobKey;
+    if (!eng || typeof eng.resume !== 'function' || !id || !eng.isWorkday()) return false;
+    if ((await st.get('ua_wd_engine_off')) === true) return false;
+    const prior = eng.result(id);
+    if (!prior || !/^(paused|stopped|review)$/.test(prior.outcome)) return false;
+    const step = wdStepKind();
+    if (!step || wdStepKey(step) === wdStepKey(prior.page)) return false;
+    const n = _wdResumes.get(id) || 0;
+    if (n >= 4) return false;
+    _wdResumes.set(id, n + 1);
+    LOG(`Workday engine: ${prior.page || 'the earlier step'} is done — handing ${step} back to the engine`);
+    eng.resume(id);
+    await waitUntil(() => eng.running(id) || !!eng.result(id), 4000, 150);
+    return workdayEngineOutcome(await workdayEngineWait(eng, id), false);
   }
   const WD_APP_STEPS = ['resumeUpload', 'myInformation', 'myExperience', 'questions', 'voluntaryDisclosures', 'selfIdentify', 'review'];
   function workdayEngineOutcome(r, earlier) {
@@ -7205,7 +7408,14 @@
        tailor-first detour (up to ~35s of waiting on Jobright's sidebar per job)
        only runs when you opted into resume tailoring for the queue. */
     await fallbackFill();
-    if (getMissingRequired().length) {
+    /* Jobright's Autofill on Workday is a whole multi-page filler of its own
+       ("Please stay on the Workday page while Autofill fills out the form"). Run
+       next to the engine and this flow, it typed into the same boxes (the typos
+       on My Information), added its own work entries, and the run then waited on
+       it until the job timed out (NVIDIA, F5, Clario). With the engine here, it
+       stays out — the engine and this flow fill Workday. */
+    const engineHere = !!(window.__uaWdEngine && window.__uaWdEngine.isWorkday && window.__uaWdEngine.isWorkday());
+    if (!engineHere && getMissingRequired().length) {
       LOG('Workday: required fields still empty — asking Jobright autofill to help');
       await triggerAutofill();
       await waitForFormStable(scaled(2000, 600));
@@ -7213,7 +7423,7 @@
     }
 
     // Phase 3: continue into the multi-page flow.
-    if (queueUseTailor) await tailorFirstFlow();
+    if (queueUseTailor && !engineHere) await tailorFirstFlow();
 
     // Phase 4: Workday multi-page navigation (handles all Workday page types)
     await workdayMultiPageFlow();
@@ -7348,13 +7558,61 @@
     return !!(c && c.querySelector('[data-automation-id="selectedItem"],[data-automation-id="DELETE_charm"],[class*="multiValue"],[data-automation-id="pill"]'));
   }
 
-  async function workdayFillEducation(p) {
-    // Click "Add Education" if no education section exists yet
-    const addEduBtn = $('button[data-automation-id="btnAddEducationHistory"],button[data-automation-id="add-button"]');
-    const eduSection = $('[data-automation-id="educationSection"],[data-automation-id="formField-school"]');
-    if (!eduSection && addEduBtn && isVisible(addEduBtn)) {
-      realClick(addEduBtn); await sleep(scaled(1500, 750));
+  /* "Add" for ONE section, at most once per page. These used to take the first
+     data-automation-id="add-button" on the page and press it whenever their own
+     selector for an existing entry missed — which on Motorola was every pass, so
+     each retry of My Experience added another Work Experience (10 of them, the
+     extras filled with copies of the first). Now: only when the page shows no
+     entry of that kind at all, only the Add inside that section, and only once. */
+  const _wdAddedOnce = new Set();
+  function wdHasEntry(kind) {
+    const sel = kind === 'exp'
+      ? '[data-automation-id="formField-jobTitle"],[data-automation-id="jobTitle"],input[id*="jobTitle" i],input[name*="jobTitle" i],[data-automation-id^="workExperience-"]'
+      : '[data-automation-id="formField-school"],[data-automation-id="school"],input[id*="school" i],[data-automation-id^="education-"]';
+    if (deepAll(sel, 3).some(isVisible)) return true;
+    const rx = kind === 'exp' ? /^\s*(job title|work experience \d)/i : /^\s*(school|university|education \d)/i;
+    return deepAll('label,h3,h4,legend', 200).some((l) => isVisible(l) && rx.test(l.textContent || ''));
+  }
+  async function wdAddFirstEntry(kind) {
+    const key = kind + '|' + location.pathname;
+    if (_wdAddedOnce.has(key) || wdHasEntry(kind)) return false;
+    const own = $(kind === 'exp' ? 'button[data-automation-id="btnAddWorkHistory"]' : 'button[data-automation-id="btnAddEducationHistory"]');
+    let add = own && isVisible(own) ? own : null;
+    if (!add) {
+      const sec = wdSection(kind === 'exp' ? ['workExperienceSection', 'workSection'] : ['educationSection'], kind === 'exp' ? /work experience|employment history/i : /^\s*education\b/i);
+      add = sec ? (Array.from(sec.querySelectorAll('[data-automation-id="add-button"],[data-automation-id="Add"],[data-automation-id="addButton"]')).find(isVisible) || wdButtonIn(sec, WD_ADD_RX)) : null;
     }
+    if (!add) return false;
+    _wdAddedOnce.add(key);
+    realClick(add); await sleep(scaled(1500, 750));
+    return true;
+  }
+
+  /* "MM/2021": a date with a year and no month, which Workday refuses
+     ("Invalid Date: /2021") and which nothing here ever completed — the step
+     was retried until the job timed out. The month goes in through the engine's
+     date setter (Workday's date boxes take keystrokes, not a value): January
+     for a From date, December for a To date. Never a year that isn't there. */
+  async function wdFillMissingMonths() {
+    const eng = window.__uaWdEngine;
+    if (!eng || typeof eng.setDate !== 'function') return 0;
+    let n = 0;
+    for (const mi of deepAll('input[data-automation-id="dateSectionMonth-input"]', 80)) {
+      if (!isVisible(mi) || String(mi.value || '').replace(/\D/g, '')) continue;
+      const box = mi.closest('[data-automation-id^="formField-"],[data-automation-id="dateInputWrapper"]') || (mi.parentElement && mi.parentElement.parentElement);
+      const yi = box && box.querySelector('input[data-automation-id="dateSectionYear-input"]');
+      const y = yi ? String(yi.value || '').replace(/\D/g, '') : '';
+      if (y.length !== 4) continue;
+      const end = /end|to\b/i.test((box.getAttribute('data-automation-id') || '') + ' ' + (getLabel(mi) || ''));
+      try { if (await eng.setDate(box, `${y}-${end ? '12' : '01'}`)) n++; } catch (_) {}
+    }
+    if (n) LOG(`Workday: added the month to ${n} year-only date(s)`);
+    return n;
+  }
+
+  async function workdayFillEducation(p) {
+    // Add the first Education entry only if the page has none (see wdAddFirstEntry).
+    await wdAddFirstEntry('edu');
 
     const school = p.school || p.university || '';
     const degree = mapDegree(p.degree || "Bachelor's");
@@ -7459,12 +7717,8 @@
 
   // SpeedyApply Workday: experience section fill (enhanced with iCIMS + multi-entry + description)
   async function workdayFillExperience(p) {
-    // Click "Add Work Experience" if no experience section exists
-    const addExpBtn = $('button[data-automation-id="btnAddWorkHistory"],button[data-automation-id="add-button"]');
-    const expSection = $('[data-automation-id="workSection"],[data-automation-id="formField-jobTitle"]');
-    if (!expSection && addExpBtn && isVisible(addExpBtn)) {
-      realClick(addExpBtn); await sleep(scaled(1500, 750));
-    }
+    // Add the first Work Experience only if the page has none (see wdAddFirstEntry).
+    await wdAddFirstEntry('exp');
 
     const title = p.current_title || p.title || '';
     const company = p.current_company || p.company || '';
@@ -7552,8 +7806,10 @@
     if (expDateEndMonth && !expDateEndMonth.value) nativeSet(expDateEndMonth, '12');
 
     // Fallback: label-text based From/To date fields
-    const fromLabel = xpath("//label[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'from')]/ancestor::div[1]//input");
-    const toLabel = xpath("//label[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'to')]/ancestor::div[1]//input");
+    // Labels that ARE "From" / "To" — "contains 'to'" also matched "Location",
+    // "History", "Total…", and a date went into whatever box followed.
+    const fromLabel = xpath("//label[normalize-space(translate(translate(.,'*',''),'FROM','from'))='from']/ancestor::div[1]//input");
+    const toLabel = xpath("//label[normalize-space(translate(translate(.,'*',''),'TO','to'))='to']/ancestor::div[1]//input");
     if (fromLabel && !fromLabel.value) nativeSet(fromLabel, `01/${startYear}`);
     if (toLabel && !toLabel.value) nativeSet(toLabel, `12/${endYear}`);
 
@@ -8669,9 +8925,16 @@
       if (currentPageType === 'unknown' && await wdHandleResumeUploadPage()) { lastPageType = ''; continue; }
       LOG(`Workday multi-page: page ${page} — ${currentPageType}`);
 
+      // A new step after an engine hand-back: the engine takes it again.
+      if (page > 1 && currentPageType !== lastPageType) {
+        const back = await workdayEngineResume();
+        if (back === 'submitted' || back === 'closed') break;
+        if (back) { lastPageType = ''; continue; }
+      }
       // Detect stuck on same page (validation error likely)
       if (page > 1 && currentPageType === lastPageType) {
         LOG('Workday: stuck on same page — running validation fix');
+        await wdFillMissingMonths();
         await wdFixFromErrorBanner(p);
         await handleValidationErrors();
         await fallbackFill();
@@ -8693,6 +8956,7 @@
         await workdayFillExperience(p);
         await workdayFillModernHistory(p);
         await workdayFillLanguage(p);
+        await wdFillMissingMonths();
       } else if (/Questions|Supplementary/.test(currentPageType)) {
         await workdayFillQuestions(p);
         await workdayFillLinks(p);
@@ -11111,7 +11375,9 @@
       try {
         const pwFields = (typeof $$ === 'function' ? $$('input[type=password]').filter(isVisible) : []);
         // Stop once we're past the account step (My Information / apply flow page shown).
-        if (document.querySelector("[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='contactInformationPage'],[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage']") || workdayApplicationReady()) {
+        // Not while a password box is on screen: NVIDIA's sign-in sits on the
+        // /apply/applyManually URL and was taken for "past the account step".
+        if (!pwFields.length && (document.querySelector("[data-automation-id='applyFlowMyInfoPage'],[data-automation-id='contactInformationPage'],[data-automation-id='quickApplyPage'],[data-automation-id='applyFlowAutoFillPage']") || workdayApplicationReady())) {
           markAccountCreated(location.hostname); // confirmed: this tenant now has an account
           clearInterval(iv); LOG('Workday account watcher: account step passed ✓'); return;
         }
