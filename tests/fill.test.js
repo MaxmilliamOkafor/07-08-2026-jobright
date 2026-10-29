@@ -1931,9 +1931,9 @@ eq("Workday's current automation-id is in the list", /adventureButton/.test(wdFn
 eq('and the uxi element id other tenants use', /data-uxi-element-id="Apply"/.test(wdFn), true);
 /* It clicked, slept two seconds and carried on regardless — so when the click
    did not take, everything after it ran against the job description. */
-eq('the click is confirmed by the page changing, not by a guessed delay',
-  /await waitForStepChange\(before, 12000\);/.test(wdFn), true);
-eq('and retried rather than assumed', /for \(let attempt = 0; attempt < 3 && !onApplyFlow\(\); attempt\+\+\)/.test(wdFn), true);
+eq('the click is confirmed by the page changing (or the apply choice / sign-in showing), not by a guessed delay',
+  /waitUntil\(\(\) => pastApply\(\) \|\| stepSignature\(\) !== before, 12000, 150\)/.test(wdFn), true);
+eq('and retried rather than assumed', /for \(let attempt = 0; attempt < 3 && !pastApply\(\); attempt\+\+\)/.test(wdFn), true);
 eq('a failure to open is reported instead of leaving a silent dead end',
   /DIAG\('workday\.apply-stuck'/.test(wdFn), true);
 
@@ -3712,6 +3712,32 @@ console.log('v17.32: Workday adds a Work Experience per role from Jobright\'s pr
   const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), '../workday-engine/src/ua/entry.ts'), 'utf8');
   eq('the engine\'s own fallback mapping carries every role too', /if \(work\.length\) out\.work_experience = work;/.test(eng), true);
   eq('My Experience is work, not a stall, for the 15s watchdog', /withBusy\('filling My Experience'/.test(body('workdayMultiPageFlow')), true);
+}
+
+
+
+/* ── 83. v17.34: SpeedyApply fills Workday; refused sign-in skips; faster Apply ── */
+console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at once, Apply without the 12s wait');
+{
+  const sa = body('workdaySpeedyApplyRun');
+  eq('SpeedyApply mode is on unless you switch it off', /\(await st\.get\('ua_wd_mode'\)\) !== 'engine'/.test(body('workdayModeSpeedyApply')), true);
+  eq('it is recognised by SpeedyApply\'s own element on the page', /speedyapply-autofill,speedyapply-modal/.test(src), true);
+  eq('…and when it is not there, the engine applies as before', /SpeedyApply is not active on this page/.test(sa) && /return false;/.test(sa), true);
+  eq('while SpeedyApply drives, our password watcher and engine stay out', /if \(_saDriving \|\| \(_saModeOn && speedyApplyPresent\(\)\)\) return;/.test(src) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
+  eq('it only presses Next / Submit once the page has been still', /quiet > STILL_MS && pressed < 3/.test(sa) && /realClick\(n\); pressed\+\+;/.test(sa), true);
+  eq('…and fills only the gaps if a step keeps showing errors', /this step still has errors — filling only the empty fields/.test(sa), true);
+  eq('called right after Apply, before anything of ours touches the page', body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') > 0 && body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') < body('workdayAutomation').indexOf('await clickApplyManually();'), true);
+  eq('a switch in the Bulk card', /id="ua-sb-wdsa"/.test(src) && /st\.set\('ua_wd_mode', saCb\.checked \? 'speedyapply' : 'engine'\)/.test(src), true);
+  // Refused sign-in.
+  const RE = new RegExp(src.match(/const WD_SIGNIN_REFUSED_RE = \/(.*)\/i;/)[1], 'i');
+  eq('Workday\'s "wrong email address or password … might be locked" is recognised', RE.test('You may have entered the wrong email address or password or your account might be locked.'), true);
+  eq('…and skips the job at once (not more passwords)', /if \(onSignIn && WD_SIGNIN_REFUSED_RE\.test\(errText\) && !_wdCreatedThisJob\) return wdSkipRefusedSignIn\(errText\);/.test(src), true);
+  eq('…unless this job just created the account (then it is created again)', /_wdCreatedThisJob = true;/.test(src), true);
+  eq('the job is marked skipped, not failed', /else if \(_authSkip\) await finalize\('skipped', _authDeadEnd\);/.test(src) && /c\.status = 'skipped';\n\s*c\.error = _authDeadEnd;/.test(src), true);
+  const auth = fs.readFileSync(path.join(path.dirname(process.argv[2]), '../workday-engine/src/workday/auth.ts'), 'utf8');
+  eq('the engine no longer calls "might be locked" a lock', /const maybe = \/\\b\(might\|may\) be locked\\b\/i\.test\(errs\);/.test(auth), true);
+  // Apply speed.
+  eq('after Apply Manually the opener moves on the moment the choice is gone (was a 10.5s wait)', /await waitUntil\(\(\) => hasApplicationForm\(\) \|\| !findApplyManually\(\), 9000, 150\);/.test(body('openApplicationForm__impl')) && !/await sleep\(scaled\(1500, 750\)\);\n\s*if \(hasApplicationForm\(\)\) return true;/.test(body('openApplicationForm__impl')), true);
 }
 
 

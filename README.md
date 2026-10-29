@@ -4092,3 +4092,57 @@ picked a specialised degree.
 - A specific degree in your profile is matched as written.
 - This applies in the engine and both built-in Workday education fillers
   (`__uaWdEngine.pickDegree`).
+
+## v17.34 — Workday: SpeedyApply does the filling; refused sign-in skips at once; Apply without the 12s wait
+
+**SpeedyApply mode (on by default).** "Fully use SpeedyApply's Workday autofill."
+SpeedyApply, installed as its own extension, runs its Workday script on every
+Workday page: it signs in or creates the account with the email and password in
+*its* settings, clicks Apply Manually, fills each step, and, with "Auto click
+next page" and "Auto submit" on, goes through to the end.
+- On a Workday job this extension fills nothing: no engine, no built-in fillers,
+  no Jobright, no password watcher. It only:
+  - presses **Apply** on the job page;
+  - presses **Apply Manually / Save and Continue / Submit** when SpeedyApply
+    hasn't after a few seconds of no change on the page (in case those
+    SpeedyApply settings are off);
+  - signs in / creates the account itself if the account page doesn't move
+    (no account saved in SpeedyApply);
+  - fills only the empty fields if a step keeps showing errors for 20s;
+  - skips on a refused sign-in, and reports the confirmation.
+- SpeedyApply's panel is a closed shadow root. Our extension can't read it, so
+  it recognises SpeedyApply by its `<speedyapply-autofill>` element. If that
+  element isn't on the page (SpeedyApply not installed, not enabled, or no
+  profile), the log says so and the Workday engine applies as before.
+- Switch: **"Workday: let SpeedyApply fill"** in the Bulk Auto-Apply card. Off
+  means the built-in engine.
+- For best results in SpeedyApply's settings: turn on **Auto click next page**
+  and **Auto submit**, and save your Workday **account email and password**.
+- Tested on the Workday mock with a SpeedyApply stand-in (`?sa=1`: its element,
+  each step filled with recognisably different values, Next never pressed). It
+  submitted "SA Role at SA Co", SpeedyApply's values, not the profile's roles.
+  Our extension only created the account and pressed Save and Continue on each
+  step, then Submit.
+
+**"You may have entered the wrong email address or password or your account
+might be locked."**
+- Our sign-in now **skips the job at once**: no further passwords, marked
+  *skipped* with the reason. The only exception is when this job itself just
+  created the account. Then the refusal means the creation didn't go through,
+  so the account is created again.
+- The engine no longer calls that message a lock. Red Hat and Cigna's "account
+  is locked" were most likely just wrong passwords.
+
+**Slow to press Apply.**
+- After "Apply Manually", the opener waited up to 9s for a *form* and then
+  slept 1.5s more. On Workday the next page is sign-in, so every job lost
+  ~10.5s. Now it moves on the moment the choice pop-up is gone.
+- Workday's own Apply step presses the button as soon as it appears (it used to
+  poll in 0.9s naps). After the click it stops waiting the moment the apply
+  choice, sign-in or form shows.
+- On the mock, Apply → Workday flow went from 12s to 1s.
+
+**Correction.** The "Please stay on the Workday page while Autofill fills out
+the form" banner is drawn by Jobright on every Workday page until you close it.
+It doesn't by itself mean Jobright's filler is running. The v17.31 block stays
+as a safeguard.

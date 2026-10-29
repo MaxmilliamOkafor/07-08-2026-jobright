@@ -7211,6 +7211,7 @@
   };
 
   async function workdayEngineRun() {
+    if (_saDriving) return false;
     const eng = window.__uaWdEngine;
     if (!eng || typeof eng.startJob !== 'function' || !eng.isWorkday()) return false;
     if ((await st.get('ua_wd_engine_off')) === true) return false;
@@ -7292,14 +7293,112 @@
       LOG(`Workday engine: ${r.reason || 'already applied / posting closed'} — nothing to apply to`);
       return 'closed';
     }
+    if (r.page === 'signIn' && /sign-?in was rejected|account is locked|wrong email|might be locked|failed twice/i.test(r.reason || '')) {
+      wdSkipRefusedSignIn(workdayAuthErrorText() || r.reason);
+      return 'closed';
+    }
     LOG(`Workday engine stopped (${r.outcome}${r.page ? ' on ' + r.page : ''})${r.reason ? ': ' + r.reason : ''} — carrying on with the built-in Workday flow`);
     noteProgress('Workday: carrying on from the engine');
     // Stopped inside the application: carry on from that step, not from Apply.
     return WD_APP_STEPS.includes(r.page) ? 'midway' : false;
   }
 
+  /* ── WORKDAY: SPEEDYAPPLY MODE ─────────────────────────────────────────────
+     "Fully use SpeedyApply's Workday autofill — it works with no issues."
+     SpeedyApply (installed as its own extension) runs its Workday script on
+     every Workday page by itself: it signs in / creates the account with the
+     email + password in ITS settings, clicks Apply Manually, fills each step,
+     and with "Auto click next page" / "Auto submit" on, moves through to the
+     end. So on a Workday job this extension fills NOTHING — no engine, no
+     built-in fillers, no Jobright, no password watcher — and only:
+       • presses Apply on the job posting (SpeedyApply starts after it);
+       • presses Apply Manually / Next / Submit if SpeedyApply hasn't once the
+         page has been still for a few seconds (in case those settings are off);
+       • skips the job at once on "wrong email address or password";
+       • reports the confirmation and moves the queue on.
+     SpeedyApply's panel is a closed shadow root, so it is seen by its element
+     on the page, not by reading it. Not there → the Workday engine as before. */
+  let _saDriving = false;
+  const speedyApplyPresent = () => !!document.querySelector('speedyapply-autofill,speedyapply-modal');
+  let _saModeOn = true;                                  // cached for the password watcher (sync)
+  try { chrome.storage.local.get('ua_wd_mode', (d) => { _saModeOn = !(d && d.ua_wd_mode === 'engine'); }); chrome.storage.onChanged.addListener((c) => { if (c.ua_wd_mode) _saModeOn = c.ua_wd_mode.newValue !== 'engine'; }); } catch (_) {}
+  async function workdayModeSpeedyApply() { return (await st.get('ua_wd_mode')) !== 'engine'; }
+  function wdFormValuesSig() {
+    try { return deepAll('input:not([type=hidden]),textarea,select', 400).filter(isVisible).map((i) => (i.type === 'checkbox' || i.type === 'radio') ? (i.checked ? 1 : 0) : String(i.value || '').length).join(','); }
+    catch (_) { return ''; }
+  }
+  const wdNextButton = () => deepAll('button[data-automation-id="bottom-navigation-next-button"],button[data-automation-id="pageFooterNextButton"]', 4).find((b) => isVisible(b) && !b.disabled) || null;
+  const wdPageErrors = () => deepAll('[data-automation-id="errorBanner"],[data-automation-id="inputError"],[data-automation-id="errorMessage"]', 10).some(isVisible);
+  async function workdaySpeedyApplyRun() {
+    if (!(await workdayModeSpeedyApply())) return false;
+    _saDriving = true;
+    const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 8000, 250);
+    if (!here) {
+      _saDriving = false;
+      LOG('Workday: SpeedyApply is not active on this page (install it, enable it and give it a profile) — using the built-in Workday engine instead');
+      DIAG('workday.speedyapply-missing', location.hostname);
+      return false;
+    }
+    LOG('Workday: SpeedyApply is filling this application — this extension only moves it along');
+    _saDriving = true;
+    try {
+      return await withBusy('SpeedyApply filling Workday', async () => {
+        const until = Date.now() + 5 * 60 * 1000;
+        const STILL_MS = scaled(6000, 3500);           // SpeedyApply done with this step
+        let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0;
+        while (Date.now() < until && !autoStopped()) {
+          if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
+          if (pageHasFailure()) return 'closed';
+          const sig = location.href + '|' + stepSignature() + '|' + wdFormValuesSig();
+          if (sig !== lastSig) { lastSig = sig; still = Date.now(); }
+          const step = wdStepKind() || '';
+          if (step !== lastStep) { lastStep = step; pressed = 0; errorsSince = 0; noteProgress('SpeedyApply: ' + (step || 'working')); if (step) LOG(`Workday (SpeedyApply): ${step}`); }
+          const quiet = Date.now() - still;
+          // The account step: SpeedyApply signs in with its own saved account.
+          if (workdayOnAccountWall()) {
+            const err = workdayAuthErrorText();
+            if (WD_SIGNIN_REFUSED_RE.test(err) && !_wdCreatedThisJob) { wdSkipRefusedSignIn(err); return 'closed'; }
+            // SpeedyApply hasn't moved the account page on (no account in its settings): ours.
+            if (quiet > (_wdCreatedThisJob || _saAccountTurns ? 2500 : 6000)) {
+              _saAccountTurns++;
+              LOG('Workday (SpeedyApply): the account page is not moving — signing in / creating the account with this extension\'s');
+              const r = await fillWorkdayCreateAccount(true);
+              if (_authDeadEnd) return 'closed';
+              if (r === 'stop' && workdayOnAccountWall()) { if (!_authDeadEnd) _authDeadEnd = 'Workday sign-in did not complete'; return 'closed'; }
+              still = Date.now();
+            }
+          } else if (findApplyManually()) {
+            if (quiet > 3000) { await clickApplyManually(); still = Date.now(); }
+          } else if (wdPageErrors()) {
+            if (!errorsSince) errorsSince = Date.now();
+            // SpeedyApply left something it could not answer: fill only the gaps, once per step.
+            if (Date.now() - errorsSince > 20000 && pressed < 2) {
+              LOG('Workday (SpeedyApply): this step still has errors — filling only the empty fields');
+              await wdEnginePass(await getProfile()); await fallbackFill();
+              const n = wdNextButton(); if (n) { realClick(n); pressed++; }
+              errorsSince = Date.now(); still = Date.now();
+            }
+          } else if (quiet > STILL_MS && pressed < 3) {
+            // Settled and nothing moved it on (SpeedyApply's auto next / auto submit off).
+            const n = wdNextButton();
+            if (n) {
+              const isSubmit = /submit/i.test(n.textContent || '');
+              LOG(`Workday (SpeedyApply): step settled — pressing ${isSubmit ? 'Submit' : 'Save and Continue'}`);
+              if (isSubmit) markSubmitAttempt();
+              realClick(n); pressed++; still = Date.now();
+            }
+          }
+          await sleep(400);
+        }
+        return 'timeout';
+      });
+    } finally { _saDriving = false; }
+  }
+
   async function workdayAutomation() {
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
+    // SpeedyApply mode: our password watcher keeps off the account page from the start.
+    if (_uaJobKey && await workdayModeSpeedyApply() && speedyApplyPresent()) _saDriving = true;
     // Fully Automated outside a run: your engine's assist fills each step as it appears.
     if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
       LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 3-second countdown you can cancel');
@@ -7328,24 +7427,40 @@
       '[data-automation-id="applyManually"],a[href$="/apply"],a[href*="/apply/"]';
     const onApplyFlow = () => /\/apply\b/i.test(location.pathname) || hasApplicationForm() || !!findApplyManually();
 
-    for (let attempt = 0; attempt < 3 && !onApplyFlow(); attempt++) {
-      const btn = deepAll(APPLY_IDS, 20).filter(isVisible)[0] ||
-        deepAll('a,button,[role="button"]', 300).filter(isVisible)
-          .find((b) => /^\s*(apply|apply now|apply for (this )?job|bewerben|postuler)\s*$/i.test(
-            (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()));
-      if (!btn) { await sleep(900); continue; }
+    /* As soon as Apply is on screen it is pressed, and the wait ends the moment
+       Workday shows the apply choice / sign-in / form. It used to poll for the
+       button in 0.9s naps (three, then give up) and, after a click, wait for the
+       page "step" to change — which the "Start Your Application" pop-up never
+       does — so 12-18s passed with the Apply button in plain sight (Cisco). */
+    const findApply = () => deepAll(APPLY_IDS, 20).filter(isVisible)[0] ||
+      deepAll('a,button,[role="button"]', 300).filter(isVisible)
+        .find((b) => /^\s*(apply|apply now|apply for (this )?job|bewerben|postuler)\s*$/i.test(
+          (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()));
+    const pastApply = () => onApplyFlow() || workdayOnAccountWall() || workdayApplicationReady();
+    for (let attempt = 0; attempt < 3 && !pastApply(); attempt++) {
+      let btn = null;
+      await waitUntil(() => pastApply() || !!(btn = findApply()), attempt ? 4000 : 10000, 150);
+      if (pastApply()) break;
+      if (!btn) continue;
       LOG(`Workday: clicking Apply (attempt ${attempt + 1})`);
       const before = stepSignature();
       if (btn.tagName === 'A' && btn.target === '_blank') btn.target = '_self';
       realClick(btn);
       noteProgress('clicked Apply');
-      // Wait for the page to actually change rather than guessing at a delay.
-      await waitForStepChange(before, 12000);
-      await waitForApplyTarget(6000);
+      await withBusy('opening the application', () =>
+        waitUntil(() => pastApply() || stepSignature() !== before, 12000, 150));
     }
     if (!onApplyFlow()) {
       LOG('Workday: the Apply button never led to the application');
       DIAG('workday.apply-stuck', 'Apply was present but the application never opened');
+    }
+
+    // SpeedyApply mode: SpeedyApply fills every step; this extension only moves it along.
+    {
+      const sa = await workdaySpeedyApplyRun();
+      if (sa === 'submitted') return 'submitted';
+      if (sa === 'closed') return 'closed';
+      if (sa === 'timeout') return 'handed-back';
     }
 
     // Always choose "Apply Manually" on Workday's "Start Your Application" modal —
@@ -11075,6 +11190,20 @@
   const WD_LOCKED_RE = /\blocked\b|too many (failed |unsuccessful )?(attempts|tries|sign.?in)|temporarily (disabled|blocked|unavailable)|account (is )?(disabled|suspended)/i;
   const WD_FORGOT_RE = /forgot (your |my )?password|reset (your |my )?password|trouble signing in|can.?t sign in/i;
   let _authDeadEnd = '';                          // why this job cannot get past the sign-in
+  /* "You may have entered the wrong email address or password or your account
+     might be locked." — you asked for that to skip the job at once: no further
+     passwords (each one is a step towards a real lockout), no waiting. The job
+     is marked skipped, with the reason, and the queue moves on. */
+  let _authSkip = false;
+  let _wdCreatedThisJob = false;   // this job pressed Create Account: a refused sign-in then means it didn't go through
+  const WD_SIGNIN_REFUSED_RE = /wrong email address or password|might be locked|may be locked|incorrect (email|password|username)|invalid (email|password|credentials|username)|email (address )?or password (is|was) (incorrect|wrong|invalid)/i;
+  function wdSkipRefusedSignIn(errText) {
+    _authSkip = true;
+    _authDeadEnd = `Workday refused the sign-in on ${location.hostname} ("${String(errText || 'wrong email address or password, or the account might be locked').replace(/\s+/g, ' ').trim().slice(0, 140)}") — skipped`;
+    LOG('Workday: ' + _authDeadEnd);
+    DIAG('workday.signin-refused', location.hostname);
+    return 'stop';
+  }
 
   function wdCandHash(cands) {
     let h = 0;
@@ -11279,6 +11408,9 @@
       if (toSignIn && isVisible(toSignIn)) { _wdLastSubmit = Date.now(); _wdActions++; LOG('Workday: account already created here — switching to Sign In'); realClick(toSignIn); return 'working'; }
     }
 
+    // Workday's "wrong email address or password / might be locked" → skip this job now.
+    // (Not when this job just created the account: then the account isn't there yet — create it again.)
+    if (onSignIn && WD_SIGNIN_REFUSED_RE.test(errText) && !_wdCreatedThisJob) return wdSkipRefusedSignIn(errText);
     /* Locked: no more attempts at all — each one would only extend the lock. */
     if (WD_LOCKED_RE.test(errText) && !/might be locked/i.test(errText)) return wdPasswordDeadEnd('the account is locked', candidates);
     /* A site where none of these passwords worked before, and the list has not
@@ -11347,6 +11479,7 @@
       if (!createBtn.disabled && createBtn.getAttribute('aria-disabled') !== 'true') {
         _wdLastSubmit = Date.now(); _wdActions++;
         LOG(`Workday: submitting Create Account (action ${_wdActions}/${WD_MAX_ACTIONS}; pw ${pw.length} chars)`);
+        _wdCreatedThisJob = true;
         auth.lastPw = pw; wdAuthSave();
         pressWorkdayButton(createBtn);
         /* Record it NOW, not only if the watcher later happens to see the
@@ -11401,6 +11534,7 @@
          wanted, and did nothing at all. The account step was then never handled
          in exactly the mode that runs 685 of them. */
       if (!autoApply && !_mgrDriving && !(qActive && isRunnerTab())) return;
+      if (_saDriving || (_saModeOn && speedyApplyPresent())) return;   // SpeedyApply signs in here
       ticks++;
       if (ticks > 160) { clearInterval(iv); LOG('Workday account watcher: stopped (timeout)'); return; } // ~240s — multi-step create→signin needs headroom
       try {
@@ -11678,7 +11812,7 @@
       if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
       clearSubmitAttempt();   // this job has not submitted anything yet
       _uaJobKey = String(c.id || c.url || '');
-      _authDeadEnd = '';
+      _authDeadEnd = ''; _authSkip = false; _wdCreatedThisJob = false;
       jrBegin(c, 'queue');
 
       /* ── ONE PASS, THEN ONE CHEAP RETRY ────────────────────────────────────
@@ -11739,6 +11873,7 @@
       }
       if (finalized) return;
       if (success) await finalize('done', null);
+      else if (_authSkip) await finalize('skipped', _authDeadEnd);
       else await finalize('failed', submitFailureReason(validationStuck));
     } catch (e) {
       if (!finalized) await finalize('failed', e?.message || String(e));
@@ -11926,7 +12061,7 @@
           // persistent validation error fast-fails instead of waiting the whole timeout.
           clearSubmitAttempt(); // no submit evidence carried over from the previous job
           _uaJobKey = String(c.id || c.url || '');
-          _authDeadEnd = '';
+          _authDeadEnd = ''; _authSkip = false; _wdCreatedThisJob = false;
           jrBegin(c, 'queue');
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
@@ -11979,6 +12114,12 @@
             qStats.completed++;
             LOG('Queue job: submission CONFIRMED');
             await recordApplication(c.url, c.title, 'applied', c.jobBoard, c.duration);
+          } else if (_authSkip) {
+            // Workday refused the sign-in: skipped at once, as you asked.
+            c.status = 'skipped';
+            c.error = _authDeadEnd;
+            qStats.skipped++;
+            LOG('Queue job: ' + _authDeadEnd);
           } else {
             // Could not confirm submission — mark failed (not a false "done") so the
             // user can see it didn't complete, and don't silently skip it as applied.
@@ -13782,6 +13923,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none">
         <input type="checkbox" id="ua-sb-tailor" style="accent-color:#00f0a0;width:14px;height:14px"> Tailor resume for each job <span style="color:#6f6f76">(slower)</span>
       </label>
+      <label title="SpeedyApply (installed separately) fills every Workday step; this extension only presses Apply / Next / Submit and moves the queue on. Off = this extension's Workday engine." style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none"><input type="checkbox" id="ua-sb-wdsa" style="accent-color:#00f0a0;width:13px;height:13px"> Workday: let SpeedyApply fill</label>
       <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none"><input type="checkbox" id="ua-sb-skipapplied" style="accent-color:#00f0a0;width:13px;height:13px"> Skip jobs already applied to</label>
       <button id="ua-sb-cred-toggle" style="${ghostBtn};width:100%;text-align:left;margin-bottom:8px">🔑 ATS account login (saved credentials)</button>
       <div id="ua-sb-cred-wrap" style="display:none;margin-bottom:10px">
@@ -13926,6 +14068,11 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       if (!queue.length) return;
       if (confirm(`Clear ALL ${queue.length} jobs from the queue?`)) await clearQ();
     });
+    const saCb = wrap.querySelector('#ua-sb-wdsa');
+    if (saCb) {
+      st.get('ua_wd_mode').then((m) => { saCb.checked = m !== 'engine'; }).catch(() => { saCb.checked = true; });
+      saCb.addEventListener('change', () => { try { st.set('ua_wd_mode', saCb.checked ? 'speedyapply' : 'engine'); } catch (_) {} LOG('Workday filler: ' + (saCb.checked ? 'SpeedyApply' : 'built-in engine')); });
+    }
     const tailorCb = wrap.querySelector('#ua-sb-tailor');
     tailorCb.checked = queueUseTailor;
     tailorCb.addEventListener('change', () => { queueUseTailor = tailorCb.checked; try { st.set('ua_queue_tailor', queueUseTailor); } catch (_) {} LOG('Queue tailoring ' + (queueUseTailor ? 'ON' : 'OFF')); });
@@ -14596,12 +14743,14 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       // flicker in and out (and fights Jobright's own "Choose Apply Manually" click).
       if (findApplyManually()) {
         await clickApplyManually();
-        if ((await waitForApplyTarget(9000)) === 'form' || hasApplicationForm()) return true;
-        // Give the form a little more time instead of re-clicking Apply.
-        await sleep(scaled(1500, 750));
-        if (hasApplicationForm()) return true;
-        // If the modal genuinely re-rendered, choose Apply Manually once more, then stop.
-        if (findApplyManually()) { await clickApplyManually(); await waitForApplyTarget(9000); }
+        /* Done the moment the choice is gone. Waiting for a FORM cost ~10s on
+           every Workday job: what follows Apply Manually there is the sign-in
+           page, which no form check matches, so the full 9s + 1.5s ran out. */
+        await waitUntil(() => hasApplicationForm() || !findApplyManually(), 9000, 150);
+        if (hasApplicationForm() || !findApplyManually()) return hasApplicationForm() || pastTheApplyStep();
+        // The modal genuinely re-rendered: choose Apply Manually once more, then stop.
+        await clickApplyManually();
+        await waitUntil(() => hasApplicationForm() || !findApplyManually(), 9000, 150);
         return hasApplicationForm();
       }
       const btn = findApplyButton();
