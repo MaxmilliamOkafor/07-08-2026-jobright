@@ -3846,3 +3846,211 @@ job, opt-ins answered No, parser-mangled names and phones, and the other hosts.
 
 Left as it is: this build never presses "Autofill with Resume", even when it is the
 only choice (v17.26). The brief allows it in that case.
+
+## v17.28 — Alongside OptimHire without getting in each other's way; one-click debug log
+
+**The run panel came out transparent over the form** (your Ashby screenshot,
+with your OptimHire build running beside it). The panel was an ordinary `<div>`
+styled by page-wide CSS (`.uc-*`), so another extension's styles or the page's
+could restyle it, and its styles could leak onto theirs. Now:
+- The panel lives in **its own sealed shadow root** (`<ua-run-panel>`, closed)
+  with its styles inside. No page or extension CSS reaches in, and ours doesn't
+  leak out. Other extensions' page scanners can't see or press its Pause, Skip
+  or Quit.
+- Tested on a page whose CSS makes every div transparent, every button unstyled
+  and the panel's old class names magenta. The panel looks the same as anywhere
+  else (`tests/e2e/runner-panel.js`).
+- The generic hide rules ("paywall", "review popup", "upgrade modal" class names)
+  apply only on a tab this extension is applying in. Before, they hid such
+  elements on every page, another extension's included.
+- **Fully Automated stands down on a page your OptimHire build is already
+  working on.** It recognises OptimHire's run panel, autofill banner, Workday
+  engine overlay and Review countdown. This extension's own queue tabs are
+  unaffected.
+
+**One click to download everything:**
+- **⬇ Download debug log** is in the Jobright sidebar card (under Queue Manager)
+  and in the run panel.
+- It's also **⬇ Download debug log** in the Queue Manager and **⬇ Download
+  everything** in the Debugger.
+- The file contains the summary with failures by cause, every job's full record
+  (timeline, pages, page snapshot, screenshot), the diagnostics report, the
+  queue, the Queue Manager, Workday engine and mailbox logs, settings, your
+  profile, and the current page's in-memory log.
+- **Never passwords, site logins, tokens or your CV file.** Their key names are
+  listed under `omitted`, so it is clear they exist.
+
+## v17.29 — Greenhouse: CV in the right box, a city not a university, the phone's own country; honest timeouts
+
+From the "is this you?" Greenhouse screenshot and the debug log you sent:
+
+- **Location (City) = "National University of Ireland, Galway, Ireland".** Two
+  causes, both fixed.
+  - **The phone-country fixer was the main one.** It was hard-wired to Ireland.
+    It clicked any visible button with "+digits" or "flag" in it, then the first
+    visible element anywhere on the page containing "Ireland". With the
+    location suggestions open, that was the university.
+  - Now it only opens the country picker **beside a phone box**. It only picks
+    from **the list that click opened**, and only an entry with the right dial
+    code or country code (Guernsey's +44 is not the UK). If nothing matches, it
+    closes the list.
+  - The country now comes from **the code your phone number is written with**
+    (+44 → United Kingdom), then your profile's dial code, then your country.
+    If the widget empties the number when the country changes, the number is
+    put back.
+  - Location suggestions are now scored. The entry must name the city you
+    typed, and gets credit for starting with it and for naming your country.
+    Universities, colleges, hospitals, airports, stations, hotels, streets and
+    companies lose. "Galway" → "Galway, Ireland", not the university;
+    "London" → "London, UK", not "London Road, Brighton".
+- **CV in "Cover Letter".** Greenhouse shows "Cover Letter" and "Resume/CV" with
+  identical Attach buttons, and "attach" alone made both look like the CV slot.
+  - A file box whose name, id, label or small surrounding block says cover
+    letter (motivation letter, Anschreiben…) is never given the CV. A box for
+    "CV and cover letter" still is.
+  - A cover letter already on file no longer counts as "CV already attached".
+- **"Timed out after 1054s" on jobs that had run for 90s.** In your log, 15
+  Workday jobs and several others were cut off at the first 90s check. Each
+  carried a start time 10–17 minutes old, so the runner thought they were past
+  the 8-minute ceiling and gave no "still working" extension.
+  - Both runners now use the time **this tab first saw the job**. The stored
+    start is believed only if it is at most 2 minutes earlier, which covers the
+    navigation to the job page. After a reload, the tab's own first sighting
+    still counts.
+  - Durations in the Debugger use the same start time.
+- Tests: section 79 in `tests/fill.test.js`, and `tests/e2e/greenhouse-cl.html`.
+  That page has Cover Letter above Resume/CV, a university and a street before
+  the city, and an intl-tel picker set to Ireland with a +44 profile phone.
+
+## v17.30 — Your name and phone from Jobright's profile; "I have a preferred name" left alone
+
+From the Motorola Solutions (Workday) screenshot and the debug log you sent
+(`Given Name(s) / Family Name / Phone Number is required`):
+
+- **The profile this extension fills from held only your email.** Your name and
+  phone are in **Jobright's own profile**, which Jobright saves as
+  `AUTOFILL_INFO_SNAPSHOT`, and nothing here read it. So every name and phone
+  box stayed empty. The same thing was behind "First Name | Last Name | Phone"
+  missing on Greenhouse.
+  - Jobright's profile is now the **bottom layer**. It supplies name, middle
+    and preferred name, email, phone and dial code, city, state, country,
+    postcode, address, LinkedIn, GitHub, website, work history and education.
+    Your OptimHire data comes above it, and anything you set in this
+    extension's profile comes above that.
+  - An empty box in your profile no longer blanks a value from the layers
+    below it.
+  - The Workday engine reads the same layers.
+  - Jobright saves its profile once you're signed in and it has loaded your
+    autofill info. Opening the Jobright sidebar once is enough.
+- **"I have a preferred name" was ticked.** On Workday that reveals a second
+  required Given Name / Family Name pair, which is why the errors were listed
+  twice. It's now left unticked unless your profile has a preferred name that
+  differs from your first name.
+- **Two flows on one tab.** Switching Fully Automated on while a queue job was
+  applying in that tab started a second Workday flow beside the first. It now
+  leaves the queue job to finish.
+- **The "missing fields" list** no longer names a Workday multiselect that has
+  a choice ("1 item selected, LinkedIn", "Ireland (+353)").
+- Tested in the browser with a profile that holds only an email and Jobright's
+  profile underneath:
+  - The Workday mock submitted, with the name, Mobile, United Kingdom (+44),
+    7700900123 and London.
+  - The Greenhouse page submitted, with the name, the phone on UK, London and
+    the CV in Resume/CV.
+  - Tests: section 80 in `tests/fill.test.js`.
+
+## v17.31 — One filler per Workday page; sign-in screens without ids; location everywhere; no "Add this job first"
+
+From your Motorola PDF and the two debug logs (Oct 29: 0 applied, 15 Workday
+timeouts):
+
+**Typos and slowness on My Information.** Jobright 1.25 starts its **own**
+Workday autofill the moment sign-in goes through ("Please stay on the Workday
+page while Autofill fills out the form"). On a queue job our Workday engine was
+filling the same page, so both typed into the same boxes.
+- Jobright's code (bundled here) now asks first, and on a tab our queue or
+  engine is driving it stays out.
+- Our flow no longer presses Jobright's Autofill, or runs the tailor detour, on
+  Workday when the engine is there. On NVIDIA, F5 and Clario the run had waited
+  on it until the job timed out.
+- Your own clicks on Jobright's Autofill button work as before.
+
+**"Unrecognised page" on 9 tenants** (NVIDIA, F5, Cisco, VSP, Clario,
+Fullsteam, Insulet, Ansira, RTX). These were sign-in screens whose Email and
+Password boxes have no Workday automation ids.
+- The engine now recognises them by their boxes: one password box means Sign
+  In, two mean Create Account.
+- It fills them and presses the form's own Submit, not the "Sign In" tab.
+- The account watcher no longer says "account step passed" while a password box
+  is on screen.
+
+**The engine comes back after a hand-back.** It paused on My Information (a
+question it couldn't answer), the built-in flow answered it, and then the
+built-in flow kept every later page. Now the next step goes back to the engine,
+up to 4 times per job.
+
+**My Experience mess** (10 Work Experience entries, "MM/2021"):
+- The old filler pressed the first "Add" button on the page on every pass. Now
+  it adds a first entry only when the section has none, uses only that
+  section's Add, and does it once.
+- A date with a year and no month gets one: January for From, December for To.
+  It goes in through the engine's date setter.
+- The "From/To" fallback only matches labels that are exactly From / To. It
+  used to match any label containing "to".
+
+**My Information:**
+- "Phone Extension" no longer gets your phone number.
+- An address saved with a line break ("21 Mount Andrew Crescent⏎Lucan") is
+  split into Address Line 1 and Line 2. Workday's box refused it before.
+
+**Location, on every ATS** (your BambooHR screenshot):
+- ZIP / postcode boxes are never treated as place searches. ZIP had got
+  "Dublin, Dublin, IE".
+- A plain street "Address" box isn't one either, unless it really is an
+  autocomplete. It had got "Dublin, Ireland".
+- A Country box left on the site's default ("United States") is switched to
+  your country, never over a choice you made. Native selects and custom
+  dropdowns are both handled, including ones with a search box.
+- "Date Available" / start date in a date box gets a date: today plus your
+  notice, in the box's own format. It used to get "Immediately", which BambooHR
+  refused.
+- "References (Name, Company, and Contact Info)" gets "Available upon request",
+  not your employer.
+
+**"Add this job first"** never shows. It is answered "Not Now", so nothing is
+added to your Jobright account.
+
+**cover-letter.txt** came from this extension. When a site *requires* a cover
+letter file and none is saved, the tailored cover-letter text is attached. It
+is now a PDF named after you (`Maxmilliam_Okafor_Cover_Letter.pdf`), and a .txt
+only where the box takes no PDF.
+
+Tests:
+- Section 81 in `tests/fill.test.js`.
+- `tests/e2e/bamboohr.html` submitted with Country United Kingdom, ZIP the
+  postcode, the street address, a real date, and References right.
+- Workday mock, Greenhouse, knockout and form pages still submit.
+
+## v17.32 — Workday: every role gets its own Work Experience ("Add Another")
+
+**Only the first role went in on Workday; Accenture, Citi and the rest were never
+added.** Since v17.30 your roles come from Jobright's own profile. The engine
+reads them in its own format, but the built-in Workday filler reads
+`work_experiences` (title / company / from / to / current). That list was never
+filled from Jobright's profile, so the built-in filler saw one role, the flat
+"current job", and never pressed "Add Another". It's the filler that handles My
+Experience whenever the engine has handed back.
+- Jobright's roles are now in both formats, so both fillers add one Work
+  Experience per role (deleting parser leftovers) and fill title, company,
+  location, current-role tick, From/To and description.
+- The engine's own fallback mapping carries every role and school too.
+- My Experience counts as work for the 15-second stall watchdog. Adding four
+  roles with dates takes longer than that, and the job was being dropped
+  mid-page.
+
+Tested on the Workday mock, which starts with three junk "parsed" entries. A
+profile holding only an email, plus Jobright's profile with four roles,
+submitted `Meta (01/2023–now) · SolimHealth (08/2022–12/2022) · Accenture
+(03/2021–07/2022) · Citi (08/2017–03/2021)`. That held with the engine and with
+the engine off (built-in filler only). The mock now prints the roles it received
+on submit. Unit tests: section 82.

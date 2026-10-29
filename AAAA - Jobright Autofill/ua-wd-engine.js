@@ -1272,6 +1272,14 @@
     for (const [rx2, kind] of STEP_RX) if (rx2.test(name)) return kind;
     return null;
   }
+  function authEmailInput() {
+    const byId = q(sel("email"));
+    if (byId && isVisible(byId)) return byId;
+    return qa('input[type="email"], input[autocomplete~="email" i], input[autocomplete="username"], input[name*="email" i], input[id*="email" i], input[aria-label*="email" i]').find((i) => isVisible(i) && i.type !== "password" && i.type !== "hidden") ?? null;
+  }
+  function authPasswordInputs() {
+    return qa('input[type="password"]').filter(isVisible);
+  }
   function detectPage() {
     const body = text(document.body).slice(0, 5e3);
     const next = nextButton();
@@ -1282,6 +1290,11 @@
     if (anyAid("verifyPassword") || anyAid("createAccountSubmit")) return "createAccount";
     if (anyAid("signInSubmit") || anyAid("password") && anyAid("email")) return "signIn";
     if (anyAid("signInWithEmail") && !anyAid("progressActive")) return "signIn";
+    if (!anyAid("progressActive")) {
+      const pws = authPasswordInputs();
+      if (pws.length >= 2) return "createAccount";
+      if (pws.length === 1 && authEmailInput()) return "signIn";
+    }
     if (VERIFY_EMAIL_RX.test(body) && !anyAid("password") && !next)
       return "verifyEmail";
     if (anyAid("autofillWithResume") || anyAid("applyManually")) return "applyMethod";
@@ -1562,8 +1575,14 @@
     }
     return false;
   }
-  async function submit(key2, label) {
-    const btn = byAid(key2) ?? buttonByText(label);
+  function submitNear(pw, label) {
+    const scope = pw?.closest("form, [role='dialog'], [data-automation-id*='odal'], section, main") ?? null;
+    if (!scope) return null;
+    const btns = qa("button, [role='button'], input[type='submit']", scope).filter(isVisible);
+    return btns.find((b) => b.type === "submit" && !/forgot/i.test(text(b))) ?? btns.find((b) => /^\s*(submit|continue)\s*$/i.test(text(b) || b.value || "")) ?? btns.find((b) => label.test(text(b))) ?? null;
+  }
+  async function submit(key2, label, pw = null) {
+    const btn = byAid(key2) ?? submitNear(pw, label) ?? buttonByText(label);
     if (!btn) throw new NeedsHuman("Couldn't find the submit button on the sign-in form.");
     await humanClick(btn);
     await sleep(400);
@@ -1590,14 +1609,14 @@
     }
     ctx.run.authAttempts++;
     await ctx.save();
-    const email = byAid("email");
-    const pw = byAid("password");
+    const email = byAid("email") ?? authEmailInput();
+    const pw = byAid("password") ?? authPasswordInputs()[0] ?? null;
     if (!email || !pw) throw new NeedsHuman("Sign-in form fields not found.");
     await setText(email, cred.email || emailFor(ctx, creds));
     await pace(ctx);
     await setText(pw, cred.password);
     await pace(ctx);
-    await submit("signInSubmit", SIGN_IN_TEXT_RX);
+    await submit("signInSubmit", SIGN_IN_TEXT_RX, pw);
     const errs = errorMessages().map((e) => e.text).join(" ");
     if (AUTH_FAILED_RX.test(errs) || LOCKED_RX.test(errs)) {
       if (LOCKED_RX.test(errs)) throw new NeedsHuman("This account is locked. Reset the password from the sign-in page, then click Resume.");
@@ -1643,9 +1662,9 @@
     }
     ctx.run.createAttempts++;
     await ctx.save();
-    const emailEl = byAid("email");
-    const pw = byAid("password");
-    const verify = byAid("verifyPassword");
+    const emailEl = byAid("email") ?? authEmailInput();
+    const pw = byAid("password") ?? authPasswordInputs()[0] ?? null;
+    const verify = byAid("verifyPassword") ?? authPasswordInputs()[1] ?? null;
     if (!emailEl || !pw) throw new NeedsHuman("Create-account form fields not found.");
     await setText(emailEl, email);
     await pace(ctx);
@@ -1660,7 +1679,7 @@
       }
       if (!await setCheckbox(terms, true)) throw new NeedsHuman("Couldn't tick the account terms box — tick it, then click Resume.");
     }
-    await submit("createAccountSubmit", CREATE_ACCOUNT_TEXT_RX);
+    await submit("createAccountSubmit", CREATE_ACCOUNT_TEXT_RX, pw);
     const errs = errorMessages().map((e) => e.text).join(" ");
     if (ACCOUNT_EXISTS_RX.test(errs)) {
       ctx.log("An account already exists for this email — switching to Sign In", "warn");
@@ -1776,7 +1795,8 @@
     [Q.lastName, (_l, c) => c.profile.personal.lastName || null],
     [Q.fullName, (_l, c) => fullName(c.profile) || null],
     [Q.email, (_l, c) => c.profile.personal.email || null],
-    [Q.phone, (_l, c) => c.profile.personal.phone.number || null],
+    // [ua] "Phone Extension" matched the phone rule and got the whole number.
+    [Q.phone, (l, c) => /ext(ension)?\b|durchwahl|poste\b|extensión/i.test(l) ? null : c.profile.personal.phone.number || null],
     [Q.address1, (_l, c) => c.profile.personal.address.line1 || null],
     [Q.city, (_l, c) => c.profile.personal.address.city || null],
     [Q.postal, (_l, c) => c.profile.personal.address.postalCode || null],
@@ -3054,9 +3074,69 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     return v && typeof v === "object" ? v : {};
   }
+  function jobrightProfile(raw) {
+    const f = W.__uaJrProfile;
+    if (typeof f === "function") {
+      try {
+        return f(raw) || {};
+      } catch {
+      }
+    }
+    const e = parse(raw);
+    const pi = e.personalInfo || {}, loc = e.location || {};
+    const str = (v) => v == null || typeof v === "object" ? "" : String(v).trim();
+    const cc = (str(e.phoneCountryCode).match(/\+?\s?(\d{1,4})\b/) || [])[1];
+    const out = {
+      first_name: str(pi.firstName),
+      last_name: str(pi.lastName),
+      preferred_name: str(pi.preferredFirstName),
+      email: str(pi.email),
+      phone: str(pi.phone_number),
+      phoneCountryCode: cc ? `+${cc}` : "",
+      city: str(loc.city),
+      state: str(loc.state || e.state),
+      country: str(loc.country),
+      postal_code: str(loc.postCode),
+      address: str(e.addressLine).split(/\s*[\r\n]+\s*/)[0],
+      address_line_2: str(e.addressLine).split(/\s*[\r\n]+\s*/).slice(1).filter(Boolean).join(", "),
+      linkedin: str(pi.linkedin_link || pi.linkedin),
+      github: str(pi.github_link || pi.github_url),
+      website: str(pi.personal_site_link || pi.personal_site)
+    };
+    const work = (Array.isArray(e.workExperience) ? e.workExperience : []).map((w) => ({
+      title: str(w.job_title),
+      company: str(w.organization),
+      location: str(w.location),
+      start_date: str(w.dates?.start_date),
+      end_date: str(w.dates?.completion_date),
+      is_current: !!w.dates?.is_current,
+      description: Array.isArray(w.job_descriptions) ? w.job_descriptions.join("\n") : str(w.summary)
+    })).filter((w) => w.title && w.company);
+    if (work.length) out.work_experience = work;
+    const edu = (Array.isArray(e.education) ? e.education : []).map((x) => ({
+      school: str(x.organization),
+      degree: str(x.accreditation),
+      gpa: str(x.gpa),
+      start_date: str(x.dates?.start_date),
+      end_date: str(x.dates?.completion_date)
+    })).filter((x) => x.school);
+    if (edu.length) out.education = edu;
+    for (const k of Object.keys(out)) if (out[k] === "") delete out[k];
+    return out;
+  }
+  function mergeLayers(...layers) {
+    const out = {};
+    for (const l of layers) {
+      for (const [k, v] of Object.entries(l || {})) {
+        const empty = v == null || typeof v === "string" && !v.trim() || Array.isArray(v) && !v.length;
+        if (!empty || !(k in out)) out[k] = v;
+      }
+    }
+    return out;
+  }
   async function uaProfile() {
-    const d = await ST.get(["ua_profile", "candidateDetails", "userDetails"]);
-    return { ...parse(d.userDetails), ...parse(d.candidateDetails), ...parse(d.ua_profile) };
+    const d = await ST.get(["ua_profile", "candidateDetails", "userDetails", "AUTOFILL_INFO_SNAPSHOT"]);
+    return mergeLayers(jobrightProfile(d.AUTOFILL_INFO_SNAPSHOT), parse(d.userDetails), parse(d.candidateDetails), parse(d.ua_profile));
   }
   function pick(o, ...keys) {
     for (const k of keys) {
@@ -3230,8 +3310,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         email: pick(s, "email", "email_address"),
         phone: { countryName: DIAL[ph.code] || country, countryCode: ph.code ? `+${ph.code}` : "", number: ph.national, deviceType: "Mobile" },
         address: {
-          line1: pick(s, "address", "address_line_1", "address1", "street"),
-          line2: pick(s, "address_line_2", "address2"),
+          // One line each: a line break in a saved address made Workday's box refuse it.
+          line1: pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/)[0],
+          line2: pick(s, "address_line_2", "address2") || pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/).slice(1).join(", "),
           city: pick(s, "city"),
           region: pick(s, "state", "region", "province", "county"),
           postalCode: pick(s, "postal_code", "zip", "postcode"),
@@ -3444,10 +3525,31 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       writeResult({ jobId: id, outcome: "error", reason: e?.message || String(e), at: Date.now() });
     }
   }
+  async function resumeJob(jobId) {
+    const id = String(jobId || "");
+    const r = readResult(id);
+    if (!id || !r || r.outcome === "submitted" || isActive()) return;
+    try {
+      sessionStorage.removeItem(RESULT_KEY);
+    } catch {
+    }
+    const mode = { queue: true, submit: true, startedAt: Date.now(), jobId: id };
+    writeMode(mode);
+    bootUntil = Date.now() + 3e4;
+    say(`resuming on ${detectPage()} (queue job ${id.slice(0, 40)})`);
+    try {
+      await installHooks(mode);
+      await startRun(null);
+    } catch (e) {
+      clearMode();
+      writeResult({ jobId: id, outcome: "error", reason: e?.message || String(e), at: Date.now() });
+    }
+  }
   W.__uaWdEngine = {
     version: 1,
     isWorkday: () => TOP && isWorkdayHost(),
     startJob: (jobId) => void startJob(jobId),
+    resume: (jobId) => void resumeJob(jobId),
     result: (jobId) => readResult(String(jobId || "")),
     /** Still working on this job (or about to resume it after a reload). A run
      *  that ended without reporting (the engine stops quietly on, e.g., a Submit
@@ -3478,7 +3580,10 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       return assistOn();
     },
     assistOn,
-    readCv: () => readCvProfile()
+    readCv: () => readCvProfile(),
+    /** Workday's month/year date boxes take keystrokes, not a value: the built-in
+     *  flow uses this to put a month next to a year-only date ("MM/2021"). */
+    setDate: (field2, ym2) => setDate(field2, ym2).catch(() => false)
   };
   if (TOP && isWorkdayHost()) {
     const submitCountdown = (seconds = 5) => {

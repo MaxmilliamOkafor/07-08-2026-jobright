@@ -130,7 +130,8 @@ const RULES: Rule[] = [
   [Q.lastName, (_l, c) => c.profile.personal.lastName || null],
   [Q.fullName, (_l, c) => fullName(c.profile) || null],
   [Q.email, (_l, c) => c.profile.personal.email || null],
-  [Q.phone, (_l, c) => c.profile.personal.phone.number || null],
+  // [ua] "Phone Extension" matched the phone rule and got the whole number.
+  [Q.phone, (l, c) => (/ext(ension)?\b|durchwahl|poste\b|extensión/i.test(l) ? null : c.profile.personal.phone.number || null)],
   [Q.address1, (_l, c) => c.profile.personal.address.line1 || null],
   [Q.city, (_l, c) => c.profile.personal.address.city || null],
   [Q.postal, (_l, c) => c.profile.personal.address.postalCode || null],

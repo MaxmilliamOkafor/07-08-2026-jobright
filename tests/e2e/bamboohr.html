@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior PHP Developer - Nylon Technology</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto} .f{margin:12px 0} label{display:block;font-weight:600}
+input,select,textarea{width:100%;padding:6px;box-sizing:border-box}</style></head><body>
+<!-- The BambooHR page from the screenshot: Country opens on "United States",
+     a street Address box, a ZIP box, "Date Available" as an mm/dd/yyyy date
+     box, and "References (Name, Company, and Contact Info)". Expected: Country =
+     the profile's (United Kingdom), Address = the street line, ZIP = the
+     postcode (never a place), a real date, and no employer under References. -->
+<h1>Senior PHP Developer</h1>
+<form id="applicationForm" class="RenderForm" novalidate onsubmit="return window.__validate(event)">
+  <div class="f"><label for="firstName">First Name *</label><input id="firstName" name="firstName" required></div>
+  <div class="f"><label for="lastName">Last Name *</label><input id="lastName" name="lastName" required></div>
+  <div class="f"><label for="email">Email *</label><input id="email" name="email" type="email" required></div>
+  <div class="f"><label for="phone">Phone *</label><input id="phone" name="phone" required></div>
+  <div class="f"><label for="streetAddress">Address *</label><input id="streetAddress" name="streetAddress" required></div>
+  <div class="f"><label for="city">City *</label><input id="city" name="city" required></div>
+  <div class="f"><label for="zip">ZIP *</label><input id="zip" name="zip" required></div>
+  <div class="f"><label for="countryId">Country *</label>
+    <select id="countryId" name="countryId" required><option value="1">United States</option><option value="2">Canada</option><option value="3">Ireland</option><option value="4">United Kingdom</option></select></div>
+  <div class="f"><label for="dateAvailable">Date Available *</label><input id="dateAvailable" name="dateAvailable" class="fab-DatePicker-input" placeholder="mm/dd/yyyy" required></div>
+  <div class="f"><label for="refs">References (Name, Company, and Contact Info)</label><textarea id="refs" name="references"></textarea></div>
+  <div class="f"><label for="resume">Resume *</label><input type="file" id="resume" name="resume" required></div>
+  <button type="submit">Submit Application</button>
+</form>
+<script>
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('applicationForm');
+    const d = document.getElementById('dateAvailable').value;
+    if (!/^\d{2}\/\d{2}\/\d{4}$/.test(d)) { console.log('BLOCKED date ' + d); return false; }
+    if (!f.checkValidity()) { console.log('BLOCKED invalid'); return false; }
+    const fd = new FormData(f); const out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    out.countryText = document.getElementById('countryId').selectedOptions[0].text;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying!</h1>';
+    return false;
+  };
+</script>
+</body></html>

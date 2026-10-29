@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Field Program Manager at Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto} .f{margin:14px 0;position:relative} label{display:block;font-weight:600}
+input[type=text],input[type=email],input[type=tel]{width:100%;padding:6px;box-sizing:border-box}
+.sugg{position:absolute;left:0;right:0;background:#fff;border:1px solid #999;margin:0;padding:0;list-style:none;z-index:5}
+.sugg li{padding:6px;cursor:pointer} .iti{display:flex;gap:6px;position:relative} .iti__selected-flag{border:1px solid #999;padding:6px;cursor:pointer;white-space:nowrap}
+.iti__country-list{position:absolute;top:34px;left:0;background:#fff;border:1px solid #999;list-style:none;margin:0;padding:0;z-index:6}
+.iti__country{padding:5px 8px;cursor:pointer}</style></head><body>
+<!-- The Greenhouse page from the "is this you?" screenshot:
+     · "Cover Letter" sits ABOVE "Resume/CV", both with the same Attach button —
+       the CV must land in Resume/CV only;
+     · "Location (City)" suggests a university and a street before the city;
+     · the phone has an intl-tel country picker set to Ireland, while the
+       profile's phone is +44 — it must end up on the United Kingdom, and only
+       from the list the picker opened. -->
+<h1>Field Program Manager</h1><div class="company">Acme Corp</div>
+<form id="application_form" novalidate onsubmit="return window.__validate(event)">
+  <div class="f"><label for="first_name">First Name *</label><input type="text" id="first_name" name="first_name" required></div>
+  <div class="f"><label for="last_name">Last Name *</label><input type="text" id="last_name" name="last_name" required></div>
+  <div class="f"><label for="email">Email *</label><input type="email" id="email" name="email" required></div>
+  <div class="f"><label for="phone">Phone *</label>
+    <div class="iti">
+      <div class="iti__selected-flag" role="button" tabindex="0" title="Ireland: +353" aria-label="Phone country: Ireland +353"><span class="iti__flag iti__ie"></span> +353</div>
+      <ul class="iti__country-list" hidden>
+        <li class="iti__country" data-country-code="ie" data-dial-code="353">Ireland +353</li>
+        <li class="iti__country" data-country-code="gg" data-dial-code="44">Guernsey +44</li>
+        <li class="iti__country" data-country-code="gb" data-dial-code="44">United Kingdom +44</li>
+        <li class="iti__country" data-country-code="us" data-dial-code="1">United States +1</li>
+      </ul>
+      <input type="tel" id="phone" name="phone" required>
+    </div>
+    <input type="hidden" name="phone_country" id="phone_country" value="ie"></div>
+  <div class="f"><label for="loc">Location (City) *</label>
+    <input type="text" id="loc" name="location" autocomplete="off" required role="combobox" aria-autocomplete="list" aria-controls="loc_list">
+    <ul class="sugg" id="loc_list" role="listbox" hidden></ul>
+    <input type="hidden" name="location_picked" id="loc_ok" value=""></div>
+  <div class="f" id="cl_block"><label for="cover_letter">Cover Letter</label>
+    <button type="button" class="attach">Attach</button> <input type="file" id="cover_letter" name="cover_letter"></div>
+  <div class="f" id="cv_block"><label for="resume">Resume/CV *</label>
+    <button type="button" class="attach">Attach</button> <input type="file" id="resume" name="resume" required></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<script>
+  const $ = (id) => document.getElementById(id);
+  // intl-tel: open / pick.
+  const flag = document.querySelector('.iti__selected-flag'), list = document.querySelector('.iti__country-list');
+  flag.addEventListener('click', () => { list.hidden = !list.hidden; });
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('.iti__country'); if (!li) return;
+    const cc = li.dataset.countryCode, dial = li.dataset.dialCode;
+    flag.innerHTML = `<span class="iti__flag iti__${cc}"></span> +${dial}`;
+    flag.title = li.textContent.replace(/ \+\d+$/, '') + ': +' + dial;
+    flag.setAttribute('aria-label', 'Phone country: ' + li.textContent);
+    $('phone_country').value = cc; list.hidden = true;
+    console.log('FX_PHONE_COUNTRY ' + cc);
+  });
+  // Location typeahead: the city comes third.
+  const loc = $('loc'), ll = $('loc_list');
+  const PLACES = ['University of London, London, United Kingdom', 'London Road, Brighton, United Kingdom', 'London, United Kingdom', 'London, Ontario, Canada'];
+  loc.addEventListener('input', () => {
+    $('loc_ok').value = '';
+    const q = loc.value.trim().toLowerCase().split(',')[0];
+    const hits = q.length < 2 ? [] : PLACES.filter((p) => p.toLowerCase().includes(q));
+    ll.innerHTML = hits.map((h) => `<li role="option">${h}</li>`).join('');
+    ll.hidden = !hits.length;
+  });
+  ll.addEventListener('click', (e) => {
+    const li = e.target.closest('li'); if (!li) return;
+    loc.value = li.textContent; $('loc_ok').value = li.textContent; ll.hidden = true;
+    if ($('loc_err')) $('loc_err').remove();
+    console.log('FX_LOCATION ' + li.textContent);
+  });
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = $('application_form');
+    if (!$('loc_ok').value && !$('loc_err')) $('loc_list').insertAdjacentHTML('afterend', '<div id="loc_err" class="error">Location (City) is required.</div>');
+    if (!f.checkValidity() || !$('loc_ok').value) { console.log('BLOCKED invalid'); return false; }
+    const fd = new FormData(f); const out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+    return false;
+  };
+</script>
+</body></html>

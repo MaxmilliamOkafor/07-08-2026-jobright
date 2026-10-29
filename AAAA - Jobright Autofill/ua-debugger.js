@@ -204,6 +204,64 @@
     });
   } catch (_) {}
 
+  /* ── ONE FILE WITH EVERYTHING ──────────────────────────────────────────────
+     What "Download debug log" saves: the summary (counts, failures by cause),
+     every job's record (timeline, pages, end-of-page snapshot, screenshot),
+     the diagnostics report, the queue and the Queue Manager's log, the Workday
+     engine's and the mailbox's logs, settings, the profile, and the page's own
+     in-memory log. Never passwords, site logins, tokens, or your CV file —
+     their key names are listed under "omitted" so it is clear they exist. */
+  const SECRET_KEY_RE = /password|passwd|token|secret|ats_logins|site_pw|WORKDAY_SIGNUP|client_id|cookie|_auth|credential|ua_resume|ua_resumes|cv_profile|mail_account/i;
+  async function bundle(page) {
+    const all = (await get(null)) || {};
+    const index = all[IDX] || [];
+    const n = (f) => index.filter(f).length;
+    const causes = {};
+    for (const e of index) {
+      if (!['failed', 'timeout'].includes(e.status) && !(e.status === 'skipped' && e.reason)) continue;
+      const g = `${e.status === 'skipped' ? 'skipped' : 'failed'}: ${e.group || reasonGroup(e.reason)}`;
+      (causes[g] = causes[g] || { count: 0, ats: {}, examples: [] }).count++;
+      causes[g].ats[e.ats || e.board || '?'] = (causes[g].ats[e.ats || e.board || '?'] || 0) + 1;
+      if (causes[g].examples.length < 5) causes[g].examples.push({ url: e.url, reason: e.reason });
+    }
+    const jobs = index.map((e) => ({ ...e, record: all[REC(e.id)] || null, screenshot: all[SHOT(e.id)] || null }));
+    const settings = {}, logs = {}, other = {}, omitted = [];
+    for (const [k, v] of Object.entries(all)) {
+      if (k === IDX || k.startsWith('ua_dbg_job:') || k.startsWith('ua_dbg_shot:')) continue;
+      if (SECRET_KEY_RE.test(k)) { omitted.push(k); continue; }
+      if (!/^(ua_|wd:|oh|candidateDetails|userDetails)/.test(k)) { omitted.push(k + ' (Jobright\'s own)'); continue; }
+      let size = 0;
+      try { size = JSON.stringify(v).length; } catch (_) {}
+      if (size > 400000) { omitted.push(`${k} (${Math.round(size / 1024)} KB)`); continue; }
+      if (/log|diag|events|_q$|_mgr_run|fails|unknown|created/.test(k)) logs[k] = v;
+      else if (/^ua_(aa|q_speed|queue_tailor|wd_assist|wd_engine_off|mgr_settings|mgr_concurrency|skip|speed|mail_enabled|mail_gmail_session)/.test(k)) settings[k] = v;
+      else other[k] = v;
+    }
+    let diagReport = '';
+    try { diagReport = typeof self.__uaDiagReport === 'function' ? await self.__uaDiagReport() : ''; } catch (_) {}
+    let version = '';
+    try { version = chrome.runtime.getManifest().version; } catch (_) {}
+    const out = {
+      what: 'Jobright debug log — everything the Debugger and the recorder have',
+      exportedAt: new Date().toISOString(),
+      extensionVersion: version,
+      page: page || null,
+      summary: {
+        jobs: index.length, applied: n((e) => e.status === 'done'), failed: n((e) => ['failed', 'timeout'].includes(e.status)),
+        skipped: n((e) => e.status === 'skipped'), running: n((e) => !e.endedAt),
+        causes: Object.entries(causes).sort((a, b) => b[1].count - a[1].count).map(([cause, c]) => ({ cause, ...c })),
+      },
+      diagnosticsReport: diagReport,
+      jobs,
+      logs,
+      settings,
+      other,
+      omitted,
+    };
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    return { name: `jobright-debug-${stamp}.json`, json: JSON.stringify(out, null, 1) };
+  }
+
   function openPage(hash) {
     const url = chrome.runtime.getURL('ua-debug.html') + (hash ? '#' + hash : '');
     // Opened because you asked: in front, even during a run (the run's tab guard lets this one through).
@@ -222,6 +280,10 @@
         case 'UA_DBG_SNAPSHOT': if (id) snapshot(id, msg.snap, sender); break;
         case 'UA_DBG_END': if (id) finish(id, String(msg.status || 'failed'), msg.reason); break;
         case 'UA_DBG_OPEN': openPage(msg.hash || ''); break;
+        case 'UA_DBG_BUNDLE':
+          bundle(msg.page).then((b) => { try { sendResponse({ ok: true, ...b }); } catch (_) {} },
+            (e) => { try { sendResponse({ ok: false, error: String((e && e.message) || e) }); } catch (_) {} });
+          return true;
         case 'UA_DBG_CLEAR':
           serial(async () => {
             const index = await loadIndex();

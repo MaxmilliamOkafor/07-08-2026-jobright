@@ -1846,8 +1846,8 @@ eq('the manual box is preferred — it is the path a person would use',
   coverFn.indexOf('MANUAL_ENTRY_RE') < coverFn.indexOf('new File('), true);
 eq('and the letter is addressed to this employer, not generic',
   /tailorCoverText\(p\.cover_letter \|\| DEFAULTS\.cover,/.test(coverFn), true);
-eq('otherwise a plain-text file, which these widgets all accept',
-  /new File\(\[letter\], 'cover-letter\.txt', \{ type: 'text\/plain' \}\)/.test(coverFn), true);
+eq('otherwise a PDF named after you (plain text only where PDF is not accepted)',
+  /new File\(\[textToPdf\(letter\)\], `\$\{who\}_Cover_Letter\.pdf`/.test(coverFn) && /new File\(\[letter\], `\$\{who\}_Cover_Letter\.txt`/.test(coverFn), true);
 eq('and the outcome is recorded either way', /DIAG\('cover\.blocked'/.test(coverFn), true);
 eq('the pass runs as part of the fill, right after the CV',
   /try \{ if \(await satisfyCoverLetter\(p\)\) filled\+\+; \}/.test(src), true);
@@ -2890,7 +2890,7 @@ console.log('v17.7 — honeypots, seeded phone boxes, select2, Lever location, c
   eq('no Workday filling while a password box is on screen',
     /while \(\(workdayOnAccountWall\(\) \|\| wdResetActive\(\)\) && Date\.now\(\) < until && !autoStopped\(\) && !_authDeadEnd\)/.test(body('workdayAutomation')), true);
   eq('a tenant still on the wall is reported, not filled', /DIAG\('workday\.auth\.stuck'/.test(body('workdayAutomation')), true);
-  eq('the account watcher stops on the broader "applying" test', /\|\| workdayApplicationReady\(\)\) \{/.test(src), true);
+  eq('the account watcher stops on the broader "applying" test — but never with a password box on screen', /if \(!pwFields\.length && \([\s\S]{0,260}\|\| workdayApplicationReady\(\)\)\) \{/.test(src), true);
 }
 
 /* ── 64. v17.9: Amazon, Workday (SpeedyApply 2.28), SmartRecruiters, OptimHire 9.0 ── */
@@ -3240,7 +3240,10 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
   eq('"Address Line 2" is not a place search', lf.loc('Address Line 2'), false);
   eq('"Apartment / Suite" neither', lf.loc('Apartment, suite, etc.'), false);
   eq('"Town or City" still is', lf.loc('Town or City'), true);
-  eq('"Address" still is', lf.loc('Address'), true);
+  eq('a plain street "Address" box is not a place search (it got "Dublin, Ireland")', lf.loc('Address'), false);
+  eq('"ZIP" is never one (it got "Dublin, Dublin, IE")', lf.loc('ZIP *'), false);
+  eq('"Postcode / Eircode" neither', lf.loc('Postcode'), false);
+  eq('"Location" still is', lf.loc('Location (City)'), true);
 
   const gv = body('guessValue');
   eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (/address|street/.test(l)) return p.address"), true);
@@ -3260,8 +3263,8 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
 console.log('v17.22: Workday speed; editing while it fills');
 {
   const wa = body('workdayAutomation');
-  eq('Jobright autofill only when something required is still empty', /if \(getMissingRequired\(\)\.length\) \{[\s\S]{0,200}await triggerAutofill\(\);/.test(wa), true);
-  eq('the tailor-first detour only when you opted into tailoring', /if \(queueUseTailor\) await tailorFirstFlow\(\);/.test(wa), true);
+  eq('Jobright autofill only when something required is still empty — and never beside the engine', /if \(!engineHere && getMissingRequired\(\)\.length\) \{[\s\S]{0,200}await triggerAutofill\(\);/.test(wa), true);
+  eq('the tailor-first detour only when you opted into tailoring, and not on Workday with the engine', /if \(queueUseTailor && !engineHere\) await tailorFirstFlow\(\);/.test(wa), true);
   const mp = body('workdayMultiPageFlow');
   eq('no flat 2.5s after Next — on as soon as the step changes', /await waitForStepChange\(sig, scaled\(6000, 2500\)\)/.test(mp) && !/next_page'\) \{ await sleep\(scaled\(2500, 1250\)\)/.test(mp), true);
   eq('no flat 1.5s per page', !/await sleep\(scaled\(1500, 750\)\);\n\n      \/\/ Detect current page type/.test(mp), true);
@@ -3330,7 +3333,7 @@ console.log('v17.23: knockout answers — years 7, AWS certified Yes, everywhere
   eq('before every submit the page is corrected', /await enforceKnockoutPolicy\(\);\n    logFillReport\('Before submit'\);/.test(body('autoSubmitOrNext__impl')), true);
   eq('…never over what you typed', /userTouched\(el\)/.test(body('enforceKnockoutPolicy')) && /radios\.some\(userTouched\)/.test(body('enforceKnockoutPolicy')), true);
   eq('no filler reads years from merged data any more', /years_experience|yearsExperience/.test(src), false);
-  eq('getProfile keeps only YOUR years', /const ownYears = p\.years;[\s\S]{0,120}p\.years = ownYears;/.test(body('getProfile')), true);
+  eq('getProfile keeps only YOUR years', /const ownYears = p\.years;[\s\S]{0,200}p\.years = ownYears;/.test(body('getProfile')), true);
 }
 
 
@@ -3362,7 +3365,7 @@ console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
   eq('stopped mid-application, the built-in flow carries on from that step', /if \(eng === 'midway'\) \{\s+await fallbackFill\(\);\s+await workdayMultiPageFlow\(\);/.test(wa), true);
   eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
   eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
-  eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineRun')) && /8 \* 60 \* 1000/.test(body('workdayEngineRun')), true);
+  eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineWait')) && /8 \* 60 \* 1000/.test(body('workdayEngineWait')) && /workdayEngineWait\(eng, id\)/.test(body('workdayEngineRun')), true);
   eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
 }
 
@@ -3465,10 +3468,246 @@ console.log('v17.27: Debugger — every job recorded, failures grouped by cause'
   // Page + ways in.
   eq('the Debugger page loads its script (no inline script)', /<script src="ua-debug\.js"><\/script>/.test(html) && !/<script>[^<]/.test(html), true);
   eq('it shows causes, jobs, timeline, page snapshot, screenshot, pages', ['renderCauses', 'renderJobs', 'renderTimeline', 'renderPage', "'shot'", "'pages'"].every((k) => page.includes(k)), true);
-  eq('copy and export for sending on', /jobReport/.test(page) && /Export all/.test(html) && /Copy summary/.test(html), true);
+  eq('copy and export for sending on', /jobReport/.test(page) && /Download everything/.test(html) && /Copy summary/.test(html), true);
   eq('a Debug button in the run panel', /id="uc-dbg"/.test(src) && /openDebugger\(/.test(src), true);
   eq('…in the Queue Manager', /id="btnDebugger"/.test(qhtml) && /btnDebugger/.test(qjs), true);
   eq('…and in the right-click menu', /ua-open-debugger/.test(orch), true);
+}
+
+
+/* ── 78. v17.28: alongside other extensions; one-click debug download ── */
+console.log('v17.28: run panel sealed in its own shadow root; coexisting with OptimHire; download everything');
+{
+  const ext = path.dirname(process.argv[2]);
+  const rd = (n) => fs.readFileSync(path.join(ext, n), 'utf8');
+  const sw = rd('ua-debugger.js');
+  // Sealed panel.
+  const eo = body('ensureOverlay');
+  eq('the run panel is a custom element with a CLOSED shadow root', /document\.createElement\('ua-run-panel'\)/.test(eo) && /attachShadow\(\{ mode: 'closed' \}\)/.test(eo), true);
+  eq('its styles are inside it, not in the page', /style\.textContent = UC_PANEL_CSS/.test(eo) && !/#ua-ctrl-card\{width:300px/.test(body('injectCSS')), true);
+  eq('the page cannot restyle the host either (all:initial !important)', /all:initial!important;position:fixed!important/.test(eo), true);
+  eq('every lookup of its parts goes through the shadow root', !/document\.getElementById\('(uc-[\w-]+|ua-ctrl)'\)/.test(src) && /function ucEl\(id\)/.test(src), true);
+  eq('…and an element with the same id in the page is never taken for ours', /_ucShadow\.getElementById\(id\)\) \|\| null/.test(body('ucEl')), true);
+  eq('this extension\'s own scans skip it', /#ua-ctrl,ua-run-panel,/.test(src), true);
+  // Generic hide rules only where we are applying.
+  const css = body('injectCSS');
+  eq('generic "paywall / review popup" hide rules only on a tab this extension is applying in',
+    /html\[data-ua-auto="1"\] \[class\*="paywall"\]/.test(css) && /html\[data-ua-auto="1"\] \[class\*="review-popup"\]/.test(css) && !/\n\[class\*="paywall"\]/.test(css), true);
+  // Not filling a page another extension is filling.
+  eq('Fully Automated stands down where your OptimHire build is working', /otherAutofillDriving\(\) \|\| \(await waitUntil\(otherAutofillDriving, 2500, 250\)\)/.test(src) && /standing down here/.test(src), true);
+  eq('…recognised by its own elements', ['#oh-csv-overlay-host', '#oh-autofill-banner', '#wd-autopilot-overlay', '#oh-wd-submit-countdown', '#optimhire-resume-score-record'].every((k) => src.includes(k)), true);
+  // One-click download.
+  eq('a "Download debug log" button in the Jobright sidebar card', /id="ua-sb-dl"/.test(src) && /querySelector\('#ua-sb-dl'\)\?\.addEventListener\('click', \(e\) => downloadDebugBundle/.test(src), true);
+  eq('…in the run panel', /id="uc-dl"/.test(src), true);
+  eq('…on the Debugger page and in the Queue Manager', /UA_DBG_BUNDLE/.test(rd('ua-debug.js')) && /Download everything/.test(rd('ua-debug.html')) && /btnDebugDl/.test(rd('ua-queue.html')) && /UA_DBG_BUNDLE/.test(rd('ua-queue.js')), true);
+  eq('the page adds its own in-memory log to the file', /log: _dbgBuf\.slice\(-2000\)/.test(body('downloadDebugBundle')), true);
+  const secret = new RegExp(sw.match(/const SECRET_KEY_RE = \/(.*)\/i;/)[1], 'i');
+  for (const k of ['ua_app_password', 'WORKDAY_SIGNUP_INFORMATION', 'ua_ats_logins', 'ua_wd_site_pw', 'ua_resume_data', 'ua_resumes', 'ua_mail_token', 'ua_mail_client_id']) eq(`"${k}" never goes in the file`, secret.test(k), true);
+  for (const k of ['ua_q', 'ua_mgr_log', 'ua_diag_events', 'ua_wd_engine_log', 'ua_profile']) eq(`"${k}" does`, secret.test(k), false);
+  eq('the file has the summary by cause, every job record with its screenshot, and the diagnostics report',
+    /causes: Object\.entries\(causes\)/.test(sw) && /record: all\[REC\(e\.id\)\] \|\| null, screenshot: all\[SHOT\(e\.id\)\]/.test(sw) && /self\.__uaDiagReport/.test(sw), true);
+}
+
+
+
+/* ── 79. v17.29: Greenhouse — CV slot, city pick, phone country; real job start ── */
+console.log('v17.29: CV never into Cover Letter; a city, not a university; phone country from the phone; true job start');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${gc('COVER_UPLOAD_RE')}${gc('CV_WORD_RE')}${gc('NOT_A_PLACE_RE')}${gc('DIAL_ISO')}${gc('DIAL_NAME')}${gc('JOB_T0_KEY')}
+    ${body('dialCodeFromPhone')}${body('isCoverLetterSlot')}${body('pickPlaceSuggestion')}${body('phoneCountryTarget')}${body('phoneCountryOptionMatches')}${body('jobStartFor')}
+    const DEFAULTS = { country: 'Ireland', phoneCountryCode: '+353' };
+    const getLabel = (el) => el.label || '';
+    const store = {}; const sessionStorage = { getItem: (k) => store[k] || null, setItem: (k, v) => { store[k] = v; } };
+    Object.assign(exports, { isCoverLetterSlot, pickPlaceSuggestion, phoneCountryTarget, phoneCountryOptionMatches, jobStartFor, store });`)(m);
+  // CV vs cover letter.
+  const box = (text, parent) => ({ innerText: text, parentElement: parent || null });
+  const inp = (o, parent) => Object.assign({ tagName: 'INPUT', name: '', id: '', getAttribute: (k) => (o.attrs || {})[k] || null, parentElement: parent }, o);
+  eq('Greenhouse id="cover_letter" is the cover letter', m.isCoverLetterSlot(inp({ id: 'cover_letter', label: 'Cover Letter Attach' }, null)), true);
+  eq('id="resume" is not', m.isCoverLetterSlot(inp({ id: 'resume', label: 'Resume/CV Attach' }, null)), false);
+  eq('an unlabelled input under a "Cover Letter Attach Dropbox" block is the cover letter',
+    m.isCoverLetterSlot(inp({}, box('Cover Letter* Attach Dropbox Google Drive Enter manually', box('Resume/CV* Attach … Cover Letter* Attach …')))), true);
+  eq('…under a "Resume/CV" block it is the CV', m.isCoverLetterSlot(inp({}, box('Resume/CV* Attach Dropbox'))), false);
+  eq('a slot for "CV and cover letter" still takes the CV', m.isCoverLetterSlot(inp({ label: 'Upload your CV and cover letter' }, null)), false);
+  eq('resumeFileInputs drops cover-letter slots before anything else', /if \(isCoverLetterSlot\(el\)\) return false;/.test(body('resumeFileInputs')), true);
+  eq('a cover-letter file on show is not taken as "CV already attached"', /if \(isCoverLetterSlot\(c\)\) continue;/.test(body('resumeAlreadyAttached')), true);
+  // City, not a university.
+  const it = (t) => ({ textContent: t });
+  const galway = [it('National University of Ireland, Galway, Ireland'), it('Galway, Ireland'), it('Galway Airport, Carnmore')];
+  eq('"Galway" picks the town, not the university listed first', m.pickPlaceSuggestion(galway, 'Galway').textContent, 'Galway, Ireland');
+  eq('"Dublin, Ireland" picks Dublin in Ireland over Dublin, CA', m.pickPlaceSuggestion([it('Dublin, CA, USA'), it('Dublin, Ireland')], 'Dublin, Ireland').textContent, 'Dublin, Ireland');
+  eq('"London" picks London, not a London street', m.pickPlaceSuggestion([it('London Road, Brighton'), it('London, UK')], 'London').textContent, 'London, UK');
+  eq('Parkville is a place (no "park" false alarm)', m.pickPlaceSuggestion([it('Parkville VIC, Australia')], 'Parkville').textContent, 'Parkville VIC, Australia');
+  eq('both pickers use it', (body('commitAutocompleteOnce').match(/pickPlaceSuggestion\(/g) || []).length, 2);
+  eq('a typed-but-unpicked city under "is required" is picked again (at most twice)',
+    /if \(!complains && \(locationAccepted\(inp\) \|\| \(_locRetries\.get\(inp\) \|\| 0\) >= 2\)\) continue;/.test(body('resolveLocationFields')), true);
+  // Phone country follows the phone.
+  eq('a +44 phone → United Kingdom, not the Ireland default', JSON.stringify(m.phoneCountryTarget({ phone: '+44 7700 900123', country: 'Ireland', phoneCountryCode: '+353' })), JSON.stringify({ code: '44', iso: 'gb', country: 'United Kingdom' }));
+  eq('a +353 phone → the profile country', m.phoneCountryTarget({ phone: '+353 87 426 1508', country: 'Ireland', phoneCountryCode: '+353' }).iso, 'ie');
+  eq('no code in the phone → the profile\'s dial code', m.phoneCountryTarget({ phone: '087 426 1508', phoneCountryCode: '+44', country: 'United Kingdom' }).country, 'United Kingdom');
+  const o = (text, attrs) => ({ textContent: text, getAttribute: (k) => (attrs || {})[k] || null });
+  const uk = { code: '44', iso: 'gb', country: 'United Kingdom' };
+  eq('intl-tel entry with data-dial-code', m.phoneCountryOptionMatches(o('United Kingdom +44', { 'data-dial-code': '44', 'data-country-code': 'gb' }), uk), true);
+  eq('Guernsey +44 is not the UK', m.phoneCountryOptionMatches(o('Guernsey +44', { 'data-dial-code': '44', 'data-country-code': 'gg' }), uk), false);
+  eq('"Ireland +353" is not +44', m.phoneCountryOptionMatches(o('Ireland +353'), uk), false);
+  eq('a location suggestion is never a phone country', m.phoneCountryOptionMatches(o('National University of Ireland, Galway, Ireland'), { code: '353', iso: 'ie', country: 'Ireland' }), false);
+  eq('a bare country-name entry matches only when it is exactly the country', m.phoneCountryOptionMatches(o('🇮🇪 Ireland'), { code: '353', iso: 'ie', country: 'Ireland' }), true);
+  const fx = body('fixPhoneCountryCode');
+  eq('the fixer no longer hard-codes Ireland', !/ireland|353|🇮🇪/i.test(fx), true);
+  eq('it only opens a selector found beside a phone box', /for \(const tel of phones\)/.test(fx) && /\$\$\(SELECTOR_SEL, scope\)/.test(fx), true);
+  eq('…and picks only from the list that click opened', /!listsBefore\.has\(l\)/.test(fx), true);
+  eq('a number the widget emptied is put back', /if \(before && !\(tel\.value \|\| ''\)\.trim\(\)\) \{ nativeSet\(tel, before\)/.test(fx), true);
+  // Real job start.
+  const now = Date.now();
+  eq('a fresh start time is believed', m.jobStartFor({ id: 'a', startedAt: now - 5000 }), now - 5000);
+  eq('a start time 17 minutes old is not (the "Timed out after 1054s" bug)', Math.abs(m.jobStartFor({ id: 'b', startedAt: now - 17 * 60000 }) - now) < 1000, true);
+  m.store.ua_job_t0 = JSON.stringify({ id: 'c', t: now - 200000 });
+  eq('after a reload, this tab\'s own first sighting of the job counts', m.jobStartFor({ id: 'c', startedAt: now - 250000 }), now - 250000);
+  eq('both timers use it', /const jobStart = jobStartFor\(c\);/.test(body('processManagedJob')) && /const jobStart = jobStartFor\(c\);/.test(body('processQ')), true);
+  eq('no timer reads the stored start directly any more', !/jobTimeoutExtension\(c\.startedAt\)/.test(src), true);
+}
+
+
+
+/* ── 80. v17.30: Jobright's own profile under ours; no preferred-name trap ── */
+console.log('v17.30: names and phone from Jobright\'s profile; "I have a preferred name" left unticked; one flow per tab');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${body('profileFromJobright')}${body('mergeProfiles')}${gc('WD_PREFERRED_NAME_RE')}
+    Object.assign(exports, { profileFromJobright, mergeProfiles, WD_PREFERRED_NAME_RE });`)(m);
+  const snap = JSON.stringify({   // Jobright stores it through @plasmohq/storage: a JSON string
+    personalInfo: { firstName: 'Maxmilliam', lastName: 'Okafor', preferredFirstName: '', email: 'max@example.com', phone_number: '+1 512 555 0100', linkedin_link: 'https://linkedin.com/in/max' },
+    phoneCountryCode: 'United States (+1)', location: { country: 'United States', state: 'Texas', city: 'Austin', postCode: '73301' }, addressLine: '1 Main St',
+    workExperience: [{ job_title: 'IT Lead', organization: 'Acme', location: 'Austin', dates: { start_date: '2020-01', is_current: true }, job_descriptions: ['Led ERP'] }],
+    education: [{ organization: 'UT Austin', accreditation: 'BSc', dates: { completion_date: '2015-06' } }],
+  });
+  const jr = m.profileFromJobright(snap);
+  eq('first / last name from Jobright', `${jr.first_name} ${jr.last_name}`, 'Maxmilliam Okafor');
+  eq('phone and its dial code', `${jr.phone} | ${jr.phoneCountryCode}`, '+1 512 555 0100 | +1');
+  eq('city, state, country, postcode, address, LinkedIn', [jr.city, jr.state, jr.country, jr.postal_code, jr.address, jr.linkedin].join('|'), 'Austin|Texas|United States|73301|1 Main St|https://linkedin.com/in/max');
+  eq('work history in the keys the fillers and the engine read', `${jr.work_experience[0].title}@${jr.work_experience[0].company} current=${jr.work_experience[0].is_current}`, 'IT Lead@Acme current=true');
+  eq('an empty preferred name is not carried', 'preferred_name' in jr, false);
+  eq('nothing stored → nothing', JSON.stringify(m.profileFromJobright(undefined)), '{}');
+  const merged = m.mergeProfiles(jr, {}, {}, { email: 'Maxokafordev@gmail.com', first_name: '' });
+  eq('your profile with only an email: the name comes from Jobright', merged.first_name, 'Maxmilliam');
+  eq('…and your email still wins', merged.email, 'Maxokafordev@gmail.com');
+  eq('a value you set wins over Jobright\'s', m.mergeProfiles(jr, { city: 'London' }).city, 'London');
+  eq('getProfile reads Jobright\'s snapshot underneath OptimHire and yours', /st\.getMulti\(\['candidateDetails', 'userDetails', JR_SNAPSHOT_KEY\]\)/.test(body('getProfile')) && /mergeProfiles\(profileFromJobright\(ohData\[JR_SNAPSHOT_KEY\]\), ud, cd, p\)/.test(body('getProfile')), true);
+  const entry = fs.readFileSync(path.join(path.dirname(process.argv[2]), '../workday-engine/src/ua/entry.ts'), 'utf8');
+  eq('the Workday engine reads it too', /"AUTOFILL_INFO_SNAPSHOT"\]\);\n  return mergeLayers\(jobrightProfile\(d\.AUTOFILL_INFO_SNAPSHOT\)/.test(entry), true);
+  eq('…in the built bundle as well', /AUTOFILL_INFO_SNAPSHOT/.test(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8')), true);
+  // Preferred name.
+  for (const q of ['I have a preferred name', 'Do you have a preferred name?', 'Preferred Name?']) eq(`"${q}" is the preferred-name switch`, m.WD_PREFERRED_NAME_RE.test(q), true);
+  for (const q of ['Preferred Name (First)', 'Given Name(s)', 'What name do you prefer to be called at work?']) eq(`"${q}" is not`, m.WD_PREFERRED_NAME_RE.test(q), false);
+  const g = body('workdayEngineOutcome') && src.slice(src.indexOf('window.__uaWdGuess = async'), src.indexOf('window.__uaWdPick ='));
+  eq('the engine\'s stand-in answers it "false" unless you have a different preferred name on file', /if \(!texts\.length\) return want \? 'true' : 'false';/.test(g), true);
+  // Multiselect with a pick.
+  new Function('exports', `${body('wdMultiselectHasPick')} const getLabel = () => ''; exports.ms = wdMultiselectHasPick;`)(m);
+  const el = (aria) => ({ getAttribute: (k) => (k === 'aria-label' ? aria : null), closest: () => null, parentElement: null });
+  eq('"1 item selected, LinkedIn" is answered', m.ms(el('1 item selected, LinkedIn')), true);
+  eq('an empty multiselect is not', m.ms(el('How Did You Hear About Us?')), false);
+  eq('the missing-fields list skips answered multiselects', /if \(wdMultiselectHasPick\(el\)\) continue;/.test(body('getMissingRequired')), true);
+  // One flow per tab.
+  eq('switching Fully Automated on mid-job does not start a second flow on that tab',
+    /const driving = \(qActive && isRunnerTab\(\)\) \|\| _mgrDriving \|\| isBusy\(\);/.test(body('setAutoApply')) && /a queue job is already applying on this tab/.test(body('setAutoApply')), true);
+}
+
+
+
+/* ── 81. v17.31: one filler per Workday page; location everywhere; no popup ── */
+console.log('v17.31: Jobright stays out of our Workday jobs; engine resumes; sign-in without automation ids; location; cover-letter PDF');
+{
+  const ext = path.dirname(process.argv[2]);
+  const rd = (n) => fs.readFileSync(path.join(ext, n), 'utf8');
+  const helper = rd('helper-app.41ea2652.js');
+  const eng = fs.readFileSync(path.join(ext, '../workday-engine/src/ua/entry.ts'), 'utf8');
+  const det = fs.readFileSync(path.join(ext, '../workday-engine/src/workday/detect.ts'), 'utf8');
+  const auth = fs.readFileSync(path.join(ext, '../workday-engine/src/workday/auth.ts'), 'utf8');
+  const ans = fs.readFileSync(path.join(ext, '../workday-engine/src/workday/answers.ts'), 'utf8');
+  const bundle = rd('ua-wd-engine.js');
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  // Jobright's own Workday autofill.
+  eq('Jobright asks before auto-starting its Workday autofill after sign-in (our patch)', (helper.match(/globalThis\.__uaOwnsAutofill\?\.\(e&&e\.targetName\)\)return!1/g) || []).length, 2);
+  eq('…and the answer is yes on a tab our engine or queue is driving', /globalThis\.__uaOwnsAutofill = \(target\) =>/.test(src) && /sessionStorage\.getItem\('uaWdRun'\)/.test(src) && /return isRunnerTab\(\) \|\| _mgrDriving/.test(src), true);
+  eq('our flow no longer presses Jobright Autofill on Workday when the engine is there', /const engineHere = /.test(body('workdayAutomation')), true);
+  // Popup.
+  eq('"Add this job first" is answered "Not Now" and never drawn', /add-job-first[\s\S]{0,40}|if\(e\)\{setTimeout\(\(\)=>\{try\{r&&r\(\)\}catch\(_\)\{\}\},0\);return null\}/.test(helper) && /\[ua\] "Add this job first" is never shown/.test(helper), true);
+  // Duplicate entries.
+  for (const f of ['workdayFillExperience', 'workdayFillEducation']) {
+    eq(`${f} no longer presses the first add-button on the page`, !/button\[data-automation-id="add-button"\]'\);/.test(body(f)) && /await wdAddFirstEntry\('(exp|edu)'\);/.test(body(f)), true);
+  }
+  eq('the first entry is added once per page, only when none exists, from its own section', /_wdAddedOnce\.has\(key\) \|\| wdHasEntry\(kind\)/.test(body('wdAddFirstEntry')) && /wdSection\(/.test(body('wdAddFirstEntry')), true);
+  // Dates.
+  eq('a year-only date gets its month through the engine\'s date setter', /eng\.setDate\(box, `\$\{y\}-\$\{end \? '12' : '01'\}`\)/.test(body('wdFillMissingMonths')), true);
+  eq('…which the bridge exposes', /setDate: \(field: HTMLElement, ym: string\) => setDate\(field, ym\)/.test(eng), true);
+  eq('"From"/"To" fallback matches only labels that ARE From / To', !/contains\(translate\(text\(\),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'\),'to'\)/.test(src), true);
+  // Engine resume.
+  eq('after the built-in flow clears the engine\'s paused step, the next step goes back to the engine (max 4)', /if \(n >= 4\) return false;/.test(body('workdayEngineResume')) && /eng\.resume\(id\)/.test(body('workdayEngineResume')), true);
+  eq('…called when the step changes', /const back = await workdayEngineResume\(\);/.test(body('workdayMultiPageFlow')), true);
+  eq('the bridge can resume a job', /resume: \(jobId: string\) => void resumeJob\(jobId\)/.test(eng) && /async function resumeJob/.test(eng), true);
+  // Sign-in screens without automation ids.
+  eq('the engine recognises sign-in / create-account by their boxes when the ids are missing', /if \(pws\.length >= 2\) return "createAccount";/.test(det) && /if \(pws\.length === 1 && authEmailInput\(\)\) return "signIn";/.test(det), true);
+  eq('…and fills them', /byAid\("email"\) \?\? authEmailInput\(\)/.test(auth) && /byAid\("verifyPassword"\) \?\? authPasswordInputs\(\)\[1\]/.test(auth), true);
+  eq('…pressing the form\'s own Submit, not the "Sign In" tab', /submitNear\(pw, label\)/.test(auth), true);
+  eq('built into the bundle', /authPasswordInputs/.test(bundle) && /resumeJob/.test(bundle), true);
+  eq('the account watcher does not pass with a password box on screen', /if \(!pwFields\.length && \(/.test(src), true);
+  // Phone extension.
+  eq('"Phone Extension" no longer gets the phone number', /ext\(ension\)\?\\b\|durchwahl/.test(ans), true);
+  // Address with a line break.
+  const m = {};
+  new Function('exports', `${body('profileFromJobright')} exports.f = profileFromJobright;`)(m);
+  const a = m.f({ personalInfo: { firstName: 'M' }, addressLine: '21 Mount Andrew Crescent\nLucan' });
+  eq('"21 Mount Andrew Crescent⏎Lucan" → line 1 + line 2', `${a.address} | ${a.address_line_2}`, '21 Mount Andrew Crescent | Lucan');
+  eq('the engine splits it the same way', /line1: pick\(s, "address", "address_line_1", "address1", "street"\)\.split\(/.test(eng), true);
+  // Location: country defaults.
+  new Function('exports', `${gc('COUNTRY_ALIASES')}${body('sameCountry')}${body('isCountryQuestion')} Object.assign(exports, { sameCountry, isCountryQuestion });`)(m);
+  eq('"United States" is not Ireland', m.sameCountry('United States', 'Ireland'), false);
+  eq('"USA" is the United States', m.sameCountry('USA', 'United States'), true);
+  eq('"Ireland (+353)" is Ireland', m.sameCountry('Ireland (+353)', 'Ireland'), true);
+  for (const q of ['Country *', 'Country', 'Country/Region']) eq(`"${q}" is a country box`, m.isCountryQuestion(q), true);
+  for (const q of ['Country Phone Code', 'Country of citizenship', 'Which countries are you authorised to work in?', 'Country of birth']) eq(`"${q}" is not`, m.isCountryQuestion(q), false);
+  eq('the fallback fill corrects a default country first, on every ATS', /try \{ filled \+= await fixCountryDefaults\(p\); \} catch \(_\) \{\}/.test(body('fallbackFill__impl')), true);
+  eq('…never over a choice you made', /userTouched\(sel\)/.test(body('fixCountryDefaults')) && /userTouched\(combo\)/.test(body('fixCountryDefaults')), true);
+  // References / date boxes.
+  const gv = body('guessValue');
+  eq('"References (Name, Company…)" is answered before the company rule', gv.indexOf("return 'Available upon request';") > 0 && gv.indexOf("return 'Available upon request';") < gv.indexOf("return p.current_company || p.company || '';"), true);
+  new Function('exports', `${body('looksLikeDateBox')} exports.d = looksLikeDateBox;`)(m);
+  const box = (attrs) => ({ tagName: 'INPUT', type: 'text', placeholder: attrs.placeholder || '', className: attrs.cls || '', getAttribute: (k) => attrs[k] || null, closest: () => null });
+  eq('an mm/dd/yyyy box is a date box', m.d(box({ placeholder: 'mm/dd/yyyy' })), true);
+  eq('a datepicker class too', m.d(box({ cls: 'fab-DatePicker-input' })), true);
+  eq('a plain text box is not', m.d(box({})), false);
+  eq('"Date Available" in a date box gets a date, not "Immediately"', /looksLikeDateBox\(el\)\) return availableDateFor\(el, p\);/.test(body('refineAnswerForControl')), true);
+  // Cover letter PDF.
+  const t = new Function(`${body('textToPdf')} return textToPdf;`)();
+  const pdf = Buffer.from(t('Dear Hiring Team,\n\nI am “excited” — to apply (really).\n\nKind regards,\nMax')).toString('latin1');
+  eq('the cover letter is a real PDF', pdf.startsWith('%PDF-1.4') && pdf.trim().endsWith('%%EOF') && /\/Type \/Page /.test(pdf), true);
+  eq('…with the text in it, quotes and dashes simplified, brackets escaped', /\(I am "excited" - to apply \\\(really\\\)\.\) Tj/.test(pdf), true);
+  const xref = Number(pdf.match(/startxref\n(\d+)/)[1]);
+  eq('…and a correct cross-reference table', pdf.slice(xref, xref + 4), 'xref');
+}
+
+
+
+/* ── 82. v17.32: every Workday role, not just the first ── */
+console.log('v17.32: Workday adds a Work Experience per role from Jobright\'s profile (Accenture, Citi, …)');
+{
+  const m = {};
+  new Function('exports', `${body('profileFromJobright')}${body('wdParseYM')}${body('wdWorkEntries')} Object.assign(exports, { profileFromJobright, wdWorkEntries });`)(m);
+  const jr = m.profileFromJobright({ personalInfo: { firstName: 'M' }, workExperience: [
+    { job_title: 'Senior Software Engineer', organization: 'Meta', dates: { start_date: '2023-01', is_current: true } },
+    { job_title: 'AI Product Manager', organization: 'SolimHealth', dates: { start_date: '2022-08', completion_date: '2022-12' } },
+    { job_title: 'Senior Solutions Architect', organization: 'Accenture', dates: { start_date: '2021-03', completion_date: '2022-07' } },
+    { job_title: 'Senior Data Analyst', organization: 'Citi', dates: { start_date: 'Aug 2017', completion_date: 'Mar 2021' } },
+  ] });
+  const roles = m.wdWorkEntries(jr);
+  eq('the built-in Workday filler sees all 4 roles (it saw only Meta)', roles.map((r) => r.company).join(', '), 'Meta, SolimHealth, Accenture, Citi');
+  eq('…with their dates', roles.map((r) => `${r.start.m}/${r.start.y}-${r.current ? 'now' : r.end.m + '/' + r.end.y}`).join(' '), '01/2023-now 08/2022-12/2022 03/2021-07/2022 8/2017-3/2021');
+  eq('…so wdMyExperience presses "Add Another" up to that count', /wdEnsureBlocks\(work, \['jobTitle', 'formField-jobTitle'\], roles\.length\)/.test(body('wdMyExperience')), true);
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), '../workday-engine/src/ua/entry.ts'), 'utf8');
+  eq('the engine\'s own fallback mapping carries every role too', /if \(work\.length\) out\.work_experience = work;/.test(eng), true);
+  eq('My Experience is work, not a stall, for the 15s watchdog', /withBusy\('filling My Experience'/.test(body('workdayMultiPageFlow')), true);
 }
 
 

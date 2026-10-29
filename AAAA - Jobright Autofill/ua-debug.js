@@ -221,11 +221,15 @@
   $('ats').onchange = renderJobs;
   $('status').onchange = () => { renderStats(); renderJobs(); };
   $('copySummary').onclick = () => copy(summary(), $('copySummary'));
-  $('exportAll').onclick = async () => {
-    const all = await new Promise((r) => chrome.storage.local.get(null, r));
-    const out = { exportedAt: new Date().toISOString(), index: all[IDX] || [], records: {} };
-    for (const e of out.index) out.records[e.id] = all[REC(e.id)] || null;
-    download(`jobright-debug-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`, JSON.stringify(out, null, 2));
+  // One file with everything (built by the service worker — the same as the sidebar's button).
+  $('exportAll').onclick = () => {
+    const b = $('exportAll'), t = b.textContent;
+    b.textContent = 'Preparing…';
+    chrome.runtime.sendMessage({ type: 'UA_DBG_BUNDLE', page: { url: location.href, userAgent: navigator.userAgent } }, (r) => {
+      void chrome.runtime.lastError;
+      if (r && r.ok && r.json) { download(r.name, r.json); b.textContent = 'Saved ✓'; } else b.textContent = 'Could not prepare it';
+      setTimeout(() => (b.textContent = t), 2500);
+    });
   };
   $('clear').onclick = () => {
     if (!confirm('Delete every recorded job from the Debugger?')) return;
