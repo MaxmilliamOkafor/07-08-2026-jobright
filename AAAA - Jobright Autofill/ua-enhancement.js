@@ -1120,15 +1120,71 @@
   };
 
   let _policyProfile = {};             // for knockoutPolicy in synchronous deciders
+  /* Jobright's own profile — the one its "Autofill" fills from, which it keeps
+     in AUTOFILL_INFO_SNAPSHOT. This extension never read it, so with a profile
+     editor that only ever got your email, every name and phone box was left
+     empty: Workday stopped on "Given Name(s) / Family Name / Phone Number is
+     required" (Motorola, Oct 29) and Greenhouse on "First Name | Last Name |
+     Phone". It is the bottom layer: anything you set here, or OptimHire holds,
+     wins; it only fills what would otherwise be blank. */
+  const JR_SNAPSHOT_KEY = 'AUTOFILL_INFO_SNAPSHOT';
+  function profileFromJobright(raw) {
+    let e = raw;
+    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (_) { return {}; } }
+    if (!e || typeof e !== 'object') return {};
+    const pi = e.personalInfo || {}, loc = e.location || {};
+    const str = (v) => (v == null || typeof v === 'object') ? '' : String(v).trim();
+    const cc = (str(e.phoneCountryCode).match(/\+?\s?(\d{1,4})\b/) || [])[1];
+    const out = {
+      first_name: str(pi.firstName), middle_name: str(pi.middleName), last_name: str(pi.lastName),
+      preferred_name: str(pi.preferredFirstName), email: str(pi.email), phone: str(pi.phone_number),
+      phoneCountryCode: cc ? '+' + cc : '',
+      city: str(loc.city), state: str(loc.state || e.state), country: str(loc.country), county: str(loc.county),
+      postal_code: str(loc.postCode), address: str(e.addressLine),
+      linkedin: str(pi.linkedin_link || pi.linkedin), github: str(pi.github_link || pi.github_url),
+      website: str(pi.personal_site_link || pi.personal_site),
+    };
+    const work = (Array.isArray(e.workExperience) ? e.workExperience : []).map((w) => ({
+      title: str(w.job_title), company: str(w.organization), location: str(w.location),
+      start_date: str(w.dates && w.dates.start_date), end_date: str(w.dates && w.dates.completion_date),
+      is_current: !!(w.dates && w.dates.is_current),
+      description: Array.isArray(w.job_descriptions) && w.job_descriptions.length ? w.job_descriptions.join('\n') : str(w.summary),
+    })).filter((w) => w.title && w.company);
+    if (work.length) {
+      out.work_experience = work;
+      out.current_title = work[0].title; out.current_company = work[0].company;
+    }
+    const edu = (Array.isArray(e.education) ? e.education : []).map((x) => ({
+      school: str(x.organization), degree: str(x.accreditation), gpa: str(x.gpa),
+      start_date: str(x.dates && x.dates.start_date), end_date: str(x.dates && x.dates.completion_date),
+    })).filter((x) => x.school);
+    if (edu.length) { out.education = edu; out.school = edu[0].school; out.degree = out.degree || edu[0].degree; }
+    for (const k of Object.keys(out)) if (out[k] === '') delete out[k];
+    return out;
+  }
+  // Later layers win, but only where they actually say something.
+  function mergeProfiles(...layers) {
+    const out = {};
+    for (const l of layers) {
+      if (!l || typeof l !== 'object') continue;
+      for (const [k, v] of Object.entries(l)) {
+        if (v == null || (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length)) { if (!(k in out)) out[k] = v; continue; }
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+  try { window.__uaJrProfile = profileFromJobright; window.__uaMergeProfiles = mergeProfiles; } catch (_) {}
+
   async function getProfile() {
     let p = (await st.get(SK.PROF)) || {};
-    // Also check OptimHire candidate data
-    const ohData = await st.getMulti(['candidateDetails', 'userDetails']);
+    // Also check OptimHire candidate data, and Jobright's own profile underneath both.
+    const ohData = await st.getMulti(['candidateDetails', 'userDetails', JR_SNAPSHOT_KEY]);
     try {
       const cd = typeof ohData.candidateDetails === 'string' ? JSON.parse(ohData.candidateDetails) : (ohData.candidateDetails || {});
       const ud = typeof ohData.userDetails === 'string' ? JSON.parse(ohData.userDetails) : (ohData.userDetails || {});
       const ownYears = p.years;              // only YOUR profile editor sets years
-      p = { ...ud, ...cd, ...p };
+      p = mergeProfiles(profileFromJobright(ohData[JR_SNAPSHOT_KEY]), ud, cd, p);
       p.years = ownYears;
     } catch (_) { }
     _policyProfile = p;
@@ -6338,6 +6394,15 @@
     } catch (_) { return null; }
   }
 
+  function wdMultiselectHasPick(el) {
+    try {
+      const own = [el.getAttribute('aria-label'), getLabel(el)].join(' ');
+      if (/^\s*[1-9]\d* items? selected\b/i.test(own)) return true;
+      const box = el.closest('[data-automation-id="multiselectInputContainer"],[data-uxi-widget-type="multiselect"]') ||
+        (el.getAttribute('data-uxi-widget-type') === 'selectinput' ? el.parentElement && el.parentElement.parentElement : null);
+      return !!(box && box.querySelector('[data-automation-id="selectedItem"],[data-automation-id="selectedItemList"] li,[data-automation-id="promptOption"][aria-selected="true"]'));
+    } catch (_) { return false; }
+  }
   function getMissingRequired() {
     const required = deepAll('input:not([type=hidden]),textarea,select').filter(el => isVisible(el) && isFieldRequired(el));
     const missing = [];
@@ -6357,6 +6422,11 @@
       } else if (el.type === 'checkbox') {
         if (el.checked) continue;
       } else if (hasFieldValue(el)) continue;
+      /* A Workday multiselect's search box is empty by design once an item is
+         picked: its label reads "1 item selected, LinkedIn". Counting it as
+         missing put "How Did You Hear About Us?" and "Country Phone Code" in
+         the missing list while both showed their choice. */
+      if (wdMultiselectHasPick(el)) continue;
       const lbl = getLabel(el) || el.name || el.id || 'Required field';
       if (!missing.includes(lbl)) { missing.push(lbl); _missingEls.set(lbl, el); }
     }
@@ -6913,10 +6983,21 @@
      is: knockouts by determineYesNo, choices by the option matchers, the rest by
      the profile rules. Only reached after your answers and the engine's own rules. */
   const WD_DEMOGRAPHIC_RE = /gender|\bsex\b|sexual|orientation|pronoun|ethnic|\brace\b|racial|disab|veteran|religio|hispanic|latino/i;
+  const WD_PREFERRED_NAME_RE = /\b(have|use|go by) a (preferred|different|other) name\b|^\s*preferred name\s*\??\s*$|nick ?name\?/i;
   window.__uaWdGuess = async (label, kind, options) => {
     try {
       const p = await getProfile();
       const texts = Array.isArray(options) ? options.filter(Boolean).map(String) : [];
+      /* "I have a preferred name" was ticked (Motorola): that reveals a second,
+         required Given Name / Family Name pair, which is exactly what the form
+         then refused to continue without. Only with a preferred name on file. */
+      if (WD_PREFERRED_NAME_RE.test(String(label))) {
+        const pref = String(p.preferred_name || '').trim();
+        const want = !!pref && pref.toLowerCase() !== String(p.first_name || '').trim().toLowerCase();
+        if (!texts.length) return want ? 'true' : 'false';
+        const i = texts.findIndex((t) => optionPolarity(t) === (want ? 1 : -1));
+        return i >= 0 ? texts[i] : null;
+      }
       let raw = '';
       try { raw = guessFieldValue(label, p, null); } catch (_) { raw = guessValue(label, p) || ''; }
       if (!texts.length) return raw && !/^n\/?a$/i.test(raw) ? raw : null;
@@ -13612,7 +13693,13 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     // The source is logged so that if the switch ever appears to move on its own
     // again, the log names what moved it.
     LOG(`Fully Automated toggled ${autoApply ? 'ON' : 'OFF'} (by ${source || 'unknown'})`);
-    if (autoApply && startNow && (detectATS() || isWorkday())) {
+    /* Not on a tab a queue job is already driving: flicking the switch mid-job
+       started a second Workday flow beside the queue's own (seen on Motorola —
+       two fillers, one page). The queue run carries on as it was. */
+    const driving = (qActive && isRunnerTab()) || _mgrDriving || isBusy();
+    if (autoApply && startNow && driving && (detectATS() || isWorkday())) {
+      LOG('Fully Automated ON — a queue job is already applying on this tab, so it is left to finish');
+    } else if (autoApply && startNow && (detectATS() || isWorkday())) {
       LOG('Fully Automated ON — starting full automation for ' + (detectATS() || 'Workday'));
       if (isWorkday()) startWorkdayAccountWatch();
       dispatchATSAutomation();
@@ -16800,12 +16887,13 @@ Result: Shipped my first production change in week three and my notes doc became
 
   async function getProfile() {
     return new Promise(r => {
-      try { chrome.storage.local.get(['ua_profile', 'candidateDetails', 'userDetails'], d => {
+      try { chrome.storage.local.get(['ua_profile', 'candidateDetails', 'userDetails', 'AUTOFILL_INFO_SNAPSHOT'], d => {
         let p = d.ua_profile || {};
         try {
           const cd = typeof d.candidateDetails === 'string' ? JSON.parse(d.candidateDetails) : (d.candidateDetails || {});
           const ud = typeof d.userDetails === 'string' ? JSON.parse(d.userDetails) : (d.userDetails || {});
-          p = { ...ud, ...cd, ...p };
+          const jr = typeof window.__uaJrProfile === 'function' ? window.__uaJrProfile(d.AUTOFILL_INFO_SNAPSHOT) : {};
+          p = typeof window.__uaMergeProfiles === 'function' ? window.__uaMergeProfiles(jr, ud, cd, p) : { ...jr, ...ud, ...cd, ...p };
         } catch (_) {}
         r(p);
       }); } catch (_) { r({}); }

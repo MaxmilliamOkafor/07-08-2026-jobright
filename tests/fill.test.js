@@ -3330,7 +3330,7 @@ console.log('v17.23: knockout answers — years 7, AWS certified Yes, everywhere
   eq('before every submit the page is corrected', /await enforceKnockoutPolicy\(\);\n    logFillReport\('Before submit'\);/.test(body('autoSubmitOrNext__impl')), true);
   eq('…never over what you typed', /userTouched\(el\)/.test(body('enforceKnockoutPolicy')) && /radios\.some\(userTouched\)/.test(body('enforceKnockoutPolicy')), true);
   eq('no filler reads years from merged data any more', /years_experience|yearsExperience/.test(src), false);
-  eq('getProfile keeps only YOUR years', /const ownYears = p\.years;[\s\S]{0,120}p\.years = ownYears;/.test(body('getProfile')), true);
+  eq('getProfile keeps only YOUR years', /const ownYears = p\.years;[\s\S]{0,200}p\.years = ownYears;/.test(body('getProfile')), true);
 }
 
 
@@ -3563,6 +3563,52 @@ console.log('v17.29: CV never into Cover Letter; a city, not a university; phone
   eq('after a reload, this tab\'s own first sighting of the job counts', m.jobStartFor({ id: 'c', startedAt: now - 250000 }), now - 250000);
   eq('both timers use it', /const jobStart = jobStartFor\(c\);/.test(body('processManagedJob')) && /const jobStart = jobStartFor\(c\);/.test(body('processQ')), true);
   eq('no timer reads the stored start directly any more', !/jobTimeoutExtension\(c\.startedAt\)/.test(src), true);
+}
+
+
+
+/* ── 80. v17.30: Jobright's own profile under ours; no preferred-name trap ── */
+console.log('v17.30: names and phone from Jobright\'s profile; "I have a preferred name" left unticked; one flow per tab');
+{
+  const gc = (n) => src.match(new RegExp('\n  const ' + n + ' = [\\s\\S]*?;\n'))[0];
+  const m = {};
+  new Function('exports', `${body('profileFromJobright')}${body('mergeProfiles')}${gc('WD_PREFERRED_NAME_RE')}
+    Object.assign(exports, { profileFromJobright, mergeProfiles, WD_PREFERRED_NAME_RE });`)(m);
+  const snap = JSON.stringify({   // Jobright stores it through @plasmohq/storage: a JSON string
+    personalInfo: { firstName: 'Maxmilliam', lastName: 'Okafor', preferredFirstName: '', email: 'max@example.com', phone_number: '+1 512 555 0100', linkedin_link: 'https://linkedin.com/in/max' },
+    phoneCountryCode: 'United States (+1)', location: { country: 'United States', state: 'Texas', city: 'Austin', postCode: '73301' }, addressLine: '1 Main St',
+    workExperience: [{ job_title: 'IT Lead', organization: 'Acme', location: 'Austin', dates: { start_date: '2020-01', is_current: true }, job_descriptions: ['Led ERP'] }],
+    education: [{ organization: 'UT Austin', accreditation: 'BSc', dates: { completion_date: '2015-06' } }],
+  });
+  const jr = m.profileFromJobright(snap);
+  eq('first / last name from Jobright', `${jr.first_name} ${jr.last_name}`, 'Maxmilliam Okafor');
+  eq('phone and its dial code', `${jr.phone} | ${jr.phoneCountryCode}`, '+1 512 555 0100 | +1');
+  eq('city, state, country, postcode, address, LinkedIn', [jr.city, jr.state, jr.country, jr.postal_code, jr.address, jr.linkedin].join('|'), 'Austin|Texas|United States|73301|1 Main St|https://linkedin.com/in/max');
+  eq('work history in the keys the fillers and the engine read', `${jr.work_experience[0].title}@${jr.work_experience[0].company} current=${jr.work_experience[0].is_current}`, 'IT Lead@Acme current=true');
+  eq('an empty preferred name is not carried', 'preferred_name' in jr, false);
+  eq('nothing stored → nothing', JSON.stringify(m.profileFromJobright(undefined)), '{}');
+  const merged = m.mergeProfiles(jr, {}, {}, { email: 'Maxokafordev@gmail.com', first_name: '' });
+  eq('your profile with only an email: the name comes from Jobright', merged.first_name, 'Maxmilliam');
+  eq('…and your email still wins', merged.email, 'Maxokafordev@gmail.com');
+  eq('a value you set wins over Jobright\'s', m.mergeProfiles(jr, { city: 'London' }).city, 'London');
+  eq('getProfile reads Jobright\'s snapshot underneath OptimHire and yours', /st\.getMulti\(\['candidateDetails', 'userDetails', JR_SNAPSHOT_KEY\]\)/.test(body('getProfile')) && /mergeProfiles\(profileFromJobright\(ohData\[JR_SNAPSHOT_KEY\]\), ud, cd, p\)/.test(body('getProfile')), true);
+  const entry = fs.readFileSync(path.join(path.dirname(process.argv[2]), '../workday-engine/src/ua/entry.ts'), 'utf8');
+  eq('the Workday engine reads it too', /"AUTOFILL_INFO_SNAPSHOT"\]\);\n  return mergeLayers\(jobrightProfile\(d\.AUTOFILL_INFO_SNAPSHOT\)/.test(entry), true);
+  eq('…in the built bundle as well', /AUTOFILL_INFO_SNAPSHOT/.test(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8')), true);
+  // Preferred name.
+  for (const q of ['I have a preferred name', 'Do you have a preferred name?', 'Preferred Name?']) eq(`"${q}" is the preferred-name switch`, m.WD_PREFERRED_NAME_RE.test(q), true);
+  for (const q of ['Preferred Name (First)', 'Given Name(s)', 'What name do you prefer to be called at work?']) eq(`"${q}" is not`, m.WD_PREFERRED_NAME_RE.test(q), false);
+  const g = body('workdayEngineOutcome') && src.slice(src.indexOf('window.__uaWdGuess = async'), src.indexOf('window.__uaWdPick ='));
+  eq('the engine\'s stand-in answers it "false" unless you have a different preferred name on file', /if \(!texts\.length\) return want \? 'true' : 'false';/.test(g), true);
+  // Multiselect with a pick.
+  new Function('exports', `${body('wdMultiselectHasPick')} const getLabel = () => ''; exports.ms = wdMultiselectHasPick;`)(m);
+  const el = (aria) => ({ getAttribute: (k) => (k === 'aria-label' ? aria : null), closest: () => null, parentElement: null });
+  eq('"1 item selected, LinkedIn" is answered', m.ms(el('1 item selected, LinkedIn')), true);
+  eq('an empty multiselect is not', m.ms(el('How Did You Hear About Us?')), false);
+  eq('the missing-fields list skips answered multiselects', /if \(wdMultiselectHasPick\(el\)\) continue;/.test(body('getMissingRequired')), true);
+  // One flow per tab.
+  eq('switching Fully Automated on mid-job does not start a second flow on that tab',
+    /const driving = \(qActive && isRunnerTab\(\)\) \|\| _mgrDriving \|\| isBusy\(\);/.test(body('setAutoApply')) && /a queue job is already applying on this tab/.test(body('setAutoApply')), true);
 }
 
 

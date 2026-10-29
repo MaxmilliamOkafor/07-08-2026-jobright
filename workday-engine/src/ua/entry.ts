@@ -260,10 +260,44 @@ function parse(v: unknown): Any {
   return v && typeof v === "object" ? (v as Any) : {};
 }
 
+/** Jobright's own profile (what its Autofill fills from), flattened to this
+ *  extension's keys. ua-enhancement's profileFromJobright does the same; the
+ *  engine runs in the same page, so it uses that when it is there. */
+function jobrightProfile(raw: unknown): Any {
+  const f = W.__uaJrProfile;
+  if (typeof f === "function") { try { return f(raw) || {}; } catch { /* below */ } }
+  const e = parse(raw);
+  const pi = e.personalInfo || {}, loc = e.location || {};
+  const str = (v: unknown) => (v == null || typeof v === "object" ? "" : String(v).trim());
+  const cc = (str(e.phoneCountryCode).match(/\+?\s?(\d{1,4})\b/) || [])[1];
+  const out: Any = {
+    first_name: str(pi.firstName), last_name: str(pi.lastName), preferred_name: str(pi.preferredFirstName),
+    email: str(pi.email), phone: str(pi.phone_number), phoneCountryCode: cc ? `+${cc}` : "",
+    city: str(loc.city), state: str(loc.state || e.state), country: str(loc.country), postal_code: str(loc.postCode),
+    address: str(e.addressLine), linkedin: str(pi.linkedin_link || pi.linkedin),
+    github: str(pi.github_link || pi.github_url), website: str(pi.personal_site_link || pi.personal_site),
+  };
+  for (const k of Object.keys(out)) if (out[k] === "") delete out[k];
+  return out;
+}
+
+/** Later layers win, but only where they say something (an empty "" in your
+ *  profile no longer blanks a name Jobright or OptimHire holds). */
+function mergeLayers(...layers: Any[]): Any {
+  const out: Any = {};
+  for (const l of layers) {
+    for (const [k, v] of Object.entries(l || {})) {
+      const empty = v == null || (typeof v === "string" && !v.trim()) || (Array.isArray(v) && !v.length);
+      if (!empty || !(k in out)) out[k] = v;
+    }
+  }
+  return out;
+}
+
 /** The extension's profile, merged the way ua-enhancement's getProfile merges it. */
 async function uaProfile(): Promise<Any> {
-  const d = await ST.get(["ua_profile", "candidateDetails", "userDetails"]);
-  return { ...parse(d.userDetails), ...parse(d.candidateDetails), ...parse(d.ua_profile) };
+  const d = await ST.get(["ua_profile", "candidateDetails", "userDetails", "AUTOFILL_INFO_SNAPSHOT"]);
+  return mergeLayers(jobrightProfile(d.AUTOFILL_INFO_SNAPSHOT), parse(d.userDetails), parse(d.candidateDetails), parse(d.ua_profile));
 }
 
 function pick(o: Any, ...keys: string[]): string {

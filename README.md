@@ -3921,3 +3921,40 @@ From the "is this you?" Greenhouse screenshot and the debug log you sent:
 - Tests: section 79 in `tests/fill.test.js`, and `tests/e2e/greenhouse-cl.html`.
   That page has Cover Letter above Resume/CV, a university and a street before
   the city, and an intl-tel picker set to Ireland with a +44 profile phone.
+
+## v17.30 — Your name and phone from Jobright's profile; "I have a preferred name" left alone
+
+From the Motorola Solutions (Workday) screenshot and the debug log you sent
+(`Given Name(s) / Family Name / Phone Number is required`):
+
+- **The profile this extension fills from held only your email.** Your name and
+  phone are in **Jobright's own profile**, which Jobright saves as
+  `AUTOFILL_INFO_SNAPSHOT`, and nothing here read it. So every name and phone
+  box stayed empty. The same thing was behind "First Name | Last Name | Phone"
+  missing on Greenhouse.
+  - Jobright's profile is now the **bottom layer**. It supplies name, middle
+    and preferred name, email, phone and dial code, city, state, country,
+    postcode, address, LinkedIn, GitHub, website, work history and education.
+    Your OptimHire data comes above it, and anything you set in this
+    extension's profile comes above that.
+  - An empty box in your profile no longer blanks a value from the layers
+    below it.
+  - The Workday engine reads the same layers.
+  - Jobright saves its profile once you're signed in and it has loaded your
+    autofill info. Opening the Jobright sidebar once is enough.
+- **"I have a preferred name" was ticked.** On Workday that reveals a second
+  required Given Name / Family Name pair, which is why the errors were listed
+  twice. It's now left unticked unless your profile has a preferred name that
+  differs from your first name.
+- **Two flows on one tab.** Switching Fully Automated on while a queue job was
+  applying in that tab started a second Workday flow beside the first. It now
+  leaves the queue job to finish.
+- **The "missing fields" list** no longer names a Workday multiselect that has
+  a choice ("1 item selected, LinkedIn", "Ireland (+353)").
+- Tested in the browser with a profile that holds only an email and Jobright's
+  profile underneath:
+  - The Workday mock submitted, with the name, Mobile, United Kingdom (+44),
+    7700900123 and London.
+  - The Greenhouse page submitted, with the name, the phone on UK, London and
+    the CV in Resume/CV.
+  - Tests: section 80 in `tests/fill.test.js`.

@@ -3054,9 +3054,50 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     return v && typeof v === "object" ? v : {};
   }
+  function jobrightProfile(raw) {
+    const f = W.__uaJrProfile;
+    if (typeof f === "function") {
+      try {
+        return f(raw) || {};
+      } catch {
+      }
+    }
+    const e = parse(raw);
+    const pi = e.personalInfo || {}, loc = e.location || {};
+    const str = (v) => v == null || typeof v === "object" ? "" : String(v).trim();
+    const cc = (str(e.phoneCountryCode).match(/\+?\s?(\d{1,4})\b/) || [])[1];
+    const out = {
+      first_name: str(pi.firstName),
+      last_name: str(pi.lastName),
+      preferred_name: str(pi.preferredFirstName),
+      email: str(pi.email),
+      phone: str(pi.phone_number),
+      phoneCountryCode: cc ? `+${cc}` : "",
+      city: str(loc.city),
+      state: str(loc.state || e.state),
+      country: str(loc.country),
+      postal_code: str(loc.postCode),
+      address: str(e.addressLine),
+      linkedin: str(pi.linkedin_link || pi.linkedin),
+      github: str(pi.github_link || pi.github_url),
+      website: str(pi.personal_site_link || pi.personal_site)
+    };
+    for (const k of Object.keys(out)) if (out[k] === "") delete out[k];
+    return out;
+  }
+  function mergeLayers(...layers) {
+    const out = {};
+    for (const l of layers) {
+      for (const [k, v] of Object.entries(l || {})) {
+        const empty = v == null || typeof v === "string" && !v.trim() || Array.isArray(v) && !v.length;
+        if (!empty || !(k in out)) out[k] = v;
+      }
+    }
+    return out;
+  }
   async function uaProfile() {
-    const d = await ST.get(["ua_profile", "candidateDetails", "userDetails"]);
-    return { ...parse(d.userDetails), ...parse(d.candidateDetails), ...parse(d.ua_profile) };
+    const d = await ST.get(["ua_profile", "candidateDetails", "userDetails", "AUTOFILL_INFO_SNAPSHOT"]);
+    return mergeLayers(jobrightProfile(d.AUTOFILL_INFO_SNAPSHOT), parse(d.userDetails), parse(d.candidateDetails), parse(d.ua_profile));
   }
   function pick(o, ...keys) {
     for (const k of keys) {
