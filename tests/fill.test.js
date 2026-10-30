@@ -3821,6 +3821,9 @@ console.log('v17.36: faster on every ATS — the waits end when the page is read
   for (const fn of ['greenhouseAutomation', 'ashbyAutomation', 'bamboohrAutomation', 'jobviteAutomation'])
     eq(`${fn} starts once the form stops changing (was a flat 1.5s)`, /await waitForFormStable\(1200\);/.test(body(fn)), true);
   eq('iCIMS looks for its form inside the application frame (an 8s wait every job)', /await waitUntil\(\(\) => deepAll\('\.iCIMS_InfoMsg_Job/.test(body('icimsAutomation')), true);
+  const NT = new RegExp(src.match(/const NOT_A_TITLE_RE = \/(.*)\/i;/)[1], 'i');
+  eq('a job link is never used as the job title in the cover note', NT.test('job-boards.greenhouse.io/acme/jobs/4412392009') && NT.test('https://jobs.lever.co/x/1'), true);
+  eq('…while real titles still are', NT.test('Senior Data Engineer') || NT.test('IT Lead - Supply Chain (US Remote)') || NT.test('Sr. Engineer, Node.js / React'), false);
   eq('SpeedyApply mode presses Next after 4s of quiet (was 6s)', /const STILL_MS = scaled\(4000, 2500\);/.test(body('workdaySpeedyApplyRun')), true);
 }
 

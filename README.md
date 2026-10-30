@@ -4211,3 +4211,49 @@ Live sites can't be reached from the test environment. Fixed:
 | Microsoft, Amazon | 31s, 35s | acknowledgements; eligible Yes, sponsor No |
 | Workday (engine) | 55s | all 4 roles added (Meta, SolimHealth, Accenture, Citi) |
 | Workday (SpeedyApply) | 70s | SpeedyApply fills, the extension only presses buttons |
+
+## v17.36 — Faster on every ATS: waits end when the page is ready
+
+"Make autofill perfectly fast enough for each ATS." Most of each job was
+spent in fixed pauses, not in filling. They now end as soon as the page is
+ready:
+
+- **Jobright's Autofill button** is checked every 200ms and clicked the moment
+  it is enabled. Before: a fixed 1.5s, then five looks 1.5–2.5s apart (~13s on
+  a page where it never appears). It is now given up on after ~6s.
+- **Jobright's own fill** is waited for only if the button was actually clicked,
+  and only while it reads "Filling…" (up to 2s to start, 15s to finish).
+  Before: 3–5s every time, clicked or not.
+- **Second fill pass** only when the first changed something. A pass that
+  filled nothing never found anything on the second run.
+- **Start of each ATS flow** (Greenhouse, Lever, Jobvite, Ashby, BambooHR,
+  SuccessFactors, …) goes once the form stops changing, instead of a fixed
+  1–1.5s.
+- **iCIMS** looks for its form inside the application frame (it waited 8s on
+  the main page every job).
+- **Workday with SpeedyApply**: Next is pressed after 4s of no change (was 6s).
+  The extension's own Workday filler takes over after 5s if SpeedyApply is
+  missing (was 8s).
+- **Fix**: a job added by link used its link as the job title. The cover note
+  read "I am applying for the job-boards.greenhouse.io/acme/jobs/… role".
+
+Time from page open to Submit, same replicas, before → after (all 17 still
+submit with the same checked values):
+
+| ATS | Before | After |
+|---|---|---|
+| Greenhouse (4 forms) | 31–40s | 20–28s |
+| Lever | 29s | 22s |
+| Ashby | 35s | 23s |
+| iCIMS | 41s | 20s |
+| Jobvite | 32s | 19s |
+| BambooHR | 34s | 21s |
+| SuccessFactors | 41s | 30s |
+| Microsoft | 27s | 20s |
+| Workday (SpeedyApply) | 67s | 53s |
+| Workday (engine) | 51s | 47s |
+| Workable / Oracle / SmartRecruiters / Amazon | 10 / 14 / 14 / 29s | 10 / 13 / 13 / 28s |
+
+These replicas have no signed-in Jobright, so each page still spends up to
+~6s confirming its Autofill button isn't there. With Jobright signed in, the
+button is there at once and that wait disappears.

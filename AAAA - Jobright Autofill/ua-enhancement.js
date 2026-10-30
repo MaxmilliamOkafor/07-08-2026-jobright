@@ -1303,12 +1303,19 @@
     } catch (_) {}
     return '';
   }
+  /* A job added by link carries the link as its "title": the cover note read
+     "I am applying for the job-boards.greenhouse.io/acme/jobs/44… role". */
+  const NOT_A_TITLE_RE = /^(https?:|www\.)|[\w-]+\.(com|io|co|ai|net|org|jobs)\b\/?|\/\S+\//i;
   function pageJobTitle() {
     try {
       const j = queue.find((x) => x.status === 'applying');
-      if (j && j.title) return String(j.title).trim().slice(0, 90);
+      const t = j && String(j.title || '').trim();
+      if (t && !NOT_A_TITLE_RE.test(t)) return t.slice(0, 90);
     } catch (_) {}
-    try { return (extractJDTitle() || '').slice(0, 90); } catch (_) { return ''; }
+    try {
+      const t = String(extractJDTitle() || '').trim();
+      return NOT_A_TITLE_RE.test(t) ? '' : t.slice(0, 90);
+    } catch (_) { return ''; }
   }
 
   function tailorCoverText(text, opts) {
