@@ -4257,3 +4257,25 @@ submit with the same checked values):
 These replicas have no signed-in Jobright, so each page still spends up to
 ~6s confirming its Autofill button isn't there. With Jobright signed in, the
 button is there at once and that wait disappears.
+
+## v17.37 — "This page isn't working · HTTP ERROR 406" on Workday
+
+"What is this?" That is Workday refusing the page, shown as Chrome's own error
+page. Here the address was `https://collegeboard.wd1.myworkdayjobs.com` with
+nothing after it. Workday answers a link with no job in it (no
+`/en-US/<site>/job/...`) with 406, and occasionally refuses a real job link
+once. The extension does not navigate there itself: its only Workday redirect,
+the "Something went wrong" retry, keeps the job's path.
+
+The problem was what happened next. Chrome's error pages run no extension
+scripts, so nothing reported back and the job sat on that page until the
+5-minute job limit. The queue now watches for it:
+
+- **First time**: the job's own link is reopened.
+- **Second time**: the job is marked failed with a reason you can read, e.g.
+  "collegeboard.wd1.myworkdayjobs.com refused the page (HTTP error, usually 406) —
+  the link has no job in it, only the site address", and the next job starts.
+- Cancelled redirects and brief connection drops are not counted as errors.
+
+If you see this for a job you want, open the job from the company's careers
+page and import that link (it contains `/job/`).

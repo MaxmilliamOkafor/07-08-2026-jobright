@@ -6,7 +6,7 @@ const vm = require('vm');
 
 function makeChrome() {
   const store = {};
-  const listeners = { changed: [], msg: [], tabUpdated: [], tabRemoved: [], alarm: [], menu: [] };
+  const listeners = { changed: [], msg: [], tabUpdated: [], tabRemoved: [], alarm: [], menu: [], navError: [] };
   let nextTabId = 100;
   const tabs = new Map();          // tabId → {id, url, windowId, active}
   /* Windows, modelled the way Chrome behaves: a tab created with no windowId
@@ -107,6 +107,7 @@ function makeChrome() {
       onClicked: { addListener: (l) => listeners.menu.push(l) },
     },
     notifications: { create: (id, o, cb) => cb && cb() },
+    webNavigation: { onErrorOccurred: { addListener: (l) => listeners.navError.push(l) } },
     sidePanel: { open: () => Promise.resolve() },
   };
   return { chrome, store, listeners, tabs, sent, windows,
@@ -800,6 +801,31 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     before = count();
     await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobright.ai/jobs/info/abc' }, r));
     eq('a plain Jobright job page is not affected', count(), before + 1);
+  }
+
+  console.log('\nA job tab on Chrome\'s error page (Workday "HTTP ERROR 406") is retried once, then failed with the reason');
+  {
+    const env = makeChrome();
+    env.store.ua_q = [job('w', 'https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/NY/Engineer_R1'), job('n', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick();
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    const tabId = [...env.tabs.keys()][0];
+    const navErr = (error, url) => env.listeners.navError.forEach((l) => l({ tabId, frameId: 0, error, url }));
+    navErr('net::ERR_ABORTED', 'https://collegeboard.wd1.myworkdayjobs.com/');
+    await tick(40);
+    eq('a cancelled redirect (ERR_ABORTED) is not an error', env.store.ua_q[0].status, 'applying');
+    navErr('net::ERR_HTTP_RESPONSE_CODE_FAILURE', 'https://collegeboard.wd1.myworkdayjobs.com/');
+    await tick(40);
+    eq('first time: the job\'s own link is reopened', env.tabs.get(tabId) && env.tabs.get(tabId).url, 'https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/NY/Engineer_R1');
+    eq('…and the job is still running', env.store.ua_q[0].status, 'applying');
+    navErr('net::ERR_HTTP_RESPONSE_CODE_FAILURE', 'https://collegeboard.wd1.myworkdayjobs.com/');
+    await tick(60);
+    eq('second time: failed at once (not after the 5-minute ceiling)', env.store.ua_q[0].status, 'failed');
+    eq('…with a reason you can read', env.store.ua_q[0].error, 'collegeboard.wd1.myworkdayjobs.com refused the page (HTTP error, usually 406) — the link has no job in it, only the site address');
+    eq('…and the next job starts', env.store.ua_q[1].status, 'applying');
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

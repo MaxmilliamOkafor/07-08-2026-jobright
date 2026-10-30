@@ -493,7 +493,7 @@
           if (picked.length >= slots) break;
           if (j.status !== 'pending') continue;
           if (!isSafeUrl(j.url)) { j.status = 'skipped'; j.error = 'Unsupported URL scheme'; j.completedAt = Date.now(); continue; }
-          j.status = 'applying'; j.startedAt = Date.now(); j.error = null;
+          j.status = 'applying'; j.startedAt = Date.now(); j.error = null; j.navErrors = 0;
           picked.push({ id: j.id, url: j.url, title: j.title, jobBoard: j.jobBoard, startedAt: j.startedAt });
         }
         return picked;
@@ -945,6 +945,47 @@
         assign(tabId, job, await settings());
         injectAllFrames(tabId);   // a new document means new frames to reach
       }
+    });
+  } catch (_) {}
+
+  /* A job tab that lands on Chrome's own error page — "This page isn't working,
+     HTTP ERROR 406" from Workday — runs no content script, so nothing reports
+     back and the job sat there until the 5-minute ceiling. Workday answers 406
+     for a link with no job in it (the bare https://<co>.wd1.myworkdayjobs.com)
+     and, now and then, as a one-off refusal. First time: reopen the job's own
+     link. Second time: fail the job with the reason and move on. Redirect
+     cancellations (ERR_ABORTED) and brief network drops are not page errors. */
+  const HARD_NAV_ERR = /ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_NAME_NOT_RESOLVED|ERR_TOO_MANY_REDIRECTS|ERR_BLOCKED_BY_RESPONSE|ERR_INVALID_RESPONSE|ERR_EMPTY_RESPONSE|ERR_SSL_PROTOCOL_ERROR|ERR_CERT_/;
+  function navErrorReason(err, url) {
+    let host = '', bare = false;
+    try { const u = new URL(url); host = u.hostname; bare = u.pathname.replace(/\/+$/, '') === '' || /^\/[a-z]{2}-[A-Z]{2}\/?$/.test(u.pathname); } catch (_) {}
+    if (/ERR_HTTP_RESPONSE_CODE_FAILURE/.test(err))
+      return `${host || 'The site'} refused the page (HTTP error${/myworkday/i.test(host) ? ', usually 406' : ''})` +
+        (bare ? ' — the link has no job in it, only the site address' : '');
+    if (/ERR_NAME_NOT_RESOLVED/.test(err)) return `${host || 'The site'} does not exist (the link's address is wrong)`;
+    if (/ERR_TOO_MANY_REDIRECTS/.test(err)) return `${host || 'The site'} redirects in a loop`;
+    return `${host || 'The site'} could not be opened (${String(err).replace(/^net::/, '')})`;
+  }
+  try {
+    if (chrome.webNavigation && chrome.webNavigation.onErrorOccurred) chrome.webNavigation.onErrorOccurred.addListener(async (d) => {
+      if (!d || d.frameId !== 0 || !HARD_NAV_ERR.test(d.error || '')) return;
+      if ((await get(K.ACTIVE)) !== true) return;
+      const jobId = await jobIdForTab(d.tabId);
+      if (!jobId) return;
+      let job = null, tries = 0;
+      await withQueue((q) => {
+        const j = q.find((x) => x.id === jobId);
+        if (!j || j.status !== 'applying') return;
+        j.navErrors = (j.navErrors || 0) + 1;
+        tries = j.navErrors; job = { ...j };
+      });
+      if (!job) return;
+      if (tries === 1 && isSafeUrl(job.url)) {
+        log(`↻ ${job.title || job.url} — ${navErrorReason(d.error, d.url)}; reopening the job link once`);
+        try { chrome.tabs.update(d.tabId, { url: job.url }); } catch (_) {}
+        return;
+      }
+      await onResult({ id: jobId, status: 'failed', error: navErrorReason(d.error, d.url), ts: Date.now() });
     });
   } catch (_) {}
 
