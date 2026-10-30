@@ -1280,6 +1280,27 @@
         return label.charAt(0).toUpperCase() + label.slice(1);
       }
     } catch (_) {}
+    /* Job boards carry the employer as the first path segment:
+       job-boards.greenhouse.io/anthropic, jobs.lever.co/<co>, jobs.ashbyhq.com/<co>.
+       "Why Anthropic?" got the generic answer because the host is the ATS. The
+       page title's own spelling is used when it has it ("OpenAI", not "Openai"). */
+    try {
+      if (/(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|jobvite\.com|smartrecruiters\.com|breezy\.hr|recruitee\.com)$/i.test(location.hostname)) {
+        const seg = decodeURIComponent((location.pathname.split('/').filter(Boolean)[0] || ''));
+        if (seg && !/^(embed|j|jobs?|apply|oneclick-ui|company|en|en-us|v\d+)$/i.test(seg) && /^[\w-]{2,40}$/.test(seg)) {
+          const flat = seg.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const pageText = [document.title, document.querySelector('meta[property="og:site_name"]')?.content, document.querySelector('h1')?.textContent].filter(Boolean).join(' | ');
+          for (const m of pageText.matchAll(/[A-Z0-9][\w&.']*(?:\s+[A-Z0-9][\w&.']*){0,3}/g)) {
+            const words = m[0].split(/\s+/);
+            for (let i = 0; i < words.length; i++) for (let k = words.length; k > i; k--) {
+              const cand = words.slice(i, k).join(' ');
+              if (cand.toLowerCase().replace(/[^a-z0-9]/g, '') === flat) return cand;
+            }
+          }
+          return seg.split(/[-_]+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+      }
+    } catch (_) {}
     return '';
   }
   function pageJobTitle() {

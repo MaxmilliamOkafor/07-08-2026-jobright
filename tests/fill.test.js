@@ -3755,7 +3755,7 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
       const document = { title: 'Research Engineer - Anthropic', querySelector: () => null, querySelectorAll: () => [] };
       const DEFAULTS = { years: '9', why: 'I admire the company culture and the opportunity to make a meaningful impact.', country: 'United Kingdom', cover: 'c', howHeard: 'LinkedIn', salary: '1' };
       ${src.slice(shapeStart, shapeEnd)}
-      Object.assign(exports, { guessValue });
+      Object.assign(exports, { guessValue, pageCompanyName });
     `)(g);
   } catch (e) { g.err = e.message; }
   const P = { first_name: 'Max', last_name: 'Okafor', city: 'London', country: 'United Kingdom' };
@@ -3764,6 +3764,9 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
   if (g.guessValue) {
     eq('Ashby\'s "Name*" gets the full name (the * left it empty)', g.guessValue('Name*', P), 'Max Okafor');
     eq('"Why Anthropic?" names the company, not the generic line', /Anthropic's mission/.test(g.guessValue('Why Anthropic?', P)), true);
+    g.company = '';
+    eq('with nothing in the description, the board\'s path names the employer (job-boards.greenhouse.io/anthropic)', g.pageCompanyName(), 'Anthropic');
+    g.company = 'Anthropic';
     eq('…but "Why are you leaving your current role?" is not a why-us answer', /mission/.test(g.guessValue('Why are you leaving?', P) || ''), false);
   } else {
     eq('guessValue runs out of the shipped block (' + g.err + ')', false, true);
