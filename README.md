@@ -4146,3 +4146,42 @@ might be locked."**
 the form" banner is drawn by Jobright on every Workday page until you close it.
 It doesn't by itself mean Jobright's filler is running. The v17.31 block stays
 as a safeguard.
+
+## v17.35 — Major ATSs tested end to end: Ashby, iCIMS, Lever, Greenhouse fixes
+
+"Still a lot of issues in autofill on the ATSs, test the major ATSs." Each ATS
+was run end to end on a replica of its application form, in Chromium, with
+this extension loaded and a Jobright-style profile (London, +44 phone, 4
+roles, a Masters). The replicas copy each ATS's markup and its submit checks.
+Live sites can't be reached from the test environment. Fixed:
+
+- **Every ATS with more than one dropdown.** The select filler read the
+  options of *every* dropdown on the page, not just the one being filled. A
+  required dropdown could get another dropdown's value (e.g. "United States"
+  for the education level). It doesn't have that option, so it stayed blank and
+  the form was blocked. Each dropdown now uses only its own options.
+- **Ashby** (stuck before; submits now in 39s):
+  - The required **Name\*** box was left empty because the trailing `*` stopped
+    the "name" rule matching.
+  - The **Yes/No questions** (two bare buttons, no inputs) were never answered.
+    They are now found, and the question is read from the title above them.
+  - **Location**: "London" was typed but never picked from the list. A combobox
+    holding only a typed word is now picked ("London, England, United Kingdom").
+- **iCIMS** (failed before; submits now in 59s):
+  - **Submit** is inside the `#icims_content_iframe` frame and was looked for
+    only in the main page ("No submit/next button found" on a full form).
+  - **Education level**: Jobright's "Masters" wasn't recognised, so "High
+    School" was picked. It now picks "Master's Degree". The required-field pass
+    also tries the profile before falling back to the first option.
+- **Lever**:
+  - A sponsorship radio whose box held only "Yes No" now finds its real
+    question, so it is answered No.
+  - Race no longer becomes "White (Not Hispanic…)" from the shared word "not".
+    EEO dropdowns are never matched on a shared word, and filler words never
+    count.
+  - Location picks London itself over "London Bridge…".
+- **"Why <Company>?"** ("Why Anthropic?") got the generic "I admire the company
+  culture…". It now gets the answer that names the company. "Why are you
+  leaving…?" is not treated as a why-us question.
+- **Speed**: when Jobright's Autofill button isn't on a page, each retry of the
+  same page waited ~14s for it again. Now it waits once per page.

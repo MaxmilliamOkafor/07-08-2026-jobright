@@ -3545,7 +3545,7 @@ console.log('v17.29: CV never into Cover Letter; a city, not a university; phone
   eq('Parkville is a place (no "park" false alarm)', m.pickPlaceSuggestion([it('Parkville VIC, Australia')], 'Parkville').textContent, 'Parkville VIC, Australia');
   eq('both pickers use it', (body('commitAutocompleteOnce').match(/pickPlaceSuggestion\(/g) || []).length, 2);
   eq('a typed-but-unpicked city under "is required" is picked again (at most twice)',
-    /if \(!complains && \(locationAccepted\(inp\) \|\| \(_locRetries\.get\(inp\) \|\| 0\) >= 2\)\) continue;/.test(body('resolveLocationFields')), true);
+    /if \(!complains && \(\(locationAccepted\(inp\) && !typedOnly\) \|\| \(_locRetries\.get\(inp\) \|\| 0\) >= 2\)\) continue;/.test(body('resolveLocationFields')), true);
   // Phone country follows the phone.
   eq('a +44 phone → United Kingdom, not the Ireland default', JSON.stringify(m.phoneCountryTarget({ phone: '+44 7700 900123', country: 'Ireland', phoneCountryCode: '+353' })), JSON.stringify({ code: '44', iso: 'gb', country: 'United Kingdom' }));
   eq('a +353 phone → the profile country', m.phoneCountryTarget({ phone: '+353 87 426 1508', country: 'Ireland', phoneCountryCode: '+353' }).iso, 'ie');
@@ -3738,6 +3738,62 @@ console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at on
   eq('the engine no longer calls "might be locked" a lock', /const maybe = \/\\b\(might\|may\) be locked\\b\/i\.test\(errs\);/.test(auth), true);
   // Apply speed.
   eq('after Apply Manually the opener moves on the moment the choice is gone (was a 10.5s wait)', /await waitUntil\(\(\) => hasApplicationForm\(\) \|\| !findApplyManually\(\), 9000, 150\);/.test(body('openApplicationForm__impl')) && !/await sleep\(scaled\(1500, 750\)\);\n\s*if \(hasApplicationForm\(\)\) return true;/.test(body('openApplicationForm__impl')), true);
+}
+
+
+
+/* ── 84. v17.35: major-ATS replica sweep fixes ── */
+console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios and city, EEO selects, "Why <Company>?"');
+{
+  // guessValue run for real, out of the same block section 20 lifts.
+  const g = { company: 'Anthropic' };
+  try {
+    new Function('exports', `
+      const getFullQuestionText = () => '', getLabel = () => '', LOG = () => {}, queue = [], workAuthorisationAnswer = () => '';
+      const extractJDCompany = () => exports.company, extractJDTitle = () => '', isFieldRequired = () => false;
+      const location = { hostname: 'job-boards.greenhouse.io', pathname: '/anthropic/jobs/1', search: '', href: 'https://job-boards.greenhouse.io/anthropic/jobs/1' };
+      const document = { title: 'Research Engineer - Anthropic', querySelector: () => null, querySelectorAll: () => [] };
+      const DEFAULTS = { years: '9', why: 'I admire the company culture and the opportunity to make a meaningful impact.', country: 'United Kingdom', cover: 'c', howHeard: 'LinkedIn', salary: '1' };
+      ${src.slice(shapeStart, shapeEnd)}
+      Object.assign(exports, { guessValue });
+    `)(g);
+  } catch (e) { g.err = e.message; }
+  const P = { first_name: 'Max', last_name: 'Okafor', city: 'London', country: 'United Kingdom' };
+  const gv = g.guessValue;
+  g.guessValue = gv && ((l, p) => { try { return gv(l, p); } catch (e) { return 'ERR ' + e.message; } });
+  if (g.guessValue) {
+    eq('Ashby\'s "Name*" gets the full name (the * left it empty)', g.guessValue('Name*', P), 'Max Okafor');
+    eq('"Why Anthropic?" names the company, not the generic line', /Anthropic's mission/.test(g.guessValue('Why Anthropic?', P)), true);
+    eq('…but "Why are you leaving your current role?" is not a why-us answer', /mission/.test(g.guessValue('Why are you leaving?', P) || ''), false);
+  } else {
+    eq('guessValue runs out of the shipped block (' + g.err + ')', false, true);
+  }
+  const bq = body('answerButtonStyleQuestions');
+  eq('Ashby\'s bare Yes/No button row is found as a question', /\[class\*="yesno" i\]/.test(bq), true);
+  eq('…its question is read from the title above it', /question-title/.test(bq) && /rest\.length >= 8/.test(bq), true);
+  eq('…and an already-picked button ("_active") is left alone', /button\[class\*="_active"\]/.test(bq), true);
+  const rl = body('resolveLocationFields');
+  eq('a combobox holding only a typed word is picked from its list', /const typedOnly = !_locPicked\.has\(inp\)/.test(rl) && /_locPicked\.add\(inp\)/.test(rl), true);
+  // The exact town beats a place named after it.
+  const m = {};
+  new Function('exports', `const NOT_A_PLACE_RE = ${src.match(/const NOT_A_PLACE_RE = (\/.*\/i);/)[1]}; ${body('pickPlaceSuggestion')} exports.pick = pickPlaceSuggestion;`)(m);
+  const rows = ['London Bridge, London, UK', 'London, England, United Kingdom', 'London, Ontario, Canada'].map((t) => ({ textContent: t }));
+  eq('"London, United Kingdom" picks London, not London Bridge or London Ontario', m.pick(rows, 'London, United Kingdom').textContent, 'London, England, United Kingdom');
+  eq('Lever\'s location picker scores its rows the same way', /pickPlaceSuggestion\(rows,/.test(body('leverLocation')), true);
+  const kr = body('answerKnockoutRadioGroup');
+  eq('a radio group whose box holds only "Yes No" climbs to the real question', /strip\(questionText\)\.length < 12/.test(kr), true);
+  const ff = body('fallbackFill__impl');
+  eq('EEO selects are not matched on a shared word ("not" → "White (Not Hispanic)")', /if \(!opt && !isEEO\)/.test(ff) && /STOPW/.test(ff), true);
+  // A select's own options, not the page's.
+  eq('deepAll(\'option\', select) is gone — it returned every option on the page', /deepAll\('option', (el|sel|inp)\)/.test(src), false);
+  const ms = {};
+  new Function('exports', `const PLACEHOLDER_OPT_RE = /^(select|choose|— make a selection —|-+)$/i; const toDays = () => NaN; const normMoney = (x) => x;
+    ${src.match(/  const EDU_RANKS = \[[\s\S]*?\n  const eduRank = [^\n]*\n/)[0]} ${body('bestOptionIndex')} exports.best = bestOptionIndex;`)(ms);
+  const edu = ['— Make a Selection —', 'High School', "Associate's Degree", "Bachelor's Degree", "Master's Degree", 'Doctorate'];
+  eq('Jobright\'s "Masters" picks "Master\'s Degree" (it got "High School")', edu[ms.best(edu, 'Masters', 'Highest level of education completed')], "Master's Degree");
+  eq('…and the required-field pass asks the profile before taking the first option', /bestOptionIndex\(texts, profileTargetFor\(lbl, p\), lbl\)/.test(body('guaranteeRequiredFieldsPass')), true);
+  eq('Submit is also looked for inside a same-origin frame (iCIMS)', /for \(const r of fieldRoots\(\)\.slice\(1\)\)/.test(body('autoSubmitOrNext__impl')), true);
+  eq('a missing Jobright Autofill button is waited for once per page, not on every retry', /_autofillMissHref === location\.href/.test(body('triggerAutofill__impl')), true);
 }
 
 

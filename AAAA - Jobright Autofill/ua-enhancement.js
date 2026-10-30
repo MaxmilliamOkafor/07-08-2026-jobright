@@ -1355,7 +1355,9 @@
   }
 
   function guessValue(label, p) {
-    const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
+    // Trimmed: "Name*" became "name " and missed ^name$ — Ashby's required
+    // full-name box was left empty and the form could never be sent.
+    const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
     // "What state do you reside in?" is a value question; it kept coming back
     // "Yes" from a fuzzy saved-answer match, so answer it properly and early.
     if (/what state|which state|state do you (reside|live)|state you (reside|live)|state of (residence|resident)|home state|state province/.test(l))
@@ -1430,7 +1432,8 @@
     /* "Why Anthropic?" names the company and nothing else, so it matched none of
        these words and a REQUIRED question went out as "N/A". */
     if (/why.*(compan|role|want|interest|position|join|work (here|with us|for us|at))/.test(l) ||
-        /^\s*why\s+[\w&.' -]{2,40}\?\s*\*?\s*$/.test(l)) return whyAnswer();
+        ((/^\s*why\s+[\w&.' -]{2,40}\?\s*\*?\s*$/i.test(String(label || '')) || /^why [a-z0-9&'-]+( [a-z0-9&'-]+){0,2}$/.test(l)) &&
+          !/^why (are|do|did|is|should|would|have|were|was|not|you)\b/.test(l))) return whyAnswer();
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
     // The PROFILE first. These two returned the defaults outright and the rules
     // further down that read the profile were never reached — a "1 month"
@@ -2245,6 +2248,28 @@
       questionText = (parent && (parent.innerText || parent.textContent)) || '';
       if (!questionText.trim() && radios[0]) questionText = getFullQuestionText(radios[0]) || getLabel(radios[0]) || '';
     } catch (_) {}
+    /* The wrapper a caller found can hold only the OPTIONS: Lever's
+       div.application-field matches "[class*=field]" and contains "Yes No" —
+       so a sponsorship question was decided as the question "yes no" and
+       answered Yes. When the text is nothing but the option labels, climb to
+       the block that carries the question — never into one holding another
+       question's radios. */
+    try {
+      const optWords = radios.map((r) => choiceLabel(r)).join(' ');
+      const strip = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').split(' ').filter((w) => w && !optWords.includes(w)).join(' ').trim();
+      if (strip(questionText).length < 12) {
+        const names = new Set(radios.map((r) => r.name).filter(Boolean));
+        let node = parent || radios[0];
+        for (let up = 0; up < 6 && node && node.parentElement; up++) {
+          node = node.parentElement;
+          const others = Array.from(node.querySelectorAll('input[type=radio],input[type=checkbox]')).some((r) => r.name && !names.has(r.name));
+          if (others) break;
+          const t = node.innerText || node.textContent || '';
+          if (strip(t).length >= 12) { questionText = t; break; }
+        }
+        if (strip(questionText).length < 12 && radios[0]) questionText = getFullQuestionText(radios[0]) || questionText;
+      }
+    } catch (_) {}
     questionText = questionText.toLowerCase().replace(/\s+/g, ' ');
 
     // 1. Check saved responses first, then answers learned from the user's own manual
@@ -2360,7 +2385,9 @@
   // the question text comes from a cheap bounded label — never a full-subtree textContent.
   function answerButtonStyleQuestions(p) {
     let answered = 0;
-    let groups = deepAll('fieldset, [role="radiogroup"], [class*="radio-group"], [class*="RadioGroup"], [class*="ButtonGroup"], [class*="button-group"], [class*="question"], [class*="Question"]', 200)
+    // Ashby's Yes/No is a bare div of two buttons (class "_yesno_<hash>") — none
+    // of the old selectors matched it, so its required questions went unanswered.
+    let groups = deepAll('fieldset, [role="radiogroup"], [class*="radio-group"], [class*="RadioGroup"], [class*="ButtonGroup"], [class*="button-group"], [class*="question"], [class*="Question"], [class*="yesno" i], [class*="YesNo"]', 200)
       .filter(isVisible).slice(0, 120);
     // Innermost first so we answer the actual small choice group, not a wrapping container.
     const depth = el => { let d = 0; for (let n = el; n; n = n.parentElement) d++; return d; };
@@ -2369,7 +2396,7 @@
     let processed = 0;
     for (const group of groups) {
       if (processed++ > 90) break; // hard cap — never let this run unbounded
-      const selectedBtn = group.querySelector('[aria-checked="true"], [data-selected="true"], [aria-pressed="true"], [class*="Checked"]');
+      const selectedBtn = group.querySelector('[aria-checked="true"], [data-selected="true"], [aria-pressed="true"], [class*="Checked"], button[class*="_active"]');
       if (selectedBtn) continue;
       const btns = $$('button, [role="button"], [role="option"], [role="radio"], div[tabindex], span[tabindex]', group)
         .filter(el => isVisible(el) && (el.textContent?.trim() || '').length > 0 && (el.textContent?.trim() || '').length < 80);
@@ -2381,6 +2408,18 @@
         || group.querySelector('legend,label,[class*="label"],[class*="title"],[class*="question"]')?.textContent
         || '').toLowerCase().replace(/\s+/g, ' ').slice(0, 200);
       const btnTexts = btns.map(b => (b.textContent?.trim() || '').toLowerCase());
+      // A bare button row carries no question of its own: the title is a sibling
+      // above it. Climb (bounded) until the text holds more than the options.
+      if (groupText.replace(/\b(yes|no)\b/g, '').trim().length < 8) {
+        let n = group;
+        for (let up = 0; up < 3 && n.parentElement; up++) {
+          n = n.parentElement;
+          const t = (n.querySelector('[class*="question-title"],[class*="title"],legend,label')?.textContent || n.textContent || '')
+            .toLowerCase().replace(/\s+/g, ' ').trim();
+          const rest = btnTexts.reduce((acc, b) => acc.replace(b, ''), t).trim();
+          if (rest.length >= 8) { groupText = t.slice(0, 200); break; }
+        }
+      }
       // Yes/No (incl. reworded options) — decide semantically, then map onto the real
       // button wording so "Does not require sponsorship" is picked for a NO, etc.
       const hasYesNoish = btnTexts.some(t => /^yes$/i.test(t)) || btnTexts.some(t => /^no$/i.test(t))
@@ -2572,6 +2611,8 @@
       let sc = -i * 0.01;                                   // keep the widget's order as a tie-break
       if (city && t.includes(city)) sc += 2; else if (city) sc -= 3;
       if (city && t.startsWith(city)) sc += 3;
+      // Exactly the town ("London, England…"), not something named after it ("London Bridge…").
+      if (city && (t === city || t.startsWith(city + ','))) sc += 2;
       if (country && t.includes(country)) sc += 1;
       if (NOT_A_PLACE_RE.test(t.replace(city, ''))) sc -= 6;
       if (sc > bestScore) { bestScore = sc; best = it; }
@@ -2671,6 +2712,7 @@
   }
 
   const _locRetries = new WeakMap();
+  const _locPicked = new WeakSet();
   async function resolveLocationFields() {
     const p = await getProfile();
     if (!locationQuery(p, false)) return 0;
@@ -2691,14 +2733,20 @@
         // "Location (City) is required." under a typed-but-unpicked value counts
         // too (Greenhouse); twice per box at most, so a static hint can't loop it.
         const complains = container && /please enter|enter your location|invalid/i.test(container.textContent || '');
-        if (!complains && (locationAccepted(inp) || (_locRetries.get(inp) || 0) >= 2)) continue;
+        /* A combobox holding a bare typed word ("London") was never picked from
+           its list: Ashby shows no error until Submit and then drops the value,
+           so "accepted" was a guess that kept the job stuck. A picked entry
+           reads "London, England, United Kingdom". */
+        const typedOnly = !_locPicked.has(inp) && !/,/.test(inp.value) &&
+          (inp.getAttribute('role') === 'combobox' || /list|both/i.test(inp.getAttribute('aria-autocomplete') || ''));
+        if (!complains && ((locationAccepted(inp) && !typedOnly) || (_locRetries.get(inp) || 0) >= 2)) continue;
         _locRetries.set(inp, (_locRetries.get(inp) || 0) + 1);
       }
       // Use the most specific label-appropriate value (city-only for pure "city" fields).
       const lbl = (getLabel(inp) || '').toLowerCase();
       const val = locationQuery(p, /\bcity\b/.test(lbl));
       if (!val) continue;
-      if (await commitAutocomplete(inp, val)) committed++;
+      if (await commitAutocomplete(inp, val)) { committed++; _locPicked.add(inp); }
       else DIAG('location.uncommitted', lbl || 'location', { detail: { tried: val.split(',')[0] } });
       await sleep(300);
     }
@@ -3435,10 +3483,18 @@
       }
       if (el.type === 'radio') continue;
       if (el.tagName === 'SELECT') {
-        const opts = deepAll('option', el).filter(o => o.value && o.index > 0);
+        const opts = selectOptions(el).filter(o => o.value && o.index > 0);
         // Decision-aware pick (reads the real option wording); then EEO/decline; then
         // first real option as a last resort so a required select is never left blank.
         let opt = selectOptionForQuestion(el, lbl, p);
+        // The profile's own value by meaning (education level, years, notice)
+        // before the first-option last resort — that put "High School" down
+        // for a Masters.
+        if (!opt) {
+          const texts = Array.from(el.options).map(o => o.text);
+          const bi = bestOptionIndex(texts, profileTargetFor(lbl, p), lbl);
+          if (bi >= 0 && el.options[bi] && el.options[bi].value) opt = el.options[bi];
+        }
         if (!opt && /gender|disability|veteran|race|ethnic|sex\b/i.test(lbl || ''))
           opt = opts.find(o => /prefer not|decline|not to/i.test(o.text));
         if (!opt) opt = opts[0];
@@ -3813,8 +3869,9 @@
   }
   const EDU_RANKS = [
     [/\b(ph\.?\s?d|doctor(ate|al)?|d\.?phil)\b/i, 5],
-    [/\b(master|m\.?sc|m\.?s\.?\b|m\.?a\.?\b|mba|m\.?eng|postgrad(uate)?)\b/i, 4],
-    [/\b(bachelor|b\.?sc|b\.?s\.?\b|b\.?a\.?\b|b\.?eng|undergrad(uate)?|honours|degree)\b/i, 3],
+    // "Masters" / "Bachelors" (Jobright's accreditation) ranked 0 — the s.
+    [/\b(masters?|m\.?sc|m\.?s\.?\b|m\.?a\.?\b|mba|m\.?eng|postgrad(uate)?)\b/i, 4],
+    [/\b(bachelors?|b\.?sc|b\.?s\.?\b|b\.?a\.?\b|b\.?eng|undergrad(uate)?|honours|degree)\b/i, 3],
     [/\b(associate|diploma|hnd|foundation)\b/i, 2],
     [/\b(high school|secondary|ged|a.?levels?|leaving cert)\b/i, 1],
   ];
@@ -4855,6 +4912,13 @@
     collectFrames(document, 0);
     return roots;
   }
+  /* A select's OWN options. Passing the select to deepAll() made it the LIMIT
+     and returned every option on the page, so a required "Highest level of
+     education" select was set to the country list's first value — which it
+     does not have, so it stayed empty and iCIMS could never be submitted. */
+  function selectOptions(sel) {
+    try { return Array.from((sel && sel.options) || []); } catch (_) { return []; }
+  }
   // All matching elements anywhere: light DOM, open shadow roots, same-origin frames.
   function deepAll(sel, limit) {
     const out = [];
@@ -5419,7 +5483,7 @@
       const lblLower = (lbl || '').toLowerCase();
       const isEEO = /gender|disability|veteran|race|ethnicity|sex\b|heritage/i.test(lblLower);
       const val = guessFieldValue(lbl, p, sel);
-      const opts = deepAll('option', sel).filter(o => o.value && o.index > 0);
+      const opts = selectOptions(sel).filter(o => o.value && o.index > 0);
       let opt = null;
       // Ranges, notice periods, education levels — see bestOptionIndex.
       {
@@ -5434,7 +5498,13 @@
           || opts.find(o => o.text.trim().toLowerCase().includes(valLower))
           || opts.find(o => o.value.toLowerCase() === valLower)
           || opts.find(o => valLower.includes(o.text.trim().toLowerCase()) && o.text.trim().length > 1);
-        if (!opt) { const words = valLower.split(/\s+/).filter(w => w.length > 2); if (words.length) opt = opts.find(o => words.some(w => o.text.trim().toLowerCase().includes(w))); }
+        /* Word overlap — never for a demographic question, and never on filler
+           words: "Prefer NOT to say" picked "White (NOT Hispanic or Latino)". */
+        if (!opt && !isEEO) {
+          const STOPW = /^(the|and|for|you|your|not|say|prefer|have|has|with|that|this|are|any|all|from|our|their|does|did|was|were|will|would|can|able|wish|answer|self|identify|other|none)$/;
+          const words = valLower.split(/[^a-z0-9]+/).filter(w => w.length > 2 && !STOPW.test(w));
+          if (words.length) opt = opts.find(o => words.some(w => new RegExp('\\b' + w + '\\b').test(o.text.trim().toLowerCase())));
+        }
       }
       // EEO/demographic fields: if nothing matched (this also covers the common case
       // where guessValue already returned the generic "Prefer not to say" default and
@@ -5551,7 +5621,7 @@
       const lbl = getLabel(sel);
       const val = guessFieldValue(lbl, p, sel);
       if (!val) continue;
-      const opt = deepAll('option', sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+      const opt = selectOptions(sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
       if (opt) { setSelectValue(sel, opt.value); refilled++; }
     }
     if (refilled > 0) LOG(`Verification pass: re-filled ${refilled} fields that were cleared`);
@@ -6358,8 +6428,12 @@
     // something really was missing, the post-submit validation-error / retry logic in
     // the queue's verification loop catches it and re-runs the guarantor sweep.
     const submitEnabled = el => el && isVisible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    /* The form can live in a same-origin frame (iCIMS: #icims_content_iframe).
+       Fields were filled through fieldRoots(), but the button was looked for in
+       the top document only — "No submit/next button found" on a full form. */
     for (const sel of submitSels) {
-      const btn = $(sel);
+      let btn = $(sel);
+      if (!submitEnabled(btn)) { for (const r of fieldRoots().slice(1)) { const b = r.querySelector(sel); if (submitEnabled(b)) { btn = b; break; } } }
       if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await clearOverSubmit(btn); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
     }
     // Fallback: button by text
@@ -9222,8 +9296,8 @@
       }, 5000, 150);
       if (!rows.length) continue;
       const want = (city || q).toLowerCase();
-      const row = rows.find((r) => (r.textContent || '').toLowerCase().startsWith(want)) ||
-        rows.find((r) => (r.textContent || '').toLowerCase().includes(want)) || rows[0];
+      // The town itself, not a landmark that starts with its name ("London Bridge").
+      const row = pickPlaceSuggestion(rows, [p.city, p.state, p.country].filter(Boolean).join(', ') || want) || rows[0];
       triggerMouse(row);
       realClick(row);
       await sleep(scaled(500, 250));
@@ -10714,7 +10788,7 @@
       if (!val) continue;
 
       if (inp.tagName === 'SELECT') {
-        const opt = deepAll('option', inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+        const opt = selectOptions(inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
         if (opt) { setSelectValue(inp, opt.value); fixed++; }
       } else {
         inp.focus({ preventScroll: true }); nativeSet(inp, val); fixed++;
@@ -10884,7 +10958,16 @@
   // ===================== AUTOFILL TRIGGER =====================
   // Shadow-DOM aware: 1.14.0 renders the sidebar inside an open shadow root, so we
   // locate the button via getSidebar()/findAutofillButton() rather than document.
+  /* Once the button has been missing on a page, the retry passes on the SAME
+     page (each blocked submit re-runs the fill) looked for it again for ~14s
+     every time. One quick look then; the full wait only on a new page. */
+  let _autofillMissHref = '';
   async function triggerAutofill__impl() {
+    if (_autofillMissHref && _autofillMissHref === location.href) {
+      const b = findAutofillButton();
+      if (b && !b.disabled && isVisible(b)) { realClick(b); LOG('Autofill button clicked'); _autofillMissHref = ''; return true; }
+      return false;
+    }
     await waitForSidebar(8000);
     await sleep(scaled(1500, 750));
     // Try several times — the button may still be mounting / disabled while the
@@ -10895,6 +10978,7 @@
       await sleep(attempt === 0 ? 1500 : 2500);
     }
     LOG('Autofill button not found or disabled (shadow-aware lookup)');
+    _autofillMissHref = location.href;
     return false;
   }
   // Stall watchdog stands down while this runs — see withBusy.
