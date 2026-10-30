@@ -6759,9 +6759,10 @@
     LOG(`Tailor-first flow starting for ${ats}...`);
 
     // Wait for Jobright sidebar to load (shadow-aware)
-    const sidebar = await waitForSidebar(15000);
+    const sidebar = await waitForSidebar(10000);
     if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow({ noJobright: true }); return; }
-    await sleep(scaled(2000, 1000));
+    // Its buttons, not a flat 2s: they usually mount within a few hundred ms.
+    await waitUntil(() => findAutofillButton() || sidebar.querySelector('.application-dashboard-tailor-resume,.external-job-generate-resume-button,.continue-button'), 2000, 150);
 
     // Step 1: Click "Generate Custom Resume" only if the user opted into tailoring
     // during the queue. By default we skip it for reliability (the resume-generator
@@ -6804,32 +6805,25 @@
 
     // Step 4: Click the Autofill button
     LOG('Step 3: Triggering Autofill');
-    await triggerAutofill();
+    const jrFired = await triggerAutofill();
 
-    // Wait for Jobright autofill to complete (watch for "Filling" → "Autofill" text change)
-    LOG('Waiting for Jobright autofill to complete...');
-    await sleep(scaled(2000, 1000));
-    const fillStart = Date.now();
-    while (Date.now() - fillStart < 15000) { // 15s max (reduced from 60s)
-      const afBtn = sidebar.querySelector('.auto-fill-button');
-      if (afBtn) {
-        const txt = afBtn.textContent?.trim().toLowerCase() || '';
-        if (txt === 'autofill' || txt === '' || txt === 'filled') break; // Done filling
-      } else break; // Button gone — don't wait forever
-      await sleep(scaled(1000, 500));
-    }
-    await sleep(scaled(1000, 500));
+    /* Wait for Jobright's fill only when it was started, and only as long as it
+       runs: "Filling…" → back to "Autofill". It was 2s + 1s polls + 1s even
+       when the button was never clicked. Up to 2s for it to start, 15s to end. */
+    if (jrFired) await waitForJobrightFill(sidebar);
 
     // Step 5: Try resume upload if needed
     await tryResumeUpload();
 
     // Step 6: Fallback fill to catch missed fields
     LOG('Step 4: Running fallback fill for missed fields');
-    await fallbackFill();
-    await sleep(scaled(1000, 500));
-    // Second pass
-    await fallbackFill();
-    await sleep(500);
+    // A second pass only when the first changed something (answers can reveal
+    // follow-up fields); after a pass that filled nothing it always found nothing.
+    if ((await fallbackFill()) > 0) {
+      await sleep(scaled(600, 250));
+      await fallbackFill();
+    }
+    await sleep(200);
     // Conditional sub-questions + declaration boxes + anything still required.
     await guaranteeRequiredFields();
     // Fix any validation errors
@@ -6840,7 +6834,7 @@
     LOG('Step 5: Auto-submit/next');
     await autoSubmitOrNext();
     await learnFromPage();
-    await sleep(scaled(2000, 1000));
+    await sleep(scaled(1000, 500));
     // Remaining pages / review-confirm / account walls are driven to completion by
     // the dispatcher's universal multi-page driver after this returns.
   }
@@ -6995,23 +6989,37 @@
      sidebar, so a genuine step change is now visible. */
   function getPageHash() { return stepSignature(); }
 
+  /* Jobright's fill runs as long as its button reads "Filling…". Up to 2s for
+     it to start, 15s for it to end, then until the form stops changing. */
+  async function waitForJobrightFill(sidebar) {
+    LOG('Waiting for Jobright autofill to complete...');
+    const fillStart = Date.now();
+    let started = false;
+    while (Date.now() - fillStart < 15000) {
+      const afBtn = findAutofillButton() || (sidebar && sidebar.querySelector('.auto-fill-button'));
+      if (!afBtn) break;                                     // button gone — don't wait forever
+      const txt = afBtn.textContent?.trim().toLowerCase() || '';
+      const idle = txt === 'autofill' || txt === '' || txt === 'filled';
+      if (!idle) started = true;
+      else if (started || Date.now() - fillStart > 2000) break;     // done (or never began)
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await waitForFormStable(800);
+  }
+
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
   async function directAutofillFlow(opts) {
     // No sidebar means no Autofill button to press: looking for one cost ~20s a job.
-    if (!(opts && opts.noJobright)) {
-      await triggerAutofill();
-      await sleep(scaled(5000, 2500));
-    }
+    // A flat 5s followed the click — even when there was nothing to click.
+    if (!(opts && opts.noJobright) && await triggerAutofill()) await waitForJobrightFill(getSidebar());
     await fixPhoneCountryCode();
-    await fallbackFill();
-    await sleep(scaled(1000, 500));
-    await fallbackFill();
-    await sleep(scaled(1000, 500));
+    if ((await fallbackFill()) > 0) { await sleep(scaled(600, 250)); await fallbackFill(); }
+    await sleep(200);
     // Conditional sub-questions + declaration boxes + anything still required.
     await guaranteeRequiredFields();
     await handleValidationErrors();
     await autoSubmitOrNext();
-    await sleep(scaled(2000, 1000));
+    await sleep(scaled(1000, 500));
     // Remaining pages are driven by the dispatcher's universal multi-page driver.
   }
 
@@ -7020,7 +7028,7 @@
     LOG('Ashby automation starting...');
     const form = await waitFor('form,.ashby-application-form,[data-testid="application-form"]', 10000);
     if (!form) { LOG('No Ashby form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1.5s: go once the form stops changing
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -7030,7 +7038,7 @@
     LOG('BambooHR automation starting...');
     const form = await waitFor('.RenderForm,form#applicationForm,.positionapply', 10000);
     if (!form) { LOG('No BambooHR form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1.5s: go once the form stops changing
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -7433,7 +7441,8 @@
   async function workdaySpeedyApplyRun() {
     if (!(await workdayModeSpeedyApply())) return false;
     _saDriving = true;
-    const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 8000, 250);
+    // SpeedyApply mounts with the page; 5s is ample (was 8s before the engine took over).
+    const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 5000, 200);
     if (!here) {
       _saDriving = false;
       LOG('Workday: SpeedyApply is not active on this page (install it, enable it and give it a profile) — using the built-in Workday engine instead');
@@ -7445,7 +7454,7 @@
     try {
       return await withBusy('SpeedyApply filling Workday', async () => {
         const until = Date.now() + 5 * 60 * 1000;
-        const STILL_MS = scaled(6000, 3500);           // SpeedyApply done with this step
+        const STILL_MS = scaled(4000, 2500);           // SpeedyApply done with this step (it types fields < 1s apart)
         let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0;
         while (Date.now() < until && !autoStopped()) {
           if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
@@ -9271,7 +9280,7 @@
     if (!$('#application_form,#application-form,#application,.application-form,.application--form') && await openEmbeddedGreenhouseForm()) return;
     const form = await waitFor('#application_form,#application-form,#application,.application-form,.application--form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Greenhouse-specific field selectors (from SpeedyApply)
     const ghFields = {
@@ -9347,7 +9356,7 @@
     // Wait for form — Lever uses many different form selectors
     const form = await waitFor('.application-form,#application-form,.postings-form,form[action*="apply"],.application-page,.content form,.main-content form,form', 8000);
     if (!form) { LOG('No Lever form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1000, 500));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     const p = await getProfile();
     await loadAnswerBank();
@@ -9519,7 +9528,7 @@
 
     const form = await waitFor('.jv-application-form,form[name="applicationForm"],.application-form,form', 10000);
     if (!form) { LOG('No Jobvite form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Jobvite field patterns
     const jvFields = {
@@ -9775,7 +9784,7 @@
 
     const form = await waitFor('.breezy-apply-form,form[id*="application"],.position-apply,form', 10000);
     if (!form) { LOG('No BreezyHR form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // BreezyHR field patterns
     const brFields = {
@@ -9808,7 +9817,7 @@
 
     const form = await waitFor('form,[class*="application-form"],[data-testid*="application"]', 10000);
     if (!form) { LOG('No Rippling form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Rippling uses React-based forms
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -9859,7 +9868,7 @@
 
     const form = await waitFor('.apply-form,form[id*="application"],form[class*="candidate"],form', 10000);
     if (!form) { LOG('No ADP form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     const adpFields = {
       'input[id*="firstName"],input[name*="firstName"]': p.first_name || p.firstName || '',
@@ -10010,7 +10019,7 @@
 
     const form = await waitFor('form[id*="application"],form,.applicationForm,[class*="applyForm"]', 10000);
     if (!form) { LOG('No SuccessFactors form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     try { await sfUploadResume(); } catch (e) { LOG('SuccessFactors CV upload failed:', e?.message || e); }
 
@@ -10068,7 +10077,7 @@
 
     const form = await waitFor('#jazzhr-apply,form[id*="apply"],form.resume-form,form', 10000);
     if (!form) { LOG('No JazzHR form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     const jzFields = {
       '#first_name,input[name="first_name"]': p.first_name || p.firstName || '',
@@ -10111,7 +10120,7 @@
 
     const form = await waitFor('form[class*="application"],form,.apply-form', 10000);
     if (!form) { LOG('No Handshake form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Fill all visible empty fields using generic approach
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -10202,7 +10211,7 @@
 
     const form = await waitFor('.apply-form,form[class*="application"],[class*="ApplicationForm"],form', 10000);
     if (!form) { LOG('No Eightfold form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Eightfold uses React with custom components. Tick boxes are the consent
     // pass's job (tickConsentBoxes), not something to type a guess into.
@@ -10279,7 +10288,9 @@
       await waitForFormStable(4000);
     }
 
-    await waitFor('.iCIMS_InfoMsg_Job,.iCIMS_Forms_Region,form,.applicant-form', 8000);
+    // The form is usually in #icims_content_iframe: looking only in the top
+    // document waited the full 8s on every iCIMS job.
+    await waitUntil(() => deepAll('.iCIMS_InfoMsg_Job,.iCIMS_Forms_Region,form,.applicant-form', 1).length > 0, 8000, 150);
     await waitForFormStable(3000);
 
     // iCIMS's own field ids, where the top document can see them. When the form
@@ -10995,14 +11006,17 @@
       if (b && !b.disabled && isVisible(b)) { realClick(b); LOG('Autofill button clicked'); _autofillMissHref = ''; return true; }
       return false;
     }
-    await waitForSidebar(8000);
-    await sleep(scaled(1500, 750));
-    // Try several times — the button may still be mounting / disabled while the
-    // sidebar hydrates. This is the click that was silently failing in 1.14.0.
-    for (let attempt = 0; attempt < 5; attempt++) {
+    /* Click the moment the button is ready. This was a flat 1.5s sleep and then
+       5 looks 1.5–2.5s apart — ~13s on every page where it never shows, and up
+       to 2.5s after it did. Now it is checked every 200ms: clicked as soon as it
+       is enabled, given up on after ~6s once the sidebar is up. */
+    const sb = await waitForSidebar(6000);
+    const dl = Date.now() + (sb ? 6000 : 1500);
+    for (let attempt = 1; ; attempt++) {
       const b = findAutofillButton();
-      if (b && !b.disabled && isVisible(b)) { realClick(b); LOG(`Autofill button clicked (attempt ${attempt + 1})`); return true; }
-      await sleep(attempt === 0 ? 1500 : 2500);
+      if (b && !b.disabled && isVisible(b)) { realClick(b); LOG(`Autofill button clicked (${attempt > 1 ? 'after ' + attempt + ' looks' : 'at once'})`); return true; }
+      if (Date.now() >= dl) break;
+      await new Promise((r) => setTimeout(r, 200));
     }
     LOG('Autofill button not found or disabled (shadow-aware lookup)');
     _autofillMissHref = location.href;

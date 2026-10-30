@@ -2512,8 +2512,9 @@ console.log('audit: the speed selector reaches every wait');
   eq('the mailbox poll keeps its own pace', /await sleep\(4000\);\s+\/\/ the mail has not landed yet/.test(src), true);
   // Every converted wait keeps at least half its time, at any speed.
   const conv = [...src.matchAll(/await sleep\(scaled\((\d{4,}), (\d+)\)\)/g)];
-  // v17.22 replaced four of them on Workday with waits on the page itself.
-  eq('there are many converted waits', conv.length >= 80, true);
+  // v17.22 replaced four of them on Workday with waits on the page itself, and
+  // v17.36 a dozen more at the start of each ATS flow (form-stable / button-ready).
+  eq('there are many converted waits', conv.length >= 55, true);
   eq('and every one keeps at least half its original time',
     conv.every(([, ms, floor]) => Number(floor) >= Math.floor(Number(ms) / 2) - 0), true);
   const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
@@ -3801,6 +3802,26 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
   const rf = body('refineAnswerForControl');
   eq('a date box never gets words with a number in them ("1 month notice" in BambooHR\'s mm/dd/yyyy)', /if \(v && !\/\\d\{1,4\}/.test(rf) && !/if \(v && !\/\\d\/\.test\(v\)/.test(rf), true);
   eq('a missing Jobright Autofill button is waited for once per page, not on every retry', /_autofillMissHref === location\.href/.test(body('triggerAutofill__impl')), true);
+}
+
+
+
+/* ── 85. v17.36: every ATS waits on the page, not the clock ── */
+console.log('v17.36: faster on every ATS — the waits end when the page is ready');
+{
+  const ta = body('triggerAutofill__impl');
+  eq('Jobright\'s Autofill button is clicked the moment it is ready (200ms checks, not 1.5s sleeps)', /setTimeout\(r, 200\)/.test(ta) && !/await sleep\(scaled\(1500, 750\)\)/.test(ta) && !/attempt < 5/.test(ta), true);
+  eq('…and given up on after ~6s, not ~13s', /Date\.now\(\) \+ \(sb \? 6000 : 1500\)/.test(ta), true);
+  const tf = body('tailorFirstFlow');
+  eq('no flat 2s after the sidebar appears — it waits for its buttons', /await waitUntil\(\(\) => findAutofillButton\(\)/.test(tf) && !/await sleep\(scaled\(2000, 1000\)\);\n\n\s*\/\/ Step 1/.test(tf), true);
+  eq('Jobright\'s fill is waited for only when it was started', /if \(jrFired\) await waitForJobrightFill\(sidebar\);/.test(tf), true);
+  eq('…and only while its button reads "Filling…"', /if \(!idle\) started = true;/.test(body('waitForJobrightFill')), true);
+  eq('a second fill pass only when the first changed something', /if \(\(await fallbackFill\(\)\) > 0\)/.test(tf) && /if \(\(await fallbackFill\(\)\) > 0\)/.test(body('directAutofillFlow')), true);
+  eq('the direct flow no longer sleeps 5s after a click that never happened', !/await sleep\(scaled\(5000, 2500\)\)/.test(body('directAutofillFlow')), true);
+  for (const fn of ['greenhouseAutomation', 'ashbyAutomation', 'bamboohrAutomation', 'jobviteAutomation'])
+    eq(`${fn} starts once the form stops changing (was a flat 1.5s)`, /await waitForFormStable\(1200\);/.test(body(fn)), true);
+  eq('iCIMS looks for its form inside the application frame (an 8s wait every job)', /await waitUntil\(\(\) => deepAll\('\.iCIMS_InfoMsg_Job/.test(body('icimsAutomation')), true);
+  eq('SpeedyApply mode presses Next after 4s of quiet (was 6s)', /const STILL_MS = scaled\(4000, 2500\);/.test(body('workdaySpeedyApplyRun')), true);
 }
 
 
