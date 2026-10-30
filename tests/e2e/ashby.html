@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer @ Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto}._fieldEntry{margin:14px 0}label,.ashby-application-form-question-title{display:block;font-weight:600}
+input[type=text],input[type=email],input[type=tel],textarea{width:100%;padding:6px;box-sizing:border-box}._yesno button{padding:6px 18px;margin-right:6px;border:1px solid #999;background:#fff}._yesno button._active{background:#333;color:#fff}
+[role=listbox]{border:1px solid #999;background:#fff;list-style:none;margin:0;padding:0}[role=option]{padding:5px;cursor:pointer}._error{color:#c00}</style></head><body>
+<!-- Ashby (jobs.ashbyhq.com/<co>/<id>/application): React form, system fields
+     _systemfield_name / _systemfield_email / _systemfield_resume, a phone box,
+     a location combobox (a typed value only counts once an option is picked),
+     Yes/No questions as two BUTTONS (no inputs at all), a checkbox group, and
+     "Submit Application". -->
+<h1>Senior Data Engineer</h1>
+<div class="ashby-application-form-container"><form id="af" novalidate onsubmit="return window.__validate(event)">
+ <div class="_fieldEntry"><label for="_systemfield_name" class="ashby-application-form-question-title">Name<span>*</span></label><input id="_systemfield_name" name="_systemfield_name" type="text" required></div>
+ <div class="_fieldEntry"><label for="_systemfield_email" class="ashby-application-form-question-title">Email<span>*</span></label><input id="_systemfield_email" name="_systemfield_email" type="email" required></div>
+ <div class="_fieldEntry"><label for="ph-3f1" class="ashby-application-form-question-title">Phone Number<span>*</span></label><input id="ph-3f1" name="ph-3f1" type="tel" required></div>
+ <div class="_fieldEntry"><label for="_systemfield_resume" class="ashby-application-form-question-title">Resume<span>*</span></label>
+   <div class="_dropzone"><button type="button" onclick="document.getElementById('_systemfield_resume').click()">Upload File</button><input id="_systemfield_resume" name="_systemfield_resume" type="file" style="display:none" required></div></div>
+ <div class="_fieldEntry"><label for="loc-9a" class="ashby-application-form-question-title">Location<span>*</span></label>
+   <input id="loc-9a" role="combobox" aria-autocomplete="list" aria-controls="loc-list" aria-expanded="false" type="text" autocomplete="off">
+   <ul id="loc-list" role="listbox" hidden></ul><input type="hidden" name="location" id="loc-val"></div>
+ <div class="_fieldEntry"><label for="li-77" class="ashby-application-form-question-title">LinkedIn Profile</label><input id="li-77" name="li-77" type="text"></div>
+ <div class="_fieldEntry" id="q-auth"><div class="ashby-application-form-question-title">Are you authorized to work in the United Kingdom?<span>*</span></div>
+   <div class="_yesno" data-name="auth"><button type="button">Yes</button><button type="button">No</button></div></div>
+ <div class="_fieldEntry" id="q-sponsor"><div class="ashby-application-form-question-title">Will you require visa sponsorship now or in the future?<span>*</span></div>
+   <div class="_yesno" data-name="sponsor"><button type="button">Yes</button><button type="button">No</button></div></div>
+ <div class="_fieldEntry"><label for="sal-1" class="ashby-application-form-question-title">What are your salary expectations?<span>*</span></label><input id="sal-1" name="salary" type="text" required></div>
+ <div class="_fieldEntry"><fieldset><legend class="ashby-application-form-question-title">How did you hear about us?</legend>
+   <label><input type="checkbox" name="src" value="LinkedIn"> LinkedIn</label><label><input type="checkbox" name="src" value="Referral"> Referral</label><label><input type="checkbox" name="src" value="Other"> Other</label></fieldset></div>
+ <div id="errs" class="_error"></div>
+ <button type="submit" class="ashby-application-form-submit-button">Submit Application</button>
+</form></div>
+<script>
+  const yesno = {};
+  document.querySelectorAll('._yesno').forEach((g) => g.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    g.querySelectorAll('button').forEach((x) => x.classList.toggle('_active', x === b));
+    yesno[g.dataset.name] = b.textContent.trim();
+  }));
+  const PLACES = ['London, England, United Kingdom', 'London, Ontario, Canada', 'Londonderry, Northern Ireland, United Kingdom'];
+  const box = document.getElementById('loc-9a'), list = document.getElementById('loc-list'), val = document.getElementById('loc-val');
+  box.addEventListener('input', () => {
+    val.value = '';
+    const q = box.value.trim().toLowerCase().split(',')[0];
+    const hits = q.length < 2 ? [] : PLACES.filter((p) => p.toLowerCase().includes(q));
+    setTimeout(() => { list.innerHTML = hits.map((h, i) => `<li role="option" id="lo-${i}">${h}</li>`).join(''); list.hidden = !hits.length; box.setAttribute('aria-expanded', String(!!hits.length)); }, 250);
+  });
+  list.addEventListener('click', (e) => { const o = e.target.closest('[role=option]'); if (!o) return; box.value = o.textContent; val.value = o.textContent; list.hidden = true; console.log('FX_LOCATION ' + o.textContent); });
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('af'), errs = [];
+    if (!f.checkValidity()) errs.push('required');
+    if (!val.value) errs.push('Location: pick one');
+    if (!yesno.auth || !yesno.sponsor) errs.push('Answer the Yes/No questions');
+    if (errs.length) { document.getElementById('errs').textContent = errs.join('; '); console.log('BLOCKED ' + errs.join('; ')); return false; }
+    const fd = new FormData(f), out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : (out[k] ? out[k] + '|' + v : v);
+    Object.assign(out, { auth: yesno.auth, sponsor: yesno.sponsor });
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h2>Application submitted</h2><p>Thank you for applying to Acme.</p>';
+    return false;
+  };
+</script></body></html>

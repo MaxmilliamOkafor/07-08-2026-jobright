@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer | Acme Careers</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto}.jv-form-field{margin:12px 0}label{display:block;font-weight:600}input[type=text],input[type=email],input[type=tel],select{width:100%;padding:6px;box-sizing:border-box}.jv-form-error{color:#c00}</style></head><body>
+<!-- Jobvite (jobs.jobvite.com/<co>/job/<id>/apply): jv-field-* ids, a country
+     select, the résumé upload, required selects for the questions, EEO
+     selects, and "Send Application". -->
+<h1>Senior Data Engineer</h1>
+<form name="jv-apply-form" id="jvf" class="jv-form" novalidate onsubmit="return window.__validate(event)">
+ <div class="jv-form-field"><label for="jv-field-fn">First Name *</label><input type="text" id="jv-field-fn" name="firstName" required></div>
+ <div class="jv-form-field"><label for="jv-field-ln">Last Name *</label><input type="text" id="jv-field-ln" name="lastName" required></div>
+ <div class="jv-form-field"><label for="jv-field-em">Email *</label><input type="email" id="jv-field-em" name="email" required></div>
+ <div class="jv-form-field"><label for="jv-field-ph">Phone *</label><input type="tel" id="jv-field-ph" name="phone" required></div>
+ <div class="jv-form-field"><label for="jv-field-city">City *</label><input type="text" id="jv-field-city" name="city" required></div>
+ <div class="jv-form-field"><label for="jv-field-country">Country *</label><select id="jv-field-country" name="country" required><option value="">Select</option><option>United States</option><option>United Kingdom</option><option>Ireland</option><option>Germany</option></select></div>
+ <div class="jv-form-field"><label for="jv-field-resume">Resume *</label><input type="file" id="jv-field-resume" name="resume" required></div>
+ <div class="jv-form-field"><label for="jv-field-li">LinkedIn Profile URL</label><input type="text" id="jv-field-li" name="linkedin"></div>
+ <div class="jv-form-field"><label for="jv-q1">Are you legally eligible to work in the United Kingdom? *</label><select id="jv-q1" name="q1" required><option value="">Select</option><option>Yes</option><option>No</option></select></div>
+ <div class="jv-form-field"><label for="jv-q2">Will you require sponsorship to work in the United Kingdom? *</label><select id="jv-q2" name="q2" required><option value="">Select</option><option>Yes</option><option>No</option></select></div>
+ <div class="jv-form-field"><label for="jv-q3">How many years of data engineering experience do you have? *</label><select id="jv-q3" name="q3" required><option value="">Select</option><option>0-2 years</option><option>3-5 years</option><option>6-8 years</option><option>9+ years</option></select></div>
+ <div class="jv-form-field"><label for="jv-q4">Where did you hear about this job? *</label><select id="jv-q4" name="q4" required><option value="">Select</option><option>LinkedIn</option><option>Indeed</option><option>Company Website</option><option>Referral</option></select></div>
+ <div class="jv-form-field"><label for="jv-eeo-g">Gender</label><select id="jv-eeo-g" name="eeo_gender"><option value="">Select</option><option>Male</option><option>Female</option><option>Decline to Self Identify</option></select></div>
+ <div id="errs" class="jv-form-error"></div>
+ <button type="submit" class="jv-button jv-button-primary">Send Application</button>
+</form>
+<script>
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('jvf');
+    if (!f.checkValidity()) { const bad = [...f.elements].filter((x) => x.willValidate && !x.checkValidity()).map((x) => x.name); document.getElementById('errs').textContent = 'Please complete the required fields: ' + bad.join(', '); console.log('BLOCKED ' + bad.join(',')); return false; }
+    const fd = new FormData(f), out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h2>Thank you!</h2><p>Your application has been received.</p>';
+    return false;
+  };
+</script></body></html>

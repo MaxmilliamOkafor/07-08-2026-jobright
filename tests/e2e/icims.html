@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer in London | Careers at Acme</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:20px auto}.iCIMS_InfoMsg{color:#c00}.iCIMS_TableRow{margin:10px 0}label{display:block;font-weight:600}input[type=text],input[type=email],select{width:100%;padding:6px;box-sizing:border-box}iframe{width:100%;height:1400px;border:0}</style></head><body>
+<script>
+/* iCIMS (careers-<co>.icims.com/jobs/<id>/<slug>/job?mode=apply): the page is a
+   shell; the application lives in #icims_content_iframe (same host,
+   in_iframe=1). Inside: iCIMS ids (PersonProfileFields.*), selects with
+   "— Make a Selection —", the résumé upload, EEO selects, and #cp_submit. */
+if (!/in_iframe=1/.test(location.search)) {
+  document.write('<h1>Senior Data Engineer</h1><iframe id="icims_content_iframe" src="' + location.pathname + '?mode=apply&in_iframe=1"></iframe>');
+} else {
+  document.write(`
+<div class="iCIMS_MainWrapper"><form id="cp_form" novalidate onsubmit="return window.__validate(event)">
+ <div class="iCIMS_TableRow"><label for="PersonProfileFields.FirstName">First Name *</label><input type="text" id="PersonProfileFields.FirstName" name="PersonProfileFields.FirstName" required></div>
+ <div class="iCIMS_TableRow"><label for="PersonProfileFields.LastName">Last Name *</label><input type="text" id="PersonProfileFields.LastName" name="PersonProfileFields.LastName" required></div>
+ <div class="iCIMS_TableRow"><label for="PersonProfileFields.Email">Email *</label><input type="email" id="PersonProfileFields.Email" name="PersonProfileFields.Email" required></div>
+ <div class="iCIMS_TableRow"><label for="PhoneNumber_Home">Phone *</label><input type="text" id="PhoneNumber_Home" name="PhoneNumber.Home" required></div>
+ <div class="iCIMS_TableRow"><label for="AddressStreet1">Street Address *</label><input type="text" id="AddressStreet1" name="PersonProfileFields.Addresses.AddressStreet1" required></div>
+ <div class="iCIMS_TableRow"><label for="AddressCity">City *</label><input type="text" id="AddressCity" name="PersonProfileFields.Addresses.AddressCity" required></div>
+ <div class="iCIMS_TableRow"><label for="AddressZip">Postal Code *</label><input type="text" id="AddressZip" name="PersonProfileFields.Addresses.AddressZip" required></div>
+ <div class="iCIMS_TableRow"><label for="AddressCountry">Country *</label><select id="AddressCountry" name="PersonProfileFields.Addresses.AddressCountry" required><option value="">— Make a Selection —</option><option value="US">United States</option><option value="GB">United Kingdom</option><option value="IE">Ireland</option></select></div>
+ <div class="iCIMS_TableRow"><label for="resume">Resume *</label><input type="file" id="resume" name="ResumeFile" required></div>
+ <div class="iCIMS_TableRow"><label for="Q_auth">Are you legally authorized to work in the country in which this job is located? *</label><select id="Q_auth" name="Q_auth" required><option value="">— Make a Selection —</option><option>Yes</option><option>No</option></select></div>
+ <div class="iCIMS_TableRow"><label for="Q_sponsor">Will you now or in the future require sponsorship for employment visa status? *</label><select id="Q_sponsor" name="Q_sponsor" required><option value="">— Make a Selection —</option><option>Yes</option><option>No</option></select></div>
+ <div class="iCIMS_TableRow"><label for="Q_18">Are you at least 18 years of age? *</label><select id="Q_18" name="Q_18" required><option value="">— Make a Selection —</option><option>Yes</option><option>No</option></select></div>
+ <div class="iCIMS_TableRow"><label for="Q_degree">Highest level of education completed *</label><select id="Q_degree" name="Q_degree" required><option value="">— Make a Selection —</option><option>High School</option><option>Associate's Degree</option><option>Bachelor's Degree</option><option>Master's Degree</option><option>Doctorate</option></select></div>
+ <div class="iCIMS_TableRow"><label for="EEO_gender">Gender</label><select id="EEO_gender" name="EEO_gender"><option value="">— Make a Selection —</option><option>Male</option><option>Female</option><option>I do not wish to self-identify</option></select></div>
+ <div class="iCIMS_TableRow"><label for="EEO_vet">Veteran Status</label><select id="EEO_vet" name="EEO_vet"><option value="">— Make a Selection —</option><option>I am a protected veteran</option><option>I am not a protected veteran</option><option>I do not wish to self-identify</option></select></div>
+ <div id="errs" class="iCIMS_InfoMsg"></div>
+ <input type="submit" id="cp_submit" class="iCIMS_Button" value="Submit">
+</form></div>`);
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('cp_form');
+    if (!f.checkValidity()) { const bad = [...f.elements].filter((x) => x.willValidate && !x.checkValidity()).map((x) => x.name); document.getElementById('errs').textContent = 'Please complete: ' + bad.join(', '); console.log('BLOCKED ' + bad.join(',')); return false; }
+    const fd = new FormData(f), out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    console.log('SUBMITTED ' + JSON.stringify(out));
+    try { window.top.__submitted = out; } catch (_) {}
+    document.body.innerHTML = '<h2>Thank you for applying!</h2><p>Your application has been submitted.</p>';
+    return false;
+  };
+}
+</script></body></html>

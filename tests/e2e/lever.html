@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Acme - Senior Data Engineer</title>
+<style>body{font-family:sans-serif;max-width:760px;margin:20px auto}.application-question{list-style:none;margin:12px 0}.application-label{font-weight:600}.required{color:#c00}
+input[type=text],input[type=email],input[type=tel],textarea,select{width:100%;padding:6px;box-sizing:border-box}.dropdown-results{border:1px solid #999;background:#fff}.dropdown-location{padding:5px;cursor:pointer}.err{color:#c00}</style></head><body>
+<!-- Lever's application page (jobs.lever.co/<co>/<id>/apply), its real structure:
+     "Full name" (one box), a location box whose value only counts once a
+     suggestion from Lever's own list is picked (hidden selectedLocation),
+     card questions as radio lists named cards[...][fieldN], EEO selects, and
+     #btn-submit. -->
+<div class="posting-headline"><h2>Senior Data Engineer</h2><div class="posting-categories">London, United Kingdom</div></div>
+<form id="application-form" class="application-form" novalidate onsubmit="return window.__validate(event)">
+ <div class="section application-form"><h4>Submit your application</h4><ul>
+  <li class="application-question resume"><label><div class="application-label">Resume/CV<span class="required">✱</span></div>
+   <div class="application-field"><input type="file" name="resume" id="resume-upload-input" class="application-file-input" required></div></label></li>
+  <li class="application-question"><label><div class="application-label">Full name<span class="required">✱</span></div><div class="application-field"><input type="text" name="name" required></div></label></li>
+  <li class="application-question"><label><div class="application-label">Email<span class="required">✱</span></div><div class="application-field"><input type="email" name="email" required></div></label></li>
+  <li class="application-question"><label><div class="application-label">Phone<span class="required">✱</span></div><div class="application-field"><input type="text" name="phone" required></div></label></li>
+  <li class="application-question"><label><div class="application-label">Current location<span class="required">✱</span></div>
+   <div class="application-field"><input type="text" name="location" id="location-input" class="location-input" data-qa="location-input" autocomplete="off" required>
+   <input type="hidden" name="selectedLocation" id="selected-location"><div class="dropdown-container"><div class="dropdown-results" id="loc-results" hidden></div></div></div></label></li>
+  <li class="application-question"><label><div class="application-label">Current company</div><div class="application-field"><input type="text" name="org"></div></label></li>
+ </ul></div>
+ <div class="section application-form"><h4>Links</h4><ul>
+  <li class="application-question"><label><div class="application-label">LinkedIn URL<span class="required">✱</span></div><div class="application-field"><input type="text" name="urls[LinkedIn]" required></div></label></li>
+  <li class="application-question"><label><div class="application-label">GitHub URL</div><div class="application-field"><input type="text" name="urls[GitHub]"></div></label></li>
+ </ul></div>
+ <div class="section application-additional"><h4>Additional information</h4><ul>
+  <li class="application-question custom-question"><div class="application-label">Are you legally authorized to work in the United Kingdom?<span class="required">✱</span></div>
+   <div class="application-field"><ul data-qa="multiple-choice">
+    <li><label><input type="radio" name="cards[a1b2][field0]" value="Yes" required> <span class="application-answer-alternative">Yes</span></label></li>
+    <li><label><input type="radio" name="cards[a1b2][field0]" value="No"> <span class="application-answer-alternative">No</span></label></li></ul></div></li>
+  <li class="application-question custom-question"><div class="application-label">Will you now or in the future require visa sponsorship to work in the United Kingdom?<span class="required">✱</span></div>
+   <div class="application-field"><ul data-qa="multiple-choice">
+    <li><label><input type="radio" name="cards[a1b2][field1]" value="Yes" required> <span class="application-answer-alternative">Yes</span></label></li>
+    <li><label><input type="radio" name="cards[a1b2][field1]" value="No"> <span class="application-answer-alternative">No</span></label></li></ul></div></li>
+  <li class="application-question custom-question"><label><div class="application-label">How many years of professional experience do you have with Python?<span class="required">✱</span></div>
+   <div class="application-field"><input type="text" name="cards[a1b2][field2]" required></div></label></li>
+  <li class="application-question custom-question"><label><div class="application-label">Why do you want to work at Acme?<span class="required">✱</span></div>
+   <div class="application-field"><textarea name="cards[a1b2][field3]" required></textarea></div></label></li>
+ </ul></div>
+ <div class="section application-eeo"><h4>U.S. Equal Employment Opportunity information</h4><ul>
+  <li class="application-question"><label><div class="application-label">Gender</div><select name="eeo[gender]"><option value="">Select ...</option><option>Male</option><option>Female</option><option>Decline to self-identify</option></select></label></li>
+  <li class="application-question"><label><div class="application-label">Race</div><select name="eeo[race]"><option value="">Select ...</option><option>White (Not Hispanic or Latino)</option><option>Black or African American (Not Hispanic or Latino)</option><option>Decline to self-identify</option></select></label></li>
+  <li class="application-question"><label><div class="application-label">Veteran status</div><select name="eeo[veteran]"><option value="">Select ...</option><option>I am a veteran</option><option>I am not a veteran</option><option>Decline to self-identify</option></select></label></li>
+ </ul></div>
+ <div id="errors" class="err"></div>
+ <button id="btn-submit" class="template-btn-submit postings-btn" type="submit">Submit application</button>
+</form>
+<script>
+  const PLACES = ['London Bridge, London, United Kingdom', 'London, England, United Kingdom', 'London, Ontario, Canada', 'New London, Connecticut, United States'];
+  const loc = document.getElementById('location-input'), res = document.getElementById('loc-results'), sel = document.getElementById('selected-location');
+  loc.addEventListener('input', () => {
+    sel.value = '';
+    const q = loc.value.trim().toLowerCase().split(',')[0];
+    const hits = q.length < 2 ? [] : PLACES.filter((p) => p.toLowerCase().includes(q));
+    setTimeout(() => { res.innerHTML = hits.map((h) => `<div class="dropdown-location">${h}</div>`).join(''); res.hidden = !hits.length; }, 300);
+  });
+  res.addEventListener('click', (e) => { const d = e.target.closest('.dropdown-location'); if (!d) return; loc.value = d.textContent; sel.value = JSON.stringify({ name: d.textContent }); res.hidden = true; console.log('FX_LOCATION ' + d.textContent); });
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('application-form'), errs = [];
+    if (!f.checkValidity()) errs.push('required');
+    if (!sel.value) errs.push('Please select a location from the dropdown');
+    if (errs.length) { document.getElementById('errors').textContent = errs.join('; '); console.log('BLOCKED ' + errs.join('; ')); return false; }
+    const fd = new FormData(f), out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h2>Application submitted!</h2><p>Thank you for applying.</p>';
+    return false;
+  };
+</script></body></html>
