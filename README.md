@@ -4181,7 +4181,33 @@ Live sites can't be reached from the test environment. Fixed:
     count.
   - Location picks London itself over "London Bridge…".
 - **"Why <Company>?"** ("Why Anthropic?") got the generic "I admire the company
-  culture…". It now gets the answer that names the company. "Why are you
+  culture…". It now gets the answer that names the company. On a job board,
+  where the host is the ATS, the company comes from the link
+  (`job-boards.greenhouse.io/anthropic` → "Anthropic"). "Why are you
   leaving…?" is not treated as a why-us question.
+- **Oracle**: "Race/Ethnicity" was taken for a location box because "ethni**city**"
+  contains "city", so it got "London, United Kingdom". Words like ethnicity
+  and relocation no longer count as place words.
+- **BambooHR**: "Date Available" (mm/dd/yyyy) got the words "1 month notice". Any
+  answer that isn't already a date now becomes today plus your notice period
+  (11/13/2026).
 - **Speed**: when Jobright's Autofill button isn't on a page, each retry of the
   same page waited ~14s for it again. Now it waits once per page.
+
+**Results after the fixes (all 17 replicas submit, with these values checked):**
+
+| ATS | Time | Checked |
+|---|---|---|
+| Greenhouse ×4 | 36–48s | sponsorship No, 9 years / "7-10 years", London picked, "Why Anthropic?" names Anthropic |
+| Lever | 32s | London, England, UK; sponsorship No; EEO declined; current company |
+| Ashby | 40s | full name, Yes/No buttons, picked location |
+| Workable | submitted in 10s | right to work Yes, sponsorship No, SQL years 9, GDPR ticked |
+| iCIMS (frame) | 60s | UK, SW1W 0RH, 18+ Yes, Master's Degree |
+| Jobvite | 37s | UK, "9+ years", LinkedIn |
+| SmartRecruiters | 19s | location picked, +44 country, sponsorship No |
+| BambooHR | 39s | UK, date available, references |
+| SuccessFactors | 46s | GB dial code, citizenship UK |
+| Oracle | 20s | address, county, race "Prefer not to say" |
+| Microsoft, Amazon | 31s, 35s | acknowledgements; eligible Yes, sponsor No |
+| Workday (engine) | 55s | all 4 roles added (Meta, SolimHealth, Accenture, Citi) |
+| Workday (SpeedyApply) | 70s | SpeedyApply fills, the extension only presses buttons |

@@ -3796,6 +3796,10 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
   eq('Jobright\'s "Masters" picks "Master\'s Degree" (it got "High School")', edu[ms.best(edu, 'Masters', 'Highest level of education completed')], "Master's Degree");
   eq('…and the required-field pass asks the profile before taking the first option', /bestOptionIndex\(texts, profileTargetFor\(lbl, p\), lbl\)/.test(body('guaranteeRequiredFieldsPass')), true);
   eq('Submit is also looked for inside a same-origin frame (iCIMS)', /for \(const r of fieldRoots\(\)\.slice\(1\)\)/.test(body('autoSubmitOrNext__impl')), true);
+  const lf = body('isLocationField');
+  eq('"Race/Ethnicity" is not a location box (ethni-CITY) — Oracle got "London, United Kingdom" in it', /hay\.replace\(\/ethnicity\|ethnicities\|relocat/.test(lf) && /test\(hayPlace\)/.test(lf), true);
+  const rf = body('refineAnswerForControl');
+  eq('a date box never gets words with a number in them ("1 month notice" in BambooHR\'s mm/dd/yyyy)', /if \(v && !\/\\d\{1,4\}/.test(rf) && !/if \(v && !\/\\d\/\.test\(v\)/.test(rf), true);
   eq('a missing Jobright Autofill button is waited for once per page, not on every retry', /_autofillMissHref === location\.href/.test(body('triggerAutofill__impl')), true);
 }
 

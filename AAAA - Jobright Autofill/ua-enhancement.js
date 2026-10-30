@@ -1640,7 +1640,9 @@
     let v = String(val == null ? '' : val).trim();
     // Resolved here because the format depends on the control, not the question.
     if (v === '__TODAY__') return todayForField(el);
-    if (v && !/\d/.test(v) && /availab|start|join|begin/i.test(String(label || '')) && looksLikeDateBox(el)) return availableDateFor(el, p);
+    // Anything that is not already a DATE — "1 month notice" has a digit, and
+    // the old no-digits test let it into BambooHR's mm/dd/yyyy box.
+    if (v && !/\d{1,4}\s*[\/.-]\s*\d{1,2}\s*[\/.-]\s*\d{1,4}/.test(v) && /availab|start|join|begin/i.test(String(label || '')) && looksLikeDateBox(el)) return availableDateFor(el, p);
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
@@ -2572,7 +2574,11 @@
     if (/\b(zip|postal|post ?code|postcode|eircode|plz|code postal)\b/i.test(hay) && !pac) return false;
     const looksSearch = pac || el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-autocomplete') || !!el.getAttribute('list');
     if (/\b(address|street)\b/i.test(hay) && !/\b(city|town|location)\b/i.test(hay) && !looksSearch) return false;
-    return /location|city|town|address|where.*(live|based)|metro|region/i.test(hay) ||
+    // "Ethni-CITY" made Oracle's Race/Ethnicity box a location search and it
+    // got "London, United Kingdom"; "re-LOCATION" / "auTHENticity" likewise.
+    // (Not word-bounded: ids like candidateLocation / addressCity must match.)
+    const hayPlace = hay.replace(/ethnicity|ethnicities|relocat\w*|authenticity|electricity|capacity|velocity|publicity|simplicity|specificity|elasticity|toxicity|felicity/g, ' ');
+    return /location|city|town|address|where.*(live|based)|metro|region/i.test(hayPlace) ||
       el.getAttribute('autocomplete') === 'address-level2' || pac;
   }
 
