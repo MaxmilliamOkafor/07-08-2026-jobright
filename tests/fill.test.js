@@ -198,7 +198,8 @@ for (const fn of ['guaranteeRequiredFields', 'fillCustomDropdowns',
   'attachResume', 'triggerAutofill', 'triggerAutofillQuick', 'autoSubmitOrNext',
   'openApplicationForm', 'handleAccountAuth', 'handleValidationErrors']) {
   eq(`${fn} runs inside the busy guard`,
-    new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{ return withBusy\\(').test(src), true);
+    // (v17.39: a "Workday is SpeedyApply's" return may come first.)
+    new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{ (if \\(saOwnsWorkday\\(\\)\\) return [^;]+; )?return withBusy\\(').test(src), true);
 }
 // These two also carry re-entrancy guards, so their wrappers are multi-line.
 for (const fn of ['fallbackFill', 'resolveDependentQuestions']) {
@@ -3368,9 +3369,9 @@ console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
 
   const wa = body('workdayAutomation');
   eq('a queue job goes to the engine first', /const eng = await workdayEngineRun\(\);/.test(wa), true);
-  eq('outside a run, Fully Automated means assist', /!_uaJobKey && window\.__uaWdEngine[\s\S]{0,120}allowAssist\(\)\) \{[\s\S]{0,300}return 'assist';/.test(wa), true);
+  eq('outside a run, Fully Automated means assist (when SpeedyApply does not own Workday)', /!_uaJobKey && !saOwnsWorkday\(\) && window\.__uaWdEngine[\s\S]{0,120}allowAssist\(\)\) \{[\s\S]{0,300}return 'assist';/.test(wa), true);
   eq('stopped mid-application, the built-in flow carries on from that step', /if \(eng === 'midway'\) \{\s+await fallbackFill\(\);\s+await workdayMultiPageFlow\(\);/.test(wa), true);
-  eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
+  eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(saOwnsWorkday\(\)\) return;[^\n]*\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
   eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
   eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineWait')) && /[58] \* 60 \* 1000/.test(body('workdayEngineWait')) && /workdayEngineWait\(eng, id\)/.test(body('workdayEngineRun')), true);
   eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
@@ -3728,7 +3729,7 @@ console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at on
   eq('…and when it is not there, the engine applies as before', /SpeedyApply is not active on this page/.test(sa) && /return false;/.test(sa), true);
   eq('while SpeedyApply drives, our password watcher and engine stay out', /if \(_saDriving \|\| \(_saModeOn && speedyApplyPresent\(\)\)\) return;/.test(src) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
   eq('it only presses Next / Submit once the page has been still', /quiet > STILL_MS && pressed < 3/.test(sa) && /realClick\(n\); pressed\+\+;/.test(sa), true);
-  eq('…and fills only the gaps if a step keeps showing errors', /this step still has errors — filling only the empty fields/.test(sa), true);
+  eq('…fills only what SpeedyApply left, once per step; what is still empty fails the job, named', (sa.match(/await fallbackFill\(\)/g) || []).length === 1 && /SpeedyApply left required fields empty on/.test(sa), true);
   eq('called right after Apply, before anything of ours touches the page', body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') > 0 && body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') < body('workdayAutomation').indexOf('await clickApplyManually();'), true);
   eq('a switch in the Bulk card', /id="ua-sb-wdsa"/.test(src) && /st\.set\('ua_wd_mode', saCb\.checked \? 'speedyapply' : 'engine'\)/.test(src), true);
   // Refused sign-in.
@@ -3870,10 +3871,10 @@ console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick
   // The account page is handled at once: SpeedyApply only types, never presses.
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode presses Create Account / Sign In after 1.5s, not 6s', /quiet > \(_wdCreatedThisJob \|\| _saAccountTurns \? 2000 : 1500\)/.test(sa), true);
-  eq('no profile in SpeedyApply → the engine applies', /SpeedyApply has no profile yet/.test(sa) && /_saDeclined = true; return false;/.test(sa), true);
-  eq('premium with no profile it can pick → the engine applies (not 20s waits per step)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)/.test(sa), true);
+  eq('no profile in SpeedyApply → the job fails saying so (Jobright does not fill in its place)', /return cannot\('SpeedyApply has no profile yet/.test(sa), true);
+  eq('premium with no profile it can pick → the job fails saying so (sign in to SpeedyApply)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return cannot\(/.test(sa), true);
   eq('handed back → SpeedyApply no longer counts as present (the account watcher works for the engine)', /!_saDeclined && \(/.test(src.match(/const speedyApplyPresent = [^\n]+/)[0]), true);
-  eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| \(saEmbedded\(\) && isWorkday\(\) && speedyApplyPresent\(\)\)\) return true;/.test(src), true);
+  eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| saOwnsWorkday\(\)\) return true;/.test(src), true);
   // The profile pick, run for real against a fake SpeedyApply.
   const run = async (answers) => {
     const sent = [];
@@ -3900,6 +3901,35 @@ console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick
   })().catch((e) => eq('the SpeedyApply profile pick runs', String(e && e.message), '')));
   eq('SpeedyApply\'s settings / popup are a right-click away', /id: 'ua-sa-settings'/.test(orch) && /options\.html#\/profile/.test(orch) && /popup\.html/.test(orch), true);
   eq('our menu setup removes only our own items (SpeedyApply\'s stay)', /removeOurMenus\(\(\) => \{/.test(orch) && !/chrome\.contextMenus\.removeAll\(/.test(orch), true);
+}
+
+
+
+/* ── 88. v17.39: Workday is SpeedyApply's only — Jobright fills nothing there ── */
+console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creates the account and presses the buttons');
+{
+  eq('one switch: Workday + "let SpeedyApply fill" + SpeedyApply built in (or on the page)', /return isWorkday\(\) && _saModeOn && \(saEmbedded\(\) \|\| speedyApplyPresent\(\)\);/.test(body('saOwnsWorkday')), true);
+  for (const fn of ['fallbackFill', 'resolveDependentQuestions'])   // the wrappers (body() returns the __impl)
+    eq(`${fn} does nothing on SpeedyApply's Workday`, new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{\\n\\s+if \\(saOwnsWorkday\\(\\)\\) return').test(src), true);
+  for (const fn of ['multiPageLoop', 'workdayEngineRun', 'wdEnginePass', 'workdayMultiPageFlow'])
+    eq(`${fn} does nothing on SpeedyApply's Workday`, /^\s+if \(saOwnsWorkday\(\)\) return/m.test(body(fn).split('\n').slice(1, 3).join('\n')), true);
+  for (const fn of ['guaranteeRequiredFields', 'fillCustomDropdowns', 'handleValidationErrors', 'autoSubmitOrNext'])
+    eq(`${fn} does nothing on SpeedyApply's Workday`, new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{ if \\(saOwnsWorkday\\(\\)\\) return').test(src), true);
+  eq('no page walk after the Workday driver', /if \(saOwnsWorkday\(\)\) return;\s+\/\/ Workday: SpeedyApply's pages/.test(body('dispatchATSAutomation')), true);
+  eq('no engine assist either', /!_uaJobKey && !saOwnsWorkday\(\) && window\.__uaWdEngine/.test(body('workdayAutomation')), true);
+  const sa = body('workdaySpeedyApplyRun');
+  eq('SpeedyApply mode never hands a built-in job to the engine', !/using the Workday engine for this job/.test(sa), true);
+  eq('fully automated: required fields SpeedyApply left empty — only those — are answered, then Next is pressed',
+    /_saLeftoverPass = true;\n\s+try \{ await wdEnginePass\(await getProfile\(\)\); await fallbackFill\(\); \} catch \(_\) \{\} finally \{ _saLeftoverPass = false; \}/.test(sa) && /if \(_saLeftoverPass\) return false;/.test(body('saOwnsWorkday')), true);
+  eq('…SpeedyApply\'s saved responses (its responseList) are in the answer bank, loaded last so they win', /'responses', 'responseList'\]/.test(body('loadAnswerBank')), true);
+  eq('Jobright\'s sidebar is tucked on Workday from page load, not only in a run', /tuckJobrightOnWorkday\(\);\n\s+try \{ if \(!window\.__uaJrTuckTimer\)/.test(body('workdayAutomation')), true);
+  eq('…unless you open it from the toolbar icon', /_jrUserShown = true;/.test(src) && /if \(_jrUserShown \|\| !saOwnsWorkday\(\)\) return;/.test(body('tuckJobrightOnWorkday')), true);
+  eq('the buttons SpeedyApply does not press are pressed: account, Apply Manually, Save and Continue, Submit',
+    /await fillWorkdayCreateAccount\(true\)/.test(sa) && /await clickApplyManually\(\)/.test(sa) && /pressing \$\{isSubmit \? 'Submit' : 'Save and Continue'\}/.test(sa), true);
+  eq('Jobright\'s sidebar is tucked away while SpeedyApply fills, so its "Autofill in progress…" shows', /tuckJobrightOnWorkday\(\);/.test(sa) && /el\.style\.display = 'none'/.test(body('tuckJobrightForSpeedyApply')) && /!\(_saDriving && host\.getAttribute\('data-ua-sa-tucked'\)\)/.test(body('forceOpenSidebar')), true);
+  eq('errors SpeedyApply left fail the job only when nobody is answering them', /Date\.now\(\) - errorsSince > STUCK_MS && quiet > 30000/.test(sa), true);
+  eq('SpeedyApply add-on\'s "N required fields need you" box is hidden (its file unchanged)', /st\.textContent = '#sa-status\{display:none!important\}';/.test(src), true);
+  eq('…but never on a step showing errors (that would only re-validate an empty field)', sa.indexOf('} else if (wdPageErrors()) {') < sa.indexOf('} else if (quiet > STILL_MS && pressed < 3) {'), true);
 }
 
 

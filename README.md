@@ -4391,3 +4391,106 @@ SpeedyApply's servers):
   CV is the one in your SpeedyApply profile.
 - **Its side panel opens Jobright's.** SpeedyApply's popup "open side panel"
   shows Jobright's queue panel, since there is one side panel per extension.
+
+## v17.39 — Workday is SpeedyApply's only
+
+"On Workday Jobright is terrible and confused while SpeedyApply perfects it —
+only SpeedyApply's codebase autofill." "Improve it to press the buttons as
+well."
+
+With **Workday: let SpeedyApply fill** ticked (the default), nothing of
+Jobright's fills a Workday page:
+- Jobright's own autofill;
+- the Workday engine and its assist mode;
+- the built-in Workday flow;
+- the fallback and gap fill, the required-field pass and validation fixing;
+- the page walker.
+
+All of them check one switch (`saOwnsWorkday`).
+
+**SpeedyApply fills; this extension presses the buttons it does not:**
+- Create Account / Sign In, with SpeedyApply's saved account and Jobright's
+  account logic: create on a new employer, sign in where recorded, skip at once
+  on a refused sign-in;
+- Apply and Apply Manually;
+- Save and Continue on a finished step that has been still for about 4s;
+- Submit on Review.
+
+It never presses on a step that shows errors.
+
+**When SpeedyApply cannot do the job, the job fails with the reason.** Nothing of
+Jobright's fills in its place:
+- "SpeedyApply has no profile yet — … Import your profile JSON";
+- "SpeedyApply autofill is switched off in its settings";
+- "SpeedyApply could not get a profile for this job — sign in to SpeedyApply …"
+  (premium autofill fills from a profile picked per tab; the extension picks
+  the best match through SpeedyApply's own messages);
+- "SpeedyApply left required fields empty on <step>: <fields> — add them to your
+  SpeedyApply profile / Custom Answers" (after 45s, without filling them).
+
+Untick the box to have the Workday engine apply instead.
+
+**Also: Ashby location.** A combobox counts as picked only when the extension
+picked it from the list. A typed "Lucan, County Dublin" (from SpeedyApply's
+add-on) has a comma but was never picked, so Ashby refused the submit.
+
+## v17.40 — Workday looks and runs like SpeedyApply on its own
+
+From your recording: SpeedyApply alone on a Workday application. Its
+**"Autofill in progress…"** badge stays at the top right while it fills My
+Information, the degree, skills one by one, the questions, the agreement name
+and today's date, through to "Application Submitted". The Jobright sidebar was
+collapsed to its thin tab.
+
+- **Jobright's sidebar is tucked away while SpeedyApply fills a Workday job**,
+  the same way its toolbar icon hides it. That corner is where SpeedyApply shows
+  "Autofill in progress…" and its profile picker. The open sidebar covered both,
+  which is why a picker nobody could see could leave My Information empty. The
+  run's keep-the-sidebar-open tick no longer brings it back over SpeedyApply.
+- **Questions SpeedyApply leaves for you:** answer them and it carries on.
+  Errors only fail the job when they stay up and nobody has touched the page for
+  30s. Any change restarts the clock. Once the errors clear, Save and Continue
+  is pressed as usual.
+- **Checked in Chromium:** SpeedyApply's own script runs in a queue job tab. Its
+  widget mounted 4.4s after the Workday page loaded.
+
+## v17.41 — SpeedyApply add-on's "required fields need you" box hidden
+
+The box at the bottom left ("7 required fields need you … Continue") comes from
+SpeedyApply's Workflow Add-on (`sa-enhancement.js`, its required-field
+watchdog), not from Jobright. It is hidden with one style rule
+(`#sa-status{display:none}`) injected by this extension. The add-on's file is
+unchanged and the add-on still runs; only its box is gone.
+
+## v17.42 — Workday 100% automatic: SpeedyApply fills; the leftovers and every button are handled
+
+From your second recording: on Workday it was **Jobright's** sidebar flow that
+kept needing you:
+- "Account Creation & Autofill" asked for a password in its Sign-up
+  Information;
+- "AI is scanning this page" / "Autofilling 75%" picked "French Southern
+  Territories" for Country and left selects at "Select One";
+- "Continue To The Next Page", and Save and Continue / Submit, waited for your
+  clicks.
+
+SpeedyApply's own badge never showed, because the open sidebar covered it.
+
+- **Jobright's sidebar is tucked on Workday from page load** while SpeedyApply
+  owns Workday, not only inside a queue run. Its flow cannot start, and
+  SpeedyApply's "Autofill in progress…" is what you see. The toolbar icon
+  still brings the sidebar back for that page if you want it.
+- **Nothing waits for you.** Once SpeedyApply has finished a step, the required
+  fields it left empty, and only those, are answered:
+  - your **SpeedyApply saved responses** (its `responseList`, the
+    `responses.json` you import) first, as they are now in the answer bank and
+    win;
+  - then the extension's answers.
+  
+  Save and Continue / Submit is then pressed. Fields SpeedyApply filled are
+  not touched. Anything still empty after that one pass fails the job, named.
+- **The account step needs no input**: Create Account / Sign In with
+  SpeedyApply's saved account (or the extension's), pressed automatically.
+
+Pull and reload the extension. The recording was from a build before the
+last few updates (the "7 required fields need you" box, hidden since v17.41,
+was still showing).

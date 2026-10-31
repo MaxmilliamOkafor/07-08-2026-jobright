@@ -462,6 +462,24 @@
     }
   });
 
+  /* "What is this random pop-up — remove it." SpeedyApply's Workflow Add-on
+     (sa-enhancement.js) puts a "N required fields need you" box at the bottom
+     left of every application page it watches. Hidden here with one style rule
+     — its file stays exactly as shipped, and the add-on itself still runs. */
+  try {
+    const hideSaStatus = () => {
+      if (document.getElementById('ua-hide-sa-status')) return true;
+      const host = document.head || document.documentElement;
+      if (!host) return false;
+      const st = document.createElement('style');
+      st.id = 'ua-hide-sa-status';
+      st.textContent = '#sa-status{display:none!important}';
+      host.appendChild(st);
+      return true;
+    };
+    if (!hideSaStatus()) document.addEventListener('DOMContentLoaded', hideSaStatus, { once: true });
+  } catch (_) {}
+
   // ===================== TOGGLE SIDEBAR ON ICON CLICK =====================
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message && (message.action === 'toggleSidebar' || message.name === 'toggleSidebar')) {
@@ -480,6 +498,8 @@
         unique.forEach(el => {
           if (el.style.display === 'none') {
             el.style.display = '';
+            el.removeAttribute && el.removeAttribute('data-ua-sa-tucked');
+            _jrUserShown = true;                       // you asked for it: not tucked again on this page
             LOG('Sidebar shown');
           } else {
             el.style.display = 'none';
@@ -1045,7 +1065,9 @@
     _answerBank = saved || {};
     _answerBankLoaded = true;
     // Also pull from OptimHire storage if available
-    const ohKeys = ['candidateDetails', 'userDetails', 'applicationDetails', 'questionAnswers', 'responses'];
+    // …and SpeedyApply's saved responses (its responseList: {question, key, response}),
+    // last, so they win — the 915 answers imported from its responses.json.
+    const ohKeys = ['candidateDetails', 'userDetails', 'applicationDetails', 'questionAnswers', 'responses', 'responseList'];
     const ohData = await st.getMulti(ohKeys);
     for (const val of Object.values(ohData || {})) {
       if (!val) continue;
@@ -2769,9 +2791,11 @@
         const complains = container && /please enter|enter your location|invalid/i.test(container.textContent || '');
         /* A combobox holding a bare typed word ("London") was never picked from
            its list: Ashby shows no error until Submit and then drops the value,
-           so "accepted" was a guess that kept the job stuck. A picked entry
-           reads "London, England, United Kingdom". */
-        const typedOnly = !_locPicked.has(inp) && !/,/.test(inp.value) &&
+           so "accepted" was a guess that kept the job stuck. A comma is no
+           proof of a pick either: another filler (SpeedyApply's add-on) types
+           "Lucan, County Dublin" straight in. Not picked by us → pick it, at
+           most twice (_locRetries). */
+        const typedOnly = !_locPicked.has(inp) &&
           (inp.getAttribute('role') === 'combobox' || /list|both/i.test(inp.getAttribute('aria-autocomplete') || ''));
         if (!complains && ((locationAccepted(inp) && !typedOnly) || (_locRetries.get(inp) || 0) >= 2)) continue;
         _locRetries.set(inp, (_locRetries.get(inp) || 0) + 1);
@@ -3483,6 +3507,7 @@
   }
   // Stall watchdog stands down while this runs — see withBusy.
   async function resolveDependentQuestions(...a) {
+    if (saOwnsWorkday()) return 0;
     if (_dependentDepth > 0) return 0;                  // already running higher up the stack
     _dependentDepth++;
     try { return await withBusy('answering follow-up questions', () => resolveDependentQuestions__impl(...a)); }
@@ -3582,7 +3607,7 @@
     return fixed;
   }
   // Stall watchdog stands down while this runs — see withBusy.
-  async function guaranteeRequiredFields(...a) { return withBusy('completing required fields', () => guaranteeRequiredFields__impl(...a)); }
+  async function guaranteeRequiredFields(...a) { if (saOwnsWorkday()) return 0; return withBusy('completing required fields', () => guaranteeRequiredFields__impl(...a)); }
 
   // ===================== DOM HELPERS =====================
   const $$ = (sel, root) => [...(root || document).querySelectorAll(sel)];
@@ -3619,7 +3644,7 @@
       } catch (_) {}
       // On Workday SpeedyApply takes the application over when it is built in
       // and on the page — Jobright's own autofill would type over it.
-      try { if (_saDriving || (saEmbedded() && isWorkday() && speedyApplyPresent())) return true; } catch (_) {}
+      try { if (_saDriving || saOwnsWorkday()) return true; } catch (_) {}
       try { return isRunnerTab() || _mgrDriving || (isWorkday() && isBusy()); } catch (_) { return false; }
     };
   } catch (_) {}
@@ -4911,7 +4936,7 @@
     return filled;
   }
   // Stall watchdog stands down while this runs — see withBusy.
-  async function fillCustomDropdowns(...a) { return withBusy('answering dropdowns', () => fillCustomDropdowns__impl(...a)); }
+  async function fillCustomDropdowns(...a) { if (saOwnsWorkday()) return 0; return withBusy('answering dropdowns', () => fillCustomDropdowns__impl(...a)); }
 
   /* ── UNIVERSAL FIELD DISCOVERY ─────────────────────────────────────────────
      $ / $$ are document.querySelector(All): they stop at a shadow boundary and
@@ -5771,6 +5796,7 @@
 
   // Stall watchdog stands down while this runs — see withBusy.
   async function fallbackFill(...a) {
+    if (saOwnsWorkday()) return 0;                      // Workday: SpeedyApply fills
     if (_fillDepth > 0) return 0;                       // never nest a fill inside a fill
     if (!fillBudgetOk()) return 0;                      // this step has had its passes
     _fillDepth++;
@@ -6570,7 +6596,7 @@
     return false;
   }
   // Stall watchdog stands down while this runs — see withBusy.
-  async function autoSubmitOrNext(...a) { return withBusy('submitting / advancing', () => autoSubmitOrNext__impl(...a)); }
+  async function autoSubmitOrNext(...a) { if (saOwnsWorkday()) return false; return withBusy('submitting / advancing', () => autoSubmitOrNext__impl(...a)); }
 
   /* How complete is this form right now? Reported after every fill pass so the
      queue log says exactly which required fields were left, instead of the run
@@ -6875,6 +6901,7 @@
   // account-creation / sign-in wall, autofills, then advances — until the
   // application is submitted (confirmed) or there is genuinely nothing left to do.
   async function multiPageLoop() {
+    if (saOwnsWorkday()) return;                       // Workday: SpeedyApply walks its own pages
     const MAX_PAGES = 18;
     let prevPageHash = getPageHash();
     let samePageRetries = 0;
@@ -7351,6 +7378,7 @@
   };
 
   async function workdayEngineRun() {
+    if (saOwnsWorkday()) return false;
     if (_saDriving) return false;
     const eng = window.__uaWdEngine;
     if (!eng || typeof eng.startJob !== 'function' || !eng.isWorkday()) return false;
@@ -7474,6 +7502,31 @@
   // Handed back to the engine for this page: SpeedyApply no longer counts as
   // present, or the account watcher would stay off for the engine too.
   let _saDeclined = false;
+  /* WORKDAY = SPEEDYAPPLY ONLY. "On Workday Jobright is terrible and confused
+     while SpeedyApply perfects it — only SpeedyApply's codebase autofill." With
+     "Workday: let SpeedyApply fill" on (the default), every Jobright filler on a
+     Workday page stands down: Jobright's own autofill, the Workday engine and its
+     assist, the built-in Workday flow, the fallback / gap fill, the required-
+     field pass, validation fixing and the page walker. What this extension still
+     does there: the account step (sign up / sign in — SpeedyApply only types its
+     account in) and pressing Next / Submit on a page that is complete. */
+  // Set only while a step SpeedyApply has finished still has required fields empty:
+  // those fields alone are answered (SpeedyApply's saved responses first), so the
+  // run never stops for you.
+  let _saLeftoverPass = false;
+  function saOwnsWorkday() {
+    if (_saLeftoverPass) return false;
+    try { return isWorkday() && _saModeOn && (saEmbedded() || speedyApplyPresent()); } catch (_) { return false; }
+  }
+  /* Jobright's sidebar off Workday while SpeedyApply owns it — from page load,
+     not only inside a run: its "Account Creation & Autofill", "AI is scanning
+     this page" and "Continue To The Next Page" flow is what kept asking you for
+     a password and pressing. The toolbar icon still shows it if you want it. */
+  let _jrUserShown = false;
+  function tuckJobrightOnWorkday() {
+    if (_jrUserShown || !saOwnsWorkday()) return;
+    tuckJobrightForSpeedyApply();
+  }
   const speedyApplyPresent = () => !_saDeclined && (!!document.querySelector('speedyapply-autofill,speedyapply-modal') || (saEmbedded() && _saReady));
   let _saModeOn = true;                                  // cached for the password watcher (sync)
   try { chrome.storage.local.get('ua_wd_mode', (d) => { _saModeOn = !(d && d.ua_wd_mode === 'engine'); }); chrome.storage.onChanged.addListener((c) => { if (c.ua_wd_mode) _saModeOn = c.ua_wd_mode.newValue !== 'engine'; }); } catch (_) {}
@@ -7508,69 +7561,77 @@
     LOG(`Workday (SpeedyApply): using your profile "${best.profileName || best.id}" for this job (${sc && sc.scores ? 'best match' + (best.score != null ? ', score ' + best.score : '') : 'your first profile'})${set ? '' : ' — SpeedyApply did not confirm it'}`);
     return best.profileName || best.id;
   }
+  /* SpeedyApply shows "Autofill in progress…" (and its profile picker) at the
+     top right — exactly where Jobright's sidebar sits. While SpeedyApply fills
+     a Workday job the Jobright sidebar is tucked away (as its toolbar icon
+     does), so SpeedyApply's own status is what you see. */
+  function tuckJobrightForSpeedyApply() {
+    try {
+      document.querySelectorAll('plasmo-csui').forEach((el) => {
+        if (el.style.display !== 'none') { el.style.display = 'none'; el.setAttribute('data-ua-sa-tucked', '1'); }
+      });
+    } catch (_) {}
+  }
   async function workdaySpeedyApplyRun() {
     if (!(await workdayModeSpeedyApply())) { _saDeclined = true; return false; }
     await refreshSaReady();
-    // Built in but never given a profile: SpeedyApply has nothing to fill with.
+    /* SpeedyApply ONLY. When it cannot fill this job, the job fails with the
+       reason — Jobright does not fill Workday in its place. */
+    const cannot = (why) => {
+      _saDriving = false;
+      LOG('Workday: ' + why);
+      DIAG('workday.speedyapply-cannot', why.slice(0, 80));
+      if (!_authDeadEnd) _authDeadEnd = why;
+      return 'closed';
+    };
     if (saEmbedded()) {
       const sa = await saSettings();
-      if (sa && !sa.hasProfile) {
-        LOG('Workday: SpeedyApply has no profile yet (right-click → "SpeedyApply settings" → Profile → Import your profile JSON) — using the Workday engine for this job');
-        DIAG('workday.speedyapply-no-profile', location.hostname);
-        _saDeclined = true; return false;
-      }
-    }
-    _saDriving = true;
-    // SpeedyApply mounts with the page; 5s is ample (was 8s before the engine took over).
-    const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 5000, 200);
-    if (!here) {
-      _saDriving = false;
-      LOG('Workday: SpeedyApply is not active on this page (install it, enable it and give it a profile) — using the built-in Workday engine instead');
-      DIAG('workday.speedyapply-missing', location.hostname);
-      _saDeclined = true; return false;
-    }
-    /* Premium SpeedyApply fills only from a profile picked for the tab. If none
-       can be picked (signed out of SpeedyApply, no saved profiles) it will not
-       fill a single field — say so and let the engine apply, rather than
-       waiting out every step. */
-    if (saEmbedded()) {
+      if (sa && !sa.hasProfile) return cannot('SpeedyApply has no profile yet — right-click → "SpeedyApply settings" → Profile → Import your profile JSON');
       const cfg = await new Promise((res) => { const t = setTimeout(() => res(null), 5000); try { chrome.runtime.sendMessage({ type: 'getAutofillConfig' }, (v) => { void chrome.runtime.lastError; clearTimeout(t); res(v || null); }); } catch (_) { clearTimeout(t); res(null); } });
-      if (cfg && cfg.enabled === false) { _saDriving = false; LOG('Workday: SpeedyApply autofill is switched off in its settings — using the Workday engine for this job'); _saDeclined = true; return false; }
-      if (cfg && cfg.premium && !(await saAutoPickProfile().catch(() => ''))) {
+      if (cfg && cfg.enabled === false) return cannot('SpeedyApply autofill is switched off in its settings');
+      /* Premium SpeedyApply fills from a profile picked FOR THIS TAB, and with
+         none it waits at its picker (top right — under Jobright's sidebar).
+         Picked here the way the picker would, through its own messages. */
+      if (cfg && cfg.premium && !(await saAutoPickProfile().catch(() => '')))
+        return cannot('SpeedyApply could not get a profile for this job — sign in to SpeedyApply (right-click → "SpeedyApply settings") and save a profile there');
+    } else {
+      // Installed separately: wait for it to show itself on the page.
+      _saDriving = true;
+      const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 5000, 200);
+      if (!here) {
         _saDriving = false;
-        LOG('Workday: SpeedyApply could not get a profile for this job (premium autofill needs your SpeedyApply sign-in and a saved profile) — using the Workday engine for this job');
-        DIAG('workday.speedyapply-no-profile-picked', location.hostname);
+        LOG('Workday: SpeedyApply is not active on this page (install it, enable it and give it a profile) — using the built-in Workday engine instead');
+        DIAG('workday.speedyapply-missing', location.hostname);
         _saDeclined = true; return false;
       }
     }
-    LOG('Workday: SpeedyApply is filling this application — this extension only moves it along');
+    LOG('Workday: SpeedyApply is filling this application — this extension only signs in / creates the account and presses Next / Submit on a finished step');
     _saDriving = true;
     try {
       return await withBusy('SpeedyApply filling Workday', async () => {
         const until = Date.now() + 5 * 60 * 1000;
         const STILL_MS = scaled(4000, 2500);           // SpeedyApply done with this step (it types fields < 1s apart)
-        let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0;
+        const STUCK_MS = 45000;                        // errors SpeedyApply left, for this long → the job fails with them
+        let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0, toldErrors = false;
         while (Date.now() < until && !autoStopped()) {
+          tuckJobrightOnWorkday();
           if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
           if (pageHasFailure()) return 'closed';
           const sig = location.href + '|' + stepSignature() + '|' + wdFormValuesSig();
           if (sig !== lastSig) { lastSig = sig; still = Date.now(); }
           const step = wdStepKind() || '';
-          if (step !== lastStep) { lastStep = step; pressed = 0; errorsSince = 0; noteProgress('SpeedyApply: ' + (step || 'working')); if (step) LOG(`Workday (SpeedyApply): ${step}`); }
+          if (step !== lastStep) { lastStep = step; pressed = 0; errorsSince = 0; toldErrors = false; noteProgress('SpeedyApply: ' + (step || 'working')); if (step) LOG(`Workday (SpeedyApply): ${step}`); }
           const quiet = Date.now() - still;
-          // The account step: SpeedyApply signs in with its own saved account.
           if (workdayOnAccountWall()) {
             const err = workdayAuthErrorText();
             if (WD_SIGNIN_REFUSED_RE.test(err) && !_wdCreatedThisJob) { wdSkipRefusedSignIn(err); return 'closed'; }
-            /* SpeedyApply only TYPES its account in (email, password, the
-               checkbox) and never presses Create Account / Sign In, decides
-               between them, or handles "already exists" / wrong password. That
-               is this extension's account flow — Jobright's sign-up / sign-in —
-               with the same account. A short settle, not 6s of waiting for a
-               press that never comes. */
+            /* The account step — Jobright's sign-up / sign-in. SpeedyApply only
+               TYPES its account in (email, password, the checkbox) and never
+               presses Create Account / Sign In, decides between them, or handles
+               "already exists" / wrong password. Same account as SpeedyApply's. */
             if (quiet > (_wdCreatedThisJob || _saAccountTurns ? 2000 : 1500)) {
               _saAccountTurns++;
-              LOG('Workday (SpeedyApply): account page — signing in / creating the account (Jobright\'s account flow, ' + ((await saWorkdayAccount()) ? 'SpeedyApply\'s saved account' : 'this extension\'s saved account') + ')');
+              LOG('Workday (SpeedyApply): account page — signing in / creating the account (' + ((await saWorkdayAccount()) ? 'SpeedyApply\'s saved account' : 'this extension\'s saved account') + ')');
               const r = await fillWorkdayCreateAccount(true);
               if (_authDeadEnd) return 'closed';
               if (r === 'stop' && workdayOnAccountWall()) { if (!_authDeadEnd) _authDeadEnd = 'Workday sign-in did not complete'; return 'closed'; }
@@ -7579,16 +7640,31 @@
           } else if (findApplyManually()) {
             if (quiet > 3000) { await clickApplyManually(); still = Date.now(); }
           } else if (wdPageErrors()) {
+            /* SpeedyApply left required fields empty. Not filled here — it is
+               SpeedyApply's page. Waited for (it may still be typing), then the
+               job fails naming them. */
             if (!errorsSince) errorsSince = Date.now();
-            // SpeedyApply left something it could not answer: fill only the gaps, once per step.
-            if (Date.now() - errorsSince > 20000 && pressed < 2) {
-              LOG('Workday (SpeedyApply): this step still has errors — filling only the empty fields');
-              await wdEnginePass(await getProfile()); await fallbackFill();
-              const n = wdNextButton(); if (n) { realClick(n); pressed++; }
+            /* Fully automated: once SpeedyApply has finished the step (quiet),
+               the required fields it left empty — and only those — are answered,
+               SpeedyApply's saved responses first, then Next is pressed. Once per
+               step; whatever is still empty after that fails the job, named. */
+            if (!toldErrors && Date.now() - errorsSince > 6000 && quiet > 3000) {
+              toldErrors = true;
+              LOG(`Workday (SpeedyApply): ${step || 'this step'} — SpeedyApply left ${remainingErrorSummary() || 'required fields'} empty; answering only those`);
+              _saLeftoverPass = true;
+              try { await wdEnginePass(await getProfile()); await fallbackFill(); } catch (_) {} finally { _saLeftoverPass = false; }
+              await sleep(600);
+              const n = wdNextButton();
+              if (n) { const isSubmit = /submit/i.test(n.textContent || ''); if (isSubmit) markSubmitAttempt(); realClick(n); pressed++; }
               errorsSince = Date.now(); still = Date.now();
             }
+            // Not while you are answering them: any change on the page restarts the clock.
+            if (Date.now() - errorsSince > STUCK_MS && quiet > 30000) {
+              _authDeadEnd = `SpeedyApply left required fields empty on ${step || 'a Workday step'}: ${remainingErrorSummary() || 'see the page'} — add them to your SpeedyApply profile / Custom Answers`;
+              return 'closed';
+            }
           } else if (quiet > STILL_MS && pressed < 3) {
-            // Settled and nothing moved it on (SpeedyApply's auto next / auto submit off).
+            // A finished, quiet step SpeedyApply did not move on (its auto next / auto submit off).
             const n = wdNextButton();
             if (n) {
               const isSubmit = /submit/i.test(n.textContent || '');
@@ -7604,13 +7680,16 @@
     } finally { _saDriving = false; }
   }
 
+
   async function workdayAutomation() {
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
     // SpeedyApply mode: our password watcher keeps off the account page from the start.
     await refreshSaReady();
+    tuckJobrightOnWorkday();
+    try { if (!window.__uaJrTuckTimer) window.__uaJrTuckTimer = setInterval(tuckJobrightOnWorkday, 1500); } catch (_) {}
     if (_uaJobKey && await workdayModeSpeedyApply() && speedyApplyPresent()) _saDriving = true;
     // Fully Automated outside a run: your engine's assist fills each step as it appears.
-    if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
+    if (!_uaJobKey && !saOwnsWorkday() && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
       LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 3-second countdown you can cancel');
       _wdAssistActive = true;
       return 'assist';
@@ -9223,6 +9302,7 @@
   }
   /* One pass of the engine over whatever page is on screen. */
   async function wdEnginePass(p) {
+    if (saOwnsWorkday()) return 0;
     return withBusy('filling the Workday page', async () => {
       const kind = wdStepKind();
       let n = 0;
@@ -9239,6 +9319,7 @@
 
   // SpeedyApply Workday: multi-page navigation with page type detection (enhanced)
   async function workdayMultiPageFlow() {
+    if (saOwnsWorkday()) return;
     const MAX_PAGES = 12;
     // SpeedyApply: both old and new Workday page naming variants
     const pageTypes = [
@@ -10948,7 +11029,7 @@
     return fixed;
   }
   // Stall watchdog stands down while this runs — see withBusy.
-  async function handleValidationErrors(...a) { return withBusy('fixing validation errors', () => handleValidationErrors__impl(...a)); }
+  async function handleValidationErrors(...a) { if (saOwnsWorkday()) return 0; return withBusy('fixing validation errors', () => handleValidationErrors__impl(...a)); }
 
   // ===================== ERROR RECOVERY & RETRY =====================
   async function withRetry(fn, label, maxRetries) {
@@ -14074,7 +14155,8 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         // Jobright's collapse toggle — doing so on every tick made the panel flicker
         // (disappear/appear). The panel naturally reloads once per job navigation.
         const host = (s.getRootNode && s.getRootNode().host) || null;
-        if (host && host.style && host.style.display === 'none') host.style.display = '';
+        // …except where SpeedyApply is filling Workday: its status sits there.
+        if (host && host.style && host.style.display === 'none' && !(_saDriving && host.getAttribute('data-ua-sa-tucked'))) host.style.display = '';
       }
       const ctrl = ucEl('ua-ctrl');
       if (ctrl && qActive && isRunnerTab()) ctrl.classList.add('show');
@@ -16628,6 +16710,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     // not a reason to skip pressing Submit.
     // Workday assist owns the page: you press Next, so no page walk follows.
     if (_wdAssistActive) return;
+    if (saOwnsWorkday()) return;                       // Workday: SpeedyApply's pages, not our walker
     if (!confirmSubmitted()) await multiPageLoop();
     } finally {
       if (!ownedElsewhere) setAutomationFlag(false);
