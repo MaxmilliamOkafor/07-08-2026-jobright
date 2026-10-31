@@ -1280,14 +1280,42 @@
         return label.charAt(0).toUpperCase() + label.slice(1);
       }
     } catch (_) {}
+    /* Job boards carry the employer as the first path segment:
+       job-boards.greenhouse.io/anthropic, jobs.lever.co/<co>, jobs.ashbyhq.com/<co>.
+       "Why Anthropic?" got the generic answer because the host is the ATS. The
+       page title's own spelling is used when it has it ("OpenAI", not "Openai"). */
+    try {
+      if (/(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|jobvite\.com|smartrecruiters\.com|breezy\.hr|recruitee\.com)$/i.test(location.hostname)) {
+        const seg = decodeURIComponent((location.pathname.split('/').filter(Boolean)[0] || ''));
+        if (seg && !/^(embed|j|jobs?|apply|oneclick-ui|company|en|en-us|v\d+)$/i.test(seg) && /^[\w-]{2,40}$/.test(seg)) {
+          const flat = seg.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const pageText = [document.title, document.querySelector('meta[property="og:site_name"]')?.content, document.querySelector('h1')?.textContent].filter(Boolean).join(' | ');
+          for (const m of pageText.matchAll(/[A-Z0-9][\w&.']*(?:\s+[A-Z0-9][\w&.']*){0,3}/g)) {
+            const words = m[0].split(/\s+/);
+            for (let i = 0; i < words.length; i++) for (let k = words.length; k > i; k--) {
+              const cand = words.slice(i, k).join(' ');
+              if (cand.toLowerCase().replace(/[^a-z0-9]/g, '') === flat) return cand;
+            }
+          }
+          return seg.split(/[-_]+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+      }
+    } catch (_) {}
     return '';
   }
+  /* A job added by link carries the link as its "title": the cover note read
+     "I am applying for the job-boards.greenhouse.io/acme/jobs/44… role". */
+  const NOT_A_TITLE_RE = /^(https?:|www\.)|[\w-]+\.(com|io|co|ai|net|org|jobs)\b\/?|\/\S+\//i;
   function pageJobTitle() {
     try {
       const j = queue.find((x) => x.status === 'applying');
-      if (j && j.title) return String(j.title).trim().slice(0, 90);
+      const t = j && String(j.title || '').trim();
+      if (t && !NOT_A_TITLE_RE.test(t)) return t.slice(0, 90);
     } catch (_) {}
-    try { return (extractJDTitle() || '').slice(0, 90); } catch (_) { return ''; }
+    try {
+      const t = String(extractJDTitle() || '').trim();
+      return NOT_A_TITLE_RE.test(t) ? '' : t.slice(0, 90);
+    } catch (_) { return ''; }
   }
 
   function tailorCoverText(text, opts) {
@@ -1355,7 +1383,9 @@
   }
 
   function guessValue(label, p) {
-    const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
+    // Trimmed: "Name*" became "name " and missed ^name$ — Ashby's required
+    // full-name box was left empty and the form could never be sent.
+    const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
     // "What state do you reside in?" is a value question; it kept coming back
     // "Yes" from a fuzzy saved-answer match, so answer it properly and early.
     if (/what state|which state|state do you (reside|live)|state you (reside|live)|state of (residence|resident)|home state|state province/.test(l))
@@ -1430,7 +1460,8 @@
     /* "Why Anthropic?" names the company and nothing else, so it matched none of
        these words and a REQUIRED question went out as "N/A". */
     if (/why.*(compan|role|want|interest|position|join|work (here|with us|for us|at))/.test(l) ||
-        /^\s*why\s+[\w&.' -]{2,40}\?\s*\*?\s*$/.test(l)) return whyAnswer();
+        ((/^\s*why\s+[\w&.' -]{2,40}\?\s*\*?\s*$/i.test(String(label || '')) || /^why [a-z0-9&'-]+( [a-z0-9&'-]+){0,2}$/.test(l)) &&
+          !/^why (are|do|did|is|should|would|have|were|was|not|you)\b/.test(l))) return whyAnswer();
     if (/how.*hear|where.*(find|learn|discover)|source|referred/.test(l)) return DEFAULTS.howHeard;
     // The PROFILE first. These two returned the defaults outright and the rules
     // further down that read the profile were never reached — a "1 month"
@@ -1616,7 +1647,9 @@
     let v = String(val == null ? '' : val).trim();
     // Resolved here because the format depends on the control, not the question.
     if (v === '__TODAY__') return todayForField(el);
-    if (v && !/\d/.test(v) && /availab|start|join|begin/i.test(String(label || '')) && looksLikeDateBox(el)) return availableDateFor(el, p);
+    // Anything that is not already a DATE — "1 month notice" has a digit, and
+    // the old no-digits test let it into BambooHR's mm/dd/yyyy box.
+    if (v && !/\d{1,4}\s*[\/.-]\s*\d{1,2}\s*[\/.-]\s*\d{1,4}/.test(v) && /availab|start|join|begin/i.test(String(label || '')) && looksLikeDateBox(el)) return availableDateFor(el, p);
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
@@ -2245,6 +2278,28 @@
       questionText = (parent && (parent.innerText || parent.textContent)) || '';
       if (!questionText.trim() && radios[0]) questionText = getFullQuestionText(radios[0]) || getLabel(radios[0]) || '';
     } catch (_) {}
+    /* The wrapper a caller found can hold only the OPTIONS: Lever's
+       div.application-field matches "[class*=field]" and contains "Yes No" —
+       so a sponsorship question was decided as the question "yes no" and
+       answered Yes. When the text is nothing but the option labels, climb to
+       the block that carries the question — never into one holding another
+       question's radios. */
+    try {
+      const optWords = radios.map((r) => choiceLabel(r)).join(' ');
+      const strip = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').split(' ').filter((w) => w && !optWords.includes(w)).join(' ').trim();
+      if (strip(questionText).length < 12) {
+        const names = new Set(radios.map((r) => r.name).filter(Boolean));
+        let node = parent || radios[0];
+        for (let up = 0; up < 6 && node && node.parentElement; up++) {
+          node = node.parentElement;
+          const others = Array.from(node.querySelectorAll('input[type=radio],input[type=checkbox]')).some((r) => r.name && !names.has(r.name));
+          if (others) break;
+          const t = node.innerText || node.textContent || '';
+          if (strip(t).length >= 12) { questionText = t; break; }
+        }
+        if (strip(questionText).length < 12 && radios[0]) questionText = getFullQuestionText(radios[0]) || questionText;
+      }
+    } catch (_) {}
     questionText = questionText.toLowerCase().replace(/\s+/g, ' ');
 
     // 1. Check saved responses first, then answers learned from the user's own manual
@@ -2360,7 +2415,9 @@
   // the question text comes from a cheap bounded label — never a full-subtree textContent.
   function answerButtonStyleQuestions(p) {
     let answered = 0;
-    let groups = deepAll('fieldset, [role="radiogroup"], [class*="radio-group"], [class*="RadioGroup"], [class*="ButtonGroup"], [class*="button-group"], [class*="question"], [class*="Question"]', 200)
+    // Ashby's Yes/No is a bare div of two buttons (class "_yesno_<hash>") — none
+    // of the old selectors matched it, so its required questions went unanswered.
+    let groups = deepAll('fieldset, [role="radiogroup"], [class*="radio-group"], [class*="RadioGroup"], [class*="ButtonGroup"], [class*="button-group"], [class*="question"], [class*="Question"], [class*="yesno" i], [class*="YesNo"]', 200)
       .filter(isVisible).slice(0, 120);
     // Innermost first so we answer the actual small choice group, not a wrapping container.
     const depth = el => { let d = 0; for (let n = el; n; n = n.parentElement) d++; return d; };
@@ -2369,7 +2426,7 @@
     let processed = 0;
     for (const group of groups) {
       if (processed++ > 90) break; // hard cap — never let this run unbounded
-      const selectedBtn = group.querySelector('[aria-checked="true"], [data-selected="true"], [aria-pressed="true"], [class*="Checked"]');
+      const selectedBtn = group.querySelector('[aria-checked="true"], [data-selected="true"], [aria-pressed="true"], [class*="Checked"], button[class*="_active"]');
       if (selectedBtn) continue;
       const btns = $$('button, [role="button"], [role="option"], [role="radio"], div[tabindex], span[tabindex]', group)
         .filter(el => isVisible(el) && (el.textContent?.trim() || '').length > 0 && (el.textContent?.trim() || '').length < 80);
@@ -2381,6 +2438,18 @@
         || group.querySelector('legend,label,[class*="label"],[class*="title"],[class*="question"]')?.textContent
         || '').toLowerCase().replace(/\s+/g, ' ').slice(0, 200);
       const btnTexts = btns.map(b => (b.textContent?.trim() || '').toLowerCase());
+      // A bare button row carries no question of its own: the title is a sibling
+      // above it. Climb (bounded) until the text holds more than the options.
+      if (groupText.replace(/\b(yes|no)\b/g, '').trim().length < 8) {
+        let n = group;
+        for (let up = 0; up < 3 && n.parentElement; up++) {
+          n = n.parentElement;
+          const t = (n.querySelector('[class*="question-title"],[class*="title"],legend,label')?.textContent || n.textContent || '')
+            .toLowerCase().replace(/\s+/g, ' ').trim();
+          const rest = btnTexts.reduce((acc, b) => acc.replace(b, ''), t).trim();
+          if (rest.length >= 8) { groupText = t.slice(0, 200); break; }
+        }
+      }
       // Yes/No (incl. reworded options) — decide semantically, then map onto the real
       // button wording so "Does not require sponsorship" is picked for a NO, etc.
       const hasYesNoish = btnTexts.some(t => /^yes$/i.test(t)) || btnTexts.some(t => /^no$/i.test(t))
@@ -2512,7 +2581,11 @@
     if (/\b(zip|postal|post ?code|postcode|eircode|plz|code postal)\b/i.test(hay) && !pac) return false;
     const looksSearch = pac || el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-autocomplete') || !!el.getAttribute('list');
     if (/\b(address|street)\b/i.test(hay) && !/\b(city|town|location)\b/i.test(hay) && !looksSearch) return false;
-    return /location|city|town|address|where.*(live|based)|metro|region/i.test(hay) ||
+    // "Ethni-CITY" made Oracle's Race/Ethnicity box a location search and it
+    // got "London, United Kingdom"; "re-LOCATION" / "auTHENticity" likewise.
+    // (Not word-bounded: ids like candidateLocation / addressCity must match.)
+    const hayPlace = hay.replace(/ethnicity|ethnicities|relocat\w*|authenticity|electricity|capacity|velocity|publicity|simplicity|specificity|elasticity|toxicity|felicity/g, ' ');
+    return /location|city|town|address|where.*(live|based)|metro|region/i.test(hayPlace) ||
       el.getAttribute('autocomplete') === 'address-level2' || pac;
   }
 
@@ -2572,6 +2645,8 @@
       let sc = -i * 0.01;                                   // keep the widget's order as a tie-break
       if (city && t.includes(city)) sc += 2; else if (city) sc -= 3;
       if (city && t.startsWith(city)) sc += 3;
+      // Exactly the town ("London, England…"), not something named after it ("London Bridge…").
+      if (city && (t === city || t.startsWith(city + ','))) sc += 2;
       if (country && t.includes(country)) sc += 1;
       if (NOT_A_PLACE_RE.test(t.replace(city, ''))) sc -= 6;
       if (sc > bestScore) { bestScore = sc; best = it; }
@@ -2671,6 +2746,7 @@
   }
 
   const _locRetries = new WeakMap();
+  const _locPicked = new WeakSet();
   async function resolveLocationFields() {
     const p = await getProfile();
     if (!locationQuery(p, false)) return 0;
@@ -2691,14 +2767,20 @@
         // "Location (City) is required." under a typed-but-unpicked value counts
         // too (Greenhouse); twice per box at most, so a static hint can't loop it.
         const complains = container && /please enter|enter your location|invalid/i.test(container.textContent || '');
-        if (!complains && (locationAccepted(inp) || (_locRetries.get(inp) || 0) >= 2)) continue;
+        /* A combobox holding a bare typed word ("London") was never picked from
+           its list: Ashby shows no error until Submit and then drops the value,
+           so "accepted" was a guess that kept the job stuck. A picked entry
+           reads "London, England, United Kingdom". */
+        const typedOnly = !_locPicked.has(inp) && !/,/.test(inp.value) &&
+          (inp.getAttribute('role') === 'combobox' || /list|both/i.test(inp.getAttribute('aria-autocomplete') || ''));
+        if (!complains && ((locationAccepted(inp) && !typedOnly) || (_locRetries.get(inp) || 0) >= 2)) continue;
         _locRetries.set(inp, (_locRetries.get(inp) || 0) + 1);
       }
       // Use the most specific label-appropriate value (city-only for pure "city" fields).
       const lbl = (getLabel(inp) || '').toLowerCase();
       const val = locationQuery(p, /\bcity\b/.test(lbl));
       if (!val) continue;
-      if (await commitAutocomplete(inp, val)) committed++;
+      if (await commitAutocomplete(inp, val)) { committed++; _locPicked.add(inp); }
       else DIAG('location.uncommitted', lbl || 'location', { detail: { tried: val.split(',')[0] } });
       await sleep(300);
     }
@@ -3435,10 +3517,18 @@
       }
       if (el.type === 'radio') continue;
       if (el.tagName === 'SELECT') {
-        const opts = deepAll('option', el).filter(o => o.value && o.index > 0);
+        const opts = selectOptions(el).filter(o => o.value && o.index > 0);
         // Decision-aware pick (reads the real option wording); then EEO/decline; then
         // first real option as a last resort so a required select is never left blank.
         let opt = selectOptionForQuestion(el, lbl, p);
+        // The profile's own value by meaning (education level, years, notice)
+        // before the first-option last resort — that put "High School" down
+        // for a Masters.
+        if (!opt) {
+          const texts = Array.from(el.options).map(o => o.text);
+          const bi = bestOptionIndex(texts, profileTargetFor(lbl, p), lbl);
+          if (bi >= 0 && el.options[bi] && el.options[bi].value) opt = el.options[bi];
+        }
         if (!opt && /gender|disability|veteran|race|ethnic|sex\b/i.test(lbl || ''))
           opt = opts.find(o => /prefer not|decline|not to/i.test(o.text));
         if (!opt) opt = opts[0];
@@ -3527,6 +3617,9 @@
         const m = JSON.parse(sessionStorage.getItem('uaWdRun') || 'null');
         if (m && !m.assist && Date.now() - (m.startedAt || 0) < 20 * 60000) return true;
       } catch (_) {}
+      // On Workday SpeedyApply takes the application over when it is built in
+      // and on the page — Jobright's own autofill would type over it.
+      try { if (_saDriving || (saEmbedded() && isWorkday() && speedyApplyPresent())) return true; } catch (_) {}
       try { return isRunnerTab() || _mgrDriving || (isWorkday() && isBusy()); } catch (_) { return false; }
     };
   } catch (_) {}
@@ -3813,8 +3906,9 @@
   }
   const EDU_RANKS = [
     [/\b(ph\.?\s?d|doctor(ate|al)?|d\.?phil)\b/i, 5],
-    [/\b(master|m\.?sc|m\.?s\.?\b|m\.?a\.?\b|mba|m\.?eng|postgrad(uate)?)\b/i, 4],
-    [/\b(bachelor|b\.?sc|b\.?s\.?\b|b\.?a\.?\b|b\.?eng|undergrad(uate)?|honours|degree)\b/i, 3],
+    // "Masters" / "Bachelors" (Jobright's accreditation) ranked 0 — the s.
+    [/\b(masters?|m\.?sc|m\.?s\.?\b|m\.?a\.?\b|mba|m\.?eng|postgrad(uate)?)\b/i, 4],
+    [/\b(bachelors?|b\.?sc|b\.?s\.?\b|b\.?a\.?\b|b\.?eng|undergrad(uate)?|honours|degree)\b/i, 3],
     [/\b(associate|diploma|hnd|foundation)\b/i, 2],
     [/\b(high school|secondary|ged|a.?levels?|leaving cert)\b/i, 1],
   ];
@@ -4855,6 +4949,13 @@
     collectFrames(document, 0);
     return roots;
   }
+  /* A select's OWN options. Passing the select to deepAll() made it the LIMIT
+     and returned every option on the page, so a required "Highest level of
+     education" select was set to the country list's first value — which it
+     does not have, so it stayed empty and iCIMS could never be submitted. */
+  function selectOptions(sel) {
+    try { return Array.from((sel && sel.options) || []); } catch (_) { return []; }
+  }
   // All matching elements anywhere: light DOM, open shadow roots, same-origin frames.
   function deepAll(sel, limit) {
     const out = [];
@@ -5224,23 +5325,43 @@
      tab was left behind for every job. Read the address instead and go there in
      this tab. From Jobright's page data first, then its "Original Job Post" link,
      then any link straight to a known ATS. */
+  /* Is this a link to a JOB, not just the company's careers site?
+     "https://collegeboard.wd1.myworkdayjobs.com" (no job in it) was taken from
+     the Jobright page and opened in the job tab: Workday answered
+     "HTTP ERROR 406", and the tab flickered and closed. A Workday job link
+     has /job/ (or /details/) in it; any other link needs more than a bare
+     host or a locale. */
+  function looksLikeJobLink(u) {
+    try {
+      const x = new URL(String(u));
+      const segs = x.pathname.split('/').filter(Boolean).filter((sg) => !/^[a-z]{2}([-_][a-z]{2})?$/i.test(sg));
+      if (/(^|\.)(myworkdayjobs|myworkdaysite|myworkday)\.com$/i.test(x.hostname)) return /\/(job|details)\//i.test(x.pathname);
+      if (!segs.length) return !!x.search && /job|req|posting|id=/i.test(x.search);
+      if (segs.length === 1 && /^(careers?|jobs?|search|home|index(\.html?)?)$/i.test(segs[0])) return false;
+      return true;
+    } catch (_) { return false; }
+  }
   function jobrightApplyTarget() {
-    const ok = (u) => { try { const x = new URL(String(u), location.href); return /^https?:$/.test(x.protocol) && !/(^|\.)jobright\.ai$/i.test(x.hostname) && x.href; } catch (_) { return false; } };
+    const ok = (u) => { try { const x = new URL(String(u), location.href); return /^https?:$/.test(x.protocol) && !/(^|\.)jobright\.ai$/i.test(x.hostname) && looksLikeJobLink(x.href) && x.href; } catch (_) { return false; } };
     try {
       const data = document.getElementById('__NEXT_DATA__');
       if (data && data.textContent) {
-        const KEY = /^(applyLink|apply_link|applyUrl|apply_url|originalUrl|original_url|jobUrl|job_url|externalUrl|external_url|sourceUrl|source_url|originalJobUrl)$/i;
-        let found = '';
+        /* The apply link by name, most specific first. It used to take the FIRST
+           key of any of these names anywhere in the data — a company record's
+           jobUrl / sourceUrl (its careers home) could win over the job's own
+           applyLink. */
+        const RANK = [/^(applyLink|apply_link|applyUrl|apply_url)$/i, /^(originalJobUrl|originalUrl|original_url|externalUrl|external_url)$/i, /^(jobUrl|job_url|sourceUrl|source_url)$/i];
+        const found = RANK.map(() => '');
         const walk = (o, d) => {
-          if (found || !o || typeof o !== 'object' || d > 12) return;
+          if (!o || typeof o !== 'object' || d > 12) return;
           for (const [k, v] of Object.entries(o)) {
-            if (found) return;
-            if (typeof v === 'string' && KEY.test(k) && ok(v)) { found = ok(v); return; }
-            if (v && typeof v === 'object') walk(v, d + 1);
+            if (typeof v === 'string') { const r = RANK.findIndex((re) => re.test(k)); if (r >= 0 && !found[r] && ok(v)) found[r] = ok(v); }
+            else if (v && typeof v === 'object') walk(v, d + 1);
           }
         };
         walk(JSON.parse(data.textContent), 0);
-        if (found) return found;
+        const best = found.find(Boolean);
+        if (best) return best;
       }
     } catch (_) {}
     const links = Array.from(document.querySelectorAll('a[href]'));
@@ -5250,6 +5371,7 @@
     const direct = links.find((a) => ok(a.href) && ATS.test(new URL(a.href).hostname));
     return direct ? ok(direct.href) : '';
   }
+
 
   /* ── VALUES IN THE WRONG BOX (ported from the OptimHire patch's sanitizer) ──
      Two engines fill these forms — Jobright's and ours — and either can put a
@@ -5419,7 +5541,7 @@
       const lblLower = (lbl || '').toLowerCase();
       const isEEO = /gender|disability|veteran|race|ethnicity|sex\b|heritage/i.test(lblLower);
       const val = guessFieldValue(lbl, p, sel);
-      const opts = deepAll('option', sel).filter(o => o.value && o.index > 0);
+      const opts = selectOptions(sel).filter(o => o.value && o.index > 0);
       let opt = null;
       // Ranges, notice periods, education levels — see bestOptionIndex.
       {
@@ -5434,7 +5556,13 @@
           || opts.find(o => o.text.trim().toLowerCase().includes(valLower))
           || opts.find(o => o.value.toLowerCase() === valLower)
           || opts.find(o => valLower.includes(o.text.trim().toLowerCase()) && o.text.trim().length > 1);
-        if (!opt) { const words = valLower.split(/\s+/).filter(w => w.length > 2); if (words.length) opt = opts.find(o => words.some(w => o.text.trim().toLowerCase().includes(w))); }
+        /* Word overlap — never for a demographic question, and never on filler
+           words: "Prefer NOT to say" picked "White (NOT Hispanic or Latino)". */
+        if (!opt && !isEEO) {
+          const STOPW = /^(the|and|for|you|your|not|say|prefer|have|has|with|that|this|are|any|all|from|our|their|does|did|was|were|will|would|can|able|wish|answer|self|identify|other|none)$/;
+          const words = valLower.split(/[^a-z0-9]+/).filter(w => w.length > 2 && !STOPW.test(w));
+          if (words.length) opt = opts.find(o => words.some(w => new RegExp('\\b' + w + '\\b').test(o.text.trim().toLowerCase())));
+        }
       }
       // EEO/demographic fields: if nothing matched (this also covers the common case
       // where guessValue already returned the generic "Prefer not to say" default and
@@ -5551,7 +5679,7 @@
       const lbl = getLabel(sel);
       const val = guessFieldValue(lbl, p, sel);
       if (!val) continue;
-      const opt = deepAll('option', sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+      const opt = selectOptions(sel).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
       if (opt) { setSelectValue(sel, opt.value); refilled++; }
     }
     if (refilled > 0) LOG(`Verification pass: re-filled ${refilled} fields that were cleared`);
@@ -6358,8 +6486,12 @@
     // something really was missing, the post-submit validation-error / retry logic in
     // the queue's verification loop catches it and re-runs the guarantor sweep.
     const submitEnabled = el => el && isVisible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    /* The form can live in a same-origin frame (iCIMS: #icims_content_iframe).
+       Fields were filled through fieldRoots(), but the button was looked for in
+       the top document only — "No submit/next button found" on a full form. */
     for (const sel of submitSels) {
-      const btn = $(sel);
+      let btn = $(sel);
+      if (!submitEnabled(btn)) { for (const r of fieldRoots().slice(1)) { const b = r.querySelector(sel); if (submitEnabled(b)) { btn = b; break; } } }
       if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await clearOverSubmit(btn); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
     }
     // Fallback: button by text
@@ -6658,9 +6790,10 @@
     LOG(`Tailor-first flow starting for ${ats}...`);
 
     // Wait for Jobright sidebar to load (shadow-aware)
-    const sidebar = await waitForSidebar(15000);
+    const sidebar = await waitForSidebar(10000);
     if (!sidebar) { LOG('Jobright sidebar not found — falling back to direct autofill'); await directAutofillFlow({ noJobright: true }); return; }
-    await sleep(scaled(2000, 1000));
+    // Its buttons, not a flat 2s: they usually mount within a few hundred ms.
+    await waitUntil(() => findAutofillButton() || sidebar.querySelector('.application-dashboard-tailor-resume,.external-job-generate-resume-button,.continue-button'), 2000, 150);
 
     // Step 1: Click "Generate Custom Resume" only if the user opted into tailoring
     // during the queue. By default we skip it for reliability (the resume-generator
@@ -6703,32 +6836,25 @@
 
     // Step 4: Click the Autofill button
     LOG('Step 3: Triggering Autofill');
-    await triggerAutofill();
+    const jrFired = await triggerAutofill();
 
-    // Wait for Jobright autofill to complete (watch for "Filling" → "Autofill" text change)
-    LOG('Waiting for Jobright autofill to complete...');
-    await sleep(scaled(2000, 1000));
-    const fillStart = Date.now();
-    while (Date.now() - fillStart < 15000) { // 15s max (reduced from 60s)
-      const afBtn = sidebar.querySelector('.auto-fill-button');
-      if (afBtn) {
-        const txt = afBtn.textContent?.trim().toLowerCase() || '';
-        if (txt === 'autofill' || txt === '' || txt === 'filled') break; // Done filling
-      } else break; // Button gone — don't wait forever
-      await sleep(scaled(1000, 500));
-    }
-    await sleep(scaled(1000, 500));
+    /* Wait for Jobright's fill only when it was started, and only as long as it
+       runs: "Filling…" → back to "Autofill". It was 2s + 1s polls + 1s even
+       when the button was never clicked. Up to 2s for it to start, 15s to end. */
+    if (jrFired) await waitForJobrightFill(sidebar);
 
     // Step 5: Try resume upload if needed
     await tryResumeUpload();
 
     // Step 6: Fallback fill to catch missed fields
     LOG('Step 4: Running fallback fill for missed fields');
-    await fallbackFill();
-    await sleep(scaled(1000, 500));
-    // Second pass
-    await fallbackFill();
-    await sleep(500);
+    // A second pass only when the first changed something (answers can reveal
+    // follow-up fields); after a pass that filled nothing it always found nothing.
+    if ((await fallbackFill()) > 0) {
+      await sleep(scaled(600, 250));
+      await fallbackFill();
+    }
+    await sleep(200);
     // Conditional sub-questions + declaration boxes + anything still required.
     await guaranteeRequiredFields();
     // Fix any validation errors
@@ -6739,7 +6865,7 @@
     LOG('Step 5: Auto-submit/next');
     await autoSubmitOrNext();
     await learnFromPage();
-    await sleep(scaled(2000, 1000));
+    await sleep(scaled(1000, 500));
     // Remaining pages / review-confirm / account walls are driven to completion by
     // the dispatcher's universal multi-page driver after this returns.
   }
@@ -6894,23 +7020,37 @@
      sidebar, so a genuine step change is now visible. */
   function getPageHash() { return stepSignature(); }
 
+  /* Jobright's fill runs as long as its button reads "Filling…". Up to 2s for
+     it to start, 15s for it to end, then until the form stops changing. */
+  async function waitForJobrightFill(sidebar) {
+    LOG('Waiting for Jobright autofill to complete...');
+    const fillStart = Date.now();
+    let started = false;
+    while (Date.now() - fillStart < 15000) {
+      const afBtn = findAutofillButton() || (sidebar && sidebar.querySelector('.auto-fill-button'));
+      if (!afBtn) break;                                     // button gone — don't wait forever
+      const txt = afBtn.textContent?.trim().toLowerCase() || '';
+      const idle = txt === 'autofill' || txt === '' || txt === 'filled';
+      if (!idle) started = true;
+      else if (started || Date.now() - fillStart > 2000) break;     // done (or never began)
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await waitForFormStable(800);
+  }
+
   // ===================== DIRECT AUTOFILL FLOW (no sidebar) =====================
   async function directAutofillFlow(opts) {
     // No sidebar means no Autofill button to press: looking for one cost ~20s a job.
-    if (!(opts && opts.noJobright)) {
-      await triggerAutofill();
-      await sleep(scaled(5000, 2500));
-    }
+    // A flat 5s followed the click — even when there was nothing to click.
+    if (!(opts && opts.noJobright) && await triggerAutofill()) await waitForJobrightFill(getSidebar());
     await fixPhoneCountryCode();
-    await fallbackFill();
-    await sleep(scaled(1000, 500));
-    await fallbackFill();
-    await sleep(scaled(1000, 500));
+    if ((await fallbackFill()) > 0) { await sleep(scaled(600, 250)); await fallbackFill(); }
+    await sleep(200);
     // Conditional sub-questions + declaration boxes + anything still required.
     await guaranteeRequiredFields();
     await handleValidationErrors();
     await autoSubmitOrNext();
-    await sleep(scaled(2000, 1000));
+    await sleep(scaled(1000, 500));
     // Remaining pages are driven by the dispatcher's universal multi-page driver.
   }
 
@@ -6919,7 +7059,7 @@
     LOG('Ashby automation starting...');
     const form = await waitFor('form,.ashby-application-form,[data-testid="application-form"]', 10000);
     if (!form) { LOG('No Ashby form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1.5s: go once the form stops changing
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -6929,7 +7069,7 @@
     LOG('BambooHR automation starting...');
     const form = await waitFor('.RenderForm,form#applicationForm,.positionapply', 10000);
     if (!form) { LOG('No BambooHR form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1.5s: go once the form stops changing
     await fixPhoneCountryCode();
     await tailorFirstFlow();
   }
@@ -7319,7 +7459,22 @@
      SpeedyApply's panel is a closed shadow root, so it is seen by its element
      on the page, not by reading it. Not there → the Workday engine as before. */
   let _saDriving = false;
-  const speedyApplyPresent = () => !!document.querySelector('speedyapply-autofill,speedyapply-modal');
+  /* Is SpeedyApply working this page? Its widget (speedyapply-autofill) is
+     only its on-screen button: it draws ~2.5s after load, and not again when
+     Apply is pressed before then — its Workday script still runs and types.
+     Built in, its own settings answer it: switched on and holding a profile. */
+  let _saReady = false;
+  const refreshSaReady = async () => {
+    try {
+      const sa = await saSettings();
+      const d = await new Promise((r) => chrome.storage.local.get('autofillEnabled', (v) => { void chrome.runtime.lastError; r(v || {}); }));
+      _saReady = !!(sa && sa.hasProfile && d.autofillEnabled !== false);
+    } catch (_) { _saReady = false; }
+  };
+  // Handed back to the engine for this page: SpeedyApply no longer counts as
+  // present, or the account watcher would stay off for the engine too.
+  let _saDeclined = false;
+  const speedyApplyPresent = () => !_saDeclined && (!!document.querySelector('speedyapply-autofill,speedyapply-modal') || (saEmbedded() && _saReady));
   let _saModeOn = true;                                  // cached for the password watcher (sync)
   try { chrome.storage.local.get('ua_wd_mode', (d) => { _saModeOn = !(d && d.ua_wd_mode === 'engine'); }); chrome.storage.onChanged.addListener((c) => { if (c.ua_wd_mode) _saModeOn = c.ua_wd_mode.newValue !== 'engine'; }); } catch (_) {}
   async function workdayModeSpeedyApply() { return (await st.get('ua_wd_mode')) !== 'engine'; }
@@ -7329,22 +7484,71 @@
   }
   const wdNextButton = () => deepAll('button[data-automation-id="bottom-navigation-next-button"],button[data-automation-id="pageFooterNextButton"]', 4).find((b) => isVisible(b) && !b.disabled) || null;
   const wdPageErrors = () => deepAll('[data-automation-id="errorBanner"],[data-automation-id="inputError"],[data-automation-id="errorMessage"]', 10).some(isVisible);
+  /* SpeedyApply's premium autofill fills from a profile chosen FOR THIS TAB
+     (getSelectedProfile); with none it shows its profile picker and waits for a
+     click — every queue job is a new tab, so each one sat at the picker. Pick
+     the way the picker would, through SpeedyApply's own messages: its job-match
+     scores (premiumFetchJobScores), else its profile list, then
+     setSelectedProfile. A profile you already picked for the tab stands. */
+  async function saAutoPickProfile() {
+    if (!saEmbedded()) return '';
+    const ask = (m, ms) => new Promise((res) => {
+      const t = setTimeout(() => res(null), ms || 15000);
+      try { chrome.runtime.sendMessage(m, (v) => { void chrome.runtime.lastError; clearTimeout(t); res(v && !v.error ? v : null); }); } catch (_) { clearTimeout(t); res(null); }
+    });
+    const cur = await ask({ type: 'getSelectedProfile' }, 5000);
+    if (cur && cur.profile) return cur.profileName || 'already picked';
+    const sc = await ask({ type: 'premiumFetchJobScores', appUrl: location.href });
+    let list = sc && Array.isArray(sc.profiles) ? sc.profiles.filter((x) => x && x.id) : [];
+    if (!list.length) { const l = await ask({ type: 'premiumFetchProfileList' }); list = Array.isArray(l) ? l.filter((x) => x && x.id) : []; }
+    if (!list.length) { LOG('Workday (SpeedyApply): no saved SpeedyApply profiles to pick from (sign in to SpeedyApply, or import a profile in its settings)'); return ''; }
+    const ranked = sc && sc.scores ? [...list].sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)) : list;
+    const best = ranked[0];
+    const set = await ask({ type: 'setSelectedProfile', profileId: best.id });
+    LOG(`Workday (SpeedyApply): using your profile "${best.profileName || best.id}" for this job (${sc && sc.scores ? 'best match' + (best.score != null ? ', score ' + best.score : '') : 'your first profile'})${set ? '' : ' — SpeedyApply did not confirm it'}`);
+    return best.profileName || best.id;
+  }
   async function workdaySpeedyApplyRun() {
-    if (!(await workdayModeSpeedyApply())) return false;
+    if (!(await workdayModeSpeedyApply())) { _saDeclined = true; return false; }
+    await refreshSaReady();
+    // Built in but never given a profile: SpeedyApply has nothing to fill with.
+    if (saEmbedded()) {
+      const sa = await saSettings();
+      if (sa && !sa.hasProfile) {
+        LOG('Workday: SpeedyApply has no profile yet (right-click → "SpeedyApply settings" → Profile → Import your profile JSON) — using the Workday engine for this job');
+        DIAG('workday.speedyapply-no-profile', location.hostname);
+        _saDeclined = true; return false;
+      }
+    }
     _saDriving = true;
-    const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 8000, 250);
+    // SpeedyApply mounts with the page; 5s is ample (was 8s before the engine took over).
+    const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 5000, 200);
     if (!here) {
       _saDriving = false;
       LOG('Workday: SpeedyApply is not active on this page (install it, enable it and give it a profile) — using the built-in Workday engine instead');
       DIAG('workday.speedyapply-missing', location.hostname);
-      return false;
+      _saDeclined = true; return false;
+    }
+    /* Premium SpeedyApply fills only from a profile picked for the tab. If none
+       can be picked (signed out of SpeedyApply, no saved profiles) it will not
+       fill a single field — say so and let the engine apply, rather than
+       waiting out every step. */
+    if (saEmbedded()) {
+      const cfg = await new Promise((res) => { const t = setTimeout(() => res(null), 5000); try { chrome.runtime.sendMessage({ type: 'getAutofillConfig' }, (v) => { void chrome.runtime.lastError; clearTimeout(t); res(v || null); }); } catch (_) { clearTimeout(t); res(null); } });
+      if (cfg && cfg.enabled === false) { _saDriving = false; LOG('Workday: SpeedyApply autofill is switched off in its settings — using the Workday engine for this job'); _saDeclined = true; return false; }
+      if (cfg && cfg.premium && !(await saAutoPickProfile().catch(() => ''))) {
+        _saDriving = false;
+        LOG('Workday: SpeedyApply could not get a profile for this job (premium autofill needs your SpeedyApply sign-in and a saved profile) — using the Workday engine for this job');
+        DIAG('workday.speedyapply-no-profile-picked', location.hostname);
+        _saDeclined = true; return false;
+      }
     }
     LOG('Workday: SpeedyApply is filling this application — this extension only moves it along');
     _saDriving = true;
     try {
       return await withBusy('SpeedyApply filling Workday', async () => {
         const until = Date.now() + 5 * 60 * 1000;
-        const STILL_MS = scaled(6000, 3500);           // SpeedyApply done with this step
+        const STILL_MS = scaled(4000, 2500);           // SpeedyApply done with this step (it types fields < 1s apart)
         let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0;
         while (Date.now() < until && !autoStopped()) {
           if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
@@ -7358,10 +7562,15 @@
           if (workdayOnAccountWall()) {
             const err = workdayAuthErrorText();
             if (WD_SIGNIN_REFUSED_RE.test(err) && !_wdCreatedThisJob) { wdSkipRefusedSignIn(err); return 'closed'; }
-            // SpeedyApply hasn't moved the account page on (no account in its settings): ours.
-            if (quiet > (_wdCreatedThisJob || _saAccountTurns ? 2500 : 6000)) {
+            /* SpeedyApply only TYPES its account in (email, password, the
+               checkbox) and never presses Create Account / Sign In, decides
+               between them, or handles "already exists" / wrong password. That
+               is this extension's account flow — Jobright's sign-up / sign-in —
+               with the same account. A short settle, not 6s of waiting for a
+               press that never comes. */
+            if (quiet > (_wdCreatedThisJob || _saAccountTurns ? 2000 : 1500)) {
               _saAccountTurns++;
-              LOG('Workday (SpeedyApply): the account page is not moving — signing in / creating the account with this extension\'s');
+              LOG('Workday (SpeedyApply): account page — signing in / creating the account (Jobright\'s account flow, ' + ((await saWorkdayAccount()) ? 'SpeedyApply\'s saved account' : 'this extension\'s saved account') + ')');
               const r = await fillWorkdayCreateAccount(true);
               if (_authDeadEnd) return 'closed';
               if (r === 'stop' && workdayOnAccountWall()) { if (!_authDeadEnd) _authDeadEnd = 'Workday sign-in did not complete'; return 'closed'; }
@@ -7398,6 +7607,7 @@
   async function workdayAutomation() {
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
     // SpeedyApply mode: our password watcher keeps off the account page from the start.
+    await refreshSaReady();
     if (_uaJobKey && await workdayModeSpeedyApply() && speedyApplyPresent()) _saDriving = true;
     // Fully Automated outside a run: your engine's assist fills each step as it appears.
     if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
@@ -9170,7 +9380,7 @@
     if (!$('#application_form,#application-form,#application,.application-form,.application--form') && await openEmbeddedGreenhouseForm()) return;
     const form = await waitFor('#application_form,#application-form,#application,.application-form,.application--form,.main-content form', 10000);
     if (!form) { LOG('No Greenhouse form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Greenhouse-specific field selectors (from SpeedyApply)
     const ghFields = {
@@ -9222,8 +9432,8 @@
       }, 5000, 150);
       if (!rows.length) continue;
       const want = (city || q).toLowerCase();
-      const row = rows.find((r) => (r.textContent || '').toLowerCase().startsWith(want)) ||
-        rows.find((r) => (r.textContent || '').toLowerCase().includes(want)) || rows[0];
+      // The town itself, not a landmark that starts with its name ("London Bridge").
+      const row = pickPlaceSuggestion(rows, [p.city, p.state, p.country].filter(Boolean).join(', ') || want) || rows[0];
       triggerMouse(row);
       realClick(row);
       await sleep(scaled(500, 250));
@@ -9246,7 +9456,7 @@
     // Wait for form — Lever uses many different form selectors
     const form = await waitFor('.application-form,#application-form,.postings-form,form[action*="apply"],.application-page,.content form,.main-content form,form', 8000);
     if (!form) { LOG('No Lever form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1000, 500));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     const p = await getProfile();
     await loadAnswerBank();
@@ -9418,7 +9628,7 @@
 
     const form = await waitFor('.jv-application-form,form[name="applicationForm"],.application-form,form', 10000);
     if (!form) { LOG('No Jobvite form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Jobvite field patterns
     const jvFields = {
@@ -9674,7 +9884,7 @@
 
     const form = await waitFor('.breezy-apply-form,form[id*="application"],.position-apply,form', 10000);
     if (!form) { LOG('No BreezyHR form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // BreezyHR field patterns
     const brFields = {
@@ -9707,7 +9917,7 @@
 
     const form = await waitFor('form,[class*="application-form"],[data-testid*="application"]', 10000);
     if (!form) { LOG('No Rippling form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Rippling uses React-based forms
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -9758,7 +9968,7 @@
 
     const form = await waitFor('.apply-form,form[id*="application"],form[class*="candidate"],form', 10000);
     if (!form) { LOG('No ADP form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     const adpFields = {
       'input[id*="firstName"],input[name*="firstName"]': p.first_name || p.firstName || '',
@@ -9909,7 +10119,7 @@
 
     const form = await waitFor('form[id*="application"],form,.applicationForm,[class*="applyForm"]', 10000);
     if (!form) { LOG('No SuccessFactors form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     try { await sfUploadResume(); } catch (e) { LOG('SuccessFactors CV upload failed:', e?.message || e); }
 
@@ -9967,7 +10177,7 @@
 
     const form = await waitFor('#jazzhr-apply,form[id*="apply"],form.resume-form,form', 10000);
     if (!form) { LOG('No JazzHR form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     const jzFields = {
       '#first_name,input[name="first_name"]': p.first_name || p.firstName || '',
@@ -10010,7 +10220,7 @@
 
     const form = await waitFor('form[class*="application"],form,.apply-form', 10000);
     if (!form) { LOG('No Handshake form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Fill all visible empty fields using generic approach
     const inputs = $$('input:not([type=hidden]):not([type=file]):not([type=submit]),textarea,select')
@@ -10101,7 +10311,7 @@
 
     const form = await waitFor('.apply-form,form[class*="application"],[class*="ApplicationForm"],form', 10000);
     if (!form) { LOG('No Eightfold form found'); await directAutofillFlow(); return; }
-    await sleep(scaled(1500, 750));
+    await waitForFormStable(1200);           // was a flat 1–1.5s
 
     // Eightfold uses React with custom components. Tick boxes are the consent
     // pass's job (tickConsentBoxes), not something to type a guess into.
@@ -10178,7 +10388,9 @@
       await waitForFormStable(4000);
     }
 
-    await waitFor('.iCIMS_InfoMsg_Job,.iCIMS_Forms_Region,form,.applicant-form', 8000);
+    // The form is usually in #icims_content_iframe: looking only in the top
+    // document waited the full 8s on every iCIMS job.
+    await waitUntil(() => deepAll('.iCIMS_InfoMsg_Job,.iCIMS_Forms_Region,form,.applicant-form', 1).length > 0, 8000, 150);
     await waitForFormStable(3000);
 
     // iCIMS's own field ids, where the top document can see them. When the form
@@ -10714,7 +10926,7 @@
       if (!val) continue;
 
       if (inp.tagName === 'SELECT') {
-        const opt = deepAll('option', inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
+        const opt = selectOptions(inp).find(o => o.text.toLowerCase().includes(val.toLowerCase()));
         if (opt) { setSelectValue(inp, opt.value); fixed++; }
       } else {
         inp.focus({ preventScroll: true }); nativeSet(inp, val); fixed++;
@@ -10884,17 +11096,30 @@
   // ===================== AUTOFILL TRIGGER =====================
   // Shadow-DOM aware: 1.14.0 renders the sidebar inside an open shadow root, so we
   // locate the button via getSidebar()/findAutofillButton() rather than document.
+  /* Once the button has been missing on a page, the retry passes on the SAME
+     page (each blocked submit re-runs the fill) looked for it again for ~14s
+     every time. One quick look then; the full wait only on a new page. */
+  let _autofillMissHref = '';
   async function triggerAutofill__impl() {
-    await waitForSidebar(8000);
-    await sleep(scaled(1500, 750));
-    // Try several times — the button may still be mounting / disabled while the
-    // sidebar hydrates. This is the click that was silently failing in 1.14.0.
-    for (let attempt = 0; attempt < 5; attempt++) {
+    if (_autofillMissHref && _autofillMissHref === location.href) {
       const b = findAutofillButton();
-      if (b && !b.disabled && isVisible(b)) { realClick(b); LOG(`Autofill button clicked (attempt ${attempt + 1})`); return true; }
-      await sleep(attempt === 0 ? 1500 : 2500);
+      if (b && !b.disabled && isVisible(b)) { realClick(b); LOG('Autofill button clicked'); _autofillMissHref = ''; return true; }
+      return false;
+    }
+    /* Click the moment the button is ready. This was a flat 1.5s sleep and then
+       5 looks 1.5–2.5s apart — ~13s on every page where it never shows, and up
+       to 2.5s after it did. Now it is checked every 200ms: clicked as soon as it
+       is enabled, given up on after ~6s once the sidebar is up. */
+    const sb = await waitForSidebar(6000);
+    const dl = Date.now() + (sb ? 6000 : 1500);
+    for (let attempt = 1; ; attempt++) {
+      const b = findAutofillButton();
+      if (b && !b.disabled && isVisible(b)) { realClick(b); LOG(`Autofill button clicked (${attempt > 1 ? 'after ' + attempt + ' looks' : 'at once'})`); return true; }
+      if (Date.now() >= dl) break;
+      await new Promise((r) => setTimeout(r, 200));
     }
     LOG('Autofill button not found or disabled (shadow-aware lookup)');
+    _autofillMissHref = location.href;
     return false;
   }
   // Stall watchdog stands down while this runs — see withBusy.
@@ -11104,6 +11329,7 @@
     const out = [];
     try { const site = await siteLogin(); if (site && site.password) out.push(site.password); } catch (_) {}
     try { const mem = (await st.get(WD_SITE_PW_KEY)) || {}; const k = accountKeyFor(location.hostname); if (mem[k]) out.push(mem[k]); } catch (_) {}
+    try { const sa = await saWorkdayAccount(); if (sa) out.push(sa.password); } catch (_) {}   // SpeedyApply's Workday account
     try { const shared = await st.get('ua_app_password'); if (shared) out.push(shared); } catch (_) {}
     try {
       // Jobright's own Workday sign-up password ("Your Autofill information → Sign-up Information").
@@ -14796,9 +15022,38 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       return hit && all[hit].email && all[hit].password ? all[hit] : null;
     } catch (_) { return null; }
   }
+  /* SpeedyApply built into this extension: its content script is in our own
+     manifest, and its settings live in the same storage — read, never written.
+     Its "Autofill Account" ({accountEmail, accountPassword, useProfileEmail})
+     is the Workday account its script types in; the account flow below uses
+     the same one, so the two never type different passwords into one form. */
+  var _saEmbedded;                                       // var: read before this line runs
+  function saEmbedded() {
+    if (_saEmbedded === undefined) { try { _saEmbedded = (chrome.runtime.getManifest().content_scripts || []).some((c) => (c.js || []).includes('content-scripts/content.js')); } catch (_) { _saEmbedded = false; } }
+    return _saEmbedded;
+  }
+  async function saSettings() {
+    if (!saEmbedded()) return null;
+    try {
+      const d = await new Promise((r) => chrome.storage.local.get(['autofillAccount', 'profile'], (v) => { void chrome.runtime.lastError; r(v || {}); }));
+      let a = d.autofillAccount, prof = d.profile;
+      if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) { a = null; } }
+      if (typeof prof === 'string') { try { prof = JSON.parse(prof); } catch (_) { prof = null; } }
+      a = a || {};
+      const email = String((a.useProfileEmail ? prof && prof.contactData && prof.contactData.email : a.accountEmail) || '').trim();
+      return { email, password: String(a.accountPassword || ''), hasProfile: !!(prof && prof.nameData && (prof.nameData.firstName || prof.nameData.lastName)) };
+    } catch (_) { return null; }
+  }
+  async function saWorkdayAccount() {
+    if (!isWorkday()) return null;
+    const sa = await saSettings();
+    return sa && sa.email && sa.password ? sa : null;
+  }
   async function getAppPassword() {
     const site = await siteLogin();
     if (site) return site.password;
+    const sa = await saWorkdayAccount();
+    if (sa) return sa.password;
     let pw = await st.get('ua_app_password');
     if (!pw) { pw = generateStrongPassword(); await st.set('ua_app_password', pw); LOG('Generated & saved a reusable ATS account password'); }
     return pw;
@@ -14808,6 +15063,8 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   async function getAppEmail() {
     const site = await siteLogin();
     if (site) return site.email;
+    const sa = await saWorkdayAccount();
+    if (sa) return sa.email;
     let e = await st.get('ua_app_email');
     if (!e) { e = ((await getProfile()).email || '').trim(); if (e) await st.set('ua_app_email', e); }
     return e;

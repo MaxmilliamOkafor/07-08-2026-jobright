@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Senior Data Engineer - Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto}.f{margin:12px 0}label,legend{display:block;font-weight:600}input[type=text],input[type=email],input[type=tel],textarea{width:100%;padding:6px;box-sizing:border-box}.err{color:#c00}</style></head><body>
+<!-- Workable (apply.workable.com/<co>/j/<id>/apply/): React form with data-ui
+     attributes, an address box, the CV upload, yes/no questions as radio
+     fieldsets named QA_<id>, a salary question, and a required GDPR consent box. -->
+<h1>Senior Data Engineer</h1>
+<form data-ui="application-form" id="wf" novalidate onsubmit="return window.__validate(event)">
+ <div class="f"><label for="firstname">First name *</label><input id="firstname" data-ui="firstname" name="firstname" aria-label="First name" required></div>
+ <div class="f"><label for="lastname">Last name *</label><input id="lastname" data-ui="lastname" name="lastname" aria-label="Last name" required></div>
+ <div class="f"><label for="email">Email *</label><input id="email" data-ui="email" name="email" type="email" required></div>
+ <div class="f"><label for="phone">Phone *</label><div data-ui="phone"><input id="phone" name="phone" type="tel" required></div></div>
+ <div class="f"><label for="address">Address</label><input id="address" data-ui="address" name="address"></div>
+ <div class="f"><label for="resume">Resume *</label><div data-ui="resume"><input id="resume" type="file" name="resume" required></div></div>
+ <div class="f"><label for="cover">Cover letter</label><textarea id="cover" data-ui="cover_letter" name="cover_letter"></textarea></div>
+ <fieldset class="f" data-ui="QA_101"><legend>Do you have the right to work in the United Kingdom? *</legend>
+   <label><input type="radio" name="QA_101" value="true" required> Yes</label><label><input type="radio" name="QA_101" value="false"> No</label></fieldset>
+ <fieldset class="f" data-ui="QA_102"><legend>Will you now or in the future require sponsorship for employment visa status? *</legend>
+   <label><input type="radio" name="QA_102" value="true" required> Yes</label><label><input type="radio" name="QA_102" value="false"> No</label></fieldset>
+ <div class="f" data-ui="QA_103"><label for="qa103">What are your salary expectations (GBP)? *</label><input id="qa103" name="QA_103" required></div>
+ <div class="f" data-ui="QA_104"><label for="qa104">How many years of experience do you have with SQL? *</label><input id="qa104" name="QA_104" type="number" required></div>
+ <div class="f"><label><input type="checkbox" data-ui="gdpr" name="gdpr" required> I agree to the processing of my personal data in accordance with the privacy notice *</label></div>
+ <div id="errs" class="err"></div>
+ <button data-ui="apply-button" type="submit">Submit application</button>
+</form>
+<script>
+  window.__validate = (e) => {
+    e.preventDefault();
+    const f = document.getElementById('wf');
+    if (!f.checkValidity()) { const bad = [...f.elements].filter((x) => x.willValidate && !x.checkValidity()).map((x) => x.name); document.getElementById('errs').textContent = 'Required: ' + bad.join(', '); console.log('BLOCKED ' + bad.join(',')); return false; }
+    const fd = new FormData(f), out = {};
+    for (const [k, v] of fd.entries()) out[k] = v instanceof File ? (v.name ? 'FILE:' + v.name : '') : v;
+    window.__submitted = out; console.log('SUBMITTED ' + JSON.stringify(out));
+    document.body.innerHTML = '<h2>Thank you for applying!</h2><p>Your application was submitted.</p>';
+    return false;
+  };
+</script></body></html>

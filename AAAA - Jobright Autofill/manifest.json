@@ -168,12 +168,61 @@
       ],
       "run_at": "document_idle",
       "css": []
+    },
+    {
+      "matches": [
+        "*://*/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": [
+        "content-scripts/content.js"
+      ]
+    },
+    {
+      "matches": [
+        "*://*.myworkdayjobs.com/*",
+        "*://*.myworkdaysite.com/*",
+        "*://*.workday.com/*",
+        "*://*.greenhouse.io/*",
+        "*://*.lever.co/*",
+        "*://*.ashbyhq.com/*",
+        "*://*.smartrecruiters.com/*",
+        "*://*.workable.com/*",
+        "*://*.icims.com/*",
+        "*://*.bamboohr.com/*",
+        "*://*.taleo.net/*",
+        "*://*.oraclecloud.com/*",
+        "*://*.jobvite.com/*",
+        "*://*.successfactors.com/*",
+        "*://*.sapsf.com/*",
+        "*://*.workforcenow.adp.com/*",
+        "*://*.breezy.hr/*",
+        "*://*.ats.rippling.com/*",
+        "*://*.eightfold.ai/*",
+        "*://*.applytojob.com/*",
+        "*://*.jazz.co/*",
+        "*://*.joinhandshake.com/*",
+        "*://*.usajobs.gov/*",
+        "*://*.governmentjobs.com/*",
+        "*://*.paylocity.com/*",
+        "*://*.freshteam.com/*",
+        "*://*.dover.io/*",
+        "*://*.dover.com/*",
+        "*://*.pinpointhq.com/*"
+      ],
+      "all_frames": false,
+      "run_at": "document_idle",
+      "js": [
+        "sa-enhancement.js"
+      ]
     }
   ],
   "host_permissions": [
     "http://*/*",
     "https://*/*",
-    "<all_urls>"
+    "<all_urls>",
+    "*://*/*"
   ],
   "web_accessible_resources": [
     {
@@ -189,6 +238,34 @@
         "ua-queue.js",
         "ua-page-hooks.js",
         "ua-diagnostics.js"
+      ]
+    },
+    {
+      "resources": [
+        "images/icon-pattern.svg"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    },
+    {
+      "resources": [
+        "options.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "extension_ids": [
+        "mbgjopdedgonlbpikjfibkccpmhjbnag"
+      ]
+    },
+    {
+      "resources": [
+        "content-scripts/content.css"
+      ],
+      "use_dynamic_url": true,
+      "matches": [
+        "*://*/*"
       ]
     }
   ],

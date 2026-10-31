@@ -4146,3 +4146,248 @@ might be locked."**
 the form" banner is drawn by Jobright on every Workday page until you close it.
 It doesn't by itself mean Jobright's filler is running. The v17.31 block stays
 as a safeguard.
+
+## v17.35 — Major ATSs tested end to end: Ashby, iCIMS, Lever, Greenhouse fixes
+
+"Still a lot of issues in autofill on the ATSs, test the major ATSs." Each ATS
+was run end to end on a replica of its application form, in Chromium, with
+this extension loaded and a Jobright-style profile (London, +44 phone, 4
+roles, a Masters). The replicas copy each ATS's markup and its submit checks.
+Live sites can't be reached from the test environment. Fixed:
+
+- **Every ATS with more than one dropdown.** The select filler read the
+  options of *every* dropdown on the page, not just the one being filled. A
+  required dropdown could get another dropdown's value (e.g. "United States"
+  for the education level). It doesn't have that option, so it stayed blank and
+  the form was blocked. Each dropdown now uses only its own options.
+- **Ashby** (stuck before; submits now in 39s):
+  - The required **Name\*** box was left empty because the trailing `*` stopped
+    the "name" rule matching.
+  - The **Yes/No questions** (two bare buttons, no inputs) were never answered.
+    They are now found, and the question is read from the title above them.
+  - **Location**: "London" was typed but never picked from the list. A combobox
+    holding only a typed word is now picked ("London, England, United Kingdom").
+- **iCIMS** (failed before; submits now in 59s):
+  - **Submit** is inside the `#icims_content_iframe` frame and was looked for
+    only in the main page ("No submit/next button found" on a full form).
+  - **Education level**: Jobright's "Masters" wasn't recognised, so "High
+    School" was picked. It now picks "Master's Degree". The required-field pass
+    also tries the profile before falling back to the first option.
+- **Lever**:
+  - A sponsorship radio whose box held only "Yes No" now finds its real
+    question, so it is answered No.
+  - Race no longer becomes "White (Not Hispanic…)" from the shared word "not".
+    EEO dropdowns are never matched on a shared word, and filler words never
+    count.
+  - Location picks London itself over "London Bridge…".
+- **"Why <Company>?"** ("Why Anthropic?") got the generic "I admire the company
+  culture…". It now gets the answer that names the company. On a job board,
+  where the host is the ATS, the company comes from the link
+  (`job-boards.greenhouse.io/anthropic` → "Anthropic"). "Why are you
+  leaving…?" is not treated as a why-us question.
+- **Oracle**: "Race/Ethnicity" was taken for a location box because "ethni**city**"
+  contains "city", so it got "London, United Kingdom". Words like ethnicity
+  and relocation no longer count as place words.
+- **BambooHR**: "Date Available" (mm/dd/yyyy) got the words "1 month notice". Any
+  answer that isn't already a date now becomes today plus your notice period
+  (11/13/2026).
+- **Speed**: when Jobright's Autofill button isn't on a page, each retry of the
+  same page waited ~14s for it again. Now it waits once per page.
+
+**Results after the fixes (all 17 replicas submit, with these values checked):**
+
+| ATS | Time | Checked |
+|---|---|---|
+| Greenhouse ×4 | 36–48s | sponsorship No, 9 years / "7-10 years", London picked, "Why Anthropic?" names Anthropic |
+| Lever | 32s | London, England, UK; sponsorship No; EEO declined; current company |
+| Ashby | 40s | full name, Yes/No buttons, picked location |
+| Workable | submitted in 10s | right to work Yes, sponsorship No, SQL years 9, GDPR ticked |
+| iCIMS (frame) | 60s | UK, SW1W 0RH, 18+ Yes, Master's Degree |
+| Jobvite | 37s | UK, "9+ years", LinkedIn |
+| SmartRecruiters | 19s | location picked, +44 country, sponsorship No |
+| BambooHR | 39s | UK, date available, references |
+| SuccessFactors | 46s | GB dial code, citizenship UK |
+| Oracle | 20s | address, county, race "Prefer not to say" |
+| Microsoft, Amazon | 31s, 35s | acknowledgements; eligible Yes, sponsor No |
+| Workday (engine) | 55s | all 4 roles added (Meta, SolimHealth, Accenture, Citi) |
+| Workday (SpeedyApply) | 70s | SpeedyApply fills, the extension only presses buttons |
+
+## v17.36 — Faster on every ATS: waits end when the page is ready
+
+"Make autofill perfectly fast enough for each ATS." Most of each job was
+spent in fixed pauses, not in filling. They now end as soon as the page is
+ready:
+
+- **Jobright's Autofill button** is checked every 200ms and clicked the moment
+  it is enabled. Before: a fixed 1.5s, then five looks 1.5–2.5s apart (~13s on
+  a page where it never appears). It is now given up on after ~6s.
+- **Jobright's own fill** is waited for only if the button was actually clicked,
+  and only while it reads "Filling…" (up to 2s to start, 15s to finish).
+  Before: 3–5s every time, clicked or not.
+- **Second fill pass** only when the first changed something. A pass that
+  filled nothing never found anything on the second run.
+- **Start of each ATS flow** (Greenhouse, Lever, Jobvite, Ashby, BambooHR,
+  SuccessFactors, …) goes once the form stops changing, instead of a fixed
+  1–1.5s.
+- **iCIMS** looks for its form inside the application frame (it waited 8s on
+  the main page every job).
+- **Workday with SpeedyApply**: Next is pressed after 4s of no change (was 6s).
+  The extension's own Workday filler takes over after 5s if SpeedyApply is
+  missing (was 8s).
+- **Fix**: a job added by link used its link as the job title. The cover note
+  read "I am applying for the job-boards.greenhouse.io/acme/jobs/… role".
+
+Time from page open to Submit, same replicas, before → after (all 17 still
+submit with the same checked values):
+
+| ATS | Before | After |
+|---|---|---|
+| Greenhouse (4 forms) | 31–40s | 20–28s |
+| Lever | 29s | 22s |
+| Ashby | 35s | 23s |
+| iCIMS | 41s | 20s |
+| Jobvite | 32s | 19s |
+| BambooHR | 34s | 21s |
+| SuccessFactors | 41s | 30s |
+| Microsoft | 27s | 20s |
+| Workday (SpeedyApply) | 67s | 53s |
+| Workday (engine) | 51s | 47s |
+| Workable / Oracle / SmartRecruiters / Amazon | 10 / 14 / 14 / 29s | 10 / 13 / 13 / 28s |
+
+These replicas have no signed-in Jobright, so each page still spends up to
+~6s confirming its Autofill button isn't there. With Jobright signed in, the
+button is there at once and that wait disappears.
+
+## v17.37 — "This page isn't working · HTTP ERROR 406" on Workday
+
+"What is this?" That is Workday refusing the page, shown as Chrome's own error
+page. Here the address was `https://collegeboard.wd1.myworkdayjobs.com` with
+nothing after it. Workday answers a link with no job in it (no
+`/en-US/<site>/job/...`) with 406, and occasionally refuses a real job link
+once. The extension does not navigate there itself: its only Workday redirect,
+the "Something went wrong" retry, keeps the job's path.
+
+The problem was what happened next. Chrome's error pages run no extension
+scripts, so nothing reported back and the job sat on that page until the
+5-minute job limit. The queue now watches for it:
+
+- **First time**: the job's own link is reopened.
+- **Second time**: the job is marked failed with a reason you can read, e.g.
+  "collegeboard.wd1.myworkdayjobs.com refused the page (HTTP error, usually 406) —
+  the link has no job in it, only the site address", and the next job starts.
+- Cancelled redirects and brief connection drops are not counted as errors.
+
+**Where the bare address came from.** When a queued job is a Jobright job page,
+the extension opens the employer's link from that page in the same tab. It used
+to take the first link of a dozen names anywhere in the page data (`applyLink`,
+`jobUrl`, `sourceUrl`, …) or any ATS link on the page. A company record's
+careers home (`https://collegeboard.wd1.myworkdayjobs.com`) could win over the
+job's own apply link. Now:
+
+- links are ranked: the apply link first, then the original or external link,
+  then generic job or source links;
+- a link counts only if it points at a job. On Workday it must contain
+  `/job/` or `/details/`; elsewhere it needs more than a bare host, a locale
+  or `/careers`;
+- with only a careers home on the page, nothing is opened, and Jobright's own
+  Apply is used.
+
+If you see this for a job you want, open the job from the company's careers
+page and import that link (it contains `/job/`).
+
+## v17.38 — SpeedyApply built in: it takes Workday over; Jobright's sign-up / sign-in does the account
+
+"Add the Workday sign up / sign in to SpeedyApply and embed SpeedyApply to
+Jobright exactly how it is." "For Workday, SpeedyApply takes over the
+application."
+
+**SpeedyApply 2.28.2 (+ Workflow Add-on), unchanged.** All 22 of its files sit
+in the extension at the paths it ships with: `background.js`, `content-scripts/`,
+`chunks/`, `assets/`, `images/`, `icon/`, `options.html`, `popup.html`,
+`sidepanel.html` and `sa-enhancement.js`. Its original manifest is kept as
+`speedyapply-manifest.json`. `tests/speedyapply.sha256` records every file's
+fingerprint, and the tests fail if any changes. Its content scripts and
+web-accessible files are declared in Jobright's manifest exactly as in its own.
+
+**Its background runs inside Jobright's worker** (`ua-speedyapply-host.js`,
+loaded with `importScripts` like our other files). Four of its calls are kept to
+what is SpeedyApply's own. In one extension they would otherwise reach Jobright:
+- `storage.local.clear()` runs when you sign out of SpeedyApply, or when its
+  token refresh fails. It would have erased your Jobright sign-in, the queue,
+  your profile and saved Workday logins. Now it removes SpeedyApply's keys only.
+- Its message listener returned `true` for every message and logged "Unhandled
+  message type" for each of Jobright's. It now receives SpeedyApply's own types
+  only.
+- `contextMenus.removeAll()` from SpeedyApply removes its own two items. Ours
+  now removes only ours as well.
+- `setUninstallURL()` would have pointed the extension's uninstall page at
+  speedyapply.com. Skipped.
+
+Its defaults are written only on a fresh install, and reloading Jobright counts
+as an update. So its own install step is run once if it has never set itself
+up. That opens its "new profile" page.
+
+**Your profiles and saved responses** import through SpeedyApply's own screens.
+Right-click any page → **SpeedyApply settings (profile, responses, Workday
+account)**:
+- **Profile → Import** takes the profile JSON (`profile_5.json`,
+  `profile_6.json`).
+- **Settings → Responses → Import Responses** takes `responses.json` (merge or
+  replace).
+- The **Autofill Account** there is the Workday email and password.
+
+Right-click → **SpeedyApply popup** opens its popup (the toolbar icon is
+Jobright's).
+
+**Workday: SpeedyApply takes the application over.**
+- SpeedyApply's Workday script fills every step. This extension only presses
+  Next / Submit if SpeedyApply hasn't after 4s of no change.
+- Jobright's own autofill stands aside on Workday while SpeedyApply is there.
+- Premium SpeedyApply fills only from a profile picked for the tab, and with
+  none it waits at its profile picker for a click. Every queue job is a new
+  tab, so the extension picks the way the picker would, through SpeedyApply's
+  own messages: the best match from `premiumFetchJobScores`, otherwise your
+  first profile, then `setSelectedProfile`. A profile you already picked
+  stands.
+- If SpeedyApply can't fill (no profile, autofill off, or premium with no
+  profile it can pick, e.g. signed out of SpeedyApply), the job goes to the
+  Workday engine at once instead of waiting out every step.
+
+**The account step (sign up / sign in) is Jobright's.** SpeedyApply only types
+its saved account in (email, password, the checkbox). It never presses Create
+Account or Sign In, chooses between them, or handles "account already exists",
+a wrong password or a lock. The extension's account flow does that:
+- create first on a new employer, sign in where an account is recorded;
+- skip at once on "wrong email or password / might be locked";
+- reset and verification-code handling as before;
+- after 1.5s on the account page (was a 6s wait for a press that never came);
+- with **SpeedyApply's saved account**: its email (or its profile's email when
+  "use profile email" is on) and password create the account. Sign-in tries the
+  password that worked for that employer before, then SpeedyApply's, then ours,
+  then Jobright's Workday sign-up password.
+
+**Checked in Chromium with the merged extension** (offline, so without
+SpeedyApply's servers):
+- SpeedyApply's worker boots and sets itself up. Its settings page opens
+  ("Welcome to SpeedyApply!").
+- A sign-out-style clear from SpeedyApply removed only its keys; Jobright's and
+  ours stayed.
+- On the Workday replica (now with Workday's real step markers, e.g.
+  `applyFlowMyInfoPage`), SpeedyApply typed its saved account. Jobright's flow
+  pressed Create Account with that same account, and the job submitted.
+- Offline, premium SpeedyApply cannot get a profile, so the job went to the
+  engine and submitted.
+
+**Know this:**
+- **Disable the separately installed SpeedyApply**, otherwise two copies fill
+  every page.
+- **This build runs in premium mode.** The "plus" build reports premium, so
+  SpeedyApply fetches the profile from its servers. That needs you signed in to
+  SpeedyApply in its settings. If its servers refuse it, the engine applies
+  instead.
+- **SpeedyApply's add-on fills other ATSs too.** On Greenhouse, Lever and the
+  rest, `sa-enhancement.js` fills empty fields and uploads the CV from your
+  SpeedyApply profile before Jobright does. Applications still submit, but the
+  CV is the one in your SpeedyApply profile.
+- **Its side panel opens Jobright's.** SpeedyApply's popup "open side panel"
+  shows Jobright's queue panel, since there is one side panel per extension.

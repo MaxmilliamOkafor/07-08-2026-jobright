@@ -19,3 +19,4 @@ try { importScripts("/ua-orchestrator.js"); } catch (e) { console.warn("[UA] orc
 try { importScripts("/ua-mailbox.js"); } catch (e) { console.warn("[UA] mailbox failed to load", e); }
 try { importScripts("/ua-diagnostics.js"); } catch (e) { console.warn("[UA] diagnostics failed to load", e); }
 try { importScripts("/ua-debugger.js"); } catch (e) { console.warn("[UA] debugger failed to load", e); }
+try { importScripts("/ua-speedyapply-host.js"); } catch (e) { console.warn("[UA] SpeedyApply host failed to load", e); }

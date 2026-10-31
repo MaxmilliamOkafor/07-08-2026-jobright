@@ -493,7 +493,7 @@
           if (picked.length >= slots) break;
           if (j.status !== 'pending') continue;
           if (!isSafeUrl(j.url)) { j.status = 'skipped'; j.error = 'Unsupported URL scheme'; j.completedAt = Date.now(); continue; }
-          j.status = 'applying'; j.startedAt = Date.now(); j.error = null;
+          j.status = 'applying'; j.startedAt = Date.now(); j.error = null; j.navErrors = 0;
           picked.push({ id: j.id, url: j.url, title: j.title, jobBoard: j.jobBoard, startedAt: j.startedAt });
         }
         return picked;
@@ -948,6 +948,47 @@
     });
   } catch (_) {}
 
+  /* A job tab that lands on Chrome's own error page — "This page isn't working,
+     HTTP ERROR 406" from Workday — runs no content script, so nothing reports
+     back and the job sat there until the 5-minute ceiling. Workday answers 406
+     for a link with no job in it (the bare https://<co>.wd1.myworkdayjobs.com)
+     and, now and then, as a one-off refusal. First time: reopen the job's own
+     link. Second time: fail the job with the reason and move on. Redirect
+     cancellations (ERR_ABORTED) and brief network drops are not page errors. */
+  const HARD_NAV_ERR = /ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_NAME_NOT_RESOLVED|ERR_TOO_MANY_REDIRECTS|ERR_BLOCKED_BY_RESPONSE|ERR_INVALID_RESPONSE|ERR_EMPTY_RESPONSE|ERR_SSL_PROTOCOL_ERROR|ERR_CERT_/;
+  function navErrorReason(err, url) {
+    let host = '', bare = false;
+    try { const u = new URL(url); host = u.hostname; bare = u.pathname.replace(/\/+$/, '') === '' || /^\/[a-z]{2}-[A-Z]{2}\/?$/.test(u.pathname); } catch (_) {}
+    if (/ERR_HTTP_RESPONSE_CODE_FAILURE/.test(err))
+      return `${host || 'The site'} refused the page (HTTP error${/myworkday/i.test(host) ? ', usually 406' : ''})` +
+        (bare ? ' — the link has no job in it, only the site address' : '');
+    if (/ERR_NAME_NOT_RESOLVED/.test(err)) return `${host || 'The site'} does not exist (the link's address is wrong)`;
+    if (/ERR_TOO_MANY_REDIRECTS/.test(err)) return `${host || 'The site'} redirects in a loop`;
+    return `${host || 'The site'} could not be opened (${String(err).replace(/^net::/, '')})`;
+  }
+  try {
+    if (chrome.webNavigation && chrome.webNavigation.onErrorOccurred) chrome.webNavigation.onErrorOccurred.addListener(async (d) => {
+      if (!d || d.frameId !== 0 || !HARD_NAV_ERR.test(d.error || '')) return;
+      if ((await get(K.ACTIVE)) !== true) return;
+      const jobId = await jobIdForTab(d.tabId);
+      if (!jobId) return;
+      let job = null, tries = 0;
+      await withQueue((q) => {
+        const j = q.find((x) => x.id === jobId);
+        if (!j || j.status !== 'applying') return;
+        j.navErrors = (j.navErrors || 0) + 1;
+        tries = j.navErrors; job = { ...j };
+      });
+      if (!job) return;
+      if (tries === 1 && isSafeUrl(job.url)) {
+        log(`↻ ${job.title || job.url} — ${navErrorReason(d.error, d.url)}; reopening the job link once`);
+        try { chrome.tabs.update(d.tabId, { url: job.url }); } catch (_) {}
+        return;
+      }
+      await onResult({ id: jobId, status: 'failed', error: navErrorReason(d.error, d.url), ts: Date.now() });
+    });
+  } catch (_) {}
+
   // A job tab the user closed by hand goes back to pending, and the slot refills.
   try {
     chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -1179,9 +1220,17 @@
 
   /* Context menu: reach the queue manager and enqueue pages without hunting
      through the puzzle menu. */
+  /* Our own items only: removeAll also took SpeedyApply's two (it lives in
+     this extension now), and theirs took ours. */
+  const UA_MENU_IDS = ['ua-open-panel', 'ua-open-tab', 'ua-add-page', 'ua-open-jobright', 'ua-add-link', 'ua-open-debugger', 'ua-sa-settings', 'ua-sa-popup'];
+  function removeOurMenus(done) {
+    let left = UA_MENU_IDS.length;
+    const one = () => { void chrome.runtime.lastError; if (--left === 0) done(); };
+    UA_MENU_IDS.forEach((id) => { try { chrome.contextMenus.remove(id, one); } catch (_) { one(); } });
+  }
   function installMenus() {
     try {
-      chrome.contextMenus.removeAll(() => {
+      removeOurMenus(() => {
         void chrome.runtime.lastError;
         chrome.contextMenus.create({ id: 'ua-open-panel', title: 'Jobright Queue Manager (side panel)', contexts: ['all'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-open-tab', title: 'Jobright Queue Manager (new tab)', contexts: ['all'] }, () => void chrome.runtime.lastError);
@@ -1189,6 +1238,9 @@
         chrome.contextMenus.create({ id: 'ua-open-jobright', title: 'Open Jobright on this page', contexts: ['page', 'frame', 'selection', 'link', 'editable'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-add-link', title: 'Add link to the Jobright queue', contexts: ['link'] }, () => void chrome.runtime.lastError);
         chrome.contextMenus.create({ id: 'ua-open-debugger', title: 'Jobright Debugger (every job\'s timeline & errors)', contexts: ['all'] }, () => void chrome.runtime.lastError);
+        // SpeedyApply (built in): its settings — profile & responses import — and its popup.
+        chrome.contextMenus.create({ id: 'ua-sa-settings', title: 'SpeedyApply settings (profile, responses, Workday account)', contexts: ['all'] }, () => void chrome.runtime.lastError);
+        chrome.contextMenus.create({ id: 'ua-sa-popup', title: 'SpeedyApply popup', contexts: ['all'] }, () => void chrome.runtime.lastError);
       });
     } catch (_) {}
   }
@@ -1205,6 +1257,11 @@
         } else if (info.menuItemId === 'ua-open-debugger') {
           if (typeof self.__uaOpenDebugger === 'function') self.__uaOpenDebugger('');
           else chrome.tabs.create({ url: chrome.runtime.getURL('ua-debug.html') });
+        } else if (info.menuItemId === 'ua-sa-settings') {
+          chrome.tabs.create({ url: chrome.runtime.getURL('options.html#/profile'), [ALLOW_FRONT]: true, [OWN]: true });
+        } else if (info.menuItemId === 'ua-sa-popup') {
+          // Its toolbar popup, in a popup-sized window (the toolbar icon is Jobright's).
+          chrome.windows.create({ url: chrome.runtime.getURL('popup.html'), type: 'popup', width: 400, height: 640 }, () => void chrome.runtime.lastError);
         } else if (info.menuItemId === 'ua-open-tab') {
           chrome.tabs.create({ url: chrome.runtime.getURL('ua-queue.html') });
         } else if (info.menuItemId === 'ua-add-page') {

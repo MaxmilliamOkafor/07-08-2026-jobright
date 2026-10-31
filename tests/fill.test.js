@@ -27,6 +27,8 @@ const manifest = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
    Operations wrapped by the busy guard keep their public name on a one-line
    wrapper and move the real body to <name>__impl — always inspect the body that
    actually does the work. */
+// Checks that finish after the synchronous run; the exit waits for them.
+const asyncChecks = [];
 function body(name) {
   const lines = src.split('\n');
   const impl = lines.findIndex((l) => new RegExp('^  (async )?function ' + name + '__impl\\(').test(l));
@@ -2512,8 +2514,9 @@ console.log('audit: the speed selector reaches every wait');
   eq('the mailbox poll keeps its own pace', /await sleep\(4000\);\s+\/\/ the mail has not landed yet/.test(src), true);
   // Every converted wait keeps at least half its time, at any speed.
   const conv = [...src.matchAll(/await sleep\(scaled\((\d{4,}), (\d+)\)\)/g)];
-  // v17.22 replaced four of them on Workday with waits on the page itself.
-  eq('there are many converted waits', conv.length >= 80, true);
+  // v17.22 replaced four of them on Workday with waits on the page itself, and
+  // v17.36 a dozen more at the start of each ATS flow (form-stable / button-ready).
+  eq('there are many converted waits', conv.length >= 55, true);
   eq('and every one keeps at least half its original time',
     conv.every(([, ms, floor]) => Number(floor) >= Math.floor(Number(ms) / 2) - 0), true);
   const scaledFn = (ms, floor, f) => Math.max(floor || 60, Math.round(ms * f));
@@ -3545,7 +3548,7 @@ console.log('v17.29: CV never into Cover Letter; a city, not a university; phone
   eq('Parkville is a place (no "park" false alarm)', m.pickPlaceSuggestion([it('Parkville VIC, Australia')], 'Parkville').textContent, 'Parkville VIC, Australia');
   eq('both pickers use it', (body('commitAutocompleteOnce').match(/pickPlaceSuggestion\(/g) || []).length, 2);
   eq('a typed-but-unpicked city under "is required" is picked again (at most twice)',
-    /if \(!complains && \(locationAccepted\(inp\) \|\| \(_locRetries\.get\(inp\) \|\| 0\) >= 2\)\) continue;/.test(body('resolveLocationFields')), true);
+    /if \(!complains && \(\(locationAccepted\(inp\) && !typedOnly\) \|\| \(_locRetries\.get\(inp\) \|\| 0\) >= 2\)\) continue;/.test(body('resolveLocationFields')), true);
   // Phone country follows the phone.
   eq('a +44 phone → United Kingdom, not the Ireland default', JSON.stringify(m.phoneCountryTarget({ phone: '+44 7700 900123', country: 'Ireland', phoneCountryCode: '+353' })), JSON.stringify({ code: '44', iso: 'gb', country: 'United Kingdom' }));
   eq('a +353 phone → the profile country', m.phoneCountryTarget({ phone: '+353 87 426 1508', country: 'Ireland', phoneCountryCode: '+353' }).iso, 'ie');
@@ -3741,7 +3744,166 @@ console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at on
 }
 
 
-setTimeout(() => {
+
+/* ── 84. v17.35: major-ATS replica sweep fixes ── */
+console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios and city, EEO selects, "Why <Company>?"');
+{
+  // guessValue run for real, out of the same block section 20 lifts.
+  const g = { company: 'Anthropic' };
+  try {
+    new Function('exports', `
+      const getFullQuestionText = () => '', getLabel = () => '', LOG = () => {}, queue = [], workAuthorisationAnswer = () => '';
+      const extractJDCompany = () => exports.company, extractJDTitle = () => '', isFieldRequired = () => false;
+      const location = { hostname: 'job-boards.greenhouse.io', pathname: '/anthropic/jobs/1', search: '', href: 'https://job-boards.greenhouse.io/anthropic/jobs/1' };
+      const document = { title: 'Research Engineer - Anthropic', querySelector: () => null, querySelectorAll: () => [] };
+      const DEFAULTS = { years: '9', why: 'I admire the company culture and the opportunity to make a meaningful impact.', country: 'United Kingdom', cover: 'c', howHeard: 'LinkedIn', salary: '1' };
+      ${src.slice(shapeStart, shapeEnd)}
+      Object.assign(exports, { guessValue, pageCompanyName });
+    `)(g);
+  } catch (e) { g.err = e.message; }
+  const P = { first_name: 'Max', last_name: 'Okafor', city: 'London', country: 'United Kingdom' };
+  const gv = g.guessValue;
+  g.guessValue = gv && ((l, p) => { try { return gv(l, p); } catch (e) { return 'ERR ' + e.message; } });
+  if (g.guessValue) {
+    eq('Ashby\'s "Name*" gets the full name (the * left it empty)', g.guessValue('Name*', P), 'Max Okafor');
+    eq('"Why Anthropic?" names the company, not the generic line', /Anthropic's mission/.test(g.guessValue('Why Anthropic?', P)), true);
+    g.company = '';
+    eq('with nothing in the description, the board\'s path names the employer (job-boards.greenhouse.io/anthropic)', g.pageCompanyName(), 'Anthropic');
+    g.company = 'Anthropic';
+    eq('…but "Why are you leaving your current role?" is not a why-us answer', /mission/.test(g.guessValue('Why are you leaving?', P) || ''), false);
+  } else {
+    eq('guessValue runs out of the shipped block (' + g.err + ')', false, true);
+  }
+  const bq = body('answerButtonStyleQuestions');
+  eq('Ashby\'s bare Yes/No button row is found as a question', /\[class\*="yesno" i\]/.test(bq), true);
+  eq('…its question is read from the title above it', /question-title/.test(bq) && /rest\.length >= 8/.test(bq), true);
+  eq('…and an already-picked button ("_active") is left alone', /button\[class\*="_active"\]/.test(bq), true);
+  const rl = body('resolveLocationFields');
+  eq('a combobox holding only a typed word is picked from its list', /const typedOnly = !_locPicked\.has\(inp\)/.test(rl) && /_locPicked\.add\(inp\)/.test(rl), true);
+  // The exact town beats a place named after it.
+  const m = {};
+  new Function('exports', `const NOT_A_PLACE_RE = ${src.match(/const NOT_A_PLACE_RE = (\/.*\/i);/)[1]}; ${body('pickPlaceSuggestion')} exports.pick = pickPlaceSuggestion;`)(m);
+  const rows = ['London Bridge, London, UK', 'London, England, United Kingdom', 'London, Ontario, Canada'].map((t) => ({ textContent: t }));
+  eq('"London, United Kingdom" picks London, not London Bridge or London Ontario', m.pick(rows, 'London, United Kingdom').textContent, 'London, England, United Kingdom');
+  eq('Lever\'s location picker scores its rows the same way', /pickPlaceSuggestion\(rows,/.test(body('leverLocation')), true);
+  const kr = body('answerKnockoutRadioGroup');
+  eq('a radio group whose box holds only "Yes No" climbs to the real question', /strip\(questionText\)\.length < 12/.test(kr), true);
+  const ff = body('fallbackFill__impl');
+  eq('EEO selects are not matched on a shared word ("not" → "White (Not Hispanic)")', /if \(!opt && !isEEO\)/.test(ff) && /STOPW/.test(ff), true);
+  // A select's own options, not the page's.
+  eq('deepAll(\'option\', select) is gone — it returned every option on the page', /deepAll\('option', (el|sel|inp)\)/.test(src), false);
+  const ms = {};
+  new Function('exports', `const PLACEHOLDER_OPT_RE = /^(select|choose|— make a selection —|-+)$/i; const toDays = () => NaN; const normMoney = (x) => x;
+    ${src.match(/  const EDU_RANKS = \[[\s\S]*?\n  const eduRank = [^\n]*\n/)[0]} ${body('bestOptionIndex')} exports.best = bestOptionIndex;`)(ms);
+  const edu = ['— Make a Selection —', 'High School', "Associate's Degree", "Bachelor's Degree", "Master's Degree", 'Doctorate'];
+  eq('Jobright\'s "Masters" picks "Master\'s Degree" (it got "High School")', edu[ms.best(edu, 'Masters', 'Highest level of education completed')], "Master's Degree");
+  eq('…and the required-field pass asks the profile before taking the first option', /bestOptionIndex\(texts, profileTargetFor\(lbl, p\), lbl\)/.test(body('guaranteeRequiredFieldsPass')), true);
+  eq('Submit is also looked for inside a same-origin frame (iCIMS)', /for \(const r of fieldRoots\(\)\.slice\(1\)\)/.test(body('autoSubmitOrNext__impl')), true);
+  const lf = body('isLocationField');
+  eq('"Race/Ethnicity" is not a location box (ethni-CITY) — Oracle got "London, United Kingdom" in it', /hay\.replace\(\/ethnicity\|ethnicities\|relocat/.test(lf) && /test\(hayPlace\)/.test(lf), true);
+  const rf = body('refineAnswerForControl');
+  eq('a date box never gets words with a number in them ("1 month notice" in BambooHR\'s mm/dd/yyyy)', /if \(v && !\/\\d\{1,4\}/.test(rf) && !/if \(v && !\/\\d\/\.test\(v\)/.test(rf), true);
+  eq('a missing Jobright Autofill button is waited for once per page, not on every retry', /_autofillMissHref === location\.href/.test(body('triggerAutofill__impl')), true);
+}
+
+
+
+/* ── 85. v17.36: every ATS waits on the page, not the clock ── */
+console.log('v17.36: faster on every ATS — the waits end when the page is ready');
+{
+  const ta = body('triggerAutofill__impl');
+  eq('Jobright\'s Autofill button is clicked the moment it is ready (200ms checks, not 1.5s sleeps)', /setTimeout\(r, 200\)/.test(ta) && !/await sleep\(scaled\(1500, 750\)\)/.test(ta) && !/attempt < 5/.test(ta), true);
+  eq('…and given up on after ~6s, not ~13s', /Date\.now\(\) \+ \(sb \? 6000 : 1500\)/.test(ta), true);
+  const tf = body('tailorFirstFlow');
+  eq('no flat 2s after the sidebar appears — it waits for its buttons', /await waitUntil\(\(\) => findAutofillButton\(\)/.test(tf) && !/await sleep\(scaled\(2000, 1000\)\);\n\n\s*\/\/ Step 1/.test(tf), true);
+  eq('Jobright\'s fill is waited for only when it was started', /if \(jrFired\) await waitForJobrightFill\(sidebar\);/.test(tf), true);
+  eq('…and only while its button reads "Filling…"', /if \(!idle\) started = true;/.test(body('waitForJobrightFill')), true);
+  eq('a second fill pass only when the first changed something', /if \(\(await fallbackFill\(\)\) > 0\)/.test(tf) && /if \(\(await fallbackFill\(\)\) > 0\)/.test(body('directAutofillFlow')), true);
+  eq('the direct flow no longer sleeps 5s after a click that never happened', !/await sleep\(scaled\(5000, 2500\)\)/.test(body('directAutofillFlow')), true);
+  for (const fn of ['greenhouseAutomation', 'ashbyAutomation', 'bamboohrAutomation', 'jobviteAutomation'])
+    eq(`${fn} starts once the form stops changing (was a flat 1.5s)`, /await waitForFormStable\(1200\);/.test(body(fn)), true);
+  eq('iCIMS looks for its form inside the application frame (an 8s wait every job)', /await waitUntil\(\(\) => deepAll\('\.iCIMS_InfoMsg_Job/.test(body('icimsAutomation')), true);
+  const NT = new RegExp(src.match(/const NOT_A_TITLE_RE = \/(.*)\/i;/)[1], 'i');
+  eq('a job link is never used as the job title in the cover note', NT.test('job-boards.greenhouse.io/acme/jobs/4412392009') && NT.test('https://jobs.lever.co/x/1'), true);
+  eq('…while real titles still are', NT.test('Senior Data Engineer') || NT.test('IT Lead - Supply Chain (US Remote)') || NT.test('Sr. Engineer, Node.js / React'), false);
+  eq('SpeedyApply mode presses Next after 4s of quiet (was 6s)', /const STILL_MS = scaled\(4000, 2500\);/.test(body('workdaySpeedyApplyRun')), true);
+}
+
+
+
+/* ── 86. v17.37: a careers home is not a job (Workday "HTTP ERROR 406") ── */
+console.log('v17.37: the Jobright page\'s link is a job, not the company\'s careers home');
+{
+  const m = {};
+  const nextData = { props: { pageProps: { company: { name: 'College Board', jobUrl: 'https://collegeboard.wd1.myworkdayjobs.com' },
+    job: { title: 'Engineer', applyLink: 'https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/New-York/Engineer_REQ-1234' } } } };
+  new Function('exports', `
+    const location = { href: 'https://jobright.ai/jobs/info/abc' };
+    const document = {
+      getElementById: (id) => (id === '__NEXT_DATA__' ? { textContent: exports.data } : null),
+      querySelectorAll: () => exports.links || [],
+    };
+    ${body('looksLikeJobLink')}${body('jobrightApplyTarget')}
+    Object.assign(exports, { looksLikeJobLink, jobrightApplyTarget });
+  `)(Object.assign(m, { data: JSON.stringify(nextData) }));
+  eq('the bare https://collegeboard.wd1.myworkdayjobs.com is not a job', m.looksLikeJobLink('https://collegeboard.wd1.myworkdayjobs.com'), false);
+  eq('…nor its careers-site home', m.looksLikeJobLink('https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers'), false);
+  eq('a Workday /job/ link is', m.looksLikeJobLink('https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/NY/Engineer_REQ-1234'), true);
+  eq('Greenhouse / Lever / Ashby job links still are', ['https://job-boards.greenhouse.io/acme/jobs/4412392011', 'https://jobs.lever.co/acme/1a2b', 'https://jobs.ashbyhq.com/acme/0d1e'].every(m.looksLikeJobLink), true);
+  eq('a careers home on the employer\'s own site is not', m.looksLikeJobLink('https://www.acme.com/careers') || m.looksLikeJobLink('https://acme.com/'), false);
+  eq('the job\'s applyLink wins over the company record\'s jobUrl', m.jobrightApplyTarget(), 'https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/New-York/Engineer_REQ-1234');
+  m.data = JSON.stringify({ props: { company: { jobUrl: 'https://collegeboard.wd1.myworkdayjobs.com' } } });
+  m.links = [{ href: 'https://collegeboard.wd1.myworkdayjobs.com/', textContent: 'College Board careers' }];
+  eq('with only the careers home, nothing is opened (Jobright\'s own Apply is used)', m.jobrightApplyTarget(), '');
+}
+
+
+
+/* ── 87. v17.38: SpeedyApply built in — it takes Workday over; Jobright's sign-up / sign-in ── */
+console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick, engine fallback');
+{
+  // Its saved Workday account goes first (after a site-specific login).
+  eq('Create Account uses SpeedyApply\'s saved password on Workday', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa\) return sa\.password;/.test(body('getAppPassword')), true);
+  eq('…and its email', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa\) return sa\.email;/.test(body('getAppEmail')), true);
+  eq('sign-in tries the password that worked here before, then SpeedyApply\'s', body('workdayPasswordCandidates').indexOf('WD_SITE_PW_KEY') < body('workdayPasswordCandidates').indexOf('saWorkdayAccount'), true);
+  eq('"use profile email" is honoured', /a\.useProfileEmail \? prof && prof\.contactData && prof\.contactData\.email : a\.accountEmail/.test(body('saSettings')), true);
+  // The account page is handled at once: SpeedyApply only types, never presses.
+  const sa = body('workdaySpeedyApplyRun');
+  eq('SpeedyApply mode presses Create Account / Sign In after 1.5s, not 6s', /quiet > \(_wdCreatedThisJob \|\| _saAccountTurns \? 2000 : 1500\)/.test(sa), true);
+  eq('no profile in SpeedyApply → the engine applies', /SpeedyApply has no profile yet/.test(sa) && /_saDeclined = true; return false;/.test(sa), true);
+  eq('premium with no profile it can pick → the engine applies (not 20s waits per step)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)/.test(sa), true);
+  eq('handed back → SpeedyApply no longer counts as present (the account watcher works for the engine)', /!_saDeclined && \(/.test(src.match(/const speedyApplyPresent = [^\n]+/)[0]), true);
+  eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| \(saEmbedded\(\) && isWorkday\(\) && speedyApplyPresent\(\)\)\) return true;/.test(src), true);
+  // The profile pick, run for real against a fake SpeedyApply.
+  const run = async (answers) => {
+    const sent = [];
+    const m = {};
+    new Function('exports', `
+      const LOG = (x) => exports.logs.push(x); const location = { href: 'https://acme.wd1.myworkdayjobs.com/x/job/y/apply' };
+      const saEmbedded = () => true;
+      const chrome = { runtime: { lastError: undefined, sendMessage: (msg, cb) => { exports.sent.push(msg.type + (msg.profileId ? ':' + msg.profileId : '')); setTimeout(() => cb(exports.answers[msg.type]), 0); } } };
+      ${body('saAutoPickProfile')}
+      exports.pick = saAutoPickProfile;
+    `)(Object.assign(m, { sent, answers, logs: [] }));
+    const r = await m.pick();
+    return { r, sent };
+  };
+  asyncChecks.push((async () => {
+    const a = await run({ getSelectedProfile: undefined, premiumFetchJobScores: { scores: true, profiles: [{ id: 'p5', profileName: 'Data', score: 41 }, { id: 'p6', profileName: 'Product', score: 87 }] }, setSelectedProfile: { profileName: 'Product' } });
+    eq('the best-scoring SpeedyApply profile is picked for the tab', a, { r: 'Product', sent: ['getSelectedProfile', 'premiumFetchJobScores', 'setSelectedProfile:p6'] });
+    const b = await run({ getSelectedProfile: { profileName: 'Mine', profile: {} } });
+    eq('a profile you already picked for the tab stands', b, { r: 'Mine', sent: ['getSelectedProfile'] });
+    const c = await run({ premiumFetchJobScores: { error: 'Not authenticated' }, premiumFetchProfileList: [{ id: 'a1', profileName: 'First' }, { id: 'a2', profileName: 'Second' }], setSelectedProfile: {} });
+    eq('no scores → your first profile', c.sent, ['getSelectedProfile', 'premiumFetchJobScores', 'premiumFetchProfileList', 'setSelectedProfile:a1']);
+    const d = await run({});
+    eq('signed out (nothing to pick) → "" so the engine applies', d.r, '');
+  })().catch((e) => eq('the SpeedyApply profile pick runs', String(e && e.message), '')));
+  eq('SpeedyApply\'s settings / popup are a right-click away', /id: 'ua-sa-settings'/.test(orch) && /options\.html#\/profile/.test(orch) && /popup\.html/.test(orch), true);
+  eq('our menu setup removes only our own items (SpeedyApply\'s stay)', /removeOurMenus\(\(\) => \{/.test(orch) && !/chrome\.contextMenus\.removeAll\(/.test(orch), true);
+}
+
+
+setTimeout(() => Promise.all(asyncChecks).then(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
-}, 50);
+}), 50);
