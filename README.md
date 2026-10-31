@@ -4433,3 +4433,23 @@ Untick the box to have the Workday engine apply instead.
 **Also: Ashby location.** A combobox counts as picked only when the extension
 picked it from the list. A typed "Lucan, County Dublin" (from SpeedyApply's
 add-on) has a comma but was never picked, so Ashby refused the submit.
+
+## v17.40 — Workday looks and runs like SpeedyApply on its own
+
+From your recording: SpeedyApply alone on a Workday application. Its
+**"Autofill in progress…"** badge stays at the top right while it fills My
+Information, the degree, skills one by one, the questions, the agreement name
+and today's date, through to "Application Submitted". The Jobright sidebar was
+collapsed to its thin tab.
+
+- **Jobright's sidebar is tucked away while SpeedyApply fills a Workday job**,
+  the same way its toolbar icon hides it. That corner is where SpeedyApply shows
+  "Autofill in progress…" and its profile picker. The open sidebar covered both,
+  which is why a picker nobody could see could leave My Information empty. The
+  run's keep-the-sidebar-open tick no longer brings it back over SpeedyApply.
+- **Questions SpeedyApply leaves for you:** answer them and it carries on.
+  Errors only fail the job when they stay up and nobody has touched the page for
+  30s. Any change restarts the clock. Once the errors clear, Save and Continue
+  is pressed as usual.
+- **Checked in Chromium:** SpeedyApply's own script runs in a queue job tab. Its
+  widget mounted 4.4s after the Workday page loaded.

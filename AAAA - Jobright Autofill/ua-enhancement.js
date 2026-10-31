@@ -7525,6 +7525,17 @@
     LOG(`Workday (SpeedyApply): using your profile "${best.profileName || best.id}" for this job (${sc && sc.scores ? 'best match' + (best.score != null ? ', score ' + best.score : '') : 'your first profile'})${set ? '' : ' — SpeedyApply did not confirm it'}`);
     return best.profileName || best.id;
   }
+  /* SpeedyApply shows "Autofill in progress…" (and its profile picker) at the
+     top right — exactly where Jobright's sidebar sits. While SpeedyApply fills
+     a Workday job the Jobright sidebar is tucked away (as its toolbar icon
+     does), so SpeedyApply's own status is what you see. */
+  function tuckJobrightForSpeedyApply() {
+    try {
+      document.querySelectorAll('plasmo-csui').forEach((el) => {
+        if (el.style.display !== 'none') { el.style.display = 'none'; el.setAttribute('data-ua-sa-tucked', '1'); }
+      });
+    } catch (_) {}
+  }
   async function workdaySpeedyApplyRun() {
     if (!(await workdayModeSpeedyApply())) { _saDeclined = true; return false; }
     await refreshSaReady();
@@ -7567,6 +7578,7 @@
         const STUCK_MS = 45000;                        // errors SpeedyApply left, for this long → the job fails with them
         let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0, toldErrors = false;
         while (Date.now() < until && !autoStopped()) {
+          tuckJobrightForSpeedyApply();
           if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
           if (pageHasFailure()) return 'closed';
           const sig = location.href + '|' + stepSignature() + '|' + wdFormValuesSig();
@@ -7598,9 +7610,10 @@
             if (!errorsSince) errorsSince = Date.now();
             if (!toldErrors && Date.now() - errorsSince > 8000) {
               toldErrors = true;
-              LOG(`Workday (SpeedyApply): ${step || 'this step'} still shows required fields SpeedyApply left empty — ${remainingErrorSummary() || 'see the page'}`);
+              LOG(`Workday (SpeedyApply): ${step || 'this step'} still shows required fields SpeedyApply left empty — ${remainingErrorSummary() || 'see the page'} (answer them and it carries on)`);
             }
-            if (Date.now() - errorsSince > STUCK_MS) {
+            // Not while you are answering them: any change on the page restarts the clock.
+            if (Date.now() - errorsSince > STUCK_MS && quiet > 30000) {
               _authDeadEnd = `SpeedyApply left required fields empty on ${step || 'a Workday step'}: ${remainingErrorSummary() || 'see the page'} — add them to your SpeedyApply profile / Custom Answers`;
               return 'closed';
             }
@@ -14094,7 +14107,8 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         // Jobright's collapse toggle — doing so on every tick made the panel flicker
         // (disappear/appear). The panel naturally reloads once per job navigation.
         const host = (s.getRootNode && s.getRootNode().host) || null;
-        if (host && host.style && host.style.display === 'none') host.style.display = '';
+        // …except where SpeedyApply is filling Workday: its status sits there.
+        if (host && host.style && host.style.display === 'none' && !(_saDriving && host.getAttribute('data-ua-sa-tucked'))) host.style.display = '';
       }
       const ctrl = ucEl('ua-ctrl');
       if (ctrl && qActive && isRunnerTab()) ctrl.classList.add('show');
