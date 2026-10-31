@@ -7523,9 +7523,23 @@
      this page" and "Continue To The Next Page" flow is what kept asking you for
      a password and pressing. The toolbar icon still shows it if you want it. */
   let _jrUserShown = false;
+  /* Only on a tab a queue job is driving. Turning "Fully Automated" on from
+     the sidebar hid the sidebar itself — the switch, the queue and the log all
+     vanished the moment you clicked it. Outside a run the page is yours: the
+     sidebar stays where it is. */
   function tuckJobrightOnWorkday() {
     if (_jrUserShown || !saOwnsWorkday()) return;
+    let queued = false;
+    try { queued = !!_uaJobKey || _mgrDriving || (qActive && isRunnerTab()); } catch (_) {}
+    if (!queued) { untuckJobright(); return; }
     tuckJobrightForSpeedyApply();
+  }
+  function untuckJobright() {
+    try {
+      document.querySelectorAll('plasmo-csui[data-ua-sa-tucked]').forEach((el) => {
+        el.style.display = ''; el.removeAttribute('data-ua-sa-tucked');
+      });
+    } catch (_) {}
   }
   const speedyApplyPresent = () => !_saDeclined && (!!document.querySelector('speedyapply-autofill,speedyapply-modal') || (saEmbedded() && _saReady));
   let _saModeOn = true;                                  // cached for the password watcher (sync)
@@ -7572,13 +7586,29 @@
       });
     } catch (_) {}
   }
+  // Sign up / sign in on the account page with the saved account, bounded.
+  async function wdAccountPass(ms) {
+    const until = Date.now() + (ms || 45000);
+    if (workdayOnAccountWall()) LOG('Workday: account page — signing in / creating the account with ' + ((await saWorkdayAccount()) ? "SpeedyApply's saved account" : "this extension's saved account"));
+    while ((workdayOnAccountWall() || wdResetActive()) && Date.now() < until && !autoStopped() && !_authDeadEnd) {
+      if (detectEmailVerificationWall()) await resolveEmailVerification(60000);
+      if ((await fillWorkdayCreateAccount(true)) === 'stop' && workdayOnAccountWall()) break;
+      await waitUntil(() => (!workdayOnAccountWall() && !wdResetActive()) || workdayApplicationReady(), scaled(4000, 2000), 250);
+    }
+    if (!workdayOnAccountWall()) { try { await wdAuthSucceeded(); } catch (_) {} }
+  }
   async function workdaySpeedyApplyRun() {
     if (!(await workdayModeSpeedyApply())) { _saDeclined = true; return false; }
     await refreshSaReady();
     /* SpeedyApply ONLY. When it cannot fill this job, the job fails with the
        reason — Jobright does not fill Workday in its place. */
-    const cannot = (why) => {
+    const cannot = async (why) => {
       _saDriving = false;
+      /* The account step is ours whatever SpeedyApply can do: it was left on
+         Create Account / Sign In untouched whenever SpeedyApply had no profile
+         to fill with, so the saved account was never used. Signed up / in
+         first, then the job ends with the reason. */
+      await wdAccountPass().catch(() => {});
       LOG('Workday: ' + why);
       DIAG('workday.speedyapply-cannot', why.slice(0, 80));
       if (!_authDeadEnd) _authDeadEnd = why;
@@ -7586,14 +7616,14 @@
     };
     if (saEmbedded()) {
       const sa = await saSettings();
-      if (sa && !sa.hasProfile) return cannot('SpeedyApply has no profile yet — right-click → "SpeedyApply settings" → Profile → Import your profile JSON');
+      if (sa && !sa.hasProfile) return await cannot('SpeedyApply has no profile yet — right-click → "SpeedyApply settings" → Profile → Import your profile JSON');
       const cfg = await new Promise((res) => { const t = setTimeout(() => res(null), 5000); try { chrome.runtime.sendMessage({ type: 'getAutofillConfig' }, (v) => { void chrome.runtime.lastError; clearTimeout(t); res(v || null); }); } catch (_) { clearTimeout(t); res(null); } });
-      if (cfg && cfg.enabled === false) return cannot('SpeedyApply autofill is switched off in its settings');
+      if (cfg && cfg.enabled === false) return await cannot('SpeedyApply autofill is switched off in its settings');
       /* Premium SpeedyApply fills from a profile picked FOR THIS TAB, and with
          none it waits at its picker (top right — under Jobright's sidebar).
          Picked here the way the picker would, through its own messages. */
       if (cfg && cfg.premium && !(await saAutoPickProfile().catch(() => '')))
-        return cannot('SpeedyApply could not get a profile for this job — sign in to SpeedyApply (right-click → "SpeedyApply settings") and save a profile there');
+        return await cannot('SpeedyApply could not get a profile for this job — sign in to SpeedyApply (right-click → "SpeedyApply settings") and save a profile there');
     } else {
       // Installed separately: wait for it to show itself on the page.
       _saDriving = true;
@@ -11841,7 +11871,12 @@
          wanted, and did nothing at all. The account step was then never handled
          in exactly the mode that runs 685 of them. */
       if (!autoApply && !_mgrDriving && !(qActive && isRunnerTab())) return;
-      if (_saDriving || (_saModeOn && speedyApplyPresent())) return;   // SpeedyApply signs in here
+      /* Stood down only while the SpeedyApply run is driving (its loop does the
+         account step itself). It used to stand down whenever SpeedyApply was
+         merely installed — and SpeedyApply never presses Create Account / Sign
+         In, so outside a run, or when SpeedyApply could not take the job (no
+         profile picked, switched off), nobody created the account. */
+      if (_saDriving) return;
       ticks++;
       if (ticks > 160) { clearInterval(iv); LOG('Workday account watcher: stopped (timeout)'); return; } // ~240s — multi-step create→signin needs headroom
       try {

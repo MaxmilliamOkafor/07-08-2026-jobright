@@ -4494,3 +4494,24 @@ SpeedyApply's own badge never showed, because the open sidebar covered it.
 Pull and reload the extension. The recording was from a build before the
 last few updates (the "7 required fields need you" box, hidden since v17.41,
 was still showing).
+
+## v17.43 — Fully Automated no longer hides the sidebar; the Workday account is always made
+
+From your Allstate Workday Create Account screenshot:
+
+- **Turning "🤖 Fully Automated" on no longer makes everything disappear.**
+  The Jobright sidebar was tucked away on Workday the moment automation
+  started, and the sidebar is where the switch, the queue and the log live. It
+  is now tucked only on a tab that a queue job is driving. Outside a run it
+  stays where it is, and one tucked earlier comes back.
+- **Create Account / Sign In happens by itself with your saved account.**
+  The account watcher stood down whenever SpeedyApply was merely installed,
+  and SpeedyApply never presses Create Account / Sign In. When SpeedyApply
+  could not take the job (no profile, no profile picked for the tab, or
+  switched off), nobody did the account step. Now:
+  - the watcher stands down only while the SpeedyApply run is actually driving;
+  - when SpeedyApply cannot fill the job, the account is signed up or signed
+    in first, with SpeedyApply's saved account or else the extension's, and
+    the job then ends with the reason.
+
+Pull and reload the extension.

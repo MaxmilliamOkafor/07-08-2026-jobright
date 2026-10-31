@@ -3727,7 +3727,9 @@ console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at on
   eq('SpeedyApply mode is on unless you switch it off', /\(await st\.get\('ua_wd_mode'\)\) !== 'engine'/.test(body('workdayModeSpeedyApply')), true);
   eq('it is recognised by SpeedyApply\'s own element on the page', /speedyapply-autofill,speedyapply-modal/.test(src), true);
   eq('…and when it is not there, the engine applies as before', /SpeedyApply is not active on this page/.test(sa) && /return false;/.test(sa), true);
-  eq('while SpeedyApply drives, our password watcher and engine stay out', /if \(_saDriving \|\| \(_saModeOn && speedyApplyPresent\(\)\)\) return;/.test(src) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
+  eq('while SpeedyApply drives, our password watcher and engine stay out', /\n      if \(_saDriving\) return;\n/.test(body('startWorkdayAccountWatch')) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
+  eq('…but SpeedyApply merely being installed no longer keeps the account step from running', /speedyApplyPresent/.test(body('startWorkdayAccountWatch')), false);
+  eq('Jobright\'s sidebar is tucked only on a tab a queue job drives', /queued = !!_uaJobKey \|\| _mgrDriving \|\| \(qActive && isRunnerTab\(\)\)/.test(body('tuckJobrightOnWorkday')) && /if \(!queued\) \{ untuckJobright\(\); return; \}/.test(body('tuckJobrightOnWorkday')), true);
   eq('it only presses Next / Submit once the page has been still', /quiet > STILL_MS && pressed < 3/.test(sa) && /realClick\(n\); pressed\+\+;/.test(sa), true);
   eq('…fills only what SpeedyApply left, once per step; what is still empty fails the job, named', (sa.match(/await fallbackFill\(\)/g) || []).length === 1 && /SpeedyApply left required fields empty on/.test(sa), true);
   eq('called right after Apply, before anything of ours touches the page', body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') > 0 && body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') < body('workdayAutomation').indexOf('await clickApplyManually();'), true);
@@ -3871,8 +3873,9 @@ console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick
   // The account page is handled at once: SpeedyApply only types, never presses.
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode presses Create Account / Sign In after 1.5s, not 6s', /quiet > \(_wdCreatedThisJob \|\| _saAccountTurns \? 2000 : 1500\)/.test(sa), true);
-  eq('no profile in SpeedyApply → the job fails saying so (Jobright does not fill in its place)', /return cannot\('SpeedyApply has no profile yet/.test(sa), true);
-  eq('premium with no profile it can pick → the job fails saying so (sign in to SpeedyApply)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return cannot\(/.test(sa), true);
+  eq('no profile in SpeedyApply → the job fails saying so (Jobright does not fill in its place)', /return await cannot\('SpeedyApply has no profile yet/.test(sa), true);
+  eq('…but the account is signed up / signed in first, whatever SpeedyApply can do', /const cannot = async \(why\) => \{[\s\S]{0,400}await wdAccountPass\(\)/.test(sa), true);
+  eq('premium with no profile it can pick → the job fails saying so (sign in to SpeedyApply)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return await cannot\(/.test(sa), true);
   eq('handed back → SpeedyApply no longer counts as present (the account watcher works for the engine)', /!_saDeclined && \(/.test(src.match(/const speedyApplyPresent = [^\n]+/)[0]), true);
   eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| saOwnsWorkday\(\)\) return true;/.test(src), true);
   // The profile pick, run for real against a fake SpeedyApply.
