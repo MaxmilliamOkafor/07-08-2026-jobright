@@ -4453,3 +4453,11 @@ collapsed to its thin tab.
   is pressed as usual.
 - **Checked in Chromium:** SpeedyApply's own script runs in a queue job tab. Its
   widget mounted 4.4s after the Workday page loaded.
+
+## v17.41 — SpeedyApply add-on's "required fields need you" box hidden
+
+The box at the bottom left ("7 required fields need you … Continue") comes from
+SpeedyApply's Workflow Add-on (`sa-enhancement.js`, its required-field
+watchdog), not from Jobright. It is hidden with one style rule
+(`#sa-status{display:none}`) injected by this extension. The add-on's file is
+unchanged and the add-on still runs; only its box is gone.

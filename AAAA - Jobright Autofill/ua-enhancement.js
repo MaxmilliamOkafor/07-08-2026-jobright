@@ -462,6 +462,24 @@
     }
   });
 
+  /* "What is this random pop-up — remove it." SpeedyApply's Workflow Add-on
+     (sa-enhancement.js) puts a "N required fields need you" box at the bottom
+     left of every application page it watches. Hidden here with one style rule
+     — its file stays exactly as shipped, and the add-on itself still runs. */
+  try {
+    const hideSaStatus = () => {
+      if (document.getElementById('ua-hide-sa-status')) return true;
+      const host = document.head || document.documentElement;
+      if (!host) return false;
+      const st = document.createElement('style');
+      st.id = 'ua-hide-sa-status';
+      st.textContent = '#sa-status{display:none!important}';
+      host.appendChild(st);
+      return true;
+    };
+    if (!hideSaStatus()) document.addEventListener('DOMContentLoaded', hideSaStatus, { once: true });
+  } catch (_) {}
+
   // ===================== TOGGLE SIDEBAR ON ICON CLICK =====================
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message && (message.action === 'toggleSidebar' || message.name === 'toggleSidebar')) {

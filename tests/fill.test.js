@@ -3923,6 +3923,7 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
     /await fillWorkdayCreateAccount\(true\)/.test(sa) && /await clickApplyManually\(\)/.test(sa) && /pressing \$\{isSubmit \? 'Submit' : 'Save and Continue'\}/.test(sa), true);
   eq('Jobright\'s sidebar is tucked away while SpeedyApply fills, so its "Autofill in progress…" shows', /tuckJobrightForSpeedyApply\(\);/.test(sa) && /el\.style\.display = 'none'/.test(body('tuckJobrightForSpeedyApply')) && /!\(_saDriving && host\.getAttribute\('data-ua-sa-tucked'\)\)/.test(body('forceOpenSidebar')), true);
   eq('errors SpeedyApply left fail the job only when nobody is answering them', /Date\.now\(\) - errorsSince > STUCK_MS && quiet > 30000/.test(sa), true);
+  eq('SpeedyApply add-on\'s "N required fields need you" box is hidden (its file unchanged)', /st\.textContent = '#sa-status\{display:none!important\}';/.test(src), true);
   eq('…but never on a step showing errors (that would only re-validate an empty field)', sa.indexOf('} else if (wdPageErrors()) {') < sa.indexOf('} else if (quiet > STILL_MS && pressed < 3) {'), true);
 }
 
