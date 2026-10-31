@@ -4461,3 +4461,36 @@ SpeedyApply's Workflow Add-on (`sa-enhancement.js`, its required-field
 watchdog), not from Jobright. It is hidden with one style rule
 (`#sa-status{display:none}`) injected by this extension. The add-on's file is
 unchanged and the add-on still runs; only its box is gone.
+
+## v17.42 — Workday 100% automatic: SpeedyApply fills; the leftovers and every button are handled
+
+From your second recording: on Workday it was **Jobright's** sidebar flow that
+kept needing you:
+- "Account Creation & Autofill" asked for a password in its Sign-up
+  Information;
+- "AI is scanning this page" / "Autofilling 75%" picked "French Southern
+  Territories" for Country and left selects at "Select One";
+- "Continue To The Next Page", and Save and Continue / Submit, waited for your
+  clicks.
+
+SpeedyApply's own badge never showed, because the open sidebar covered it.
+
+- **Jobright's sidebar is tucked on Workday from page load** while SpeedyApply
+  owns Workday, not only inside a queue run. Its flow cannot start, and
+  SpeedyApply's "Autofill in progress…" is what you see. The toolbar icon
+  still brings the sidebar back for that page if you want it.
+- **Nothing waits for you.** Once SpeedyApply has finished a step, the required
+  fields it left empty, and only those, are answered:
+  - your **SpeedyApply saved responses** (its `responseList`, the
+    `responses.json` you import) first, as they are now in the answer bank and
+    win;
+  - then the extension's answers.
+  
+  Save and Continue / Submit is then pressed. Fields SpeedyApply filled are
+  not touched. Anything still empty after that one pass fails the job, named.
+- **The account step needs no input**: Create Account / Sign In with
+  SpeedyApply's saved account (or the extension's), pressed automatically.
+
+Pull and reload the extension. The recording was from a build before the
+last few updates (the "7 required fields need you" box, hidden since v17.41,
+was still showing).

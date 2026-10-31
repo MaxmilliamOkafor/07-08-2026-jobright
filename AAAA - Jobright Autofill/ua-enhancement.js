@@ -498,6 +498,8 @@
         unique.forEach(el => {
           if (el.style.display === 'none') {
             el.style.display = '';
+            el.removeAttribute && el.removeAttribute('data-ua-sa-tucked');
+            _jrUserShown = true;                       // you asked for it: not tucked again on this page
             LOG('Sidebar shown');
           } else {
             el.style.display = 'none';
@@ -1063,7 +1065,9 @@
     _answerBank = saved || {};
     _answerBankLoaded = true;
     // Also pull from OptimHire storage if available
-    const ohKeys = ['candidateDetails', 'userDetails', 'applicationDetails', 'questionAnswers', 'responses'];
+    // …and SpeedyApply's saved responses (its responseList: {question, key, response}),
+    // last, so they win — the 915 answers imported from its responses.json.
+    const ohKeys = ['candidateDetails', 'userDetails', 'applicationDetails', 'questionAnswers', 'responses', 'responseList'];
     const ohData = await st.getMulti(ohKeys);
     for (const val of Object.values(ohData || {})) {
       if (!val) continue;
@@ -7506,8 +7510,22 @@
      field pass, validation fixing and the page walker. What this extension still
      does there: the account step (sign up / sign in — SpeedyApply only types its
      account in) and pressing Next / Submit on a page that is complete. */
+  // Set only while a step SpeedyApply has finished still has required fields empty:
+  // those fields alone are answered (SpeedyApply's saved responses first), so the
+  // run never stops for you.
+  let _saLeftoverPass = false;
   function saOwnsWorkday() {
+    if (_saLeftoverPass) return false;
     try { return isWorkday() && _saModeOn && (saEmbedded() || speedyApplyPresent()); } catch (_) { return false; }
+  }
+  /* Jobright's sidebar off Workday while SpeedyApply owns it — from page load,
+     not only inside a run: its "Account Creation & Autofill", "AI is scanning
+     this page" and "Continue To The Next Page" flow is what kept asking you for
+     a password and pressing. The toolbar icon still shows it if you want it. */
+  let _jrUserShown = false;
+  function tuckJobrightOnWorkday() {
+    if (_jrUserShown || !saOwnsWorkday()) return;
+    tuckJobrightForSpeedyApply();
   }
   const speedyApplyPresent = () => !_saDeclined && (!!document.querySelector('speedyapply-autofill,speedyapply-modal') || (saEmbedded() && _saReady));
   let _saModeOn = true;                                  // cached for the password watcher (sync)
@@ -7596,7 +7614,7 @@
         const STUCK_MS = 45000;                        // errors SpeedyApply left, for this long → the job fails with them
         let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0, toldErrors = false;
         while (Date.now() < until && !autoStopped()) {
-          tuckJobrightForSpeedyApply();
+          tuckJobrightOnWorkday();
           if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
           if (pageHasFailure()) return 'closed';
           const sig = location.href + '|' + stepSignature() + '|' + wdFormValuesSig();
@@ -7626,9 +7644,19 @@
                SpeedyApply's page. Waited for (it may still be typing), then the
                job fails naming them. */
             if (!errorsSince) errorsSince = Date.now();
-            if (!toldErrors && Date.now() - errorsSince > 8000) {
+            /* Fully automated: once SpeedyApply has finished the step (quiet),
+               the required fields it left empty — and only those — are answered,
+               SpeedyApply's saved responses first, then Next is pressed. Once per
+               step; whatever is still empty after that fails the job, named. */
+            if (!toldErrors && Date.now() - errorsSince > 6000 && quiet > 3000) {
               toldErrors = true;
-              LOG(`Workday (SpeedyApply): ${step || 'this step'} still shows required fields SpeedyApply left empty — ${remainingErrorSummary() || 'see the page'} (answer them and it carries on)`);
+              LOG(`Workday (SpeedyApply): ${step || 'this step'} — SpeedyApply left ${remainingErrorSummary() || 'required fields'} empty; answering only those`);
+              _saLeftoverPass = true;
+              try { await wdEnginePass(await getProfile()); await fallbackFill(); } catch (_) {} finally { _saLeftoverPass = false; }
+              await sleep(600);
+              const n = wdNextButton();
+              if (n) { const isSubmit = /submit/i.test(n.textContent || ''); if (isSubmit) markSubmitAttempt(); realClick(n); pressed++; }
+              errorsSince = Date.now(); still = Date.now();
             }
             // Not while you are answering them: any change on the page restarts the clock.
             if (Date.now() - errorsSince > STUCK_MS && quiet > 30000) {
@@ -7657,6 +7685,8 @@
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
     // SpeedyApply mode: our password watcher keeps off the account page from the start.
     await refreshSaReady();
+    tuckJobrightOnWorkday();
+    try { if (!window.__uaJrTuckTimer) window.__uaJrTuckTimer = setInterval(tuckJobrightOnWorkday, 1500); } catch (_) {}
     if (_uaJobKey && await workdayModeSpeedyApply() && speedyApplyPresent()) _saDriving = true;
     // Fully Automated outside a run: your engine's assist fills each step as it appears.
     if (!_uaJobKey && !saOwnsWorkday() && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {

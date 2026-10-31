@@ -3729,7 +3729,7 @@ console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at on
   eq('…and when it is not there, the engine applies as before', /SpeedyApply is not active on this page/.test(sa) && /return false;/.test(sa), true);
   eq('while SpeedyApply drives, our password watcher and engine stay out', /if \(_saDriving \|\| \(_saModeOn && speedyApplyPresent\(\)\)\) return;/.test(src) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
   eq('it only presses Next / Submit once the page has been still', /quiet > STILL_MS && pressed < 3/.test(sa) && /realClick\(n\); pressed\+\+;/.test(sa), true);
-  eq('…and never fills gaps itself: errors SpeedyApply left fail the job, naming them', !/fallbackFill|wdEnginePass/.test(sa) && /SpeedyApply left required fields empty on/.test(sa), true);
+  eq('…fills only what SpeedyApply left, once per step; what is still empty fails the job, named', (sa.match(/await fallbackFill\(\)/g) || []).length === 1 && /SpeedyApply left required fields empty on/.test(sa), true);
   eq('called right after Apply, before anything of ours touches the page', body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') > 0 && body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') < body('workdayAutomation').indexOf('await clickApplyManually();'), true);
   eq('a switch in the Bulk card', /id="ua-sb-wdsa"/.test(src) && /st\.set\('ua_wd_mode', saCb\.checked \? 'speedyapply' : 'engine'\)/.test(src), true);
   // Refused sign-in.
@@ -3919,9 +3919,14 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
   eq('no engine assist either', /!_uaJobKey && !saOwnsWorkday\(\) && window\.__uaWdEngine/.test(body('workdayAutomation')), true);
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode never hands a built-in job to the engine', !/using the Workday engine for this job/.test(sa), true);
+  eq('fully automated: required fields SpeedyApply left empty — only those — are answered, then Next is pressed',
+    /_saLeftoverPass = true;\n\s+try \{ await wdEnginePass\(await getProfile\(\)\); await fallbackFill\(\); \} catch \(_\) \{\} finally \{ _saLeftoverPass = false; \}/.test(sa) && /if \(_saLeftoverPass\) return false;/.test(body('saOwnsWorkday')), true);
+  eq('…SpeedyApply\'s saved responses (its responseList) are in the answer bank, loaded last so they win', /'responses', 'responseList'\]/.test(body('loadAnswerBank')), true);
+  eq('Jobright\'s sidebar is tucked on Workday from page load, not only in a run', /tuckJobrightOnWorkday\(\);\n\s+try \{ if \(!window\.__uaJrTuckTimer\)/.test(body('workdayAutomation')), true);
+  eq('…unless you open it from the toolbar icon', /_jrUserShown = true;/.test(src) && /if \(_jrUserShown \|\| !saOwnsWorkday\(\)\) return;/.test(body('tuckJobrightOnWorkday')), true);
   eq('the buttons SpeedyApply does not press are pressed: account, Apply Manually, Save and Continue, Submit',
     /await fillWorkdayCreateAccount\(true\)/.test(sa) && /await clickApplyManually\(\)/.test(sa) && /pressing \$\{isSubmit \? 'Submit' : 'Save and Continue'\}/.test(sa), true);
-  eq('Jobright\'s sidebar is tucked away while SpeedyApply fills, so its "Autofill in progress…" shows', /tuckJobrightForSpeedyApply\(\);/.test(sa) && /el\.style\.display = 'none'/.test(body('tuckJobrightForSpeedyApply')) && /!\(_saDriving && host\.getAttribute\('data-ua-sa-tucked'\)\)/.test(body('forceOpenSidebar')), true);
+  eq('Jobright\'s sidebar is tucked away while SpeedyApply fills, so its "Autofill in progress…" shows', /tuckJobrightOnWorkday\(\);/.test(sa) && /el\.style\.display = 'none'/.test(body('tuckJobrightForSpeedyApply')) && /!\(_saDriving && host\.getAttribute\('data-ua-sa-tucked'\)\)/.test(body('forceOpenSidebar')), true);
   eq('errors SpeedyApply left fail the job only when nobody is answering them', /Date\.now\(\) - errorsSince > STUCK_MS && quiet > 30000/.test(sa), true);
   eq('SpeedyApply add-on\'s "N required fields need you" box is hidden (its file unchanged)', /st\.textContent = '#sa-status\{display:none!important\}';/.test(src), true);
   eq('…but never on a step showing errors (that would only re-validate an empty field)', sa.indexOf('} else if (wdPageErrors()) {') < sa.indexOf('} else if (quiet > STILL_MS && pressed < 3) {'), true);
