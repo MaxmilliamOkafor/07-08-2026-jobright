@@ -27,6 +27,8 @@ const manifest = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
    Operations wrapped by the busy guard keep their public name on a one-line
    wrapper and move the real body to <name>__impl — always inspect the body that
    actually does the work. */
+// Checks that finish after the synchronous run; the exit waits for them.
+const asyncChecks = [];
 function body(name) {
   const lines = src.split('\n');
   const impl = lines.findIndex((l) => new RegExp('^  (async )?function ' + name + '__impl\\(').test(l));
@@ -3856,7 +3858,52 @@ console.log('v17.37: the Jobright page\'s link is a job, not the company\'s care
 }
 
 
-setTimeout(() => {
+
+/* ── 87. v17.38: SpeedyApply built in — it takes Workday over; Jobright's sign-up / sign-in ── */
+console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick, engine fallback');
+{
+  // Its saved Workday account goes first (after a site-specific login).
+  eq('Create Account uses SpeedyApply\'s saved password on Workday', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa\) return sa\.password;/.test(body('getAppPassword')), true);
+  eq('…and its email', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa\) return sa\.email;/.test(body('getAppEmail')), true);
+  eq('sign-in tries the password that worked here before, then SpeedyApply\'s', body('workdayPasswordCandidates').indexOf('WD_SITE_PW_KEY') < body('workdayPasswordCandidates').indexOf('saWorkdayAccount'), true);
+  eq('"use profile email" is honoured', /a\.useProfileEmail \? prof && prof\.contactData && prof\.contactData\.email : a\.accountEmail/.test(body('saSettings')), true);
+  // The account page is handled at once: SpeedyApply only types, never presses.
+  const sa = body('workdaySpeedyApplyRun');
+  eq('SpeedyApply mode presses Create Account / Sign In after 1.5s, not 6s', /quiet > \(_wdCreatedThisJob \|\| _saAccountTurns \? 2000 : 1500\)/.test(sa), true);
+  eq('no profile in SpeedyApply → the engine applies', /SpeedyApply has no profile yet/.test(sa) && /_saDeclined = true; return false;/.test(sa), true);
+  eq('premium with no profile it can pick → the engine applies (not 20s waits per step)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)/.test(sa), true);
+  eq('handed back → SpeedyApply no longer counts as present (the account watcher works for the engine)', /!_saDeclined && \(/.test(src.match(/const speedyApplyPresent = [^\n]+/)[0]), true);
+  eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| \(saEmbedded\(\) && isWorkday\(\) && speedyApplyPresent\(\)\)\) return true;/.test(src), true);
+  // The profile pick, run for real against a fake SpeedyApply.
+  const run = async (answers) => {
+    const sent = [];
+    const m = {};
+    new Function('exports', `
+      const LOG = (x) => exports.logs.push(x); const location = { href: 'https://acme.wd1.myworkdayjobs.com/x/job/y/apply' };
+      const saEmbedded = () => true;
+      const chrome = { runtime: { lastError: undefined, sendMessage: (msg, cb) => { exports.sent.push(msg.type + (msg.profileId ? ':' + msg.profileId : '')); setTimeout(() => cb(exports.answers[msg.type]), 0); } } };
+      ${body('saAutoPickProfile')}
+      exports.pick = saAutoPickProfile;
+    `)(Object.assign(m, { sent, answers, logs: [] }));
+    const r = await m.pick();
+    return { r, sent };
+  };
+  asyncChecks.push((async () => {
+    const a = await run({ getSelectedProfile: undefined, premiumFetchJobScores: { scores: true, profiles: [{ id: 'p5', profileName: 'Data', score: 41 }, { id: 'p6', profileName: 'Product', score: 87 }] }, setSelectedProfile: { profileName: 'Product' } });
+    eq('the best-scoring SpeedyApply profile is picked for the tab', a, { r: 'Product', sent: ['getSelectedProfile', 'premiumFetchJobScores', 'setSelectedProfile:p6'] });
+    const b = await run({ getSelectedProfile: { profileName: 'Mine', profile: {} } });
+    eq('a profile you already picked for the tab stands', b, { r: 'Mine', sent: ['getSelectedProfile'] });
+    const c = await run({ premiumFetchJobScores: { error: 'Not authenticated' }, premiumFetchProfileList: [{ id: 'a1', profileName: 'First' }, { id: 'a2', profileName: 'Second' }], setSelectedProfile: {} });
+    eq('no scores → your first profile', c.sent, ['getSelectedProfile', 'premiumFetchJobScores', 'premiumFetchProfileList', 'setSelectedProfile:a1']);
+    const d = await run({});
+    eq('signed out (nothing to pick) → "" so the engine applies', d.r, '');
+  })().catch((e) => eq('the SpeedyApply profile pick runs', String(e && e.message), '')));
+  eq('SpeedyApply\'s settings / popup are a right-click away', /id: 'ua-sa-settings'/.test(orch) && /options\.html#\/profile/.test(orch) && /popup\.html/.test(orch), true);
+  eq('our menu setup removes only our own items (SpeedyApply\'s stay)', /removeOurMenus\(\(\) => \{/.test(orch) && !/chrome\.contextMenus\.removeAll\(/.test(orch), true);
+}
+
+
+setTimeout(() => Promise.all(asyncChecks).then(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
-}, 50);
+}), 50);

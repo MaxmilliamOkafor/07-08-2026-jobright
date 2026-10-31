@@ -489,7 +489,7 @@ function Wizard({ data, setData, step, setStep, files, setFiles, onSubmit }) {
 
   return h(
     "main",
-    null,
+    { "data-automation-id": "ApplyFlowPage" },
     h("ol", { "data-automation-id": "progressBar" }, STEPS.map((s, i) => h("li", { key: s, "data-automation-id": i === step ? "progressBarActiveStep" : "progressBarStep" }, i === step ? s : s))),
     h("h2", { "data-automation-id": "pageHeader" }, STEPS[step]),
     errors.length > 0 &&
@@ -500,7 +500,9 @@ function Wizard({ data, setData, step, setStep, files, setFiles, onSubmit }) {
           h("button", { key: id, type: "button", onClick: () => document.getElementById(`in-${id}`)?.focus() }, `Error: ${label} is required`)
         )
       ),
-    h("div", { key: step }, ...pages[step]()),
+    // Real Workday wraps each step in a page container with its own automation
+    // id; SpeedyApply recognises the step by it (applyFlowMyInfoPage, …).
+    h("div", { key: step, "data-automation-id": ["applyFlowMyInfoPage", "applyFlowMyExpPage", "applyFlowPrimaryQuestionsPage", "applyFlowVoluntaryDisclosuresPage", "applyFlowSelfIdentifyPage", "applyFlowReviewPage"][step] }, ...pages[step]()),
     h("footer", null, h("button", { "data-automation-id": "pageFooterNextButton", onClick: next }, t(step === 5 ? "Submit" : "Save and Continue")))
   );
 }

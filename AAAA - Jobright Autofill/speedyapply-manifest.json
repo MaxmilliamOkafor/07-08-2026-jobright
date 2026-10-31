@@ -1,0 +1,122 @@
+{
+  "manifest_version": 3,
+  "name": "SpeedyApply + Workflow Add-on",
+  "description": "Applying to jobs just got easier. Automate job applications with a single click and track your progress over time.",
+  "version": "2.28.2",
+  "short_name": "SpeedyApply",
+  "icons": {
+    "16": "icon/16.png",
+    "32": "icon/32.png",
+    "48": "icon/48.png",
+    "96": "icon/96.png",
+    "128": "icon/128.png"
+  },
+  "author": "kirk@speedyapply.com",
+  "homepage_url": "https://speedyapply.com",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "contextMenus",
+    "cookies",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "*://*/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "images/icon-pattern.svg"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    },
+    {
+      "resources": [
+        "options.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "extension_ids": [
+        "mbgjopdedgonlbpikjfibkccpmhjbnag"
+      ]
+    },
+    {
+      "resources": [
+        "content-scripts/content.css"
+      ],
+      "use_dynamic_url": true,
+      "matches": [
+        "*://*/*"
+      ]
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlcGrEhb20+Zo1vrslurXRqYEVk7IH6cV30Xge/gi5WwaIqLgB235A7lMTYRRV+pROtbsutie3mbB6YHsQT3OF/N94fdA7EkEfvaELnsMYS8G7stqdQq9i8iIACrHlwvqn8jI3G5KlRFH1zqWU/ihRbg+WdAYK1zR9lX6VqBpJplsYaPYmtGdfMpfWz1tSd+cQlpm3ffHOPUt7j8DWY3sLME/C4HMqPf+++yVWMsw/gaYYhPo/6vaRSpvT73OfMK2MlxXRf+NYh5x8NKO7B1hE4KAXlbBwyBKbAdO+rOFl1rAKPiwhApDw3bjVVc1HJMLXXB190xPFWbl+UVYZvvuWQIDAQAB",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "SpeedyApply: Job Application Autofill Tool",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "open_in_tab": true,
+    "page": "options.html"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": [
+        "content-scripts/content.js"
+      ]
+    },
+    {
+      "matches": [
+        "*://*.myworkdayjobs.com/*",
+        "*://*.myworkdaysite.com/*",
+        "*://*.workday.com/*",
+        "*://*.greenhouse.io/*",
+        "*://*.lever.co/*",
+        "*://*.ashbyhq.com/*",
+        "*://*.smartrecruiters.com/*",
+        "*://*.workable.com/*",
+        "*://*.icims.com/*",
+        "*://*.bamboohr.com/*",
+        "*://*.taleo.net/*",
+        "*://*.oraclecloud.com/*",
+        "*://*.jobvite.com/*",
+        "*://*.successfactors.com/*",
+        "*://*.sapsf.com/*",
+        "*://*.workforcenow.adp.com/*",
+        "*://*.breezy.hr/*",
+        "*://*.ats.rippling.com/*",
+        "*://*.eightfold.ai/*",
+        "*://*.applytojob.com/*",
+        "*://*.jazz.co/*",
+        "*://*.joinhandshake.com/*",
+        "*://*.usajobs.gov/*",
+        "*://*.governmentjobs.com/*",
+        "*://*.paylocity.com/*",
+        "*://*.freshteam.com/*",
+        "*://*.dover.io/*",
+        "*://*.dover.com/*",
+        "*://*.pinpointhq.com/*"
+      ],
+      "all_frames": false,
+      "run_at": "document_idle",
+      "js": [
+        "sa-enhancement.js"
+      ]
+    }
+  ]
+}

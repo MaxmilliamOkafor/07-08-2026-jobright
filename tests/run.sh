@@ -97,6 +97,9 @@ node tests/diagnostics.test.js "$EXT/ua-diagnostics.js" || fails=$((fails + 1))
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
 
+step "SpeedyApply embedded (its files unchanged, its background kept to its own data)"
+node tests/speedyapply-host.test.js "$EXT" || fails=$((fails + 1))
+
 printf '\n'
 if [ "$fails" -eq 0 ]; then printf '\033[32mAll checks passed.\033[0m\n'; else printf '\033[31m%s check group(s) failed.\033[0m\n' "$fails"; fi
 exit $fails

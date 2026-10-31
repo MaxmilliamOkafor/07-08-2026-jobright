@@ -4294,3 +4294,100 @@ job's own apply link. Now:
 
 If you see this for a job you want, open the job from the company's careers
 page and import that link (it contains `/job/`).
+
+## v17.38 — SpeedyApply built in: it takes Workday over; Jobright's sign-up / sign-in does the account
+
+"Add the Workday sign up / sign in to SpeedyApply and embed SpeedyApply to
+Jobright exactly how it is." "For Workday, SpeedyApply takes over the
+application."
+
+**SpeedyApply 2.28.2 (+ Workflow Add-on), unchanged.** All 22 of its files sit
+in the extension at the paths it ships with: `background.js`, `content-scripts/`,
+`chunks/`, `assets/`, `images/`, `icon/`, `options.html`, `popup.html`,
+`sidepanel.html` and `sa-enhancement.js`. Its original manifest is kept as
+`speedyapply-manifest.json`. `tests/speedyapply.sha256` records every file's
+fingerprint, and the tests fail if any changes. Its content scripts and
+web-accessible files are declared in Jobright's manifest exactly as in its own.
+
+**Its background runs inside Jobright's worker** (`ua-speedyapply-host.js`,
+loaded with `importScripts` like our other files). Four of its calls are kept to
+what is SpeedyApply's own. In one extension they would otherwise reach Jobright:
+- `storage.local.clear()` runs when you sign out of SpeedyApply, or when its
+  token refresh fails. It would have erased your Jobright sign-in, the queue,
+  your profile and saved Workday logins. Now it removes SpeedyApply's keys only.
+- Its message listener returned `true` for every message and logged "Unhandled
+  message type" for each of Jobright's. It now receives SpeedyApply's own types
+  only.
+- `contextMenus.removeAll()` from SpeedyApply removes its own two items. Ours
+  now removes only ours as well.
+- `setUninstallURL()` would have pointed the extension's uninstall page at
+  speedyapply.com. Skipped.
+
+Its defaults are written only on a fresh install, and reloading Jobright counts
+as an update. So its own install step is run once if it has never set itself
+up. That opens its "new profile" page.
+
+**Your profiles and saved responses** import through SpeedyApply's own screens.
+Right-click any page → **SpeedyApply settings (profile, responses, Workday
+account)**:
+- **Profile → Import** takes the profile JSON (`profile_5.json`,
+  `profile_6.json`).
+- **Settings → Responses → Import Responses** takes `responses.json` (merge or
+  replace).
+- The **Autofill Account** there is the Workday email and password.
+
+Right-click → **SpeedyApply popup** opens its popup (the toolbar icon is
+Jobright's).
+
+**Workday: SpeedyApply takes the application over.**
+- SpeedyApply's Workday script fills every step. This extension only presses
+  Next / Submit if SpeedyApply hasn't after 4s of no change.
+- Jobright's own autofill stands aside on Workday while SpeedyApply is there.
+- Premium SpeedyApply fills only from a profile picked for the tab, and with
+  none it waits at its profile picker for a click. Every queue job is a new
+  tab, so the extension picks the way the picker would, through SpeedyApply's
+  own messages: the best match from `premiumFetchJobScores`, otherwise your
+  first profile, then `setSelectedProfile`. A profile you already picked
+  stands.
+- If SpeedyApply can't fill (no profile, autofill off, or premium with no
+  profile it can pick, e.g. signed out of SpeedyApply), the job goes to the
+  Workday engine at once instead of waiting out every step.
+
+**The account step (sign up / sign in) is Jobright's.** SpeedyApply only types
+its saved account in (email, password, the checkbox). It never presses Create
+Account or Sign In, chooses between them, or handles "account already exists",
+a wrong password or a lock. The extension's account flow does that:
+- create first on a new employer, sign in where an account is recorded;
+- skip at once on "wrong email or password / might be locked";
+- reset and verification-code handling as before;
+- after 1.5s on the account page (was a 6s wait for a press that never came);
+- with **SpeedyApply's saved account**: its email (or its profile's email when
+  "use profile email" is on) and password create the account. Sign-in tries the
+  password that worked for that employer before, then SpeedyApply's, then ours,
+  then Jobright's Workday sign-up password.
+
+**Checked in Chromium with the merged extension** (offline, so without
+SpeedyApply's servers):
+- SpeedyApply's worker boots and sets itself up. Its settings page opens
+  ("Welcome to SpeedyApply!").
+- A sign-out-style clear from SpeedyApply removed only its keys; Jobright's and
+  ours stayed.
+- On the Workday replica (now with Workday's real step markers, e.g.
+  `applyFlowMyInfoPage`), SpeedyApply typed its saved account. Jobright's flow
+  pressed Create Account with that same account, and the job submitted.
+- Offline, premium SpeedyApply cannot get a profile, so the job went to the
+  engine and submitted.
+
+**Know this:**
+- **Disable the separately installed SpeedyApply**, otherwise two copies fill
+  every page.
+- **This build runs in premium mode.** The "plus" build reports premium, so
+  SpeedyApply fetches the profile from its servers. That needs you signed in to
+  SpeedyApply in its settings. If its servers refuse it, the engine applies
+  instead.
+- **SpeedyApply's add-on fills other ATSs too.** On Greenhouse, Lever and the
+  rest, `sa-enhancement.js` fills empty fields and uploads the CV from your
+  SpeedyApply profile before Jobright does. Applications still submit, but the
+  CV is the one in your SpeedyApply profile.
+- **Its side panel opens Jobright's.** SpeedyApply's popup "open side panel"
+  shows Jobright's queue panel, since there is one side panel per extension.

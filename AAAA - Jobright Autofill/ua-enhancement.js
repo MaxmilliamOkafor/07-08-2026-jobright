@@ -3617,6 +3617,9 @@
         const m = JSON.parse(sessionStorage.getItem('uaWdRun') || 'null');
         if (m && !m.assist && Date.now() - (m.startedAt || 0) < 20 * 60000) return true;
       } catch (_) {}
+      // On Workday SpeedyApply takes the application over when it is built in
+      // and on the page — Jobright's own autofill would type over it.
+      try { if (_saDriving || (saEmbedded() && isWorkday() && speedyApplyPresent())) return true; } catch (_) {}
       try { return isRunnerTab() || _mgrDriving || (isWorkday() && isBusy()); } catch (_) { return false; }
     };
   } catch (_) {}
@@ -7456,7 +7459,22 @@
      SpeedyApply's panel is a closed shadow root, so it is seen by its element
      on the page, not by reading it. Not there → the Workday engine as before. */
   let _saDriving = false;
-  const speedyApplyPresent = () => !!document.querySelector('speedyapply-autofill,speedyapply-modal');
+  /* Is SpeedyApply working this page? Its widget (speedyapply-autofill) is
+     only its on-screen button: it draws ~2.5s after load, and not again when
+     Apply is pressed before then — its Workday script still runs and types.
+     Built in, its own settings answer it: switched on and holding a profile. */
+  let _saReady = false;
+  const refreshSaReady = async () => {
+    try {
+      const sa = await saSettings();
+      const d = await new Promise((r) => chrome.storage.local.get('autofillEnabled', (v) => { void chrome.runtime.lastError; r(v || {}); }));
+      _saReady = !!(sa && sa.hasProfile && d.autofillEnabled !== false);
+    } catch (_) { _saReady = false; }
+  };
+  // Handed back to the engine for this page: SpeedyApply no longer counts as
+  // present, or the account watcher would stay off for the engine too.
+  let _saDeclined = false;
+  const speedyApplyPresent = () => !_saDeclined && (!!document.querySelector('speedyapply-autofill,speedyapply-modal') || (saEmbedded() && _saReady));
   let _saModeOn = true;                                  // cached for the password watcher (sync)
   try { chrome.storage.local.get('ua_wd_mode', (d) => { _saModeOn = !(d && d.ua_wd_mode === 'engine'); }); chrome.storage.onChanged.addListener((c) => { if (c.ua_wd_mode) _saModeOn = c.ua_wd_mode.newValue !== 'engine'; }); } catch (_) {}
   async function workdayModeSpeedyApply() { return (await st.get('ua_wd_mode')) !== 'engine'; }
@@ -7466,8 +7484,42 @@
   }
   const wdNextButton = () => deepAll('button[data-automation-id="bottom-navigation-next-button"],button[data-automation-id="pageFooterNextButton"]', 4).find((b) => isVisible(b) && !b.disabled) || null;
   const wdPageErrors = () => deepAll('[data-automation-id="errorBanner"],[data-automation-id="inputError"],[data-automation-id="errorMessage"]', 10).some(isVisible);
+  /* SpeedyApply's premium autofill fills from a profile chosen FOR THIS TAB
+     (getSelectedProfile); with none it shows its profile picker and waits for a
+     click — every queue job is a new tab, so each one sat at the picker. Pick
+     the way the picker would, through SpeedyApply's own messages: its job-match
+     scores (premiumFetchJobScores), else its profile list, then
+     setSelectedProfile. A profile you already picked for the tab stands. */
+  async function saAutoPickProfile() {
+    if (!saEmbedded()) return '';
+    const ask = (m, ms) => new Promise((res) => {
+      const t = setTimeout(() => res(null), ms || 15000);
+      try { chrome.runtime.sendMessage(m, (v) => { void chrome.runtime.lastError; clearTimeout(t); res(v && !v.error ? v : null); }); } catch (_) { clearTimeout(t); res(null); }
+    });
+    const cur = await ask({ type: 'getSelectedProfile' }, 5000);
+    if (cur && cur.profile) return cur.profileName || 'already picked';
+    const sc = await ask({ type: 'premiumFetchJobScores', appUrl: location.href });
+    let list = sc && Array.isArray(sc.profiles) ? sc.profiles.filter((x) => x && x.id) : [];
+    if (!list.length) { const l = await ask({ type: 'premiumFetchProfileList' }); list = Array.isArray(l) ? l.filter((x) => x && x.id) : []; }
+    if (!list.length) { LOG('Workday (SpeedyApply): no saved SpeedyApply profiles to pick from (sign in to SpeedyApply, or import a profile in its settings)'); return ''; }
+    const ranked = sc && sc.scores ? [...list].sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)) : list;
+    const best = ranked[0];
+    const set = await ask({ type: 'setSelectedProfile', profileId: best.id });
+    LOG(`Workday (SpeedyApply): using your profile "${best.profileName || best.id}" for this job (${sc && sc.scores ? 'best match' + (best.score != null ? ', score ' + best.score : '') : 'your first profile'})${set ? '' : ' — SpeedyApply did not confirm it'}`);
+    return best.profileName || best.id;
+  }
   async function workdaySpeedyApplyRun() {
-    if (!(await workdayModeSpeedyApply())) return false;
+    if (!(await workdayModeSpeedyApply())) { _saDeclined = true; return false; }
+    await refreshSaReady();
+    // Built in but never given a profile: SpeedyApply has nothing to fill with.
+    if (saEmbedded()) {
+      const sa = await saSettings();
+      if (sa && !sa.hasProfile) {
+        LOG('Workday: SpeedyApply has no profile yet (right-click → "SpeedyApply settings" → Profile → Import your profile JSON) — using the Workday engine for this job');
+        DIAG('workday.speedyapply-no-profile', location.hostname);
+        _saDeclined = true; return false;
+      }
+    }
     _saDriving = true;
     // SpeedyApply mounts with the page; 5s is ample (was 8s before the engine took over).
     const here = speedyApplyPresent() || await waitUntil(speedyApplyPresent, 5000, 200);
@@ -7475,7 +7527,21 @@
       _saDriving = false;
       LOG('Workday: SpeedyApply is not active on this page (install it, enable it and give it a profile) — using the built-in Workday engine instead');
       DIAG('workday.speedyapply-missing', location.hostname);
-      return false;
+      _saDeclined = true; return false;
+    }
+    /* Premium SpeedyApply fills only from a profile picked for the tab. If none
+       can be picked (signed out of SpeedyApply, no saved profiles) it will not
+       fill a single field — say so and let the engine apply, rather than
+       waiting out every step. */
+    if (saEmbedded()) {
+      const cfg = await new Promise((res) => { const t = setTimeout(() => res(null), 5000); try { chrome.runtime.sendMessage({ type: 'getAutofillConfig' }, (v) => { void chrome.runtime.lastError; clearTimeout(t); res(v || null); }); } catch (_) { clearTimeout(t); res(null); } });
+      if (cfg && cfg.enabled === false) { _saDriving = false; LOG('Workday: SpeedyApply autofill is switched off in its settings — using the Workday engine for this job'); _saDeclined = true; return false; }
+      if (cfg && cfg.premium && !(await saAutoPickProfile().catch(() => ''))) {
+        _saDriving = false;
+        LOG('Workday: SpeedyApply could not get a profile for this job (premium autofill needs your SpeedyApply sign-in and a saved profile) — using the Workday engine for this job');
+        DIAG('workday.speedyapply-no-profile-picked', location.hostname);
+        _saDeclined = true; return false;
+      }
     }
     LOG('Workday: SpeedyApply is filling this application — this extension only moves it along');
     _saDriving = true;
@@ -7496,10 +7562,15 @@
           if (workdayOnAccountWall()) {
             const err = workdayAuthErrorText();
             if (WD_SIGNIN_REFUSED_RE.test(err) && !_wdCreatedThisJob) { wdSkipRefusedSignIn(err); return 'closed'; }
-            // SpeedyApply hasn't moved the account page on (no account in its settings): ours.
-            if (quiet > (_wdCreatedThisJob || _saAccountTurns ? 2500 : 6000)) {
+            /* SpeedyApply only TYPES its account in (email, password, the
+               checkbox) and never presses Create Account / Sign In, decides
+               between them, or handles "already exists" / wrong password. That
+               is this extension's account flow — Jobright's sign-up / sign-in —
+               with the same account. A short settle, not 6s of waiting for a
+               press that never comes. */
+            if (quiet > (_wdCreatedThisJob || _saAccountTurns ? 2000 : 1500)) {
               _saAccountTurns++;
-              LOG('Workday (SpeedyApply): the account page is not moving — signing in / creating the account with this extension\'s');
+              LOG('Workday (SpeedyApply): account page — signing in / creating the account (Jobright\'s account flow, ' + ((await saWorkdayAccount()) ? 'SpeedyApply\'s saved account' : 'this extension\'s saved account') + ')');
               const r = await fillWorkdayCreateAccount(true);
               if (_authDeadEnd) return 'closed';
               if (r === 'stop' && workdayOnAccountWall()) { if (!_authDeadEnd) _authDeadEnd = 'Workday sign-in did not complete'; return 'closed'; }
@@ -7536,6 +7607,7 @@
   async function workdayAutomation() {
     LOG('Workday automation starting (SpeedyApply-enhanced)...');
     // SpeedyApply mode: our password watcher keeps off the account page from the start.
+    await refreshSaReady();
     if (_uaJobKey && await workdayModeSpeedyApply() && speedyApplyPresent()) _saDriving = true;
     // Fully Automated outside a run: your engine's assist fills each step as it appears.
     if (!_uaJobKey && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
@@ -11257,6 +11329,7 @@
     const out = [];
     try { const site = await siteLogin(); if (site && site.password) out.push(site.password); } catch (_) {}
     try { const mem = (await st.get(WD_SITE_PW_KEY)) || {}; const k = accountKeyFor(location.hostname); if (mem[k]) out.push(mem[k]); } catch (_) {}
+    try { const sa = await saWorkdayAccount(); if (sa) out.push(sa.password); } catch (_) {}   // SpeedyApply's Workday account
     try { const shared = await st.get('ua_app_password'); if (shared) out.push(shared); } catch (_) {}
     try {
       // Jobright's own Workday sign-up password ("Your Autofill information → Sign-up Information").
@@ -14949,9 +15022,38 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       return hit && all[hit].email && all[hit].password ? all[hit] : null;
     } catch (_) { return null; }
   }
+  /* SpeedyApply built into this extension: its content script is in our own
+     manifest, and its settings live in the same storage — read, never written.
+     Its "Autofill Account" ({accountEmail, accountPassword, useProfileEmail})
+     is the Workday account its script types in; the account flow below uses
+     the same one, so the two never type different passwords into one form. */
+  var _saEmbedded;                                       // var: read before this line runs
+  function saEmbedded() {
+    if (_saEmbedded === undefined) { try { _saEmbedded = (chrome.runtime.getManifest().content_scripts || []).some((c) => (c.js || []).includes('content-scripts/content.js')); } catch (_) { _saEmbedded = false; } }
+    return _saEmbedded;
+  }
+  async function saSettings() {
+    if (!saEmbedded()) return null;
+    try {
+      const d = await new Promise((r) => chrome.storage.local.get(['autofillAccount', 'profile'], (v) => { void chrome.runtime.lastError; r(v || {}); }));
+      let a = d.autofillAccount, prof = d.profile;
+      if (typeof a === 'string') { try { a = JSON.parse(a); } catch (_) { a = null; } }
+      if (typeof prof === 'string') { try { prof = JSON.parse(prof); } catch (_) { prof = null; } }
+      a = a || {};
+      const email = String((a.useProfileEmail ? prof && prof.contactData && prof.contactData.email : a.accountEmail) || '').trim();
+      return { email, password: String(a.accountPassword || ''), hasProfile: !!(prof && prof.nameData && (prof.nameData.firstName || prof.nameData.lastName)) };
+    } catch (_) { return null; }
+  }
+  async function saWorkdayAccount() {
+    if (!isWorkday()) return null;
+    const sa = await saSettings();
+    return sa && sa.email && sa.password ? sa : null;
+  }
   async function getAppPassword() {
     const site = await siteLogin();
     if (site) return site.password;
+    const sa = await saWorkdayAccount();
+    if (sa) return sa.password;
     let pw = await st.get('ua_app_password');
     if (!pw) { pw = generateStrongPassword(); await st.set('ua_app_password', pw); LOG('Generated & saved a reusable ATS account password'); }
     return pw;
@@ -14961,6 +15063,8 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   async function getAppEmail() {
     const site = await siteLogin();
     if (site) return site.email;
+    const sa = await saWorkdayAccount();
+    if (sa) return sa.email;
     let e = await st.get('ua_app_email');
     if (!e) { e = ((await getProfile()).email || '').trim(); if (e) await st.set('ua_app_email', e); }
     return e;

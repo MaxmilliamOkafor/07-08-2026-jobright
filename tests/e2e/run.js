@@ -57,6 +57,13 @@ const T0 = Date.now();
     });
   }, { pdf, extra: JSON.parse(process.env.EXTRA_STORAGE || '{}'), profileExtra: JSON.parse(process.env.PROFILE_EXTRA || '{}') });
 
+  /* RESEED_AFTER_MS: write EXTRA_STORAGE again after SpeedyApply's own install
+     step (a fresh test browser fires it, writing its empty defaults over
+     whatever was seeded first). */
+  if (process.env.RESEED_AFTER_MS) {
+    await new Promise((r) => setTimeout(r, Number(process.env.RESEED_AFTER_MS)));
+    await panel.evaluate((extra) => chrome.storage.local.set(extra), JSON.parse(process.env.EXTRA_STORAGE || '{}'));
+  }
   const send = (m) => panel.evaluate((m) => new Promise((r) => { chrome.runtime.sendMessage(m, r); setTimeout(() => r('timeout'), 4000); }), m);
   console.log('add:', JSON.stringify(await send({ type: 'UA_MGR_CMD', cmd: 'add', url: JOB_URL })));
   console.log('start:', JSON.stringify(await send({ type: 'UA_MGR_CMD', cmd: 'start' })));
