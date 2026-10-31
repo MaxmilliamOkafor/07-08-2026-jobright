@@ -4277,5 +4277,20 @@ scripts, so nothing reported back and the job sat on that page until the
   the link has no job in it, only the site address", and the next job starts.
 - Cancelled redirects and brief connection drops are not counted as errors.
 
+**Where the bare address came from.** When a queued job is a Jobright job page,
+the extension opens the employer's link from that page in the same tab. It used
+to take the first link of a dozen names anywhere in the page data (`applyLink`,
+`jobUrl`, `sourceUrl`, …) or any ATS link on the page. A company record's
+careers home (`https://collegeboard.wd1.myworkdayjobs.com`) could win over the
+job's own apply link. Now:
+
+- links are ranked: the apply link first, then the original or external link,
+  then generic job or source links;
+- a link counts only if it points at a job. On Workday it must contain
+  `/job/` or `/details/`; elsewhere it needs more than a bare host, a locale
+  or `/careers`;
+- with only a careers home on the page, nothing is opened, and Jobright's own
+  Apply is used.
+
 If you see this for a job you want, open the job from the company's careers
 page and import that link (it contains `/job/`).

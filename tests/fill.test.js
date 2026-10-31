@@ -3828,6 +3828,34 @@ console.log('v17.36: faster on every ATS — the waits end when the page is read
 }
 
 
+
+/* ── 86. v17.37: a careers home is not a job (Workday "HTTP ERROR 406") ── */
+console.log('v17.37: the Jobright page\'s link is a job, not the company\'s careers home');
+{
+  const m = {};
+  const nextData = { props: { pageProps: { company: { name: 'College Board', jobUrl: 'https://collegeboard.wd1.myworkdayjobs.com' },
+    job: { title: 'Engineer', applyLink: 'https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/New-York/Engineer_REQ-1234' } } } };
+  new Function('exports', `
+    const location = { href: 'https://jobright.ai/jobs/info/abc' };
+    const document = {
+      getElementById: (id) => (id === '__NEXT_DATA__' ? { textContent: exports.data } : null),
+      querySelectorAll: () => exports.links || [],
+    };
+    ${body('looksLikeJobLink')}${body('jobrightApplyTarget')}
+    Object.assign(exports, { looksLikeJobLink, jobrightApplyTarget });
+  `)(Object.assign(m, { data: JSON.stringify(nextData) }));
+  eq('the bare https://collegeboard.wd1.myworkdayjobs.com is not a job', m.looksLikeJobLink('https://collegeboard.wd1.myworkdayjobs.com'), false);
+  eq('…nor its careers-site home', m.looksLikeJobLink('https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers'), false);
+  eq('a Workday /job/ link is', m.looksLikeJobLink('https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/NY/Engineer_REQ-1234'), true);
+  eq('Greenhouse / Lever / Ashby job links still are', ['https://job-boards.greenhouse.io/acme/jobs/4412392011', 'https://jobs.lever.co/acme/1a2b', 'https://jobs.ashbyhq.com/acme/0d1e'].every(m.looksLikeJobLink), true);
+  eq('a careers home on the employer\'s own site is not', m.looksLikeJobLink('https://www.acme.com/careers') || m.looksLikeJobLink('https://acme.com/'), false);
+  eq('the job\'s applyLink wins over the company record\'s jobUrl', m.jobrightApplyTarget(), 'https://collegeboard.wd1.myworkdayjobs.com/en-US/Careers/job/New-York/Engineer_REQ-1234');
+  m.data = JSON.stringify({ props: { company: { jobUrl: 'https://collegeboard.wd1.myworkdayjobs.com' } } });
+  m.links = [{ href: 'https://collegeboard.wd1.myworkdayjobs.com/', textContent: 'College Board careers' }];
+  eq('with only the careers home, nothing is opened (Jobright\'s own Apply is used)', m.jobrightApplyTarget(), '');
+}
+
+
 setTimeout(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -5322,23 +5322,43 @@
      tab was left behind for every job. Read the address instead and go there in
      this tab. From Jobright's page data first, then its "Original Job Post" link,
      then any link straight to a known ATS. */
+  /* Is this a link to a JOB, not just the company's careers site?
+     "https://collegeboard.wd1.myworkdayjobs.com" (no job in it) was taken from
+     the Jobright page and opened in the job tab: Workday answered
+     "HTTP ERROR 406", and the tab flickered and closed. A Workday job link
+     has /job/ (or /details/) in it; any other link needs more than a bare
+     host or a locale. */
+  function looksLikeJobLink(u) {
+    try {
+      const x = new URL(String(u));
+      const segs = x.pathname.split('/').filter(Boolean).filter((sg) => !/^[a-z]{2}([-_][a-z]{2})?$/i.test(sg));
+      if (/(^|\.)(myworkdayjobs|myworkdaysite|myworkday)\.com$/i.test(x.hostname)) return /\/(job|details)\//i.test(x.pathname);
+      if (!segs.length) return !!x.search && /job|req|posting|id=/i.test(x.search);
+      if (segs.length === 1 && /^(careers?|jobs?|search|home|index(\.html?)?)$/i.test(segs[0])) return false;
+      return true;
+    } catch (_) { return false; }
+  }
   function jobrightApplyTarget() {
-    const ok = (u) => { try { const x = new URL(String(u), location.href); return /^https?:$/.test(x.protocol) && !/(^|\.)jobright\.ai$/i.test(x.hostname) && x.href; } catch (_) { return false; } };
+    const ok = (u) => { try { const x = new URL(String(u), location.href); return /^https?:$/.test(x.protocol) && !/(^|\.)jobright\.ai$/i.test(x.hostname) && looksLikeJobLink(x.href) && x.href; } catch (_) { return false; } };
     try {
       const data = document.getElementById('__NEXT_DATA__');
       if (data && data.textContent) {
-        const KEY = /^(applyLink|apply_link|applyUrl|apply_url|originalUrl|original_url|jobUrl|job_url|externalUrl|external_url|sourceUrl|source_url|originalJobUrl)$/i;
-        let found = '';
+        /* The apply link by name, most specific first. It used to take the FIRST
+           key of any of these names anywhere in the data — a company record's
+           jobUrl / sourceUrl (its careers home) could win over the job's own
+           applyLink. */
+        const RANK = [/^(applyLink|apply_link|applyUrl|apply_url)$/i, /^(originalJobUrl|originalUrl|original_url|externalUrl|external_url)$/i, /^(jobUrl|job_url|sourceUrl|source_url)$/i];
+        const found = RANK.map(() => '');
         const walk = (o, d) => {
-          if (found || !o || typeof o !== 'object' || d > 12) return;
+          if (!o || typeof o !== 'object' || d > 12) return;
           for (const [k, v] of Object.entries(o)) {
-            if (found) return;
-            if (typeof v === 'string' && KEY.test(k) && ok(v)) { found = ok(v); return; }
-            if (v && typeof v === 'object') walk(v, d + 1);
+            if (typeof v === 'string') { const r = RANK.findIndex((re) => re.test(k)); if (r >= 0 && !found[r] && ok(v)) found[r] = ok(v); }
+            else if (v && typeof v === 'object') walk(v, d + 1);
           }
         };
         walk(JSON.parse(data.textContent), 0);
-        if (found) return found;
+        const best = found.find(Boolean);
+        if (best) return best;
       }
     } catch (_) {}
     const links = Array.from(document.querySelectorAll('a[href]'));
@@ -5348,6 +5368,7 @@
     const direct = links.find((a) => ok(a.href) && ATS.test(new URL(a.href).hostname));
     return direct ? ok(direct.href) : '';
   }
+
 
   /* ── VALUES IN THE WRONG BOX (ported from the OptimHire patch's sanitizer) ──
      Two engines fill these forms — Jobright's and ours — and either can put a
