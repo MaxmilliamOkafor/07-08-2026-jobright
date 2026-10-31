@@ -4391,3 +4391,45 @@ SpeedyApply's servers):
   CV is the one in your SpeedyApply profile.
 - **Its side panel opens Jobright's.** SpeedyApply's popup "open side panel"
   shows Jobright's queue panel, since there is one side panel per extension.
+
+## v17.39 — Workday is SpeedyApply's only
+
+"On Workday Jobright is terrible and confused while SpeedyApply perfects it —
+only SpeedyApply's codebase autofill." "Improve it to press the buttons as
+well."
+
+With **Workday: let SpeedyApply fill** ticked (the default), nothing of
+Jobright's fills a Workday page:
+- Jobright's own autofill;
+- the Workday engine and its assist mode;
+- the built-in Workday flow;
+- the fallback and gap fill, the required-field pass and validation fixing;
+- the page walker.
+
+All of them check one switch (`saOwnsWorkday`).
+
+**SpeedyApply fills; this extension presses the buttons it does not:**
+- Create Account / Sign In, with SpeedyApply's saved account and Jobright's
+  account logic: create on a new employer, sign in where recorded, skip at once
+  on a refused sign-in;
+- Apply and Apply Manually;
+- Save and Continue on a finished step that has been still for about 4s;
+- Submit on Review.
+
+It never presses on a step that shows errors.
+
+**When SpeedyApply cannot do the job, the job fails with the reason.** Nothing of
+Jobright's fills in its place:
+- "SpeedyApply has no profile yet — … Import your profile JSON";
+- "SpeedyApply autofill is switched off in its settings";
+- "SpeedyApply could not get a profile for this job — sign in to SpeedyApply …"
+  (premium autofill fills from a profile picked per tab; the extension picks
+  the best match through SpeedyApply's own messages);
+- "SpeedyApply left required fields empty on <step>: <fields> — add them to your
+  SpeedyApply profile / Custom Answers" (after 45s, without filling them).
+
+Untick the box to have the Workday engine apply instead.
+
+**Also: Ashby location.** A combobox counts as picked only when the extension
+picked it from the list. A typed "Lucan, County Dublin" (from SpeedyApply's
+add-on) has a comma but was never picked, so Ashby refused the submit.
