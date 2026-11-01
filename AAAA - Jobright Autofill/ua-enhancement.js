@@ -7907,23 +7907,26 @@
   }
   function jrAutofillButton() {
     for (const r of jrSidebarRoots()) {
-      const b = Array.from(r.querySelectorAll('button,[role="button"]')).find((x) => /^\s*auto\s?-?fill\s*$/i.test(x.textContent || '') && isVisible(x) && !x.disabled);
+      const b = Array.from(r.querySelectorAll('button,[role="button"],[class*="autofill-button"],[class*="autofill-btn"]')).find((x) => /^\s*auto\s?-?fill\s*$/i.test(x.textContent || '') && isVisible(x) && !x.disabled);
       if (b) return b;
     }
     return null;
   }
-  // "Please stay on the Workday page while Autofill fills out the form." / "AI is scanning this page"
-  const jrAutofilling = () => jrSidebarRoots().some((r) => /stay on the [^.]{0,40} page while autofill|autofill(ing)? in progress|scanning this page/i.test(r.textContent || ''));
-  async function wdOneClickRun() {
+  /* Its button reads "Autofilling.." and its panel "Autofilling 67%  Cancel" while it types.
+     (Not "Please stay on the Workday page while Autofill fills out the form": that notice
+     stays up after it has finished.) */
+  const jrAutofilling = () => jrSidebarRoots().some((r) => /\bautofilling\b|autofill in progress|scanning this page/i.test(r.textContent || ''));
+  async function wdOneClickRun(opts) {
     if (_wdOneClickRunning || !isWorkday() || !wdOneClickArmed()) return '';
-    if (_uaJobKey || _mgrDriving || _saDriving || (autoApply && isBusy())) return '';   // a run already drives this tab
+    // A run already drives this tab (Fully Automated's own dispatch is that run when it calls this).
+    if (_uaJobKey || _mgrDriving || _saDriving || (!(opts && opts.fromAuto) && autoApply && isBusy())) return '';
     _wdOneClickRunning = true;
     let outcome = 'stopped';
     try {
       LOG('Workday one-click: filling every step, pressing Save and Continue, then Submit');
       const until = Date.now() + WD_ONECLICK_MS;
       const QUIET_MS = 1200;                           // Jobright / SpeedyApply done typing on this step
-      let lastSig = '', still = Date.now(), lastStep = null, passes = 0, moved = 0, applies = 0;
+      let lastSig = '', still = Date.now(), lastStep = null, passes = 0, moved = 0, applies = 0, jrSince = 0, jrStuck = false;
       // Pressed on the job description: Apply first (Apply Manually is chosen below).
       const applyBtn = () => deepAll('[data-automation-id="applyButton"],[data-automation-id="jobAction-apply"],[data-automation-id="adventureButton"],[data-uxi-element-id="Apply"]', 6).find(isVisible) || null;
       while (Date.now() < until && wdOneClickArmed() && moved < 14) {
@@ -7947,20 +7950,34 @@
           /* Jobright's Autofill and this one together: on each new step Jobright's
              own Autofill is pressed (your click already did the first), it is
              left to finish, and only then is what it missed answered here. */
-          if (step && step !== 'review') {
-            const jr = moved > 0 && jrAutofillButton();
+          if (step && step !== 'review' && !jrStuck) {
+            // Your click already ran it on the first step; Fully Automated did not.
+            const jr = (moved > 0 || (opts && opts.fromAuto)) && !jrAutofilling() && jrAutofillButton();
             if (jr) { realClick(jr); LOG(`Workday one-click: Jobright Autofill on ${step}`); await waitUntil(jrAutofilling, 3000, 200); }
-            // Done when its banner goes, or its typing stops for 4s (the banner can linger).
+            /* Done when it no longer says "Autofilling" and has stopped typing. Never
+               typed over: two fillers in one Workday date box interleave their digits
+               (Education From "2001", To left "YYYY" while Jobright was at 67%). */
             const t0 = Date.now(); let sig0 = wdFormValuesSig(), typedAt = Date.now();
             await waitUntil(() => {
               const s = wdFormValuesSig(); if (s !== sig0) { sig0 = s; typedAt = Date.now(); }
-              return Date.now() - t0 > 1500 && (!jrAutofilling() || Date.now() - typedAt > 4000);
-            }, 25000, 300);
+              if (Date.now() - t0 < 1500 || Date.now() - typedAt < 1500) return false;
+              // Still "Autofilling" but nothing typed for 10s after 30s: stuck (signed out, an error) — carry on.
+              return !jrAutofilling() || (Date.now() - t0 > 30000 && Date.now() - typedAt > 10000);
+            }, 120000, 300);
+            // Seen stuck once: not pressed or waited for again on this application.
+            if (jrAutofilling()) { jrStuck = true; LOG('Workday one-click: Jobright still says Autofilling but has stopped typing — carrying on without it'); }
             still = Date.now();
             continue;
           }
         }
         if (Date.now() - still < QUIET_MS) { await sleep(400); continue; }
+        // Jobright still filling this step (you pressed its Autofill again, or it is slow): wait for it.
+        if (!jrStuck && jrAutofilling()) {
+          if (!jrSince) jrSince = Date.now();
+          // Waited for while it types; a sidebar stuck on "Autofilling" (no typing for 10s, 30s in) is not.
+          if (Date.now() - jrSince < 30000 || Date.now() - still < 10000) { await sleep(500); continue; }
+          jrStuck = true; LOG('Workday one-click: Jobright still says Autofilling but has stopped typing — carrying on without it');
+        } else jrSince = 0;
         if (passes >= 2) { LOG(`Workday one-click: ${step || 'this step'} still has ${remainingErrorSummary() || 'required fields'} empty — answer them and press Autofill again`); break; }
         passes++;
         _saLeftoverPass = true;
@@ -8003,7 +8020,9 @@
     try {
       if (!e.isTrusted || !isWorkday()) return;
       const path = e.composedPath ? e.composedPath() : [];
-      const btn = path.find((n) => n && n.nodeType === 1 && n.matches && n.matches('button,a,[role="button"]'));
+      // Jobright's green Autofill may be a styled <div>, not a <button>.
+      const btn = path.find((n) => n && n.nodeType === 1 && n.matches && (n.matches('button,a,[role="button"]') ||
+        (/autofill-button|autofill-btn/i.test(String(n.className || '')) && /^\s*auto\s?-?fill\s*$/i.test(n.textContent || ''))));
       if (!btn) return;
       const txt = (btn.textContent || btn.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
       if (!txt || txt.length > 60 || /setting|history|profile|stop|cancel|turn off|pause|resume upload/i.test(txt)) return;
@@ -8030,11 +8049,15 @@
     tuckJobrightOnWorkday();
     try { if (!window.__uaJrTuckTimer) window.__uaJrTuckTimer = setInterval(tuckJobrightOnWorkday, 1500); } catch (_) {}
     if (_uaJobKey && await workdayModeSpeedyApply() && speedyApplyPresent()) _saDriving = true;
-    // Fully Automated outside a run: your engine's assist fills each step as it appears.
-    if (!_uaJobKey && !saOwnsWorkday() && window.__uaWdEngine && window.__uaWdEngine.isWorkday() && window.__uaWdEngine.allowAssist()) {
-      LOG('Workday assist: each step is filled as it appears — check it, edit anything, press Save and Continue; Review submits after a 3-second countdown you can cancel');
-      _wdAssistActive = true;
-      return 'assist';
+    /* Fully Automated outside a queue run: the whole application, as one click of
+       Autofill does — every step filled (with Jobright's Autofill), Save and
+       Continue and Submit pressed. The engine's "assist" filled each step and
+       then waited for YOU to press Save and Continue, which is what stopped on
+       My Information once SpeedyApply (no profile) stopped owning Workday. */
+    if (!_uaJobKey && !saOwnsWorkday()) {
+      wdOneClickArm();
+      const r = await wdOneClickRun({ fromAuto: true });
+      return r === 'submitted' ? 'submitted' : 'handed-back';
     }
     const p = await getProfile();
 
@@ -9332,7 +9355,11 @@
   }
   function wdEducationEntries(p) {
     const list = (Array.isArray(p.education) ? p.education : []).filter((e) => e && e.school);
-    if (list.length) return list.map((e) => ({ school: e.school, degree: e.degree || p.degree || '', field: e.field || p.major || '', gpa: e.gpa || '' }));
+    // Each school's own years (Jobright's dates.start_date / completion_date) — they were dropped,
+    // so Education From / To were never set from your profile ("2001" / "YYYY" on Wolters Kluwer).
+    const yr = (v) => (String(v || '').match(/\b(19|20)\d{2}\b/) || [''])[0];
+    if (list.length) return list.map((e) => ({ school: e.school, degree: e.degree || p.degree || '', field: e.field || p.major || '', gpa: e.gpa || '',
+      startYear: yr(e.start_date || e.from || e.start_year), endYear: yr(e.end_date || e.to || e.end_year || e.graduation_year) }));
     if (!p.school && !p.university) return [];
     return [{ school: p.school || p.university, degree: p.degree || '', field: p.major || p.field_of_study || '', gpa: p.gpa || '', endYear: p.graduation_year || p.grad_year || '' }];
   }
@@ -9612,8 +9639,11 @@
         if (field && !wdReadValue(field) && e.field && (wdKind(field) === 'multiselect' ? await wdMultiselectPick(field, e.field) : await wdWriteText(field, e.field))) n++;
         const gpa = wdField(b, ['gradeAverage', 'formField-gradeAverage']);
         if (gpa && e.gpa && !wdReadValue(gpa) && await wdWriteText(gpa, e.gpa)) n++;
+        // Your years replace whatever is there (a CV parser's or a half-typed "2001"), like the work dates.
+        const from = wdField(b, ['formField-firstYearAttended', 'formField-startDate']);
+        if (from && e.startYear && await wdSetDate(from, { y: e.startYear })) n++;
         const end = wdField(b, ['formField-lastYearAttended', 'formField-endDate']);
-        if (end && e.endYear && !wdReadValue(end) && await wdSetDate(end, { y: e.endYear })) n++;
+        if (end && e.endYear && await wdSetDate(end, { y: e.endYear })) n++;
       }
     }
     n += await wdAddSkills(p);
@@ -9649,6 +9679,53 @@
     if (n) LOG(`Workday: ${n} skill(s) added (limit ${WD_SKILLS_MAX})`);
     return n;
   }
+  /* 10 IN THE BOX, WHOEVER ADDS THEM. The 40 skills on Wolters Kluwer were
+     typed by Jobright's own Autofill, from your Jobright profile (its sidebar
+     at "Autofilling 100%", "Scikit-learn" in the search box). This extension's
+     limit could not stop that. Now the box itself is held to 10:
+       • once it holds 10, picking another result (click, or Enter in its
+         search box) is refused — unticking one is still allowed;
+       • anything over 10 is removed, newest first. */
+  const wdSkillsBox = () => { try { return isWorkday() ? wdField(document, ['formField-skills', 'skills', 'skillsSection']) : null; } catch (_) { return null; } };
+  let _wdSkillsFocusAt = 0;                         // the skills search box was the last field used
+  function wdSkillsGuard(e) {
+    try {
+      const box = wdSkillsBox();
+      if (!box || wdSelected(box).length < WD_SKILLS_MAX) return false;
+      const path = e.composedPath ? e.composedPath() : [e.target];
+      const inBox = path.includes(box);
+      if (e.type === 'keydown') {
+        if (!inBox || e.key !== 'Enter') return false;
+      } else {
+        const opt = path.find((n) => n && n.nodeType === 1 && n.matches && n.matches('[data-automation-id="promptOption"],[data-automation-id="promptLeafNode"],[role="option"],[data-automation-id="menuItem"]'));
+        if (!opt || inBox || Date.now() - _wdSkillsFocusAt > 60000 || wdOptionTicked(opt)) return false;
+      }
+      e.stopImmediatePropagation(); e.preventDefault();
+      return true;
+    } catch (_) { return false; }
+  }
+  try {
+    document.addEventListener('focusin', (e) => {
+      const box = wdSkillsBox();
+      if (!box) return;
+      const t = (e.composedPath && e.composedPath()[0]) || e.target;
+      if (box.contains(t)) _wdSkillsFocusAt = Date.now();
+      else if (t && t.closest && t.closest(WD_FF)) _wdSkillsFocusAt = 0;   // another question now
+    }, true);
+    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown']) document.addEventListener(t, wdSkillsGuard, true);
+    let _wdTrimTold = false;
+    setInterval(() => {
+      const box = wdSkillsBox();
+      if (!box) return;
+      const chips = Array.from(box.querySelectorAll('[data-automation-id="selectedItem"]'));
+      if (chips.length <= WD_SKILLS_MAX) return;
+      const last = chips[chips.length - 1];
+      const del = last.querySelector('[data-automation-id="DELETE_charm"],[aria-label*="delete" i],[aria-label*="remove" i],button,[role="button"]') ||
+        (last.parentElement && last.parentElement.querySelector('[data-automation-id="DELETE_charm"]'));
+      if (del) realClick(del);
+      if (!_wdTrimTold) { _wdTrimTold = true; LOG(`Workday: skills box held to ${WD_SKILLS_MAX} — removing the ${chips.length - WD_SKILLS_MAX} extra`); }
+    }, 700);
+  } catch (_) {}
   async function wdSelfIdentify(p) {
     let n = 0;
     const name = wdField(document, ['name', 'formField-name']);

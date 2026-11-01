@@ -4645,3 +4645,27 @@ From your Workday run on Workday's own careers site (Application Questions 1 of 
 **The flicker before autofill:** on the test page nothing on screen toggles. Jobright's
 sidebar is re-marked "open" but never closes. The real sidebar needs your Jobright
 login, so this could not be reproduced here.
+
+## v17.50 — Fully Automated walks Workday; education years; never typed over; skills box held to 10
+
+- **Fully Automated no longer waits for you on Workday.** With SpeedyApply holding
+  no profile, Fully Automated fell into the engine's "assist" mode: it filled
+  each step, then waited for you to press Save and Continue. It now walks the
+  whole application the way one click of Autofill does: every step filled with
+  Jobright's Autofill pressed first, then Save and Continue, then Submit.
+- **The skills box is held to 10, whoever adds.** The 40 skills on Wolters
+  Kluwer were typed by Jobright's own Autofill from your Jobright profile, which
+  this extension's own limit could not stop. Once the box holds 10, picking
+  another result (click or Enter) is refused and anything over 10 is removed.
+  Unticking one is still allowed.
+- **Education From / To come from your profile.** Each school's years were
+  dropped, so From showed "2001" and To stayed "YYYY". Each school's own
+  start / end years are now used, and they replace whatever is in the boxes.
+- **Never typed over Jobright.** Nothing is filled on a step while Jobright's
+  sidebar says "Autofilling". Two fillers in one Workday date box mix their
+  digits. Its "Please stay on the Workday page" notice no longer counts as
+  filling, because it stays up after it has finished.
+
+Tested: unit tests and browser checks for the skills limit; the Workday test
+page submits as a queue job, with one click and with Fully Automated; all the
+other ATS test forms still submit.
