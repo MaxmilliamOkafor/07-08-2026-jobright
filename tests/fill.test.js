@@ -3969,3 +3969,14 @@ console.log('platform pack: travel %, salary period, scale radios, training');
   eq('a 1-to-N scale shown as radios picks one below the top', /scale of/.test(body('answerKnockoutRadioGroup')), true);
   eq('"Other relevant training or qualifications" gets your degree and school', /training\|qualifications/.test(body('guessValue')), true);
 }
+
+console.log('Workday skills: hard stop at 10, each skill once per page');
+{
+  const add = body('wdAddSkills');
+  eq('the limit is 10', /const WD_SKILLS_MAX = 10;/.test(src), true);
+  eq('a box already holding 10 is left alone', /if \(wdSelected\(skills\)\.length >= WD_SKILLS_MAX\) return 0;/.test(add), true);
+  eq('it stops mid-list once the box reaches 10', /if \(wdSelected\(skills\)\.length >= WD_SKILLS_MAX\) break;/.test(add), true);
+  eq('each skill is tried once per page, whatever calls it', /_wdSkillsTried\.has\(key\)/.test(add) && /_wdSkillsTried\.add\(key\)/.test(add), true);
+  const steps = fs.readFileSync(path.resolve(__dirname, '../workday-engine/src/workday/steps.ts'), 'utf8');
+  eq('the Workday engine stops at 10 too, once per page', /Math\.min\(10, ctx\.settings\.maxSkills \|\| 10\)/.test(steps) && /skillsTried\.has\(key\)/.test(steps), true);
+}

@@ -9017,12 +9017,18 @@
       } catch (_) {}
     }
   }
+  /* The tick sits BESIDE the option text in Workday's row, not inside it, so the
+     whole row is read. Missing it is what clicked added skills off again. */
   const wdOptionTicked = (o) => {
     try {
-      // Not aria-selected: that marks the row the keyboard is on, not one already added.
-      if (o.getAttribute('aria-checked') === 'true') return true;
-      const box = o.querySelector('input[type="checkbox"],[role="checkbox"]');
-      return !!box && (box.checked === true || box.getAttribute('aria-checked') === 'true');
+      const row = (o.closest && o.closest('[role="option"],li,[data-automation-id="menuItem"],[data-automation-id="promptLeafNode"]')) || o;
+      for (const el of [o, row]) {
+        // Not aria-selected: that marks the row the keyboard is on, not one already added.
+        if (el.getAttribute('aria-checked') === 'true') return true;
+        const box = el.querySelector('input[type="checkbox"],[role="checkbox"]');
+        if (box && (box.checked === true || box.getAttribute('aria-checked') === 'true')) return true;
+      }
+      return false;
     } catch (_) { return false; }
   };
   /* Search-and-pick lists (source, phone code, school, field of study, skills).
@@ -9409,13 +9415,30 @@
   }
   /* "Type to Add Skills": each skill typed into Search, Enter, then its result
      ticked — Workday adds nothing for text left in the box. Your first ten. */
+  /* HARD STOP AT 10. Skills kept being added without end: every pass (the
+     step filler, the SpeedyApply leftovers, a re-fill after a page change) ran
+     the list again, and a skill already added was clicked again — which on
+     Workday REMOVES it — then added back on the next pass. Now:
+       • never more than 10 skills in the box, counting ones already there;
+       • each skill is tried once per page, whatever calls this;
+       • the box is left alone for good once it holds 10. */
+  const WD_SKILLS_MAX = 10;
+  const _wdSkillsTried = new Set();
   async function wdAddSkills(p) {
     const skills = wdField(document, ['formField-skills', 'skills', 'skillsSection']);
     if (!skills || wdKind(skills) !== 'multiselect') return 0;
-    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
+    if (wdSelected(skills).length >= WD_SKILLS_MAX) return 0;
+    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, WD_SKILLS_MAX);
     let n = 0;
-    for (const s of list) if (!wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85) && await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
-    if (n) LOG(`Workday: ${n} skill(s) added`);
+    for (const s of list) {
+      if (wdSelected(skills).length >= WD_SKILLS_MAX) break;
+      const key = location.pathname + '|' + s.toLowerCase();
+      if (_wdSkillsTried.has(key)) continue;
+      _wdSkillsTried.add(key);
+      if (wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85)) continue;
+      if (await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
+    }
+    if (n) LOG(`Workday: ${n} skill(s) added (limit ${WD_SKILLS_MAX})`);
     return n;
   }
   async function wdSelfIdentify(p) {

@@ -4569,3 +4569,14 @@ Checked with a new test form built from the report's field guides
   that order.
 - The Trakstar job site was labelled "Recruitee" in logs and diagnostics; it
   now says Trakstar.
+
+## v17.47 — Workday skills: hard stop at 10
+
+Skills kept being added without end. Two causes:
+- every pass ran the skills list again;
+- the "already added" tick sits beside the option text in Workday's row, so
+  an added skill was clicked again, which removes it, and was then added back.
+
+Now there are never more than 10 skills in the box, counting ones already
+there. Each skill is tried once per page, the whole row is read for the tick,
+and the Workday engine's own limit is 10 too.
