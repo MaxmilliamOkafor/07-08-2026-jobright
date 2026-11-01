@@ -149,10 +149,15 @@ function pressEnter(el: HTMLElement) {
   }
 }
 
+/** [ua] The tick sits beside the option text in Workday's row, so the row is read too. */
 function ticked(o: HTMLElement): boolean {
-  if (o.getAttribute("aria-checked") === "true") return true;
-  const box = o.querySelector<HTMLInputElement>('input[type="checkbox"], [role="checkbox"]');
-  return !!box && (box.checked === true || box.getAttribute("aria-checked") === "true");
+  const row = (o.closest('[role="option"], li, [data-automation-id="menuItem"], [data-automation-id="promptLeafNode"]') as HTMLElement | null) ?? o;
+  for (const el of [o, row]) {
+    if (el.getAttribute("aria-checked") === "true") return true;
+    const box = el.querySelector<HTMLInputElement>('input[type="checkbox"], [role="checkbox"]');
+    if (box && (box.checked === true || box.getAttribute("aria-checked") === "true")) return true;
+  }
+  return false;
 }
 
 function key(el: HTMLElement, k: string) {

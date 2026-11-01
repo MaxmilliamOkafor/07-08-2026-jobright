@@ -133,7 +133,7 @@ export const DEFAULT_WD_SETTINGS: WorkdaySettings = {
   requireDocApproval: true,
   llmAnswers: true,
   trustedInputFallback: false,
-  maxSkills: 15,
+  maxSkills: 10,
   fieldDelayMs: 120,
   externalTailorUrl: "",
   externalTailorToken: "",

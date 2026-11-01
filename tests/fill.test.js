@@ -3893,9 +3893,9 @@ console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick
   // The account page is handled at once: SpeedyApply only types, never presses.
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode presses Create Account / Sign In after 1.5s, not 6s', /quiet > \(_wdCreatedThisJob \|\| _saAccountTurns \? 2000 : 1500\)/.test(sa), true);
-  eq('no profile in SpeedyApply → the job fails saying so (Jobright does not fill in its place)', /return await cannot\('SpeedyApply has no profile yet/.test(sa), true);
-  eq('…but the account is signed up / signed in first, whatever SpeedyApply can do', /const cannot = async \(why\) => \{[\s\S]{0,400}await wdAccountPass\(\)/.test(sa), true);
-  eq('premium with no profile it can pick → the job fails saying so (sign in to SpeedyApply)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return await cannot\(/.test(sa), true);
+  eq('no profile in SpeedyApply → it says so (and the built-in engine fills the job)', /return await cannot\('SpeedyApply has no profile yet/.test(sa), true);
+  eq('…handed to the engine, which signs up / in itself', /const cannot = async \(why\) => \{[\s\S]{0,400}_saDeclined = true;/.test(sa), true);
+  eq('premium with no profile it can pick → it says so (sign in to SpeedyApply), the engine fills', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return await cannot\(/.test(sa), true);
   eq('handed back → SpeedyApply no longer counts as present (the account watcher works for the engine)', /!_saDeclined && \(/.test(src.match(/const speedyApplyPresent = [^\n]+/)[0]), true);
   eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| saOwnsWorkday\(\)\) return true;/.test(src), true);
   // The profile pick, run for real against a fake SpeedyApply.
@@ -3943,7 +3943,7 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode never hands a built-in job to the engine', !/using the Workday engine for this job/.test(sa), true);
   eq('fully automated: required fields SpeedyApply left empty — only those — are answered, then Next is pressed',
-    /_saLeftoverPass = true;\n\s+try \{ await wdEnginePass\(await getProfile\(\)\); await fallbackFill\(\); \} catch \(_\) \{\} finally \{ _saLeftoverPass = false; \}/.test(sa) && /if \(_saLeftoverPass\) return false;/.test(body('saOwnsWorkday')), true);
+    /_saLeftoverPass = true;\n\s+try \{ await wdEnginePass\(await getProfile\(\)\); await fallbackFill\(\); \} catch \(_\) \{\} finally \{ _saLeftoverPass = false; \}/.test(sa) && /if \(_saLeftoverPass[ |)]/.test(body('saOwnsWorkday')), true);
   eq('…SpeedyApply\'s saved responses (its responseList) are in the answer bank, loaded last so they win', /'responses', 'responseList'\]/.test(body('loadAnswerBank')), true);
   eq('Jobright\'s sidebar is tucked on Workday from page load, not only in a run', /tuckJobrightOnWorkday\(\);\n\s+try \{ if \(!window\.__uaJrTuckTimer\)/.test(body('workdayAutomation')), true);
   eq('…unless you open it from the toolbar icon', /_jrUserShown = true;/.test(src) && /if \(_jrUserShown \|\| !saOwnsWorkday\(\)\) return;/.test(body('tuckJobrightOnWorkday')), true);
@@ -3968,4 +3968,65 @@ console.log('platform pack: travel %, salary period, scale radios, training');
   eq('travel percentages pick the one nearest 25%', /Math\.abs\(pct\(a\) - 25\)/.test(cbm), true);
   eq('a 1-to-N scale shown as radios picks one below the top', /scale of/.test(body('answerKnockoutRadioGroup')), true);
   eq('"Other relevant training or qualifications" gets your degree and school', /training\|qualifications/.test(body('guessValue')), true);
+}
+
+console.log('Workday skills: hard stop at 10, each skill once per page');
+{
+  const add = body('wdAddSkills');
+  eq('the limit is 10', /const WD_SKILLS_MAX = 10;/.test(src), true);
+  eq('a box already holding 10 is left alone', /if \(wdSelected\(skills\)\.length >= WD_SKILLS_MAX\) return 0;/.test(add), true);
+  eq('it stops mid-list once the box reaches 10', /if \(wdSelected\(skills\)\.length >= WD_SKILLS_MAX\) break;/.test(add), true);
+  eq('each skill is tried once per page, whatever calls it', /_wdSkillsTried\.has\(key\)/.test(add) && /_wdSkillsTried\.add\(key\)/.test(add), true);
+  const steps = fs.readFileSync(path.resolve(__dirname, '../workday-engine/src/workday/steps.ts'), 'utf8');
+  eq('the Workday engine stops at 10 too, once per page', /Math\.min\(10, ctx\.settings\.maxSkills \|\| 10\)/.test(steps) && /skillsTried\.has\(key\)/.test(steps), true);
+}
+
+/* ── v17.48: Workday in one click — every step, every question ───────────── */
+console.log('v17.48: Workday one click — walks every step, SpeedyApply without a profile falls back');
+{
+  const sa = body('workdaySpeedyApplyRun');
+  eq('SpeedyApply without a profile → the built-in engine fills the job (it failed every Workday job)', /const cannot = async \(why\) => \{[\s\S]{0,400}_saDeclined = true;\s*return false;/.test(sa), true);
+  eq('…and nothing marks the job dead for it', /const cannot = async \(why\) => \{[^}]*_authDeadEnd = why/.test(sa), false);
+  eq('a declined / profile-less SpeedyApply does not own Workday', /if \(_saLeftoverPass \|\| _saDeclined \|\| _saNoProfile\) return false;/.test(body('saOwnsWorkday')), true);
+  const run = body('wdOneClickRun');
+  eq('one click goes all the way: Review → Submit, then waits for the confirmation', /step === 'review' \|\| \/submit\/i\.test\(n\.textContent/.test(run) && /markSubmitAttempt\(\);\s*realClick\(n\);/.test(run) && /outcome = 'submitted'/.test(run), true);
+  eq('…and moves on as soon as a step is filled (SpeedyApply\'s pace: 1.2s quiet, not 3.5s)', /const QUIET_MS = 1200;/.test(run), true);
+  eq('…answers every empty field on each step, SpeedyApply or not', /_saLeftoverPass = true;[\s\S]{0,200}wdEnginePass\(p\)[\s\S]{0,120}wdAddSkills\(p\)[\s\S]{0,60}fallbackFill\(\)/.test(run), true);
+  eq('…presses Save and Continue and waits for the next step', /realClick\(n\);\s*if \(await waitForStepChange\(before, 12000\)\)/.test(run), true);
+  eq('…is bounded (14 steps, two passes per step, 15 minutes)', /moved < 14/.test(run) && /passes >= 2/.test(run) && /WD_ONECLICK_MS = 15 \* 60 \* 1000/.test(src), true);
+  eq('…never on a tab a queue job drives', /if \(_uaJobKey \|\| _mgrDriving \|\| _saDriving/.test(run), true);
+  eq('only YOUR click arms it (isTrusted), and the gate lets it through', /if \(!e\.isTrusted \|\| !isWorkday\(\)\) return;[\s\S]{0,900}wdOneClickArm\(\)/.test(src) && /if \(oneClickActive\(\)\) return true;/.test(src), true);
+  const re = new RegExp(src.match(/const WD_ONECLICK_RE = (\/.*\/i);/)[1].slice(1, -2), 'i');
+  for (const [t, want] of [['Autofill', true], ['Continue To The Next Page', true], ['Autofill this page', true], ['Save and Continue', false], ['Submit', false]])
+    eq(`"${t}" ${want ? 'starts' : 'does not start'} a one-click run`, re.test(t), want);
+
+  // The notice-period "select all that apply" box: the option your notice names.
+  const m = {};
+  new Function('exports', `
+    ${src.match(/  const PLACEHOLDER_OPT_RE = [^\n]*\n/)[0]}
+    ${src.match(/  const normMoney = [\s\S]*?\n  function toDays/)[0].replace(/\n  function toDays$/, '')}
+    ${body('toDays')}
+    ${src.match(/  const EDU_RANKS = \[[\s\S]*?\n  const eduRank = [^\n]*\n/)[0]}
+    ${body('bestOptionIndex')}
+    ${src.match(/  const wdRx = [^\n]*\n/)[0]}
+    ${src.match(/  const WD_Q = \{[\s\S]*?\n  \};\n/)[0]}
+    ${src.match(/  const WD_COUNTRY_ALIASES = \{[\s\S]*?\n  \};\n/)[0]}
+    ${src.match(/  const wdEsc = [^\n]*\n/)[0]}
+    ${src.match(/  const WD_COUNTRY_RX = [\s\S]*?\]\)\);\n/)[0]}
+    ${src.match(/  const WD_SYNONYMS = \[[\s\S]*?\n  \];\n/)[0]}
+    ${body('wdNorm')} ${body('wdSimilarity')} ${body('wdBestIndex')}
+    const WD_DECLINE_RX = /decline/i, YEARS_Q_RE = /how many years/i;
+    const wdYesNo = () => '', wdProfileYears = () => 9, scoreExperienceRange = () => 0, profileTargetFor = () => '';
+    let ANSWER = '';
+    const guessFieldValue = () => ANSWER;
+    ${body('wdChooseOption')}
+    exports.pick = (label, options, ans) => { ANSWER = ans; return wdChooseOption(label, options, {}); };`)(m);
+  const opts = ['2 Weeks', '1 Month', '2 Months', 'More than 3 Months', 'Available Immediately'];
+  const q = 'What is your current notice period, and when would you be available to start work? (Please select all that apply)';
+  eq('notice "1 month" → "1 Month" (Revvity — the one box Jobright left empty)', m.pick(q, opts, '1 month'), '1 Month');
+  eq('"1 month\'s notice" → "1 Month"', m.pick(q, opts, "1 month's notice"), '1 Month');
+  eq('"2 weeks" → "2 Weeks"', m.pick(q, opts, '2 weeks'), '2 Weeks');
+  eq('"Immediately" → "Available Immediately"', m.pick(q, opts, 'Immediately'), 'Available Immediately');
+  eq('"4 months" → "More than 3 Months"', m.pick(q, opts, '4 months'), 'More than 3 Months');
+  eq('"30 days" → "1 Month"', m.pick(q, opts, '30 days'), '1 Month');
 }

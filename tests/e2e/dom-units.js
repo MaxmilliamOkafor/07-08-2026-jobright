@@ -64,6 +64,8 @@ const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.string
     await run('<input id="s">', `(() => { let hit = 0; const i = document.getElementById("s"); i.addEventListener("keydown", (e) => { if (e.keyCode === 13 && e.which === 13 && e.key === "Enter") hit++; }); T.wdPressEnter(i); return hit; })()`), 1);
   eq('a result row with a ticked box counts as already added (clicking it would remove the skill)',
     await run('<div id="o" data-automation-id="promptOption"><input type="checkbox" checked> Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), true);
+  eq('Workday\'s layout: the tick BESIDE the option text, in the same row, counts as added',
+    await run('<div role="option"><input type="checkbox" checked><div id="o" data-automation-id="promptOption">Python</div></div>', 'T.wdOptionTicked(document.getElementById("o"))'), true);
   eq('an unticked row does not', await run('<div id="o"><input type="checkbox"> Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), false);
   eq('the row the keyboard is on (aria-selected) is not taken for added',
     await run('<div id="o" role="option" aria-selected="true">Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), false);

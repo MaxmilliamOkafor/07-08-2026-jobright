@@ -63,8 +63,15 @@
     catch (_) { return false; }
   }
 
+  // Your own click of Autofill on a Workday tab: that application, until Review (bounded).
+  function oneClickActive() {
+    try { return Number(document.documentElement.getAttribute('data-ua-oneclick') || 0) > Date.now(); }
+    catch (_) { return false; }
+  }
+
   window.__uaAutoAllowed = function () {
     if (managedJobActive()) return true;          // a queued job owns this tab
+    if (oneClickActive()) return true;            // you pressed Autofill on this Workday application
     if (!ready) return false;                     // preference not known yet → do nothing
     if (toggleOn) return true;
     return queueRunning && isRunnerTab();
@@ -72,6 +79,7 @@
   // For UI/diagnostics: why did the gate answer the way it did?
   window.__uaAutoReason = function () {
     if (managedJobActive()) return 'queue job';
+    if (oneClickActive()) return 'Autofill pressed on Workday';
     if (!ready) return 'preference not loaded';
     if (toggleOn) return 'toggle ON';
     if (queueRunning && isRunnerTab()) return 'queue runner tab';
@@ -7627,6 +7635,19 @@
   // Handed back to the engine for this page: SpeedyApply no longer counts as
   // present, or the account watcher would stay off for the engine too.
   let _saDeclined = false;
+  /* Built in but holding no profile (or switched off in its settings):
+     SpeedyApply fills nothing, so it does not own Workday and the engine
+     fills every step. Unknown settings leave it as it was. */
+  let _saNoProfile = false;
+  setTimeout(async () => {
+    try {
+      if (!isWorkday() || !saEmbedded()) return;
+      await refreshSaReady();
+      const sa = await saSettings();
+      _saNoProfile = !!sa && !_saReady;
+      if (_saNoProfile) LOG('Workday: SpeedyApply has no profile — the built-in Workday engine fills this application');
+    } catch (_) {}
+  }, 0);
   /* WORKDAY = SPEEDYAPPLY ONLY. "On Workday Jobright is terrible and confused
      while SpeedyApply perfects it — only SpeedyApply's codebase autofill." With
      "Workday: let SpeedyApply fill" on (the default), every Jobright filler on a
@@ -7640,7 +7661,7 @@
   // run never stops for you.
   let _saLeftoverPass = false;
   function saOwnsWorkday() {
-    if (_saLeftoverPass) return false;
+    if (_saLeftoverPass || _saDeclined || _saNoProfile) return false;
     try { return isWorkday() && _saModeOn && (saEmbedded() || speedyApplyPresent()); } catch (_) { return false; }
   }
   /* Jobright's sidebar off Workday while SpeedyApply owns it — from page load,
@@ -7725,19 +7746,16 @@
   async function workdaySpeedyApplyRun() {
     if (!(await workdayModeSpeedyApply())) { _saDeclined = true; return false; }
     await refreshSaReady();
-    /* SpeedyApply ONLY. When it cannot fill this job, the job fails with the
-       reason — Jobright does not fill Workday in its place. */
+    /* When SpeedyApply cannot fill this job (no profile, switched off, none it
+       can pick) the built-in Workday engine fills it instead. Failing the job
+       left every Workday application untouched on the account page ("SpeedyApply
+       has no profile yet" on each one). The engine path signs up / in itself. */
     const cannot = async (why) => {
       _saDriving = false;
-      /* The account step is ours whatever SpeedyApply can do: it was left on
-         Create Account / Sign In untouched whenever SpeedyApply had no profile
-         to fill with, so the saved account was never used. Signed up / in
-         first, then the job ends with the reason. */
-      await wdAccountPass().catch(() => {});
-      LOG('Workday: ' + why);
+      LOG('Workday: ' + why + ' — filling with the built-in Workday engine instead');
       DIAG('workday.speedyapply-cannot', why.slice(0, 80));
-      if (!_authDeadEnd) _authDeadEnd = why;
-      return 'closed';
+      _saDeclined = true;
+      return false;
     };
     if (saEmbedded()) {
       const sa = await saSettings();
@@ -7841,6 +7859,109 @@
       });
     } finally { _saDriving = false; }
   }
+
+  /* ── ONE CLICK OF AUTOFILL ON WORKDAY ─────────────────────────────────────
+     Jobright's Autofill filled the step on screen and stopped there: "4/5
+     required", then Save and Continue was yours to press on every step. Now a
+     real click of Autofill (Jobright's sidebar, or Continue To The Next Page)
+     on a Workday application walks it: on each step, once the page is quiet,
+     every field still empty is answered (the notice-period "select all that
+     apply" box, the skills, the questions), then Save and Continue is pressed.
+     Like SpeedyApply: the moment a step is filled it moves on — no pause for
+     you — and on Review it presses Submit, so one click ends submitted.
+       • stops on a step whose errors stay after two passes, naming them;
+       • at most 14 steps / 15 minutes, and never on a queue job's tab (the
+         queue drives those). */
+  const WD_ONECLICK_MS = 15 * 60 * 1000;
+  const WD_ONECLICK_RE = /^\s*(auto\s?-?fill( (this|the) (page|application|form)| now| with jobright)?|continue to (the )?next (page|step)|fill (this )?(page|application))\s*$/i;
+  let _wdOneClickRunning = false;
+  function wdOneClickArm() {
+    const until = String(Date.now() + WD_ONECLICK_MS);
+    try { document.documentElement.setAttribute('data-ua-oneclick', until); } catch (_) {}
+    try { sessionStorage.setItem('ua_wd_oneclick', until); } catch (_) {}
+  }
+  function wdOneClickDisarm() {
+    try { document.documentElement.removeAttribute('data-ua-oneclick'); } catch (_) {}
+    try { sessionStorage.removeItem('ua_wd_oneclick'); } catch (_) {}
+  }
+  const wdOneClickArmed = () => Number(document.documentElement.getAttribute('data-ua-oneclick') || 0) > Date.now();
+  async function wdOneClickRun() {
+    if (_wdOneClickRunning || !isWorkday() || !wdOneClickArmed()) return '';
+    if (_uaJobKey || _mgrDriving || _saDriving || (autoApply && isBusy())) return '';   // a run already drives this tab
+    _wdOneClickRunning = true;
+    let outcome = 'stopped';
+    try {
+      LOG('Workday one-click: filling every step, pressing Save and Continue, then Submit');
+      const until = Date.now() + WD_ONECLICK_MS;
+      const QUIET_MS = 1200;                           // Jobright / SpeedyApply done typing on this step
+      let lastSig = '', still = Date.now(), lastStep = null, passes = 0, moved = 0, applies = 0;
+      // Pressed on the job description: Apply first (Apply Manually is chosen below).
+      const applyBtn = () => deepAll('[data-automation-id="applyButton"],[data-automation-id="jobAction-apply"],[data-automation-id="adventureButton"],[data-uxi-element-id="Apply"]', 6).find(isVisible) || null;
+      while (Date.now() < until && wdOneClickArmed() && moved < 14) {
+        if (confirmSubmitted() || hardSuccessSignal()) { outcome = 'submitted'; break; }
+        if (workdayOnAccountWall()) { await wdAccountPass(); if (workdayOnAccountWall()) { LOG('Workday one-click: still on the account page — stopping'); break; } continue; }
+        if (findApplyManually()) { await clickApplyManually(); await waitUntil(() => !findApplyManually(), 6000, 200); continue; }
+        if (await wdHandleResumeUploadPage()) continue;
+        if (!wdStepKind() && applies < 3 && applyBtn()) {
+          applies++; realClick(applyBtn());
+          await waitUntil(() => workdayOnAccountWall() || !!findApplyManually() || !!wdStepKind(), 10000, 200);
+          continue;
+        }
+        const sig = location.href + '|' + stepSignature() + '|' + wdFormValuesSig();
+        if (sig !== lastSig) { lastSig = sig; still = Date.now(); }
+        const step = wdStepKind() || '';
+        if (step !== lastStep) { lastStep = step; passes = 0; if (step) LOG(`Workday one-click: ${step}`); }
+        if (Date.now() - still < QUIET_MS) { await sleep(400); continue; }
+        if (passes >= 2) { LOG(`Workday one-click: ${step || 'this step'} still has ${remainingErrorSummary() || 'required fields'} empty — answer them and press Autofill again`); break; }
+        passes++;
+        _saLeftoverPass = true;
+        try {
+          const p = await getProfile();
+          await wdEnginePass(p);
+          if (step === 'myExperience') await wdAddSkills(p);
+          await fallbackFill();
+        } catch (_) {} finally { _saLeftoverPass = false; }
+        await sleep(250);
+        const n = wdNextButton() || await waitUntil(wdNextButton, 5000, 250) && wdNextButton();
+        if (!n) { LOG('Workday one-click: no Save and Continue on this step — stopping'); break; }
+        if (step === 'review' || /submit/i.test(n.textContent || '')) {
+          LOG('Workday one-click: Review — pressing Submit');
+          markSubmitAttempt();
+          realClick(n);
+          if (await waitUntil(() => confirmSubmitted() || hardSuccessSignal(), 15000, 250)) { LOG('Workday one-click: application submitted'); outcome = 'submitted'; break; }
+          still = Date.now() - QUIET_MS; continue;    // errors shown: the next pass answers them
+        }
+        const before = stepSignature();
+        realClick(n);
+        if (await waitForStepChange(before, 12000)) { moved++; lastSig = ''; still = Date.now(); }
+        else still = Date.now() - QUIET_MS;           // errors shown: the next pass answers them
+      }
+    } finally { _wdOneClickRunning = false; wdOneClickDisarm(); }
+    return outcome;
+  }
+  // The click itself: a real one (not ours), inside Jobright's sidebar or on a button so named.
+  document.addEventListener('click', (e) => {
+    try {
+      if (!e.isTrusted || !isWorkday()) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      const btn = path.find((n) => n && n.nodeType === 1 && n.matches && n.matches('button,a,[role="button"]'));
+      if (!btn) return;
+      const txt = (btn.textContent || btn.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length > 60 || /setting|history|profile|stop|cancel|turn off|pause|resume upload/i.test(txt)) return;
+      const inSidebar = path.some((n) => n && n.nodeType === 1 && /^plasmo-csui$/i.test(n.tagName || ''));
+      if (!(inSidebar ? /auto\s?-?fill|continue to (the )?next (page|step)/i.test(txt) : WD_ONECLICK_RE.test(txt))) return;
+      wdOneClickArm();
+      setTimeout(() => { wdOneClickRun().catch(() => {}); }, 1500);
+    } catch (_) {}
+  }, true);
+  // Through a full reload (sign-in, a tenant that reloads between steps) the run carries on.
+  try {
+    const left = Number(sessionStorage.getItem('ua_wd_oneclick') || 0);
+    if (left > Date.now() && isWorkday()) {
+      document.documentElement.setAttribute('data-ua-oneclick', String(left));
+      setTimeout(() => { wdOneClickRun().catch(() => {}); }, 2500);
+    }
+  } catch (_) {}
 
 
   async function workdayAutomation() {
@@ -9017,12 +9138,18 @@
       } catch (_) {}
     }
   }
+  /* The tick sits BESIDE the option text in Workday's row, not inside it, so the
+     whole row is read. Missing it is what clicked added skills off again. */
   const wdOptionTicked = (o) => {
     try {
-      // Not aria-selected: that marks the row the keyboard is on, not one already added.
-      if (o.getAttribute('aria-checked') === 'true') return true;
-      const box = o.querySelector('input[type="checkbox"],[role="checkbox"]');
-      return !!box && (box.checked === true || box.getAttribute('aria-checked') === 'true');
+      const row = (o.closest && o.closest('[role="option"],li,[data-automation-id="menuItem"],[data-automation-id="promptLeafNode"]')) || o;
+      for (const el of [o, row]) {
+        // Not aria-selected: that marks the row the keyboard is on, not one already added.
+        if (el.getAttribute('aria-checked') === 'true') return true;
+        const box = el.querySelector('input[type="checkbox"],[role="checkbox"]');
+        if (box && (box.checked === true || box.getAttribute('aria-checked') === 'true')) return true;
+      }
+      return false;
     } catch (_) { return false; }
   };
   /* Search-and-pick lists (source, phone code, school, field of study, skills).
@@ -9409,13 +9536,30 @@
   }
   /* "Type to Add Skills": each skill typed into Search, Enter, then its result
      ticked — Workday adds nothing for text left in the box. Your first ten. */
+  /* HARD STOP AT 10. Skills kept being added without end: every pass (the
+     step filler, the SpeedyApply leftovers, a re-fill after a page change) ran
+     the list again, and a skill already added was clicked again — which on
+     Workday REMOVES it — then added back on the next pass. Now:
+       • never more than 10 skills in the box, counting ones already there;
+       • each skill is tried once per page, whatever calls this;
+       • the box is left alone for good once it holds 10. */
+  const WD_SKILLS_MAX = 10;
+  const _wdSkillsTried = new Set();
   async function wdAddSkills(p) {
     const skills = wdField(document, ['formField-skills', 'skills', 'skillsSection']);
     if (!skills || wdKind(skills) !== 'multiselect') return 0;
-    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
+    if (wdSelected(skills).length >= WD_SKILLS_MAX) return 0;
+    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, WD_SKILLS_MAX);
     let n = 0;
-    for (const s of list) if (!wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85) && await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
-    if (n) LOG(`Workday: ${n} skill(s) added`);
+    for (const s of list) {
+      if (wdSelected(skills).length >= WD_SKILLS_MAX) break;
+      const key = location.pathname + '|' + s.toLowerCase();
+      if (_wdSkillsTried.has(key)) continue;
+      _wdSkillsTried.add(key);
+      if (wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85)) continue;
+      if (await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
+    }
+    if (n) LOG(`Workday: ${n} skill(s) added (limit ${WD_SKILLS_MAX})`);
     return n;
   }
   async function wdSelfIdentify(p) {

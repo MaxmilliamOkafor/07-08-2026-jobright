@@ -870,9 +870,13 @@
     }
   }
   function ticked(o) {
-    if (o.getAttribute("aria-checked") === "true") return true;
-    const box = o.querySelector('input[type="checkbox"], [role="checkbox"]');
-    return !!box && (box.checked === true || box.getAttribute("aria-checked") === "true");
+    const row = o.closest('[role="option"], li, [data-automation-id="menuItem"], [data-automation-id="promptLeafNode"]') ?? o;
+    for (const el of [o, row]) {
+      if (el.getAttribute("aria-checked") === "true") return true;
+      const box = el.querySelector('input[type="checkbox"], [role="checkbox"]');
+      if (box && (box.checked === true || box.getAttribute("aria-checked") === "true")) return true;
+    }
+    return false;
   }
   function key(el, k) {
     const code = k.length === 1 ? /\d/.test(k) ? `Digit${k}` : `Key${k.toUpperCase()}` : k;
@@ -1438,7 +1442,7 @@
     requireDocApproval: true,
     llmAnswers: true,
     trustedInputFallback: false,
-    maxSkills: 15,
+    maxSkills: 10,
     fieldDelayMs: 120,
     externalTailorUrl: "",
     externalTailorToken: "",
@@ -1969,6 +1973,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     for (const t of ["keydown", "mousedown", "paste"]) document.addEventListener(t, mark, true);
   }
   var TENANT_DEFAULTS = /* @__PURE__ */ new Set(["country", "phoneCode", "phoneType"]);
+  var skillsTried = /* @__PURE__ */ new Set();
   function caseOnly(a, b) {
     return a !== b && a.trim().toLowerCase() === b.trim().toLowerCase();
   }
@@ -2372,9 +2377,14 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (skillsEl) {
       const c = containerOf(skillsEl);
       handled.add(c);
-      const list = (ctx.docs?.tailored?.skills ?? p.skills).slice(0, ctx.settings.maxSkills);
+      const max = Math.min(10, ctx.settings.maxSkills || 10);
+      const list = (ctx.docs?.tailored?.skills ?? p.skills).slice(0, max);
       let added = 0;
       for (const s of list) {
+        if (multiselectSelected(c).length >= max) break;
+        const key2 = location.pathname + "|" + s.toLowerCase();
+        if (skillsTried.has(key2)) continue;
+        skillsTried.add(key2);
         if (multiselectSelected(c).some((x) => similarity(x, s) >= 0.85)) continue;
         await pace(ctx);
         if (await multiselectPick(c, s, { min: 0.75 })) added++;

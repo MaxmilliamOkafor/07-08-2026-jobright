@@ -98,6 +98,8 @@ if (typeof document !== "undefined") {
  * (Workday guide §6), and the phone code and device type follow it.
  */
 const TENANT_DEFAULTS = new Set<AidKey>(["country", "phoneCode", "phoneType"]);
+/** [ua] Skills already tried on this page (path|skill), so no pass repeats them. */
+const skillsTried = new Set<string>();
 
 /** [ua] Same text, different case ("MAXMILLIAM" from a CV parse): never what you meant. */
 function caseOnly(a: string, b: string): boolean {
@@ -580,9 +582,16 @@ export async function myExperience(ctx: Ctx): Promise<void> {
   if (skillsEl) {
     const c = containerOf(skillsEl);
     handled.add(c);
-    const list = (ctx.docs?.tailored?.skills ?? p.skills).slice(0, ctx.settings.maxSkills);
+    // [ua] Hard stop at 10, counting skills already in the box, and each skill tried
+    // once per page: re-running the list on every pass added skills without end.
+    const max = Math.min(10, ctx.settings.maxSkills || 10);
+    const list = (ctx.docs?.tailored?.skills ?? p.skills).slice(0, max);
     let added = 0;
     for (const s of list) {
+      if (multiselectSelected(c).length >= max) break;
+      const key = location.pathname + "|" + s.toLowerCase();
+      if (skillsTried.has(key)) continue;
+      skillsTried.add(key);
       if (multiselectSelected(c).some((x) => similarity(x, s) >= 0.85)) continue;
       await pace(ctx);
       if (await multiselectPick(c, s, { min: 0.75 })) added++;
