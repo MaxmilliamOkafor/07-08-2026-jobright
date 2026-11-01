@@ -789,7 +789,7 @@
     // OptimHire / SpeedyApply supported ATS platforms
     { n: 'Zoho', p: /zohorecruit\.com|recruit\.zoho/i }, { n: 'Freshteam', p: /freshteam\.com/i },
     { n: 'Recruiterbox', p: /recruiterbox\.com/i }, { n: 'Jobadder', p: /jobadder\.com/i },
-    { n: 'Recruitee', p: /hire\.trakstar\.com/i }, { n: 'CATSone', p: /catsone\.com/i },
+    { n: 'Trakstar', p: /hire\.trakstar\.com/i }, { n: 'CATSone', p: /catsone\.com/i },
     { n: 'PCRecruiter', p: /pcrecruiter\.net/i }, { n: 'ApplicantStack', p: /applicantstack\.com/i },
     { n: 'Hirebridge', p: /hirebridge\.com/i }, { n: 'Newton', p: /newtonsoftware\.com/i },
     { n: 'CEIPAL', p: /ceipal\.com/i }, { n: 'Oorwin', p: /oorwin\.com/i },
@@ -1462,6 +1462,12 @@
     if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type|descri|responsib|dut(y|ies)|summary|achievement|accomplish|salary|compensation|\bpay\b|remuneration|rate|notice|travel|relocat|start|availab|visa|sponsor|reside|location/.test(l)) return p.current_title || p.title || '';
     // Free-text knockouts from the 27-10-2026 pack.
     if (/\bvisa status\b|\bimmigration status\b|\bwork(ing)? (permit|authori[sz]ation) status\b/.test(l)) return p.visa_status || DEFAULTS.visaStatus;
+    // BrassRing "Other relevant training or qualifications*": your degree, school and certifications.
+    if (/\b(other|additional|relevant)\b[^?]{0,30}\b(training|qualifications?)\b/.test(l)) {
+      const deg = [p.degree, p.major && ('in ' + p.major)].filter(Boolean).join(' ');
+      const parts = [deg && (deg + (p.school ? ` (${p.school})` : '')), p.certifications || p.certs].filter(Boolean);
+      if (parts.length) return parts.join('; ');
+    }
     if (/\b(which|what)\b[^?]{0,30}\bai\b[^?]{0,20}\btools?\b|\bai tools?\b[^?]{0,30}\b(which|what|use|used)\b/.test(l)) return p.ai_tools || DEFAULTS.aiTools;
     // Dropped bare "org" — a 3-letter fragment that could match unrelated labels
     // (e.g. a "yourname.org" website hint) and stuff the company name into them.
@@ -2119,7 +2125,7 @@
     if (/\b(related|relative|family member|close personal relationship|spouse|partner)\b[^?]{0,80}\b(influence|sign|award|approve|decision)\w*\b[^?]{0,60}\b(contracts?|agreements?|business)\b/.test(q)) return 'no';
     if (/\b(employee|employed|worked)\b[^?]{0,40}\b(federal|state|local|us|u\.s\.|united states)\b[^?]{0,20}\bgovernment\b|\bgovernment\b[^?]{0,30}\b(employee|employed)\b|\bemployed (by|with|at) (a|an|the|any)?\s*(\w+ )?government\b/.test(q)) return 'no';
     if (/\b(early[- ]careers?|graduate|apprenticeship|internship|intern)\s+(programme|program|scheme)\b/.test(q) && /\b(graduate of|completed|alumn|participated|been (a|an|part of))\b/.test(q)) return 'no';
-    if (/\b(require|need|request)\b[^?]{0,30}\b(adjustments?|accommodations?|special arrangements?)\b/.test(q)) return 'no';
+    if (/\b(require|need|request)\b[^?]{0,30}\b(adjustments?|accommodations?|special arrangements?)\b|\b(adjustments?|accommodations?|special arrangements?)\b[^?]{0,20}\b(needed|required|requested)\b/.test(q)) return 'no';
     const firm = q.match(/\b(?:currently|previously|ever)?\s*(?:been\s+)?employed (?:by|at|with)\s*,?\s*(?:or (?:have you )?(?:been|were you) (?:previously )?employed (?:by|at|with)\s*,?\s*)?([a-z0-9&.' -]{2,40}?)\s*\??$/);
     if (firm && !/\b(this|our|the) (company|organi[sz]ation|firm)\b|\b(any|a|an)\b/.test(firm[1])) {
       const cur = String((_policyProfile && (_policyProfile.current_company || _policyProfile.company)) || '').toLowerCase().trim();
@@ -2270,6 +2276,17 @@
       if (hit) return hit;
     }
     if (/\bgross\b.*\bnet\b|\bnet\b.*\bgross\b/.test(ql)) { const g = opts.find((o) => /\bgross\b/i.test(o.text)); if (g) return g; }
+    // Salary period (ADP "Annually / Hourly", Paylocity): your figure is a yearly one.
+    if (/\b(salary|pay|compensation|wage|rate)\b[^?]{0,30}\b(period|frequency|basis|type|unit)\b|\b(period|frequency|basis)\b[^?]{0,20}\b(salary|pay)\b/.test(ql)) {
+      const y = opts.find((o) => /\b(yearly|annual\w*|per year|per annum|year)\b/i.test(o.text)); if (y) return y;
+    }
+    // Travel percentage (BrassRing "If yes, what percentage?"): about a quarter of the time.
+    if (opts.filter((o) => /^\s*(up to\s*)?\d{1,3}\s*%/i.test(o.text)).length >= 3 && /percent|%|travel/.test(ql)) {
+      const pct = (o) => parseInt((o.text.match(/(\d{1,3})\s*%/) || [])[1], 10);
+      const withPct = opts.filter((o) => !isNaN(pct(o)));
+      const hit = withPct.slice().sort((a, b) => Math.abs(pct(a) - 25) - Math.abs(pct(b) - 25) || pct(a) - pct(b))[0];
+      if (hit) return hit;
+    }
     if (/\b(monthly|per month)\b.*\b(yearly|annual|per year)\b|\b(yearly|annual)\b.*\bmonthly\b/.test(ql)) {
       const y = opts.find((o) => /\b(yearly|annual\w*|per year|per annum)\b/i.test(o.text)); if (y) return y;
     }
@@ -2420,6 +2437,16 @@
       const match = radios.find(r => optText(r) === sNorm)
         || (sNorm.length > 3 ? radios.find(r => optText(r).includes(sNorm)) : null);
       if (match) return commitChoice(match);
+    }
+
+    // "On a scale of 1 to 4, how experienced are you…?" (Ashby radios) → one below the top.
+    {
+      const sc = questionText.match(/\bscale of (\d+)\s*(?:-|to|–)\s*(\d+)/);
+      if (sc) {
+        const want = String(Math.max(parseInt(sc[1], 10), parseInt(sc[2], 10) - 1));
+        const hit = radios.find((r) => new RegExp('^\\s*' + want + '\\b').test(choiceLabel(r)));
+        if (hit) return commitChoice(hit);
+      }
     }
 
     // 2. Experience range questions (0-3, 3-5, 5-7, 7+)

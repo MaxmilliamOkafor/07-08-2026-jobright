@@ -4552,3 +4552,20 @@ engine, the queue pages and every canned answer.
   "1 month's notice" for availability / start-date questions.
 - Answer banks already saved in your browser are corrected too (seed version
   1.5.6). Anything you edited yourself is left alone.
+
+## v17.46 — fields from the advanced report's platform guides
+
+Checked with a new test form built from the report's field guides
+(`tests/e2e/platform-pack.html`):
+- **Travel percentage** (BrassRing "If yes, what percentage?"): picks the
+  option nearest 25%, not the first one (0%).
+- **Salary period** (ADP "Annually / Hourly"): Annually, since your salary
+  figure is yearly.
+- **"On a scale of 1 to 4…"** shown as radio buttons (Ashby): 3, the same as
+  the dropdown version.
+- **"Other relevant training or qualifications"** (BrassRing, required): your
+  degree, subject and school, plus certifications if your profile has them.
+- **"Adjustments needed for the interview?"**: No, also when the words come in
+  that order.
+- The Trakstar job site was labelled "Recruitee" in logs and diagnostics; it
+  now says Trakstar.

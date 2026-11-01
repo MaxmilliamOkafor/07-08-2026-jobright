@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Platform Engineer at Acme</title>
+<style>body{font-family:sans-serif;max-width:720px;margin:20px auto}.f{margin:12px 0}label{display:block;font-weight:600}.opt{display:inline-block;font-weight:normal;margin-right:12px}input[type=text],input[type=email],input[type=tel],input[type=number],select{width:100%;padding:6px}</style></head><body>
+<!-- Fields from the field guides in ATS_Test_Report_Advanced_27-10-2026 (BrassRing
+     Additional Information + Declaration, Ashby experience scale, SmartRecruiters
+     confirm email, ADP salary period, Paylocity mobile, iCIMS adjustments). -->
+<h1>Platform Engineer</h1><div class="company">Acme Corp</div><div>Location: Dublin, Ireland</div>
+<form id="application_form" novalidate onsubmit="return window.__validate(event)">
+  <div class="f"><label for="first_name">First name *</label><input type="text" id="first_name" name="first_name" required></div>
+  <div class="f"><label for="last_name">Last name *</label><input type="text" id="last_name" name="last_name" required></div>
+  <div class="f"><label for="email">Email *</label><input type="email" id="email" name="email" required></div>
+  <div class="f"><label for="email2">Confirm your email *</label><input type="email" id="email2" name="email_confirm" required></div>
+  <div class="f"><label for="mobile">Mobile Number (start with +) *</label><input type="tel" id="mobile" name="mobile" required></div>
+  <div class="f"><label for="notice_m">Notice period in months *</label><input type="number" id="notice_m" name="notice_months" required></div>
+  <fieldset class="f"><legend>Have you previously been employed by Acme? *</legend>
+    <label class="opt"><input type="radio" name="prev" value="Yes" required> Yes</label><label class="opt"><input type="radio" name="prev" value="No"> No</label></fieldset>
+  <fieldset class="f"><legend>Are you open to travel? *</legend>
+    <label class="opt"><input type="radio" name="travel" value="Yes" required> Yes</label><label class="opt"><input type="radio" name="travel" value="No"> No</label></fieldset>
+  <div class="f"><label for="travel_pct">If yes, what percentage? *</label>
+    <select id="travel_pct" name="travel_pct" required><option value="">Select...</option><option>0%</option><option>25%</option><option>50%</option><option>75%</option><option>100%</option></select></div>
+  <div class="f"><label for="training">Other relevant training or qualifications *</label><input type="text" id="training" name="training" required></div>
+  <fieldset class="f"><legend>On a scale of 1 to 4, how experienced are you with application programming? *</legend>
+    <label class="opt"><input type="radio" name="scale" value="1" required> 1</label><label class="opt"><input type="radio" name="scale" value="2"> 2</label><label class="opt"><input type="radio" name="scale" value="3"> 3</label><label class="opt"><input type="radio" name="scale" value="4"> 4</label></fieldset>
+  <div class="f"><label for="sal">Desired salary *</label><input type="text" id="sal" name="salary" required></div>
+  <div class="f"><label for="sal_period">Salary period *</label>
+    <select id="sal_period" name="salary_period" required><option value="">Select...</option><option>Hourly</option><option>Annually</option></select></div>
+  <div class="f"><label for="english">Are you comfortable communicating regularly in English? *</label>
+    <select id="english" name="english" required><option value="">Select...</option><option>I am comfortable communicating regularly in English</option><option>I am not comfortable communicating regularly in English</option></select></div>
+  <fieldset class="f"><legend>Adjustments needed for the interview? *</legend>
+    <label class="opt"><input type="radio" name="adj" value="Yes" required> Yes</label><label class="opt"><input type="radio" name="adj" value="No"> No</label></fieldset>
+  <fieldset class="f"><legend>Applicant statement: I declare the information given is true and complete. *</legend>
+    <label class="opt"><input type="radio" name="decl" value="accept" required> Yes, I accept</label><label class="opt"><input type="radio" name="decl" value="decline"> No, I decline</label></fieldset>
+  <div class="f"><label><input type="checkbox" name="talent" value="1"> Join our talent community for future vacancies</label></div>
+  <div class="f"><label><input type="checkbox" name="privacy" value="1" required> I have read and accept the privacy notice *</label></div>
+  <div class="f"><label for="resume">Resume/CV *</label><input type="file" id="resume" name="resume" required></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+<script>window.__validate=(e)=>{e.preventDefault();const f=document.getElementById('application_form');const fd=new FormData(f);const out={};for(const [k,v] of fd.entries())out[k]=v instanceof File?(v.name?'FILE:'+v.name:''):v;if(!f.checkValidity()){console.log('BLOCKED invalid '+JSON.stringify(out));return false;}window.__submitted=out;console.log('SUBMITTED '+JSON.stringify(out));document.body.innerHTML='<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';return false;};</script>
+</body></html>

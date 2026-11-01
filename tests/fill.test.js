@@ -2617,6 +2617,7 @@ console.log('knockout answers are the ones that do not get you rejected');
     ['Are you currently employed by, or have you been employed by, PwC?', 'no'],
     ["Are you a graduate of the company's early-careers programme?", 'no'],
     ['Do you require any adjustments for the interview process?', 'no'],
+    ['Adjustments needed for the interview?', 'no'],
     ['Visa / work permit required?', 'no'],
     ['May we text you?', 'no'],
     ['Have you previously worked for Acme as an employee or contractor?', 'no'],
@@ -2689,7 +2690,7 @@ console.log('knockout answers are the ones that do not get you rejected');
   const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
     .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
   eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
-  eq('the battery really is 69 questions', CASES.length, 69);
+  eq('the battery really is 70 questions', CASES.length, 70);
 }
 
 /* ── 61. v17.4: what a real browser run showed ────────────────────────────────
@@ -3959,3 +3960,12 @@ setTimeout(() => Promise.all(asyncChecks).then(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 }), 50);
+
+console.log('platform pack: travel %, salary period, scale radios, training');
+{
+  const cbm = body('choiceByMeaning');
+  eq('a salary period picks the yearly option (your figure is yearly)', /salary\|pay\|compensation\|wage\|rate/.test(cbm) && /yearly\|annual/.test(cbm), true);
+  eq('travel percentages pick the one nearest 25%', /Math\.abs\(pct\(a\) - 25\)/.test(cbm), true);
+  eq('a 1-to-N scale shown as radios picks one below the top', /scale of/.test(body('answerKnockoutRadioGroup')), true);
+  eq('"Other relevant training or qualifications" gets your degree and school', /training\|qualifications/.test(body('guessValue')), true);
+}
