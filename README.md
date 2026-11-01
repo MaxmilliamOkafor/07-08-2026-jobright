@@ -4580,3 +4580,36 @@ Skills kept being added without end. Two causes:
 Now there are never more than 10 skills in the box, counting ones already
 there. Each skill is tried once per page, the whole row is read for the tick,
 and the Workday engine's own limit is 10 too.
+
+## v17.48 — Workday in one click: every step, every question, submitted
+
+**One click of Autofill on Workday does the whole application.** Before, Jobright
+filled the step on screen ("4/5 required") and you pressed Save and Continue on
+every step. Now a real click of Autofill (Jobright's sidebar, or Continue To The
+Next Page) on a Workday tab works like SpeedyApply. The extension presses every
+button itself:
+- Apply, then Apply Manually;
+- the account step (sign up or sign in with the saved account);
+- the resume upload page;
+- on each step, once it is filled, every field still empty is answered and Save
+  and Continue is pressed straight away (1.2s of quiet, not 3.5s);
+- on Review, Submit, then it waits for the confirmation.
+
+It stops, naming the fields, on a step whose errors are still there after two
+passes. It is bounded at 14 steps and 15 minutes, survives a full page reload,
+and never runs on a tab a queue job drives.
+
+**SpeedyApply without a profile no longer blocks Workday.** The debug log
+(2026-11-01) showed every Workday job ending at once with "SpeedyApply has no
+profile yet", with nothing filled. When SpeedyApply cannot fill (no profile,
+switched off, no profile it can pick), the built-in Workday engine now fills
+the job, in queue runs and with Fully Automated on.
+
+**The notice-period "select all that apply" box** (Revvity: 2 Weeks / 1 Month
+/ 2 Months / More than 3 Months / Available Immediately) picks the option your
+notice period names, "1 Month". This was the one box left empty.
+
+Tested on the Workday mock with one real click, Fully Automated off and no queue
+job: job page → Apply → account created → CV → My Information → My Experience
+(skills) → Questions → Voluntary Disclosures → Self Identify → Review →
+submitted in about 60s. The queue run on the same mock submits too.
