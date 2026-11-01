@@ -1133,7 +1133,7 @@
     // Seven, not five: this is the number typed into "how many years of X?" on
     // every ATS that asks, and a screening filter looking for a minimum never
     // prefers the smaller answer.
-    years: '9', salary: '60000', notice: '1 month', availability: '1 month notice',
+    years: '9', salary: '60000', notice: '1 month', availability: "1 month's notice",
     noDeadlines: 'No — I have no deadlines or timeline constraints at the moment.',
     country: 'Ireland', phoneCountryCode: '+353', countryCode: 'IE',
     cover: 'I am excited to apply for this role. My background and skills make me an excellent candidate and I look forward to contributing to your team.',
@@ -17412,7 +17412,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     { keywords: ['legal', 'age', 'work'], response: 'Yes' },
 
     // ===== AVAILABILITY / START =====
-    { keywords: ['available', 'start'], response: '1 month notice' },
+    { keywords: ['available', 'start'], response: "1 month's notice" },
     { keywords: ['when', 'start', 'work'], response: 'Within 1 month' },
     { keywords: ['earliest', 'start', 'date'], response: '1 month from offer' },
     { keywords: ['notice', 'period'], response: '1 month' },
@@ -17540,11 +17540,11 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
 
   // Corrections for answers an earlier seed wrote into storage (v1.5.4). Only entries still
   // holding the old seeded value are touched, so anything you edited yourself is kept.
-  const SEED_FIXES = [{"sig": "available|start", "old": "Immediately", "new": "1 month notice"}, {"sig": "start|when|work", "old": "Within 2 weeks", "new": "Within 1 month"}, {"sig": "date|earliest|start", "old": "Immediately", "new": "1 month from offer"}, {"sig": "notice|period", "old": "2 weeks", "new": "1 month"}, {"sig": "days|notice|required", "old": "14", "new": "30"}, {"sig": "can|immediately|start", "old": "Yes", "new": "No"}, {"sig": "desired|salary", "old": "80000", "new": "60000"}, {"sig": "expected|salary", "old": "80000", "new": "60000"}, {"sig": "expectation|salary", "old": "80000", "new": "60000"}, {"sig": "minimum|salary", "old": "70000", "new": null}, {"sig": "current|salary", "old": "75000", "new": "50000"}, {"sig": "hourly|rate", "old": "40", "new": null}, {"sig": "degree|highest", "old": "Bachelor's Degree", "new": "Master's Degree"}, {"sig": "education|level", "old": "Bachelor's Degree", "new": "Master's Degree"}, {"sig": "gpa", "old": "3.6", "new": "3.90"}, {"sig": "experience|years", "old": "7", "new": "9"}, {"sig": "experience|professional|years", "old": "7", "new": "9"}, {"sig": "experience|total|years", "old": "7", "new": "9"}, {"sig": "experience|relevant", "old": "7 years", "new": "9 years"}, {"sig": "experience|management", "old": "3 years", "new": null}, {"sig": "certifications|professional", "old": "AWS Certified Solutions Architect, Certified Scrum Master", "new": "AWS Certified Solutions Architect – Professional, Certified Kubernetes Administrator (CKA)"}, {"sig": "clearance|security", "old": "None", "new": null}, {"sig": "additional|information", "old": "I am available to start within two weeks and am fully authorized to work without sponsorship. I am happy to provide references or complete any assessments as needed.", "new": null}];
+  const SEED_FIXES = [{"sig": "available|start", "old": "Immediately", "new": "1 month's notice"}, {"sig": "available|start", "old": "1 month notice", "new": "1 month's notice"}, {"sig": "start|when|work", "old": "Within 2 weeks", "new": "Within 1 month"}, {"sig": "date|earliest|start", "old": "Immediately", "new": "1 month from offer"}, {"sig": "notice|period", "old": "2 weeks", "new": "1 month"}, {"sig": "days|notice|required", "old": "14", "new": "30"}, {"sig": "can|immediately|start", "old": "Yes", "new": "No"}, {"sig": "desired|salary", "old": "80000", "new": "60000"}, {"sig": "expected|salary", "old": "80000", "new": "60000"}, {"sig": "expectation|salary", "old": "80000", "new": "60000"}, {"sig": "minimum|salary", "old": "70000", "new": null}, {"sig": "current|salary", "old": "75000", "new": "50000"}, {"sig": "hourly|rate", "old": "40", "new": null}, {"sig": "degree|highest", "old": "Bachelor's Degree", "new": "Master's Degree"}, {"sig": "education|level", "old": "Bachelor's Degree", "new": "Master's Degree"}, {"sig": "gpa", "old": "3.6", "new": "3.90"}, {"sig": "experience|years", "old": "7", "new": "9"}, {"sig": "experience|professional|years", "old": "7", "new": "9"}, {"sig": "experience|total|years", "old": "7", "new": "9"}, {"sig": "experience|relevant", "old": "7 years", "new": "9 years"}, {"sig": "experience|management", "old": "3 years", "new": null}, {"sig": "certifications|professional", "old": "AWS Certified Solutions Architect, Certified Scrum Master", "new": "AWS Certified Solutions Architect – Professional, Certified Kubernetes Administrator (CKA)"}, {"sig": "clearance|security", "old": "None", "new": null}, {"sig": "additional|information", "old": "I am available to start within two weeks and am fully authorized to work without sponsorship. I am happy to provide references or complete any assessments as needed.", "new": null}];
   async function seedOnce() {
     try {
       const flag = await new Promise(r => chrome.storage.local.get(SEEDED_FLAG, d => r(d[SEEDED_FLAG])));
-      if (flag === '1.5.5') { LOG('Seed bank already installed'); return; }
+      if (flag === '1.5.6') { LOG('Seed bank already installed'); return; }
       let existing = await new Promise(r => chrome.storage.local.get(SEED_KEY, d => r(d[SEED_KEY] || [])));
       let fixed = 0;
       existing = existing.filter((e) => {
@@ -17565,7 +17565,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         existing.push({ keywords: entry.keywords, response: entry.response, appearances: 1, createdAt: Date.now(), updatedAt: Date.now(), seeded: true });
         added++;
       }
-      await new Promise(r => chrome.storage.local.set({ [SEED_KEY]: existing, [SEEDED_FLAG]: '1.5.5' }, r));
+      await new Promise(r => chrome.storage.local.set({ [SEED_KEY]: existing, [SEEDED_FLAG]: '1.5.6' }, r));
       LOG(`Seeded ${added} knockout responses (total ${existing.length})`);
     } catch (e) { LOG('Seed error:', e.message); }
   }
@@ -17963,7 +17963,7 @@ Result: Shipped my first production change in week three and my notes doc became
       // (DEFAULTS lives in another closure — keep these in step with it)
       const answer = /salary|pay|rate/i.test(q) ? '60000'
                    : /years|experience/i.test(q) ? '9'
-                   : /start|available/i.test(q) ? '1 month notice'
+                   : /start|available/i.test(q) ? "1 month's notice"
                    : '';
       if (!answer) return false;   // unknown question: leave it for you rather than invent "Yes"
       setter?.call(inputEl, answer);

@@ -4540,3 +4540,15 @@ Pull and reload the extension.
   - While SpeedyApply runs Workday, skills are now added once on My Experience.
 - New fixture `tests/e2e/knockout-pack.html` (52 pack questions) submits with
   every pack answer.
+
+## v17.45 — typo sweep of everything autofill types
+
+Every autofill source was spell-checked: the content scripts, the Workday
+engine, the queue pages and every canned answer.
+- The code and text were already clean. The only flags were deliberate
+  foreign words (Sie, connexion, profissional) and regex stems (requir,
+  declar).
+- One wording slip was being typed into forms: "1 month notice" is now
+  "1 month's notice" for availability / start-date questions.
+- Answer banks already saved in your browser are corrected too (seed version
+  1.5.6). Anything you edited yourself is left alone.
