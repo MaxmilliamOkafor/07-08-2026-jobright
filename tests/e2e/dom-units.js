@@ -20,7 +20,9 @@ const lib = `
   const getLabel = (el) => (el.labels && el.labels[0] && el.labels[0].textContent) || '';
   const getQuestionForInput = () => '', textOfIds = () => '';
   ${['normLabel', 'safeClass', 'isSelect2Native', 'coveredBy', 'describeControl', 'workdayOnAccountWall', 'workdayApplicationReady', 'isPhoneBox', 'dialCodeBeside', 'phoneForPickerBox', 'fieldName'].map(fn).join('\n')}
-  window.T = { coveredBy, describeControl, workdayOnAccountWall, workdayApplicationReady, phoneForPickerBox, fieldName };`;
+  ${fn('wdPressEnter')}
+  ${src.match(/  const wdOptionTicked = [\s\S]*?\n  \};\n/)[0]}
+  window.T = { coveredBy, describeControl, workdayOnAccountWall, workdayApplicationReady, phoneForPickerBox, fieldName, wdPressEnter, wdOptionTicked };`;
 let pass = 0, fail = 0;
 const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.stringify(want);
   if (g === w) { pass++; console.log('  ok   ' + name); } else { fail++; console.log('  FAIL ' + name + '\n       got  ' + g + '\n       want ' + w); } };
@@ -57,6 +59,14 @@ const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.string
   console.log('labels inside web components');
   eq('a shadow-root label names the field', await run('<x-field id=h></x-field>', `customElements.define("x-field", class extends HTMLElement { constructor(){ super(); this.attachShadow({mode:"open"}).innerHTML = "<label>Email *</label><input>"; } });
     T.fieldName(document.getElementById("h").shadowRoot.querySelector("input"))`), 'Email *');
+  console.log('Workday "Type to Add Skills": Enter and the ticked result');
+  eq('Enter reaches a handler that checks keyCode 13 (Chrome drops keyCode from the init)',
+    await run('<input id="s">', `(() => { let hit = 0; const i = document.getElementById("s"); i.addEventListener("keydown", (e) => { if (e.keyCode === 13 && e.which === 13 && e.key === "Enter") hit++; }); T.wdPressEnter(i); return hit; })()`), 1);
+  eq('a result row with a ticked box counts as already added (clicking it would remove the skill)',
+    await run('<div id="o" data-automation-id="promptOption"><input type="checkbox" checked> Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), true);
+  eq('an unticked row does not', await run('<div id="o"><input type="checkbox"> Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), false);
+  eq('the row the keyboard is on (aria-selected) is not taken for added',
+    await run('<div id="o" role="option" aria-selected="true">Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), false);
   await b.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

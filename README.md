@@ -4515,3 +4515,28 @@ From your Allstate Workday Create Account screenshot:
     the job then ends with the reason.
 
 Pull and reload the extension.
+
+## v17.44 — knockout answers from the 27-10-2026 ATS pack; Workday skills really get added
+
+- **Required dropdowns no longer default to "Yes".** With no confident match,
+  a required select picked its first option, which is "Yes" on every Yes/No
+  question. Now they are decided by meaning: export control (Cuba, Iran, North
+  Korea, Syria, Crimea), contract-signer relatives, US government employment,
+  "employed by PwC", early-careers graduate, interview adjustments, visa
+  required, previously worked here and "May we text you?" are all **No**.
+  - Salary currency follows your country (EUR for Ireland), Gross over Net,
+    Yearly over Monthly, and "scale of 1 to 4" gets 3.
+- **Text boxes:**
+  - salary questions mentioning "this role" no longer get your job title;
+  - "visa status" gets "EU citizen — no visa or sponsorship required";
+  - "Which AI tools…?" gets "Claude, ChatGPT and GitHub Copilot";
+  - the e-signature box gets your full name.
+- **Workday "Type to Add Skills":** each skill is typed into Search, Enter is
+  pressed, then its result is ticked.
+  - Chrome had been dropping key code 13 from scripted Enter presses, so
+    nothing was ever searched.
+  - A result that is already ticked is never clicked, because clicking it
+    removes the skill.
+  - While SpeedyApply runs Workday, skills are now added once on My Experience.
+- New fixture `tests/e2e/knockout-pack.html` (52 pack questions) submits with
+  every pack answer.

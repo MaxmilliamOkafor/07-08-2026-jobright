@@ -1436,6 +1436,7 @@ new Function('exports', `
   ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
+  ${body('packKnockoutNo')}
   ${body('workAuthorisationAnswer')}
   ${body('workAuthOptionIndex')}
   ${reLines}
@@ -1478,7 +1479,7 @@ eq('and so does the fuzzy half of the text path',
    their word is final — the guard must not touch it. */
 eq('an exact learned answer YOU gave is left to stand',
   /const exactOk = exact && \(isManualAnswer\(label, el\) \? exact : safeKnockoutAnswer\(exact, questionText\)\);/.test(src), true);
-eq('and it is consulted before the built-in guesses', /const raw = fromSaved \|\| exactOk \|\| guessValue\(label, p\) \|\|/.test(src), true);
+eq('and it is consulted before the built-in guesses', /const builtIn = guessValue\(label, p\);\n    const raw = fromSaved \|\| exactOk \|\| builtIn \|\|/.test(src), true);
 
 /* ── 40. nothing may pause a run waiting for a human ──────────────────────── */
 /* "Leave site? Changes you made may not be saved." froze a 685-job run on
@@ -2605,9 +2606,27 @@ console.log('knockout answers are the ones that do not get you rejected');
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
+    ${body('packKnockoutNo')}
     exports.d = determineYesNo;
   `)(koCtx2);
   const CASES = [
+    // The 27-10-2026 knockout pack: each of these fell through to the default Yes.
+    ['Are you a citizen, national or permanent resident of Cuba, Iran, North Korea, Syria or Crimea?', 'no'],
+    ['Are you related to anyone who can influence or sign commercial or government contracts with Acme?', 'no'],
+    ['In the last five years, have you been an employee of the US Federal Government or a state or local government?', 'no'],
+    ['Are you currently employed by, or have you been employed by, PwC?', 'no'],
+    ["Are you a graduate of the company's early-careers programme?", 'no'],
+    ['Do you require any adjustments for the interview process?', 'no'],
+    ['Visa / work permit required?', 'no'],
+    ['May we text you?', 'no'],
+    ['Have you previously worked for Acme as an employee or contractor?', 'no'],
+    // …and the pack's Yes answers stay Yes.
+    ['Do you have documents entitling you to work in the European Union (valid work permits)?', 'yes'],
+    ['Are you a citizen of the European Union?', 'yes'],
+    ['We require two office days a week in Dublin. Is this doable for you?', 'yes'],
+    ['Do you speak English at a minimum B2 level?', 'yes'],
+    ['Are you at least 18 years of age?', 'yes'],
+    ['Any offer is contingent on a background check. Do you acknowledge?', 'yes'],
     // right to work — Yes
     ['Are you legally authorized to work in the United States?', 'yes'],
     ['Are you legally authorised to work in the UK?', 'yes'],
@@ -2670,7 +2689,7 @@ console.log('knockout answers are the ones that do not get you rejected');
   const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
     .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
   eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
-  eq('the battery really is 54 questions', CASES.length, 54);
+  eq('the battery really is 69 questions', CASES.length, 69);
 }
 
 /* ── 61. v17.4: what a real browser run showed ────────────────────────────────

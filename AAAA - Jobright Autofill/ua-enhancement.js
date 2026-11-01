@@ -1139,6 +1139,8 @@
     cover: 'I am excited to apply for this role. My background and skills make me an excellent candidate and I look forward to contributing to your team.',
     why: 'I admire the company culture and the opportunity to make a meaningful impact.',
     howHeard: 'LinkedIn',
+    visaStatus: 'EU citizen — no visa or sponsorship required',
+    aiTools: 'Claude, ChatGPT and GitHub Copilot (scripts, reports and data models)',
   };
 
   let _policyProfile = {};             // for knockoutPolicy in synchronous deciders
@@ -1456,7 +1458,11 @@
     // candidate's) and "position type" (employment-type dropdown, e.g. Full-Time).
     // "Role Description" / "Position responsibilities" ask for prose, not the title —
     // the title rule used to put "Senior Solutions Architect" in a description box.
-    if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type|descri|responsib|dut(y|ies)|summary|achievement|accomplish/.test(l)) return p.current_title || p.title || '';
+    // "What are your salary expectations for this ROLE?" got the job title.
+    if (/title|position|role|current.?title|job.?title/.test(l) && !/company|applied.?for|applying.?for|position.?type|employment.?type|descri|responsib|dut(y|ies)|summary|achievement|accomplish|salary|compensation|\bpay\b|remuneration|rate|notice|travel|relocat|start|availab|visa|sponsor|reside|location/.test(l)) return p.current_title || p.title || '';
+    // Free-text knockouts from the 27-10-2026 pack.
+    if (/\bvisa status\b|\bimmigration status\b|\bwork(ing)? (permit|authori[sz]ation) status\b/.test(l)) return p.visa_status || DEFAULTS.visaStatus;
+    if (/\b(which|what)\b[^?]{0,30}\bai\b[^?]{0,20}\btools?\b|\bai tools?\b[^?]{0,30}\b(which|what|use|used)\b/.test(l)) return p.ai_tools || DEFAULTS.aiTools;
     // Dropped bare "org" — a 3-letter fragment that could match unrelated labels
     // (e.g. a "yourname.org" website hint) and stuff the company name into them.
     // "References (Name, Company, and Contact Info)" is not your employer: it got "Meta".
@@ -1503,6 +1509,9 @@
     if (/^\s*(citizenship|nationality)\s*(1|one|primary)?\s*$/.test(l)) return p.nationality || p.citizenship || p.country || DEFAULTS.country;
     if (/^\s*(citizenship|nationality)\s*(2|3|two|second|secondary|other|additional)\s*$|^\s*(second|secondary|other|additional|dual)\s+(citizenship|nationality)\s*$/.test(l)) return p.second_nationality || p.nationality2 || '';
     {
+      // "…citizen, national or permanent resident of Cuba, Iran…?" is not a right-to-work question.
+      const ko = packKnockoutNo(l);
+      if (ko) return ko === 'yes' ? 'Yes' : 'No';
       const wa = workAuthorisationAnswer(label || '');
       if (wa === 'yes') return DEFAULTS.authorized;
       if (wa === 'no') return DEFAULTS.sponsorship;
@@ -1618,7 +1627,7 @@
   function looksLikeYesNoQuestion(q) {
     const t = String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
     if (!t) return false;
-    if (/\b(what|which|where|when|how many|how much|how long|how old|name of|provide the name|please (explain|describe|provide|specify|list)|explain|describe|list|specify)\b/.test(t)) return false;
+    if (/\b(what|which|where|when|how many|how much|how long|how old|name of|provide the name|please (explain|describe|provide|specify|list)|explain|describe|list|specify|confirm (your|the)|tell us)\b/.test(t)) return false;
     return /^(are|is|am|do|does|did|have|has|had|will|would|can|could|should|shall|may|might|was|were|must)\b/.test(t) ||
       /\byes\b\s*(\/|,|or)\s*\bno\b/.test(t);
   }
@@ -1750,10 +1759,16 @@
        those go through the same knockout filter as everything else. */
     const exact = getLearnedAnswer(label, el, true);
     const exactOk = exact && (isManualAnswer(label, el) ? exact : safeKnockoutAnswer(exact, questionText));
-    const raw = fromSaved || exactOk || guessValue(label, p) ||
+    const builtIn = guessValue(label, p);
+    const raw = fromSaved || exactOk || builtIn ||
       safeKnockoutAnswer(getLearnedAnswer(label, el), questionText) || '';
     // Last step: make the answer fit the control it is going into.
-    return refineAnswerForControl(raw, label, p, el);
+    const out = refineAnswerForControl(raw, label, p, el);
+    /* A saved "Yes" (the bank's electronic + signature → Yes) refused by a text box
+       left "Please type your full name as your electronic signature" blank, though
+       the built-in rule knows it is your name. */
+    if (!out && raw && builtIn && raw !== builtIn) return refineAnswerForControl(builtIn, label, p, el);
+    return out;
   }
 
   // ===================== SAVED RESPONSES SYSTEM (SpeedyApply-style) =====================
@@ -2088,6 +2103,31 @@
      to move") and is always Yes. The old list only knew four literal phrasings. */
   const RELOCATION_RE = /\b(relocat\w*|willing to move|open to (moving|relocation|relocating)|prepared to (move|relocate)|happy to (move|relocate)|consider (moving|relocating)|able to move|move (to|for)|willing to travel|able to commute|commute to)\b/i;
 
+  /* Knockouts from the 27-10-2026 ATS pack whose wording fell through to the
+     default Yes. Each one is No for this candidate, and a Yes on any of them
+     rejects (export control) or flags (conflicts) the application:
+       • citizen / resident of Cuba, Iran, North Korea, Syria, Crimea (export control);
+       • related to anyone who can influence or sign contracts with the company;
+       • an employee of the US Federal / state / local government;
+       • "currently employed by, or have you been employed by, PwC?" — unless the
+         firm named is your current employer;
+       • a graduate of the company's early-careers / graduate programme;
+       • needs adjustments / accommodations for the interview. */
+  const EMBARGO_RE = /\b(cuba|iran|north korea|dprk|syria|crimea|donetsk|luhansk|sanctioned|embargoed)\b/;
+  function packKnockoutNo(q) {
+    if (EMBARGO_RE.test(q) && /\b(citizen|national|resident|residency|reside|live|lived|living|located|ordinarily)\b/.test(q)) return 'no';
+    if (/\b(related|relative|family member|close personal relationship|spouse|partner)\b[^?]{0,80}\b(influence|sign|award|approve|decision)\w*\b[^?]{0,60}\b(contracts?|agreements?|business)\b/.test(q)) return 'no';
+    if (/\b(employee|employed|worked)\b[^?]{0,40}\b(federal|state|local|us|u\.s\.|united states)\b[^?]{0,20}\bgovernment\b|\bgovernment\b[^?]{0,30}\b(employee|employed)\b|\bemployed (by|with|at) (a|an|the|any)?\s*(\w+ )?government\b/.test(q)) return 'no';
+    if (/\b(early[- ]careers?|graduate|apprenticeship|internship|intern)\s+(programme|program|scheme)\b/.test(q) && /\b(graduate of|completed|alumn|participated|been (a|an|part of))\b/.test(q)) return 'no';
+    if (/\b(require|need|request)\b[^?]{0,30}\b(adjustments?|accommodations?|special arrangements?)\b/.test(q)) return 'no';
+    const firm = q.match(/\b(?:currently|previously|ever)?\s*(?:been\s+)?employed (?:by|at|with)\s*,?\s*(?:or (?:have you )?(?:been|were you) (?:previously )?employed (?:by|at|with)\s*,?\s*)?([a-z0-9&.' -]{2,40}?)\s*\??$/);
+    if (firm && !/\b(this|our|the) (company|organi[sz]ation|firm)\b|\b(any|a|an)\b/.test(firm[1])) {
+      const cur = String((_policyProfile && (_policyProfile.current_company || _policyProfile.company)) || '').toLowerCase().trim();
+      return cur && firm[1].includes(cur) ? 'yes' : 'no';
+    }
+    return null;
+  }
+
   // Smart Yes/No determination based on question context
   const SMS_OPTIN_RE = /\b(may|can|could) we (text|sms|send (you )?(a )?(text|sms))|\b(text|sms)\s*(message|messaging|alert|update|notification)s?\b[^?.]{0,80}\b(consent|opt.?in|receive|agree|permission|authori[sz]e)|\b(consent|opt.?in|agree|permission|authori[sz]e)\b[^?.]{0,80}(\b(text|sms)\s*(message|messaging|alert|update|notification)s?\b|\bsms\b|\btext (me|you)\b)|\b(join|subscribe to)\b[^?.]{0,40}\b(talent (community|network|pool)|newsletter|mailing list)|\bmarketing (communications?|emails?|messages?)\b/;
   function determineYesNo(questionText) {
@@ -2099,6 +2139,8 @@
 
     // Work authorisation / sponsorship, decided by what the sentence actually
     // asks rather than by whether it contains the word "visa".
+    // Before the work-authorisation rule: "citizen … or permanent resident of Cuba…" is not a right-to-work question.
+    { const ko = packKnockoutNo(q); if (ko) return ko; }
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
 
@@ -2199,6 +2241,49 @@
     return 0;
   }
 
+  /* A dropdown nothing else answered, decided by what it asks. The last resort
+     below it picks the FIRST option — "Yes" on every Yes/No select — which
+     answered "Visa required?", "previously worked for Acme?", "citizen of Cuba,
+     Iran…?", "related to anyone who signs our contracts?", "May we text you?"
+     all Yes on the 27-10-2026 knockout pack. */
+  function choiceByMeaning(sel, lbl, p) {
+    const opts = Array.from(sel.options).filter((o) => o.value && o.index > 0);
+    if (!opts.length) return null;
+    let q = String(lbl || '');
+    try { q = (getFullQuestionText(sel) || '') + ' ' + q; } catch (_) {}
+    q = q.replace(/\s+/g, ' ').trim();
+    const ql = q.toLowerCase();
+    const T = (o) => o.text.trim().toLowerCase();
+    const yes = opts.find((o) => /^(yes|y|true|oui|ja|s[ií])\b/.test(T(o)));
+    const no = opts.find((o) => /^(no|n|false|non|nein)\b/.test(T(o)));
+    if (yes && no && opts.length <= 4) {
+      const yn = determineYesNo(q);
+      if (yn === 'no') return no;
+      if (yn === 'yes') return yes;
+    }
+    // Salary currency: the money of the country you live in.
+    if (/\bcurrenc/.test(ql)) {
+      const c = String(p.country || DEFAULTS.country || '').toLowerCase();
+      const cur = /united kingdom|\buk\b|britain|england|scotland|wales/.test(c) ? 'gbp' : /united states|\busa?\b|america/.test(c) ? 'usd'
+        : /switzerland/.test(c) ? 'chf' : /poland/.test(c) ? 'pln' : 'eur';
+      const hit = opts.find((o) => new RegExp('\\b' + cur + '\\b|' + { eur: 'euro', gbp: 'pound', usd: 'dollar', chf: 'franc', pln: 'zloty|złoty' }[cur], 'i').test(o.text));
+      if (hit) return hit;
+    }
+    if (/\bgross\b.*\bnet\b|\bnet\b.*\bgross\b/.test(ql)) { const g = opts.find((o) => /\bgross\b/i.test(o.text)); if (g) return g; }
+    if (/\b(monthly|per month)\b.*\b(yearly|annual|per year)\b|\b(yearly|annual)\b.*\bmonthly\b/.test(ql)) {
+      const y = opts.find((o) => /\b(yearly|annual\w*|per year|per annum)\b/i.test(o.text)); if (y) return y;
+    }
+    // "On a scale of 1 to 4, how experienced are you…?" → one below the top.
+    const sc = ql.match(/\bscale of (\d+)\s*(?:-|to|–)\s*(\d+)/);
+    if (sc) {
+      const hi = parseInt(sc[2], 10), lo = parseInt(sc[1], 10);
+      const want = String(Math.max(lo, hi - 1));
+      const hit = opts.find((o) => new RegExp('^\\s*' + want + '\\b').test(o.text));
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   // Comprehensive knockout question handler for radio button groups
   /* Commit one option of a multiple-choice question. A native radio takes a
      .click(); a Spark <spl-radio>, an Oracle <oj-radio>, a Material
@@ -2270,7 +2355,8 @@
         return '';
       }
     }
-    if (!KNOCKOUT_Q_RE.test(questionText)) return saved;
+    // The pack's export-control / conflict questions are knockouts too (see packKnockoutNo).
+    if (!KNOCKOUT_Q_RE.test(questionText) && !packKnockoutNo(String(questionText).toLowerCase().replace(/ +/g, ' '))) return saved;
     let want = '';
     try { want = determineYesNo(String(questionText).toLowerCase()); } catch (_) {}
     if (want !== 'yes' && want !== 'no') return saved;
@@ -2823,6 +2909,8 @@
        order — ANY mention of visa/sponsorship answered No, so "are you allowed to
        work in Belgium without visa sponsorship?" was answered No and the employer
        read it as "not allowed to work in Belgium". */
+    // Before the work-authorisation rule: "citizen … or permanent resident of Cuba…" is not a right-to-work question.
+    { const ko = packKnockoutNo(q); if (ko) return ko; }
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
     if (/hispanic|latino|latina|latinx/.test(q)) return 'no';   // "Are you Hispanic/Latino?" → No
@@ -4928,7 +5016,13 @@
       const q = comboQuestion(combo);
       const rsInput = reactSelectControl(combo) ? (reactSelectControl(combo).querySelector('input') || combo) : combo;
       const required = isFieldRequired(combo) || isFieldRequired(rsInput) || /\*/.test(q);
-      const guess = q ? guessFieldValue(q, profile, combo) : '';
+      let guess = q ? guessFieldValue(q, profile, combo) : '';
+      // Nothing resolved on a Yes/No question: decided by meaning, so a required one
+      // is not handed to the first-option fallback (always "Yes"). See choiceByMeaning.
+      if (!guess && q && looksLikeYesNoQuestion(q)) {
+        const yn = determineYesNo(q);
+        if (yn === 'yes' || yn === 'no') guess = yn === 'yes' ? 'Yes' : 'No';
+      }
       try { if (await commitCustomDropdown(combo, guess, required)) filled++; } catch (_) {}
       await sleep(150);
     }
@@ -5594,6 +5688,7 @@
       // it simply doesn't match the site's own wording), prefer a genuine "decline to
       // answer" style option over guessing a SPECIFIC demographic value.
       if (!opt && isEEO) opt = opts.find(o => /prefer not|decline|not to|do not|don.t wish/i.test(o.text));
+      if (!opt && !isEEO) opt = choiceByMeaning(sel, lbl, p);
       if (opt) { setSelectValue(sel, opt.value); filled++; }
       else if (isFieldRequired(sel) && opts.length) {
         // Blindly picking option[0] when we have NO confident match used to run
@@ -7322,6 +7417,9 @@
       if (!isManualAnswer(label, null)) {
         const pol = knockoutPolicy(label, _policyProfile);
         if (pol) return pol === 'yes' ? 'Yes' : pol === 'no' ? 'No' : pol;
+        // Export control, contract-signer relatives, US government, "employed by PwC" (Mastercard / Salesforce Workday).
+        const ko = packKnockoutNo(String(label).toLowerCase().replace(/\s+/g, ' '));
+        if (ko) return ko === 'yes' ? 'Yes' : 'No';
       }
       const fromSaved = safeKnockoutAnswer(findSavedResponseMatch(label), label);
       const exact = getLearnedAnswer(label, null, true);
@@ -7642,7 +7740,7 @@
         const until = Date.now() + 5 * 60 * 1000;
         const STILL_MS = scaled(4000, 2500);           // SpeedyApply done with this step (it types fields < 1s apart)
         const STUCK_MS = 45000;                        // errors SpeedyApply left, for this long → the job fails with them
-        let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0, toldErrors = false;
+        let lastSig = '', still = Date.now(), lastStep = '', errorsSince = 0, pressed = 0, _saAccountTurns = 0, toldErrors = false, skillsStep = '';
         while (Date.now() < until && !autoStopped()) {
           tuckJobrightOnWorkday();
           if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday (SpeedyApply): application submitted'); return 'submitted'; }
@@ -7694,6 +7792,13 @@
               return 'closed';
             }
           } else if (quiet > STILL_MS && pressed < 3) {
+            /* Skills are optional, so SpeedyApply's leftovers pass never reached
+               them and the box stayed empty. Added once on My Experience, the
+               way the box wants (search, Enter, tick the result). */
+            if (step === 'myExperience' && skillsStep !== location.href) {
+              skillsStep = location.href;
+              try { if (await wdAddSkills(await getProfile())) { still = Date.now(); continue; } } catch (_) {}
+            }
             // A finished, quiet step SpeedyApply did not move on (its auto next / auto submit off).
             const n = wdNextButton();
             if (n) {
@@ -8872,6 +8977,27 @@
     return !!wdDropdownValue(c);
   }
   const wdSelected = (c) => Array.from(c.querySelectorAll('[data-automation-id="selectedItem"]')).map(wdText).filter(Boolean);
+  /* Enter as Workday's search box reads it. Chrome ignores keyCode / which in a
+     KeyboardEvent's init, so they were 0 and a handler checking 13 never ran:
+     the skill was typed and nothing was searched. */
+  function wdPressEnter(input) {
+    for (const t of ['keydown', 'keypress', 'keyup']) {
+      try {
+        const ev = new KeyboardEvent(t, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true });
+        Object.defineProperty(ev, 'keyCode', { get: () => 13 });
+        Object.defineProperty(ev, 'which', { get: () => 13 });
+        input.dispatchEvent(ev);
+      } catch (_) {}
+    }
+  }
+  const wdOptionTicked = (o) => {
+    try {
+      // Not aria-selected: that marks the row the keyboard is on, not one already added.
+      if (o.getAttribute('aria-checked') === 'true') return true;
+      const box = o.querySelector('input[type="checkbox"],[role="checkbox"]');
+      return !!box && (box.checked === true || box.getAttribute('aria-checked') === 'true');
+    } catch (_) { return false; }
+  };
   /* Search-and-pick lists (source, phone code, school, field of study, skills).
      A category row drills into a sub-list; walk at most three levels. */
   async function wdMultiselectPick(c, wanted, opts) {
@@ -8883,7 +9009,7 @@
     if (!input) return false;
     await wdClick(input);
     nativeSet(input, String(wanted));
-    for (const t of ['keydown', 'keyup']) { try { input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true, composed: true })); } catch (_) {} }
+    wdPressEnter(input);                         // Workday searches on Enter ("Type to Add Skills")
     await sleep(250);
     for (let depth = 0; depth < 3; depth++) {
       let options = [];
@@ -8892,9 +9018,14 @@
       let i = wdBestIndex(options.map(wdText), wanted, min);
       if (i < 0 && opts.fallbackFirst) i = 0;
       if (i < 0) break;
+      /* The result row of a skill already added shows a ticked box; clicking it
+         again REMOVES the skill. */
+      if (wdOptionTicked(options[i])) { try { input.blur(); } catch (_) {} return true; }
+      const before = wdSelected(c).length;
       await wdClick(options[i]);
       await sleep(250);
-      if (wdSelected(c).length) { try { input.blur(); } catch (_) {} return true; }
+      const picked = wdText(options[i]);
+      if (wdSelected(c).length > before || wdSelected(c).some((x) => wdSimilarity(x, picked || wanted) >= 0.85)) { try { input.blur(); } catch (_) {} return true; }
     }
     try { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); input.blur(); } catch (_) {}
     await sleep(80);
@@ -9244,13 +9375,20 @@
         if (end && e.endYear && !wdReadValue(end) && await wdSetDate(end, { y: e.endYear })) n++;
       }
     }
-    const skills = wdField(document, ['formField-skills', 'skills', 'skillsSection']);
-    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
-    if (skills && wdKind(skills) === 'multiselect') {
-      for (const s of list) if (!wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85) && await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
-    }
+    n += await wdAddSkills(p);
     const li = wdField(document, ['linkedinQuestion', 'formField-linkedInAccount']);
     if (li && !wdReadValue(li) && (p.linkedin_profile_url || p.linkedin) && await wdWriteText(li, p.linkedin_profile_url || p.linkedin)) n++;
+    return n;
+  }
+  /* "Type to Add Skills": each skill typed into Search, Enter, then its result
+     ticked — Workday adds nothing for text left in the box. Your first ten. */
+  async function wdAddSkills(p) {
+    const skills = wdField(document, ['formField-skills', 'skills', 'skillsSection']);
+    if (!skills || wdKind(skills) !== 'multiselect') return 0;
+    const list = (Array.isArray(p.skills) ? p.skills : String(p.skills || '').split(/[,;\n]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
+    let n = 0;
+    for (const s of list) if (!wdSelected(skills).some((x) => wdSimilarity(x, s) >= 0.85) && await wdMultiselectPick(skills, s, { min: 0.75 })) n++;
+    if (n) LOG(`Workday: ${n} skill(s) added`);
     return n;
   }
   async function wdSelfIdentify(p) {

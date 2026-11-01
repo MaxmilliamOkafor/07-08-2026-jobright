@@ -861,6 +861,19 @@
     const t = text(b);
     return /^select one$|^select$/i.test(t) ? "" : t;
   }
+  function pressEnter(el) {
+    for (const t of ["keydown", "keypress", "keyup"]) {
+      const ev = new KeyboardEvent(t, { key: "Enter", code: "Enter", bubbles: true, cancelable: true, composed: true });
+      Object.defineProperty(ev, "keyCode", { get: () => 13 });
+      Object.defineProperty(ev, "which", { get: () => 13 });
+      el.dispatchEvent(ev);
+    }
+  }
+  function ticked(o) {
+    if (o.getAttribute("aria-checked") === "true") return true;
+    const box = o.querySelector('input[type="checkbox"], [role="checkbox"]');
+    return !!box && (box.checked === true || box.getAttribute("aria-checked") === "true");
+  }
   function key(el, k) {
     const code = k.length === 1 ? /\d/.test(k) ? `Digit${k}` : `Key${k.toUpperCase()}` : k;
     el.dispatchEvent(new KeyboardEvent("keydown", { key: k, code, bubbles: true, cancelable: true }));
@@ -1014,7 +1027,7 @@
     for (const term of terms) {
       await humanClick(input);
       setNativeValue(input, opts.path ? "" : term);
-      if (!opts.path) input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+      if (!opts.path) pressEnter(input);
       await sleep(250);
       if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, wanted, term, min);
       for (let depth = 0; depth < 3; depth++) {
@@ -1025,6 +1038,10 @@
         if (!match && opts.fallbackFirst && (!opts.path || depth >= path.length - 1)) match = options[0];
         if (!match) break;
         const picked = text(match);
+        if (ticked(match)) {
+          blur(input);
+          return true;
+        }
         await humanClick(match);
         await sleep(250);
         if (spinning()) await settledOptions(3e3);
