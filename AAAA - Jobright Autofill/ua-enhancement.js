@@ -1477,6 +1477,13 @@
       if (parts.length) return parts.join('; ');
     }
     if (/\b(which|what)\b[^?]{0,30}\bai\b[^?]{0,20}\btools?\b|\bai tools?\b[^?]{0,30}\b(which|what|use|used)\b/.test(l)) return p.ai_tools || DEFAULTS.aiTools;
+    // "Describe your interactions with the Workday system.*" — true for anyone applying through it.
+    if (/\b(describe|explain|tell us)\b[^?]{0,40}\b(interactions?|experience|use)\b[^?]{0,30}\bworkday\b/.test(l)) {
+      const sk = [].concat(p.skills || []).join(' ');
+      return p.workday_experience || (/\bworkday\b/i.test(sk)
+        ? 'I use Workday in my work, as listed in my skills, alongside the other enterprise systems I support.'
+        : 'I do not use the Workday system in my current role. My interactions with Workday have been as a candidate, applying for roles through Workday career sites.');
+    }
     // Dropped bare "org" — a 3-letter fragment that could match unrelated labels
     // (e.g. a "yourname.org" website hint) and stuff the company name into them.
     // "References (Name, Company, and Contact Info)" is not your employer: it got "Meta".
@@ -2134,6 +2141,13 @@
     if (/\b(employee|employed|worked)\b[^?]{0,40}\b(federal|state|local|us|u\.s\.|united states)\b[^?]{0,20}\bgovernment\b|\bgovernment\b[^?]{0,30}\b(employee|employed)\b|\bemployed (by|with|at) (a|an|the|any)?\s*(\w+ )?government\b/.test(q)) return 'no';
     if (/\b(early[- ]careers?|graduate|apprenticeship|internship|intern)\s+(programme|program|scheme)\b/.test(q) && /\b(graduate of|completed|alumn|participated|been (a|an|part of))\b/.test(q)) return 'no';
     if (/\b(require|need|request)\b[^?]{0,30}\b(adjustments?|accommodations?|special arrangements?)\b|\b(adjustments?|accommodations?|special arrangements?)\b[^?]{0,20}\b(needed|required|requested)\b/.test(q)) return 'no';
+    // Workday's own careers site (Application Questions 1 of 2) left these on "Select One".
+    if (/\bnon[- ]?(compete|competition|solicit\w*)\b|\brestrictive covenants?\b/.test(q)) return 'no';
+    if (/\b(related to|relative of|family member of)\b[^?]{0,60}\b(employees?|officials?|officers?|directors?)\b|\b(relatives?|family members?)\b[^?]{0,40}\b(works?|working|employed)\b/.test(q)) return 'no';
+    if (/\b(use|used|work on|work with|worked on|worked with)\b[^?]{0,12}\bworkday (system|software|platform|products?)\b/.test(q)) {
+      const sk = [].concat((_policyProfile && _policyProfile.skills) || []).join(' ');
+      if (!/\bworkday\b/i.test(sk)) return 'no';
+    }
     const firm = q.match(/\b(?:currently|previously|ever)?\s*(?:been\s+)?employed (?:by|at|with)\s*,?\s*(?:or (?:have you )?(?:been|were you) (?:previously )?employed (?:by|at|with)\s*,?\s*)?([a-z0-9&.' -]{2,40}?)\s*\??$/);
     if (firm && !/\b(this|our|the) (company|organi[sz]ation|firm)\b|\b(any|a|an)\b/.test(firm[1])) {
       const cur = String((_policyProfile && (_policyProfile.current_company || _policyProfile.company)) || '').toLowerCase().trim();
@@ -3761,6 +3775,8 @@
   try {
     globalThis.__uaOwnsAutofill = (target) => {
       if (target && !/workday/i.test(String(target))) return false;
+      // Your one click of Autofill: Jobright's Autofill fills each step WITH this one.
+      try { if (_wdOneClickRunning || wdOneClickArmed()) return false; } catch (_) {}
       try {
         const m = JSON.parse(sessionStorage.getItem('uaWdRun') || 'null');
         if (m && !m.assist && Date.now() - (m.startedAt || 0) < 20 * 60000) return true;
@@ -7885,6 +7901,19 @@
     try { sessionStorage.removeItem('ua_wd_oneclick'); } catch (_) {}
   }
   const wdOneClickArmed = () => Number(document.documentElement.getAttribute('data-ua-oneclick') || 0) > Date.now();
+  // Jobright's sidebar (an open shadow root): its green Autofill button, and whether it is filling now.
+  function jrSidebarRoots() {
+    try { return Array.from(document.querySelectorAll('plasmo-csui')).map((h) => h.shadowRoot).filter(Boolean); } catch (_) { return []; }
+  }
+  function jrAutofillButton() {
+    for (const r of jrSidebarRoots()) {
+      const b = Array.from(r.querySelectorAll('button,[role="button"]')).find((x) => /^\s*auto\s?-?fill\s*$/i.test(x.textContent || '') && isVisible(x) && !x.disabled);
+      if (b) return b;
+    }
+    return null;
+  }
+  // "Please stay on the Workday page while Autofill fills out the form." / "AI is scanning this page"
+  const jrAutofilling = () => jrSidebarRoots().some((r) => /stay on the [^.]{0,40} page while autofill|autofill(ing)? in progress|scanning this page/i.test(r.textContent || ''));
   async function wdOneClickRun() {
     if (_wdOneClickRunning || !isWorkday() || !wdOneClickArmed()) return '';
     if (_uaJobKey || _mgrDriving || _saDriving || (autoApply && isBusy())) return '';   // a run already drives this tab
@@ -7910,7 +7939,27 @@
         const sig = location.href + '|' + stepSignature() + '|' + wdFormValuesSig();
         if (sig !== lastSig) { lastSig = sig; still = Date.now(); }
         const step = wdStepKind() || '';
-        if (step !== lastStep) { lastStep = step; passes = 0; if (step) LOG(`Workday one-click: ${step}`); }
+        // By heading too: "Application Questions 1 of 2" and "2 of 2" are both 'questions'.
+        const stepKey = step + '|' + wdText(deepAll('[data-automation-id="pageHeader"],[data-automation-id="pageHeaderTitle"]', 3).find(isVisible));
+        if (stepKey !== lastStep) {
+          lastStep = stepKey; passes = 0;
+          if (step) LOG(`Workday one-click: ${step}`);
+          /* Jobright's Autofill and this one together: on each new step Jobright's
+             own Autofill is pressed (your click already did the first), it is
+             left to finish, and only then is what it missed answered here. */
+          if (step && step !== 'review') {
+            const jr = moved > 0 && jrAutofillButton();
+            if (jr) { realClick(jr); LOG(`Workday one-click: Jobright Autofill on ${step}`); await waitUntil(jrAutofilling, 3000, 200); }
+            // Done when its banner goes, or its typing stops for 4s (the banner can linger).
+            const t0 = Date.now(); let sig0 = wdFormValuesSig(), typedAt = Date.now();
+            await waitUntil(() => {
+              const s = wdFormValuesSig(); if (s !== sig0) { sig0 = s; typedAt = Date.now(); }
+              return Date.now() - t0 > 1500 && (!jrAutofilling() || Date.now() - typedAt > 4000);
+            }, 25000, 300);
+            still = Date.now();
+            continue;
+          }
+        }
         if (Date.now() - still < QUIET_MS) { await sleep(400); continue; }
         if (passes >= 2) { LOG(`Workday one-click: ${step || 'this step'} still has ${remainingErrorSummary() || 'required fields'} empty — answer them and press Autofill again`); break; }
         passes++;
@@ -7922,6 +7971,16 @@
           await fallbackFill();
         } catch (_) {} finally { _saLeftoverPass = false; }
         await sleep(250);
+        /* Never pressed with a required question still empty: it pressed Save
+           and Continue on Workday's Application Questions with three dropdowns
+           on "Select One" and the description box empty. Another pass first;
+           still empty after two → stop, naming them. */
+        const empty = wdEmptyRequired();
+        if (empty.length) {
+          if (passes < 2) { still = Date.now() - QUIET_MS; continue; }
+          LOG(`Workday one-click: ${step || 'this step'} — no answer for ${empty.slice(0, 4).map((x) => '"' + x.slice(0, 60) + '"').join(', ')} — answer ${empty.length > 1 ? 'them' : 'it'} and press Autofill again`);
+          break;
+        }
         const n = wdNextButton() || await waitUntil(wdNextButton, 5000, 250) && wdNextButton();
         if (!n) { LOG('Workday one-click: no Save and Continue on this step — stopping'); break; }
         if (step === 'review' || /submit/i.test(n.textContent || '')) {
@@ -9401,9 +9460,37 @@
     if (WD_Q.years.test(label)) return String(wdProfileYears(p) || '');
     try { return String(guessFieldValue(label, p, null) || ''); } catch (_) { return ''; }
   }
+  /* A Workday upload box that already holds a file. */
+  const wdFileUploaded = (c) => !!c.querySelector('[data-automation-id="file-upload-successful"],[data-automation-id="file-upload-item"],[data-automation-id="file-name"]');
+  /* "Resume/CV — Upload a file (5MB max)*" on My Experience: required, and left
+     empty ("The field Upload a file (5MB max) is required"). The CV goes into a
+     box for it — or any required upload box that is not for another document. */
+  async function wdUploadResumeInto(c) {
+    if (wdFileUploaded(c)) return false;
+    const sect = ((c.closest && c.closest('[aria-labelledby]')) || { getAttribute: () => '' }).getAttribute('aria-labelledby') || '';
+    const name = wdLabelOf(c) + ' ' + sect;
+    if (/cover|transcript|portfolio|certif|writing sample|reference|photo|id document|passport/i.test(name)) return false;
+    if (!/resume|\bcv\b|curriculum/i.test(name) && !wdRequired(c)) return false;
+    const input = c.querySelector('input[type="file"]');
+    const data = await st.get('ua_resume_data');
+    if (!input || !data || !data.base64 || !data.fileName) return false;
+    try {
+      const bin = atob(String(data.base64).split(',').pop());
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], data.fileName, { type: data.mimeType || 'application/pdf' }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    } catch (_) { return false; }
+    const ok = await waitUntil(() => wdFileUploaded(c), 15000, 250);
+    LOG(`Workday: CV ${ok ? 'uploaded' : 'sent'} into "${wdLabelOf(c) || 'the upload box'}" — ${data.fileName}`);
+    return true;
+  }
   async function wdAnswerContainer(c, p) {
     const kind = wdKind(c);
-    if (kind === 'none' || kind === 'file' || wdReadValue(c)) return false;
+    if (kind === 'file') return wdUploadResumeInto(c);
+    if (kind === 'none' || wdReadValue(c)) return false;
     const label = wdLabelOf(c);
     if (!label) return false;
     if (kind === 'text' || kind === 'textarea') return wdWriteText(c, wdTextAnswer(label, p));
@@ -9587,6 +9674,16 @@
       try { if (await wdAnswerContainer(c, p)) { n++; noteProgress('filling fields'); } } catch (_) {}
     }
     return n;
+  }
+  /* The required questions on screen still without an answer, by label. */
+  function wdEmptyRequired() {
+    const cs = deepAll(WD_FF, 150).filter(isVisible);
+    return cs.filter((c) => {
+      if (cs.some((o) => o !== c && o.contains(c)) || !wdRequired(c)) return false;
+      const kind = wdKind(c);
+      if (kind === 'none') return false;
+      return !(kind === 'file' ? wdFileUploaded(c) : wdReadValue(c));
+    }).map((c) => wdLabelOf(c) || 'a required field');
   }
   /* Workday's error banner lists each field it refused as a button that focuses
      it. Follow each one and answer the field it lands on. */

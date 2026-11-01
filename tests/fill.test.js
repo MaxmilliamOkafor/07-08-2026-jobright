@@ -2618,6 +2618,11 @@ console.log('knockout answers are the ones that do not get you rejected');
     ["Are you a graduate of the company's early-careers programme?", 'no'],
     ['Do you require any adjustments for the interview process?', 'no'],
     ['Adjustments needed for the interview?', 'no'],
+    // Workday's own careers site, Application Questions 1 of 2 (left on "Select One").
+    ['Are you subject to any non-compete or non-solicitation restrictions at your current or most recent employer?', 'no'],
+    ['Are you related to a current Workday employee?', 'no'],
+    ['To the best of your knowledge, are you related to an employee of a customer, or a government official, who has direct business interactions with Workday?', 'no'],
+    ['In your current job, do you use or work on the Workday system?', 'no'],
     ['Visa / work permit required?', 'no'],
     ['May we text you?', 'no'],
     ['Have you previously worked for Acme as an employee or contractor?', 'no'],
@@ -2690,7 +2695,7 @@ console.log('knockout answers are the ones that do not get you rejected');
   const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
     .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
   eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
-  eq('the battery really is 70 questions', CASES.length, 70);
+  eq('the battery really is 74 questions', CASES.length, 74);
 }
 
 /* ── 61. v17.4: what a real browser run showed ────────────────────────────────
@@ -3187,7 +3192,7 @@ console.log('v17.20: SuccessFactors — phone code, citizenship, CV dialog, Term
   eq('no phone code: the profile\'s dial code', m.pick(cc, { phone: '087 426 1508', phoneCountryCode: '+353' }).value, 'IE');
   eq('"No Selection" is never the answer', m.pick({ options: [opt('No Selection', '')] }, { phone: '' }), null);
 
-  const gv = body('guessValue');
+  const gv = src.slice(src.indexOf('  function guessValue('), src.indexOf('  function guessValue(') + 20000);
   eq('"Country/Region Code" is not a region', /!\/statement\|country \(region \)\?code\//.test(gv), true);
   eq('"Country/Region Code" is the dial code, from the phone first', /country\.\?\(region\.\?\)\?code[^\n]*dialCodeFromPhone\(p\.phone\)/.test(gv), true);
   const cit = gv.indexOf('(citizenship|nationality)\\s*(1|one|primary)'), wa = gv.indexOf('const wa = workAuthorisationAnswer');
@@ -4029,4 +4034,21 @@ console.log('v17.48: Workday one click — walks every step, SpeedyApply without
   eq('"Immediately" → "Available Immediately"', m.pick(q, opts, 'Immediately'), 'Available Immediately');
   eq('"4 months" → "More than 3 Months"', m.pick(q, opts, '4 months'), 'More than 3 Months');
   eq('"30 days" → "1 Month"', m.pick(q, opts, '30 days'), '1 Month');
+}
+
+/* ── v17.49: Workday with Jobright's Autofill — nothing pressed with a question empty ── */
+console.log('v17.49: one click works WITH Jobright\'s Autofill; never Save and Continue over an empty required field');
+{
+  const run = body('wdOneClickRun');
+  eq('Save and Continue is never pressed while a required question is empty — another pass, then stop naming it', /const empty = wdEmptyRequired\(\);\s*if \(empty\.length\) \{\s*if \(passes < 2\)/.test(run) && /break;\s*\}\s*const n = wdNextButton\(\)/.test(run), true);
+  eq('each new step: Jobright\'s own Autofill is pressed, left to finish, then the gaps are filled', /jrAutofillButton\(\);\s*if \(jr\) \{ realClick\(jr\)/.test(run) && /!jrAutofilling\(\) \|\| Date\.now\(\) - typedAt > 4000/.test(run), true);
+  eq('"Application Questions 1 of 2" and "2 of 2" are different steps (by heading)', /const stepKey = step \+ '\|' \+ wdText\(/.test(run) && /if \(stepKey !== lastStep\)/.test(run), true);
+  eq('Jobright\'s helper is not told the tab is ours during your one click', /if \(_wdOneClickRunning \|\| wdOneClickArmed\(\)\) return false;/.test(src), true);
+  eq('a required upload box gets your CV (Resume/CV on My Experience was left empty)', /if \(kind === 'file'\) return wdUploadResumeInto\(c\);/.test(body('wdAnswerContainer')), true);
+  eq('…but not a box for a cover letter / transcript / other document', /cover\|transcript\|portfolio/.test(body('wdUploadResumeInto')), true);
+  const empt = body('wdEmptyRequired');
+  eq('an upload box counts as answered once it shows the file', /kind === 'file' \? wdFileUploaded\(c\) : wdReadValue\(c\)/.test(empt), true);
+  // The free-text Workday question, answered truthfully.
+  const gv = body('guessValue');
+  eq('"Describe your interactions with the Workday system" is answered (as a candidate, unless your skills say Workday)', gv.includes('(interactions?|experience|use)') && /applying for roles through Workday career sites/.test(gv), true);
 }

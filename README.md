@@ -4613,3 +4613,35 @@ Tested on the Workday mock with one real click, Fully Automated off and no queue
 job: job page → Apply → account created → CV → My Information → My Experience
 (skills) → Questions → Voluntary Disclosures → Self Identify → Review →
 submitted in about 60s. The queue run on the same mock submits too.
+
+## v17.49 — one click works with Jobright's Autofill; no Save and Continue over empty questions
+
+From your Workday run on Workday's own careers site (Application Questions 1 of 2):
+
+- **Save and Continue is never pressed while a required question is empty.** It
+  was pressed with three dropdowns on "Select One" and the description box
+  empty. Now an empty required field gets another pass. If it is still empty
+  after that, the run stops and names it instead of pressing.
+- **Jobright's Autofill and this extension work together.** The green Autofill
+  button in Jobright's sidebar starts the run. On every new step Jobright's
+  Autofill is pressed again and left to finish (its banner goes, or its typing
+  stops for 4s). Then whatever it missed is answered here. While the run is
+  going, Jobright's helper is never told the tab is ours, so it always fills.
+- **"Application Questions 1 of 2" and "2 of 2" are separate steps.** They were
+  one step to the run, so it would have stopped on the second page.
+- **The Resume/CV upload box on My Experience** ("Upload a file (5MB max)*") gets
+  your CV. So does any required upload box that is not for another document (a
+  cover letter, transcript, portfolio and so on).
+- **New answers:**
+  - non-compete / non-solicitation restrictions → No;
+  - related to a current employee / to an employee of a customer or a
+    government official → No;
+  - "do you use or work on the Workday system?" → No, unless your skills list
+    Workday;
+  - "Describe your interactions with the Workday system" → that you don't use
+    it in your role and know it as a candidate applying through Workday sites
+    (or your own `workday_experience` text).
+
+**The flicker before autofill:** on the test page nothing on screen toggles. Jobright's
+sidebar is re-marked "open" but never closes. The real sidebar needs your Jobright
+login, so this could not be reproduced here.
