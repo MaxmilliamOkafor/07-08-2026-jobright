@@ -1436,6 +1436,7 @@ new Function('exports', `
   ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
+  ${body('packKnockoutNo')}
   ${body('workAuthorisationAnswer')}
   ${body('workAuthOptionIndex')}
   ${reLines}
@@ -1478,7 +1479,7 @@ eq('and so does the fuzzy half of the text path',
    their word is final — the guard must not touch it. */
 eq('an exact learned answer YOU gave is left to stand',
   /const exactOk = exact && \(isManualAnswer\(label, el\) \? exact : safeKnockoutAnswer\(exact, questionText\)\);/.test(src), true);
-eq('and it is consulted before the built-in guesses', /const raw = fromSaved \|\| exactOk \|\| guessValue\(label, p\) \|\|/.test(src), true);
+eq('and it is consulted before the built-in guesses', /const builtIn = guessValue\(label, p\);\n    const raw = fromSaved \|\| exactOk \|\| builtIn \|\|/.test(src), true);
 
 /* ── 40. nothing may pause a run waiting for a human ──────────────────────── */
 /* "Leave site? Changes you made may not be saved." froze a 685-job run on
@@ -2605,9 +2606,28 @@ console.log('knockout answers are the ones that do not get you rejected');
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
+    ${body('packKnockoutNo')}
     exports.d = determineYesNo;
   `)(koCtx2);
   const CASES = [
+    // The 27-10-2026 knockout pack: each of these fell through to the default Yes.
+    ['Are you a citizen, national or permanent resident of Cuba, Iran, North Korea, Syria or Crimea?', 'no'],
+    ['Are you related to anyone who can influence or sign commercial or government contracts with Acme?', 'no'],
+    ['In the last five years, have you been an employee of the US Federal Government or a state or local government?', 'no'],
+    ['Are you currently employed by, or have you been employed by, PwC?', 'no'],
+    ["Are you a graduate of the company's early-careers programme?", 'no'],
+    ['Do you require any adjustments for the interview process?', 'no'],
+    ['Adjustments needed for the interview?', 'no'],
+    ['Visa / work permit required?', 'no'],
+    ['May we text you?', 'no'],
+    ['Have you previously worked for Acme as an employee or contractor?', 'no'],
+    // …and the pack's Yes answers stay Yes.
+    ['Do you have documents entitling you to work in the European Union (valid work permits)?', 'yes'],
+    ['Are you a citizen of the European Union?', 'yes'],
+    ['We require two office days a week in Dublin. Is this doable for you?', 'yes'],
+    ['Do you speak English at a minimum B2 level?', 'yes'],
+    ['Are you at least 18 years of age?', 'yes'],
+    ['Any offer is contingent on a background check. Do you acknowledge?', 'yes'],
     // right to work — Yes
     ['Are you legally authorized to work in the United States?', 'yes'],
     ['Are you legally authorised to work in the UK?', 'yes'],
@@ -2670,7 +2690,7 @@ console.log('knockout answers are the ones that do not get you rejected');
   const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
     .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
   eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
-  eq('the battery really is 54 questions', CASES.length, 54);
+  eq('the battery really is 70 questions', CASES.length, 70);
 }
 
 /* ── 61. v17.4: what a real browser run showed ────────────────────────────────
@@ -3727,7 +3747,9 @@ console.log('v17.34: Workday — SpeedyApply mode, refused sign-in skipped at on
   eq('SpeedyApply mode is on unless you switch it off', /\(await st\.get\('ua_wd_mode'\)\) !== 'engine'/.test(body('workdayModeSpeedyApply')), true);
   eq('it is recognised by SpeedyApply\'s own element on the page', /speedyapply-autofill,speedyapply-modal/.test(src), true);
   eq('…and when it is not there, the engine applies as before', /SpeedyApply is not active on this page/.test(sa) && /return false;/.test(sa), true);
-  eq('while SpeedyApply drives, our password watcher and engine stay out', /if \(_saDriving \|\| \(_saModeOn && speedyApplyPresent\(\)\)\) return;/.test(src) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
+  eq('while SpeedyApply drives, our password watcher and engine stay out', /\n      if \(_saDriving\) return;\n/.test(body('startWorkdayAccountWatch')) && /if \(_saDriving\) return false;/.test(body('workdayEngineRun')), true);
+  eq('…but SpeedyApply merely being installed no longer keeps the account step from running', /speedyApplyPresent/.test(body('startWorkdayAccountWatch')), false);
+  eq('Jobright\'s sidebar is tucked only on a tab a queue job drives', /queued = !!_uaJobKey \|\| _mgrDriving \|\| \(qActive && isRunnerTab\(\)\)/.test(body('tuckJobrightOnWorkday')) && /if \(!queued\) \{ untuckJobright\(\); return; \}/.test(body('tuckJobrightOnWorkday')), true);
   eq('it only presses Next / Submit once the page has been still', /quiet > STILL_MS && pressed < 3/.test(sa) && /realClick\(n\); pressed\+\+;/.test(sa), true);
   eq('…fills only what SpeedyApply left, once per step; what is still empty fails the job, named', (sa.match(/await fallbackFill\(\)/g) || []).length === 1 && /SpeedyApply left required fields empty on/.test(sa), true);
   eq('called right after Apply, before anything of ours touches the page', body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') > 0 && body('workdayAutomation').indexOf('workdaySpeedyApplyRun()') < body('workdayAutomation').indexOf('await clickApplyManually();'), true);
@@ -3871,8 +3893,9 @@ console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick
   // The account page is handled at once: SpeedyApply only types, never presses.
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode presses Create Account / Sign In after 1.5s, not 6s', /quiet > \(_wdCreatedThisJob \|\| _saAccountTurns \? 2000 : 1500\)/.test(sa), true);
-  eq('no profile in SpeedyApply → the job fails saying so (Jobright does not fill in its place)', /return cannot\('SpeedyApply has no profile yet/.test(sa), true);
-  eq('premium with no profile it can pick → the job fails saying so (sign in to SpeedyApply)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return cannot\(/.test(sa), true);
+  eq('no profile in SpeedyApply → the job fails saying so (Jobright does not fill in its place)', /return await cannot\('SpeedyApply has no profile yet/.test(sa), true);
+  eq('…but the account is signed up / signed in first, whatever SpeedyApply can do', /const cannot = async \(why\) => \{[\s\S]{0,400}await wdAccountPass\(\)/.test(sa), true);
+  eq('premium with no profile it can pick → the job fails saying so (sign in to SpeedyApply)', /cfg && cfg\.premium && !\(await saAutoPickProfile\(\)[\s\S]{0,40}\)\)\n\s+return await cannot\(/.test(sa), true);
   eq('handed back → SpeedyApply no longer counts as present (the account watcher works for the engine)', /!_saDeclined && \(/.test(src.match(/const speedyApplyPresent = [^\n]+/)[0]), true);
   eq('on Workday Jobright\'s own autofill stands aside for SpeedyApply', /if \(_saDriving \|\| saOwnsWorkday\(\)\) return true;/.test(src), true);
   // The profile pick, run for real against a fake SpeedyApply.
@@ -3937,3 +3960,12 @@ setTimeout(() => Promise.all(asyncChecks).then(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 }), 50);
+
+console.log('platform pack: travel %, salary period, scale radios, training');
+{
+  const cbm = body('choiceByMeaning');
+  eq('a salary period picks the yearly option (your figure is yearly)', /salary\|pay\|compensation\|wage\|rate/.test(cbm) && /yearly\|annual/.test(cbm), true);
+  eq('travel percentages pick the one nearest 25%', /Math\.abs\(pct\(a\) - 25\)/.test(cbm), true);
+  eq('a 1-to-N scale shown as radios picks one below the top', /scale of/.test(body('answerKnockoutRadioGroup')), true);
+  eq('"Other relevant training or qualifications" gets your degree and school', /training\|qualifications/.test(body('guessValue')), true);
+}

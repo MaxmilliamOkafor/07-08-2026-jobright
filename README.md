@@ -4494,3 +4494,78 @@ SpeedyApply's own badge never showed, because the open sidebar covered it.
 Pull and reload the extension. The recording was from a build before the
 last few updates (the "7 required fields need you" box, hidden since v17.41,
 was still showing).
+
+## v17.43 — Fully Automated no longer hides the sidebar; the Workday account is always made
+
+From your Allstate Workday Create Account screenshot:
+
+- **Turning "🤖 Fully Automated" on no longer makes everything disappear.**
+  The Jobright sidebar was tucked away on Workday the moment automation
+  started, and the sidebar is where the switch, the queue and the log live. It
+  is now tucked only on a tab that a queue job is driving. Outside a run it
+  stays where it is, and one tucked earlier comes back.
+- **Create Account / Sign In happens by itself with your saved account.**
+  The account watcher stood down whenever SpeedyApply was merely installed,
+  and SpeedyApply never presses Create Account / Sign In. When SpeedyApply
+  could not take the job (no profile, no profile picked for the tab, or
+  switched off), nobody did the account step. Now:
+  - the watcher stands down only while the SpeedyApply run is actually driving;
+  - when SpeedyApply cannot fill the job, the account is signed up or signed
+    in first, with SpeedyApply's saved account or else the extension's, and
+    the job then ends with the reason.
+
+Pull and reload the extension.
+
+## v17.44 — knockout answers from the 27-10-2026 ATS pack; Workday skills really get added
+
+- **Required dropdowns no longer default to "Yes".** With no confident match,
+  a required select picked its first option, which is "Yes" on every Yes/No
+  question. Now they are decided by meaning: export control (Cuba, Iran, North
+  Korea, Syria, Crimea), contract-signer relatives, US government employment,
+  "employed by PwC", early-careers graduate, interview adjustments, visa
+  required, previously worked here and "May we text you?" are all **No**.
+  - Salary currency follows your country (EUR for Ireland), Gross over Net,
+    Yearly over Monthly, and "scale of 1 to 4" gets 3.
+- **Text boxes:**
+  - salary questions mentioning "this role" no longer get your job title;
+  - "visa status" gets "EU citizen — no visa or sponsorship required";
+  - "Which AI tools…?" gets "Claude, ChatGPT and GitHub Copilot";
+  - the e-signature box gets your full name.
+- **Workday "Type to Add Skills":** each skill is typed into Search, Enter is
+  pressed, then its result is ticked.
+  - Chrome had been dropping key code 13 from scripted Enter presses, so
+    nothing was ever searched.
+  - A result that is already ticked is never clicked, because clicking it
+    removes the skill.
+  - While SpeedyApply runs Workday, skills are now added once on My Experience.
+- New fixture `tests/e2e/knockout-pack.html` (52 pack questions) submits with
+  every pack answer.
+
+## v17.45 — typo sweep of everything autofill types
+
+Every autofill source was spell-checked: the content scripts, the Workday
+engine, the queue pages and every canned answer.
+- The code and text were already clean. The only flags were deliberate
+  foreign words (Sie, connexion, profissional) and regex stems (requir,
+  declar).
+- One wording slip was being typed into forms: "1 month notice" is now
+  "1 month's notice" for availability / start-date questions.
+- Answer banks already saved in your browser are corrected too (seed version
+  1.5.6). Anything you edited yourself is left alone.
+
+## v17.46 — fields from the advanced report's platform guides
+
+Checked with a new test form built from the report's field guides
+(`tests/e2e/platform-pack.html`):
+- **Travel percentage** (BrassRing "If yes, what percentage?"): picks the
+  option nearest 25%, not the first one (0%).
+- **Salary period** (ADP "Annually / Hourly"): Annually, since your salary
+  figure is yearly.
+- **"On a scale of 1 to 4…"** shown as radio buttons (Ashby): 3, the same as
+  the dropdown version.
+- **"Other relevant training or qualifications"** (BrassRing, required): your
+  degree, subject and school, plus certifications if your profile has them.
+- **"Adjustments needed for the interview?"**: No, also when the words come in
+  that order.
+- The Trakstar job site was labelled "Recruitee" in logs and diagnostics; it
+  now says Trakstar.
