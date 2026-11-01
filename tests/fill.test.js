@@ -2618,6 +2618,11 @@ console.log('knockout answers are the ones that do not get you rejected');
     ["Are you a graduate of the company's early-careers programme?", 'no'],
     ['Do you require any adjustments for the interview process?', 'no'],
     ['Adjustments needed for the interview?', 'no'],
+    // Workday's own careers site, Application Questions 1 of 2 (left on "Select One").
+    ['Are you subject to any non-compete or non-solicitation restrictions at your current or most recent employer?', 'no'],
+    ['Are you related to a current Workday employee?', 'no'],
+    ['To the best of your knowledge, are you related to an employee of a customer, or a government official, who has direct business interactions with Workday?', 'no'],
+    ['In your current job, do you use or work on the Workday system?', 'no'],
     ['Visa / work permit required?', 'no'],
     ['May we text you?', 'no'],
     ['Have you previously worked for Acme as an employee or contractor?', 'no'],
@@ -2690,7 +2695,7 @@ console.log('knockout answers are the ones that do not get you rejected');
   const wrong = CASES.filter(([q, want]) => koCtx2.d(q.toLowerCase()) !== want)
     .map(([q, want]) => `${q} → ${koCtx2.d(q.toLowerCase())} (want ${want})`);
   eq(`all ${CASES.length} knockout phrasings get the answer that does not reject you`, wrong, []);
-  eq('the battery really is 70 questions', CASES.length, 70);
+  eq('the battery really is 74 questions', CASES.length, 74);
 }
 
 /* ── 61. v17.4: what a real browser run showed ────────────────────────────────
@@ -3187,7 +3192,7 @@ console.log('v17.20: SuccessFactors — phone code, citizenship, CV dialog, Term
   eq('no phone code: the profile\'s dial code', m.pick(cc, { phone: '087 426 1508', phoneCountryCode: '+353' }).value, 'IE');
   eq('"No Selection" is never the answer', m.pick({ options: [opt('No Selection', '')] }, { phone: '' }), null);
 
-  const gv = body('guessValue');
+  const gv = src.slice(src.indexOf('  function guessValue('), src.indexOf('  function guessValue(') + 20000);
   eq('"Country/Region Code" is not a region', /!\/statement\|country \(region \)\?code\//.test(gv), true);
   eq('"Country/Region Code" is the dial code, from the phone first', /country\.\?\(region\.\?\)\?code[^\n]*dialCodeFromPhone\(p\.phone\)/.test(gv), true);
   const cit = gv.indexOf('(citizenship|nationality)\\s*(1|one|primary)'), wa = gv.indexOf('const wa = workAuthorisationAnswer');
@@ -3389,9 +3394,9 @@ console.log('v17.24: your Workday engine — queue jobs, assist, CV roles');
 
   const wa = body('workdayAutomation');
   eq('a queue job goes to the engine first', /const eng = await workdayEngineRun\(\);/.test(wa), true);
-  eq('outside a run, Fully Automated means assist (when SpeedyApply does not own Workday)', /!_uaJobKey && !saOwnsWorkday\(\) && window\.__uaWdEngine[\s\S]{0,120}allowAssist\(\)\) \{[\s\S]{0,300}return 'assist';/.test(wa), true);
+  eq('outside a run, Fully Automated walks the whole application (fill, Save and Continue, Submit), not assist', /if \(!_uaJobKey && !saOwnsWorkday\(\)\) \{\s*wdOneClickArm\(\);\s*const r = await wdOneClickRun\(\{ fromAuto: true \}\);/.test(wa), true);
   eq('stopped mid-application, the built-in flow carries on from that step', /if \(eng === 'midway'\) \{\s+await fallbackFill\(\);\s+await workdayMultiPageFlow\(\);/.test(wa), true);
-  eq('assist owns the page: no page walk after it', /if \(_wdAssistActive\) return;\n\s+if \(saOwnsWorkday\(\)\) return;[^\n]*\n\s+if \(!confirmSubmitted\(\)\) await multiPageLoop\(\);/.test(body('dispatchATSAutomation')) && /_wdAssistActive = true;\n\s+return 'assist';/.test(body('workdayAutomation')), true);
+  eq('the engine assist (fill, then wait for you to press Save and Continue) is no longer entered', !/return 'assist';/.test(body('workdayAutomation')), true);
   eq('each queue job is told apart (results survive a reload, never leak to the next job)', (src.match(/_uaJobKey = String\(c\.id \|\| c\.url \|\| ''\);/g) || []).length, 2);
   eq('the engine is waited on as work, bounded', /withBusy\('Workday engine'/.test(body('workdayEngineWait')) && /[58] \* 60 \* 1000/.test(body('workdayEngineWait')) && /workdayEngineWait\(eng, id\)/.test(body('workdayEngineRun')), true);
   eq('"ua_wd_engine_off" gives Workday back to the built-in flow', /st\.get\('ua_wd_engine_off'\)\) === true\) return false/.test(body('workdayEngineRun')), true);
@@ -3939,7 +3944,7 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
   for (const fn of ['guaranteeRequiredFields', 'fillCustomDropdowns', 'handleValidationErrors', 'autoSubmitOrNext'])
     eq(`${fn} does nothing on SpeedyApply's Workday`, new RegExp('async function ' + fn + '\\(\\.\\.\\.a\\) \\{ if \\(saOwnsWorkday\\(\\)\\) return').test(src), true);
   eq('no page walk after the Workday driver', /if \(saOwnsWorkday\(\)\) return;\s+\/\/ Workday: SpeedyApply's pages/.test(body('dispatchATSAutomation')), true);
-  eq('no engine assist either', /!_uaJobKey && !saOwnsWorkday\(\) && window\.__uaWdEngine/.test(body('workdayAutomation')), true);
+  eq('no engine assist either', !/allowAssist\(\)/.test(body('workdayAutomation')), true);
   const sa = body('workdaySpeedyApplyRun');
   eq('SpeedyApply mode never hands a built-in job to the engine', !/using the Workday engine for this job/.test(sa), true);
   eq('fully automated: required fields SpeedyApply left empty — only those — are answered, then Next is pressed',
@@ -4029,4 +4034,41 @@ console.log('v17.48: Workday one click — walks every step, SpeedyApply without
   eq('"Immediately" → "Available Immediately"', m.pick(q, opts, 'Immediately'), 'Available Immediately');
   eq('"4 months" → "More than 3 Months"', m.pick(q, opts, '4 months'), 'More than 3 Months');
   eq('"30 days" → "1 Month"', m.pick(q, opts, '30 days'), '1 Month');
+}
+
+/* ── v17.49: Workday with Jobright's Autofill — nothing pressed with a question empty ── */
+console.log('v17.49: one click works WITH Jobright\'s Autofill; never Save and Continue over an empty required field');
+{
+  const run = body('wdOneClickRun');
+  eq('Save and Continue is never pressed while a required question is empty — another pass, then stop naming it', /const empty = wdEmptyRequired\(\);\s*if \(empty\.length\) \{\s*if \(passes < 2\)/.test(run) && /break;\s*\}\s*const n = wdNextButton\(\)/.test(run), true);
+  eq('each new step: Jobright\'s own Autofill is pressed, left to finish, then the gaps are filled', /jrAutofillButton\(\);\s*if \(jr\) \{ realClick\(jr\)/.test(run) && /return !jrAutofilling\(\) \|\| \(Date\.now\(\) - t0 > 30000 && Date\.now\(\) - typedAt > 10000\)/.test(run), true);
+  eq('"Application Questions 1 of 2" and "2 of 2" are different steps (by heading)', /const stepKey = step \+ '\|' \+ wdText\(/.test(run) && /if \(stepKey !== lastStep\)/.test(run), true);
+  eq('Jobright\'s helper is not told the tab is ours during your one click', /if \(_wdOneClickRunning \|\| wdOneClickArmed\(\)\) return false;/.test(src), true);
+  eq('a required upload box gets your CV (Resume/CV on My Experience was left empty)', /if \(kind === 'file'\) return wdUploadResumeInto\(c\);/.test(body('wdAnswerContainer')), true);
+  eq('…but not a box for a cover letter / transcript / other document', /cover\|transcript\|portfolio/.test(body('wdUploadResumeInto')), true);
+  const empt = body('wdEmptyRequired');
+  eq('an upload box counts as answered once it shows the file', /kind === 'file' \? wdFileUploaded\(c\) : wdReadValue\(c\)/.test(empt), true);
+  // The free-text Workday question, answered truthfully.
+  const gv = body('guessValue');
+  eq('"Describe your interactions with the Workday system" is answered (as a candidate, unless your skills say Workday)', gv.includes('(interactions?|experience|use)') && /applying for roles through Workday career sites/.test(gv), true);
+}
+
+/* ── v17.50: Fully Automated walks Workday; education years; Jobright never typed over; skills box 10 ── */
+console.log('v17.50: education years, Jobright not typed over, the skills box held to 10');
+{
+  const m = {};
+  new Function('exports', `${body('wdEducationEntries')} exports.edu = wdEducationEntries;`)(m);
+  const edu = m.edu({ education: [{ school: 'Imperial College London', degree: 'Masters', start_date: '2023-09', end_date: '2024-09' }, { school: 'University of Derby', start_date: '2013', end_date: '2016-06' }] });
+  eq('each school keeps its own From / To years (Wolters Kluwer got "2001" / "YYYY")', edu.map((e) => e.startYear + '-' + e.endYear).join(', '), '2023-2024, 2013-2016');
+  const me = body('wdMyExperience');
+  eq('Education From is set too, and your years replace what is there', /formField-firstYearAttended[\s\S]{0,120}if \(from && e\.startYear && await wdSetDate\(from/.test(me) && /if \(end && e\.endYear && await wdSetDate\(end/.test(me), true);
+  const jr = src.match(/const jrAutofilling = [^\n]+/)[0];
+  const rx = new RegExp(jr.match(/\/(.*)\/i\.test/)[1], 'i');
+  eq('"Autofilling 67%  Cancel" in Jobright\'s sidebar = it is still typing', rx.test('Autofilling 67% Cancel'), true);
+  eq('…its lingering "Please stay on the Workday page while Autofill fills out the form." is not', rx.test('Please stay on the Workday page while Autofill fills out the form.'), false);
+  eq('…its idle "Autofill" button is not', rx.test('Autofill Generate Custom Resume + Autofill'), false);
+  const run = body('wdOneClickRun');
+  eq('nothing is filled on a step while Jobright says Autofilling and is typing', /if \(Date\.now\(\) - jrSince < 30000 \|\| Date\.now\(\) - still < 10000\) \{ await sleep\(500\); continue; \}/.test(run), true);
+  eq('…but a sidebar stuck on "Autofilling" (signed out, an error) cannot hang the run', /Jobright still says Autofilling but has stopped typing — carrying on without it/.test(run) && /if \(!jrStuck && jrAutofilling\(\)\)/.test(run), true);
+  eq('the box is held to 10 whoever adds: picking an 11th refused, extras removed', /for \(const t of \['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown'\]\) document\.addEventListener\(t, wdSkillsGuard, true\);/.test(src) && /if \(chips\.length <= WD_SKILLS_MAX\) return;/.test(src), true);
 }

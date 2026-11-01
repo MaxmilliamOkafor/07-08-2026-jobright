@@ -4613,3 +4613,59 @@ Tested on the Workday mock with one real click, Fully Automated off and no queue
 job: job page → Apply → account created → CV → My Information → My Experience
 (skills) → Questions → Voluntary Disclosures → Self Identify → Review →
 submitted in about 60s. The queue run on the same mock submits too.
+
+## v17.49 — one click works with Jobright's Autofill; no Save and Continue over empty questions
+
+From your Workday run on Workday's own careers site (Application Questions 1 of 2):
+
+- **Save and Continue is never pressed while a required question is empty.** It
+  was pressed with three dropdowns on "Select One" and the description box
+  empty. Now an empty required field gets another pass. If it is still empty
+  after that, the run stops and names it instead of pressing.
+- **Jobright's Autofill and this extension work together.** The green Autofill
+  button in Jobright's sidebar starts the run. On every new step Jobright's
+  Autofill is pressed again and left to finish (its banner goes, or its typing
+  stops for 4s). Then whatever it missed is answered here. While the run is
+  going, Jobright's helper is never told the tab is ours, so it always fills.
+- **"Application Questions 1 of 2" and "2 of 2" are separate steps.** They were
+  one step to the run, so it would have stopped on the second page.
+- **The Resume/CV upload box on My Experience** ("Upload a file (5MB max)*") gets
+  your CV. So does any required upload box that is not for another document (a
+  cover letter, transcript, portfolio and so on).
+- **New answers:**
+  - non-compete / non-solicitation restrictions → No;
+  - related to a current employee / to an employee of a customer or a
+    government official → No;
+  - "do you use or work on the Workday system?" → No, unless your skills list
+    Workday;
+  - "Describe your interactions with the Workday system" → that you don't use
+    it in your role and know it as a candidate applying through Workday sites
+    (or your own `workday_experience` text).
+
+**The flicker before autofill:** on the test page nothing on screen toggles. Jobright's
+sidebar is re-marked "open" but never closes. The real sidebar needs your Jobright
+login, so this could not be reproduced here.
+
+## v17.50 — Fully Automated walks Workday; education years; never typed over; skills box held to 10
+
+- **Fully Automated no longer waits for you on Workday.** With SpeedyApply holding
+  no profile, Fully Automated fell into the engine's "assist" mode: it filled
+  each step, then waited for you to press Save and Continue. It now walks the
+  whole application the way one click of Autofill does: every step filled with
+  Jobright's Autofill pressed first, then Save and Continue, then Submit.
+- **The skills box is held to 10, whoever adds.** The 40 skills on Wolters
+  Kluwer were typed by Jobright's own Autofill from your Jobright profile, which
+  this extension's own limit could not stop. Once the box holds 10, picking
+  another result (click or Enter) is refused and anything over 10 is removed.
+  Unticking one is still allowed.
+- **Education From / To come from your profile.** Each school's years were
+  dropped, so From showed "2001" and To stayed "YYYY". Each school's own
+  start / end years are now used, and they replace whatever is in the boxes.
+- **Never typed over Jobright.** Nothing is filled on a step while Jobright's
+  sidebar says "Autofilling". Two fillers in one Workday date box mix their
+  digits. Its "Please stay on the Workday page" notice no longer counts as
+  filling, because it stays up after it has finished.
+
+Tested: unit tests and browser checks for the skills limit; the Workday test
+page submits as a queue job, with one click and with Fully Automated; all the
+other ATS test forms still submit.

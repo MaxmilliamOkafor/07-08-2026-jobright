@@ -22,6 +22,12 @@ const lib = `
   ${['normLabel', 'safeClass', 'isSelect2Native', 'coveredBy', 'describeControl', 'workdayOnAccountWall', 'workdayApplicationReady', 'isPhoneBox', 'dialCodeBeside', 'phoneForPickerBox', 'fieldName'].map(fn).join('\n')}
   ${fn('wdPressEnter')}
   ${src.match(/  const wdOptionTicked = [\s\S]*?\n  \};\n/)[0]}
+  const isWorkday = () => true, WD_SKILLS_MAX = 10;
+  const wdSelected = (c) => Array.from(c.querySelectorAll('[data-automation-id="selectedItem"]')).map(wdText).filter(Boolean);
+  const wdSkillsBox = () => document.querySelector('[data-automation-id="formField-skills"]');
+  let _wdSkillsFocusAt = Date.now();
+  ${fn('wdSkillsGuard')}
+  window.guardOn = () => { for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown']) document.addEventListener(t, wdSkillsGuard, true); };
   window.T = { coveredBy, describeControl, workdayOnAccountWall, workdayApplicationReady, phoneForPickerBox, fieldName, wdPressEnter, wdOptionTicked };`;
 let pass = 0, fail = 0;
 const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.stringify(want);
@@ -69,6 +75,15 @@ const eq = (name, got, want) => { const g = JSON.stringify(got), w = JSON.string
   eq('an unticked row does not', await run('<div id="o"><input type="checkbox"> Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), false);
   eq('the row the keyboard is on (aria-selected) is not taken for added',
     await run('<div id="o" role="option" aria-selected="true">Python</div>', 'T.wdOptionTicked(document.getElementById("o"))'), false);
+  console.log('the skills box is held to 10, whoever adds (Jobright typed 40 on Wolters Kluwer)');
+  const box = (n) => '<div data-automation-id="formField-skills"><input id="q">' + Array.from({ length: n }, (_, i) => '<div data-automation-id="selectedItem">S' + i + '</div>').join('') + '</div>' +
+    '<div role="listbox"><div id="o" data-automation-id="promptOption">Scikit-learn</div><div role="option"><input type="checkbox" checked><span id="tt">S3</span></div></div>';
+  const tryPick = (id) => `(() => { guardOn(); let hit = 0; const el = document.getElementById("${id}"); el.addEventListener("click", () => hit++); el.click(); return hit; })()`;
+  eq('10 in the box → an 11th result cannot be picked', await run(box(10), tryPick('o')), 0);
+  eq('9 in the box → the 10th can', await run(box(9), tryPick('o')), 1);
+  eq('…unticking one already in the box is still allowed', await run(box(10), tryPick('tt')), 1);
+  eq('10 in the box → Enter in its search box adds nothing',
+    await run(box(10), '(() => { guardOn(); let hit = 0; const q = document.getElementById("q"); q.addEventListener("keydown", () => hit++); q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return hit; })()'), 0);
   await b.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
