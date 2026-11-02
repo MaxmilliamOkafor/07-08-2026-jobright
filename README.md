@@ -4669,3 +4669,38 @@ login, so this could not be reproduced here.
 Tested: unit tests and browser checks for the skills limit; the Workday test
 page submits as a queue job, with one click and with Fully Automated; all the
 other ATS test forms still submit.
+
+## v17.51 — on to the next job the moment it is submitted; no 20s CV wait; stands aside for LazyApply
+
+- **The queue moves on as soon as the page says "Application Submitted".** On
+  CrowdStrike the run sat on "Job 1 of 420 — Processing…" over Workday's
+  "Application Submitted" dialog. The page is now checked every 0.4s while a job
+  runs; once it confirms the submission the job is recorded as applied and the
+  next one opens straight away (both the in-tab queue and the side-panel queue).
+  A "thank you" already on the page when a job starts only counts with our own
+  Submit behind it, so an old message never passes a job.
+- **No 20-second wait on the CV.** The Workday engine picked the extension's own
+  hidden "add a resume" box instead of Workday's upload box, waited 20s for an
+  upload that never showed, and added the CV to your resume list again. The
+  Workday test job now takes 64s instead of 82s.
+- **Fully Automated stands aside while another tool is applying.** When another
+  tool's "Automation In Progress" panel (LazyApply's "Job 14 of 315") is on the
+  page, Fully Automated does nothing there, so the two no longer fill and submit
+  the same form. Your own queue runs and one click of Autofill are unaffected.
+  This extension never reads or changes LazyApply's speed or settings.
+- **A science degree is never filled as an arts one.** CrowdStrike's degree list
+  got "Master of Arts (MA)" for "Master of Science, Artificial Intelligence and
+  Machine Learning". The option matcher now refuses MSc↔MA and BSc↔BA swaps and
+  takes the plain "Master's" / "Bachelor's" option instead, or leaves the box
+  for you if there is none.
+- **Irish / UK counties.** Intel's county box was left empty because "Dublin" is
+  listed there as "Co. Dublin" / "County Dublin"; those forms are now tried too.
+- **CrowdStrike's post-submit page** (`/jobTasks/completed/application`) was an
+  "unrecognised page" to the Workday engine, which paused there; the job is now
+  marked applied from the page's own "Application Submitted".
+- **No more pile of Jobright tabs.** With "Tailor resume for each job" on,
+  Jobright opens a tailor tab (jobright.ai/jobs/info/…?plugin_tailor=1) for
+  every job, and nothing closed them — a row of "Senior …" tabs during a run.
+  A run now keeps one per job in progress: the previous one closes when the
+  next opens and when the queue moves on. A tailor tab you opened yourself by
+  pressing Tailor is never closed.

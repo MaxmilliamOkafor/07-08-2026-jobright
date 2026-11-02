@@ -69,20 +69,41 @@
     catch (_) { return false; }
   }
 
+  /* Another tool's run on this page (LazyApply's "Automation In Progress — Job 14
+     of 315"). Ours lives in a closed shadow root, so a visible one in the page is
+     never ours. Fully Automated then stands aside instead of filling and
+     submitting the same form underneath it. Looked up at most once a second. */
+  let foreignAt = 0, foreignSeen = false;
+  function foreignRunActive() {
+    if (Date.now() - foreignAt < 1000) return foreignSeen;
+    foreignAt = Date.now(); foreignSeen = false;
+    try {
+      const r = document.evaluate("//*[normalize-space(text())='Automation In Progress']", document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      for (let i = 0; i < r.snapshotLength; i++) {
+        const el = r.snapshotItem(i);
+        if (el.closest('[id^="ua-"]') || !el.getClientRects().length) continue;
+        foreignSeen = true; break;
+      }
+    } catch (_) {}
+    return foreignSeen;
+  }
+
   window.__uaAutoAllowed = function () {
     if (managedJobActive()) return true;          // a queued job owns this tab
     if (oneClickActive()) return true;            // you pressed Autofill on this Workday application
     if (!ready) return false;                     // preference not known yet → do nothing
-    if (toggleOn) return true;
-    return queueRunning && isRunnerTab();
+    if (queueRunning && isRunnerTab()) return true;
+    if (foreignRunActive()) return false;         // another tool is applying here
+    return toggleOn;
   };
   // For UI/diagnostics: why did the gate answer the way it did?
   window.__uaAutoReason = function () {
     if (managedJobActive()) return 'queue job';
     if (oneClickActive()) return 'Autofill pressed on Workday';
     if (!ready) return 'preference not loaded';
-    if (toggleOn) return 'toggle ON';
     if (queueRunning && isRunnerTab()) return 'queue runner tab';
+    if (foreignRunActive()) return 'another tool (e.g. LazyApply) is running on this page';
+    if (toggleOn) return 'toggle ON';
     return 'toggle OFF';
   };
 
@@ -6376,6 +6397,20 @@
     return false;
   }
   function checkSuccess() { return hardSuccessSignal() || (submitAttempted() && softSuccessSignal()); }
+  /* Workday's own post-submit screen: Candidate Home with an "Application
+     Submitted" dialog. It is never shown before a submission. */
+  function wdSubmittedDialog() {
+    return isWorkday() && /\bapplication\s+submitted\b|successfully\s+been\s+submitted/i.test(document.body?.innerText || '');
+  }
+  /* The queue moves on as soon as the page says the job was sent, wherever the
+     fill code happens to be. On CrowdStrike the run sat on "Job 1 of 420 —
+     Processing…" over Workday's "Application Submitted". A success message that
+     was already on the page when the job began only counts with our own submit
+     behind it (or Workday's dialog), so an old "thank you" never passes a job. */
+  function jobSubmittedNow(seenAtStart) {
+    if (!hardSuccessSignal()) return false;
+    return submitAttempted() || !seenAtStart || wdSubmittedDialog();
+  }
 
   /* ── SUBMIT-CONTROL RECOGNITION (shared by every ATS driver) ───────────────
      Submit buttons are labelled differently on every platform, and the old test
@@ -11739,6 +11774,7 @@
   let qSpeed = 1;
   let qTimeout = 150000; // 150s hard cap per job — enough for the fill→submit→verify→retry loop; protects against truly stuck pages (captcha/login)
   let _qTimeoutId = null;
+  let _qDoneIv = null;                 // watches for the page saying the current job was submitted
 
   // ===================== SINGLE RUNNER TAB =====================
   // The queue must drive exactly ONE tab — otherwise every open tab (and any new
@@ -12592,6 +12628,14 @@
     };
     beat();   // straight away: a page that just reloaded should not look silent
     beatIv = setInterval(beat, 5000);
+    // The page says it was sent → done now, so the manager opens the next job.
+    {
+      const seenAtStart = hardSuccessSignal();
+      const doneIv = setInterval(() => {
+        if (finalized) return void clearInterval(doneIv);
+        if (jobSubmittedNow(seenAtStart)) { clearInterval(doneIv); LOG('The page says the application was submitted — on to the next job'); finalize('done', null); }
+      }, 400);
+    }
 
     try {
       if (qSkipApplied && alreadyApplied(c.url)) return void await finalize('skipped', 'Already applied');
@@ -12835,6 +12879,23 @@
           };
           _qTimeoutId = setTimeout(onJobTimeout, qTimeout);
 
+          // Submitted → recorded and on to the next job at once, not after the fill code returns.
+          const finishSubmitted = async () => {
+            if (c.status !== 'applying') return;
+            clearTimeout(_qTimeoutId); clearInterval(_qDoneIv);
+            c.status = 'done'; c.completedAt = Date.now(); c.duration = c.completedAt - jobStart;
+            qStats.completed++; qStats.totalTime += c.duration;
+            LOG('Queue job: the page says the application was submitted — on to the next job');
+            try { await recordApplication(c.url, c.title, 'applied', c.jobBoard, c.duration); } catch (_) {}
+            try { await learnFromPage(); } catch (_) {}
+            await saveQ(); await saveStats(); renderQ(); updateCtrl();
+            goNext();
+          };
+          const seenAtStart = hardSuccessSignal();
+          if (seenAtStart && (submitAttempted() || wdSubmittedDialog())) return void await finishSubmitted();
+          clearInterval(_qDoneIv);
+          _qDoneIv = setInterval(() => { if (c.status !== 'applying') clearInterval(_qDoneIv); else if (jobSubmittedNow(seenAtStart)) finishSubmitted(); }, 400);
+
           // LazyApply-style: never re-apply to a job already applied to before.
           if (qSkipApplied && alreadyApplied(c.url)) {
             LOG('Already applied previously — skipping');
@@ -12960,7 +13021,7 @@
 
           await learnFromPage();
           await saveQ(); await saveStats(); renderQ(); updateCtrl();
-          await sleep(scaled(2000, 1000));
+          await sleep(scaled(600, 250));
           goNext();
           return;
         }
@@ -12979,6 +13040,7 @@
   }
 
   function goNext() {
+    clearInterval(_qDoneIv);
     if (qPaused) return;
     // Drop anything that isn't a real web URL before it can reach location.href.
     for (const j of queue) {

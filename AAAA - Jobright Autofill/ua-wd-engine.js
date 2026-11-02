@@ -1955,7 +1955,17 @@ FIELD: ${labelOf(c)}
 OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       );
       const pick2 = JSON.parse(reply.match(/\{[\s\S]*\}/)?.[0] ?? "{}").option;
-      const exact = pick2 ? options.find((o) => o === pick2 || similarity(o, pick2) >= 0.95) : void 0;
+      let exact = pick2 ? options.find((o) => o === pick2 || similarity(o, pick2) >= 0.95) : void 0;
+      // A science degree is never an arts one, or the reverse: CrowdStrike got
+      // "Master of Science, AI and ML" → "Master of Arts (MA)". Then take the
+      // plain "Master's" / "Bachelor's" option if the list has one, else leave it.
+      const sci = (s) => /\bscience\b|\b[mb]\.?\s?sc\b|\(m?b?sc?\)|\bm\.?s\.?$|\bb\.?s\.?$|\bms\b|\bbs\b/i.test(s);
+      const art = (s) => /\barts?\b|\([mb]\.?a\.?\)|\b[mb]\.?a\.?$/i.test(s) && !/\bbusiness\b|\bmba\b/i.test(s);
+      if (exact && ((sci(value) && art(exact) && !sci(exact)) || (art(value) && sci(exact) && !art(exact)))) {
+        const lvl = /master/i.test(value) ? /^master'?s?(\s+degree)?$/i : /bachelor/i.test(value) ? /^bachelor'?s?(\s+degree)?$/i : null;
+        exact = lvl ? options.find((o) => lvl.test(o.trim())) : void 0;
+        if (!exact) { ctx.log(`"${value}": no matching option ("${pick2}" is a different degree)`); return false; }
+      }
       if (!exact) return false;
       ctx.log(`"${value}" → "${exact}" (translated option)`);
       return writeValue(c, exact);
@@ -1991,6 +2001,14 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       if (e instanceof NeedsHuman) return false;
       throw e;
     });
+    // Irish / UK county lists say "Co. Dublin" / "County Dublin", not "Dublin" (Intel).
+    if (!ok && key2 === "region" && kindOf(c) === "dropdown") {
+      const base = String(value).replace(/^(co\.?|county)\s+/i, "").replace(/\s+county$/i, "");
+      for (const v of [base, `Co. ${base}`, `County ${base}`, `${base} County`, `Co ${base}`]) {
+        if (v === value) continue;
+        if (ok = await writeValue(c, v).catch(() => false)) break;
+      }
+    }
     if (!ok && ["dropdown", "radio", "checkboxGroup"].includes(kindOf(c))) ok = await translateChoice(ctx, c, value);
     if (!ok) {
       const label = labelOf(c) || key2;
@@ -2274,7 +2292,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
   }
   async function uploadDocuments(ctx) {
-    const inputs = qa(sel("fileInput") + ', input[type="file"]');
+    // Never the extension's own "add a resume" box (#ua-resume-file in its panel):
+    // picking it cost 20s per job and added the CV to your resume list again.
+    const inputs = qa(sel("fileInput") + ', input[type="file"]').filter((i) => !i.closest('[id^="ua-"], .ua-panel, plasmo-csui'));
     if (!inputs.length) return;
     const cv = pickCv(ctx);
     const cl = pickCoverLetter(ctx);

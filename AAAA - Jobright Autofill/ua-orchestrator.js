@@ -180,6 +180,20 @@
       if (msg && msg.type === 'UA_TAILOR_INTENT' && sender && sender.tab) _tailorIntentAt = Date.now();
     });
   } catch (_) {}
+  /* Tailor tabs a queue run let Jobright open, one per job. Nothing closed them,
+     so a long run left a row of "Senior …" Jobright tabs. At most one now: the
+     previous job's closes when the next opens, and when the queue moves on.
+     Tabs you opened by pressing Tailor yourself are never in this set. */
+  const _runTailorTabs = new Set();
+  // Oldest first (a Set keeps insertion order); `keep` newest stay open.
+  function closeRunTailorTabs(keep = 0) {
+    const ids = [..._runTailorTabs];
+    for (const id of ids.slice(0, Math.max(0, ids.length - keep))) {
+      _runTailorTabs.delete(id);
+      try { chrome.tabs.remove(id, () => void chrome.runtime.lastError); } catch (_) {}
+    }
+  }
+  try { chrome.tabs.onRemoved.addListener((id) => _runTailorTabs.delete(id)); } catch (_) {}
   async function tailorTabAllowed() {
     if (Date.now() - _tailorIntentAt < 15000) return 'yes';
     try {
@@ -193,13 +207,23 @@
     const rawCreate = chrome.tabs.create.bind(chrome.tabs);
     chrome.tabs.create = function (props, done) {
       if (props && typeof props === 'object' && props[OWN] !== true && typeof props.url === 'string' && TAILOR_TAB_RE.test(props.url)) {
-        const decided = tailorTabAllowed().then((how) => {
+        const decided = tailorTabAllowed().then(async (how) => {
           if (how === 'no') {
             console.log('[UA] Jobright tailor tab not opened (you did not ask for it):', props.url);
             throw new Error('Jobright tailor tab blocked: not requested');
           }
           const p = Object.assign({}, props, how === 'background' ? { active: false } : {});
-          return new Promise((res, rej) => rawCreate(p, (t) => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res(t))));
+          // A run's tailor tabs are its own to tidy: one per job running at once, so the
+          // single-tab queue keeps 1 and the side-panel queue one per parallel tab.
+          if (how === 'background') {
+            const managerRun = await new Promise((r) => { try { chrome.storage.local.get(K.ACTIVE, (d) => { void chrome.runtime.lastError; r(!!(d && d[K.ACTIVE] === true)); }); } catch (_) { r(false); } });
+            closeRunTailorTabs(managerRun ? (await concurrency()) - 1 : 0);
+          }
+          return new Promise((res, rej) => rawCreate(p, (t) => {
+            if (chrome.runtime.lastError) return rej(new Error(chrome.runtime.lastError.message));
+            if (how === 'background' && t && typeof t.id === 'number') _runTailorTabs.add(t.id);
+            res(t);
+          }));
         });
         if (done === undefined) return decided;
         decided.then((t) => done(t), () => done(undefined));
@@ -1136,6 +1160,7 @@
            old swap remains as a fallback — and even then the replacement is
            only active if the outgoing tab was the one you were looking at. */
         const was = sender.tab;
+        closeRunTailorTabs();               // the finished job's Jobright tailor tab
         let started = false;
         const onUpd = (id, info) => { if (id === tabId && (info.status === 'loading' || info.url)) started = true; };
         try { chrome.tabs.onUpdated.addListener(onUpd); } catch (_) {}
