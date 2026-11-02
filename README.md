@@ -4721,3 +4721,11 @@ other ATS test forms still submit.
   profile; where that did not reach Workday, the boxes stayed empty and the run
   met "Given Name(s) is required" again and again. The engine now flags "Your
   profile has no first name — add it in the extension's Profile".
+
+## v17.53 — SpeedyApply's "No profiles available" popup stays hidden
+
+- SpeedyApply (built in) showed its profile picker on every application with
+  "No profiles available. Please contact support if the issue persists." With
+  no SpeedyApply profile it fills nothing — this extension fills instead — so
+  its autofill box and message popups are now hidden until you add a
+  SpeedyApply profile, when they come back without a reload.

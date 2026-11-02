@@ -4131,3 +4131,22 @@ console.log('v17.51: "Application Submitted" ends the job and opens the next one
   eq('JLL: "How did you hear" also tries Company Website / Career Site / Other', /\[\["Company Website", "Other"\], true\]/.test(eng) && /"Careers Website", "Other"\]\) if \(await selectDropdown/.test(eng), true);
   eq('no first / last name in any profile → said plainly, not "Given Name(s) is required" later', /Your profile has no \$\{what\} — add it in the extension's Profile/.test(eng), true);
 }
+
+/* ── v17.53: SpeedyApply's "No profiles available. Please contact support" popup ── */
+console.log('v17.53: SpeedyApply with no profile stays out of sight');
+{
+  const mk = () => { const nodes = {}; const doc = { head: { appendChild: (n) => { nodes[n.id] = n; n.remove = () => delete nodes[n.id]; } },
+    getElementById: (id) => nodes[id] || null, createElement: () => ({}) }; return { doc, nodes }; };
+  const fnSrc = body('saQuietWithoutProfile');
+  const run = async (env, settings) => new Function('document', 'saSettings', 'SA_QUIET_ID', `return (${fnSrc.replace(/^async function saQuietWithoutProfile/, 'async function')})();`)(env.doc, async () => settings, 'ua-sa-quiet');
+  asyncChecks.push((async () => {
+    const e = mk();
+    await run(e, { hasProfile: false });
+    eq('no SpeedyApply profile → its autofill box and popups are hidden', !!e.nodes['ua-sa-quiet'] && /speedyapply-autofill,speedyapply-modal\{display:none!important\}/.test(e.nodes['ua-sa-quiet'].textContent), true);
+    await run(e, { hasProfile: true });
+    eq('…and shown again once you add a profile', !!e.nodes['ua-sa-quiet'], false);
+    const f = mk(); await run(f, null);
+    eq('SpeedyApply not built in (no settings) → nothing changed', !!f.nodes['ua-sa-quiet'], false);
+  })());
+  eq('re-checked when SpeedyApply\'s profile changes, no reload needed', /if \(area === 'local' && \(c\.profile \|\| c\.autofillAccount\)\) saQuietWithoutProfile\(\)/.test(src), true);
+}

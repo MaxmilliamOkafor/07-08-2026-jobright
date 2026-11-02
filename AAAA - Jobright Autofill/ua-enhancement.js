@@ -15706,6 +15706,25 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       return { email, password: String(a.accountPassword || ''), hasProfile: !!(prof && prof.nameData && (prof.nameData.firstName || prof.nameData.lastName)) };
     } catch (_) { return null; }
   }
+  /* SpeedyApply with no profile kept showing its profile picker on every
+     application — "No profiles available. Please contact support if the issue
+     persists." With no profile it fills nothing (this extension fills instead),
+     so its autofill box and message popups stay hidden until you add a
+     SpeedyApply profile; then they come back without a reload. */
+  const SA_QUIET_ID = 'ua-sa-quiet';
+  async function saQuietWithoutProfile() {
+    const sa = await saSettings();
+    const quiet = !!sa && !sa.hasProfile;
+    let s = document.getElementById(SA_QUIET_ID);
+    if (quiet && !s) {
+      s = document.createElement('style');
+      s.id = SA_QUIET_ID;
+      s.textContent = 'speedyapply-autofill,speedyapply-modal{display:none!important}';
+      (document.head || document.documentElement).appendChild(s);
+    } else if (!quiet && s) s.remove();
+  }
+  setTimeout(() => { saQuietWithoutProfile().catch(() => {}); }, 0);
+  try { chrome.storage.onChanged.addListener((c, area) => { if (area === 'local' && (c.profile || c.autofillAccount)) saQuietWithoutProfile().catch(() => {}); }); } catch (_) {}
   async function saWorkdayAccount() {
     if (!isWorkday()) return null;
     const sa = await saSettings();
