@@ -3567,6 +3567,25 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         if (!p.summary) p.summary = cv.summary;
       }, () => void 0);
     }
+    if (!p.personal.firstName || !p.personal.lastName) {
+      const nm = await cvName().catch(() => null);
+      if (nm) {
+        const add = {};
+        if (!p.personal.firstName) p.personal.firstName = add.first_name = nm.firstName;
+        if (!p.personal.lastName) p.personal.lastName = add.last_name = nm.lastName;
+        console.info(`[UA] Name taken from your CV: ${p.personal.firstName} ${p.personal.lastName} — saved to the extension's Profile`);
+        try {
+          const raw = (await ST.get("ua_profile")).ua_profile;
+          const cur = parse(raw) || {};
+          for (const k of Object.keys(add)) if (String(cur[k] || "").trim()) delete add[k];
+          if (Object.keys(add).length) {
+            const next = { ...cur, ...add };
+            await ST.set({ ua_profile: typeof raw === "string" ? JSON.stringify(next) : next });
+          }
+        } catch {
+        }
+      }
+    }
     for (const k of ["firstName", "lastName", "preferredName"]) p.personal[k] = properCase(p.personal[k] || "");
     return p;
   }
@@ -3577,6 +3596,50 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (!r || !r.base64) return void 0;
     const base64 = String(r.base64).split(",").pop() || "";
     return { fileName: r.fileName || r.name || "Resume.pdf", mime: r.mimeType || "application/pdf", base64 };
+  }
+  /* Your name from your own CV, for when no profile has it. The run kept meeting
+     "Given Name(s) / Family Name is required" (30 times an hour) because the
+     saved profile held only an email. Two sources, which must agree when both
+     speak: the file name ("Maxmilliam_Okafor_CV2026….pdf") and the CV's first
+     lines. A job-title line ("Senior Solutions Architect") is never a name. */
+  var NAME_STOP = /^(cv|resume|résumé|curriculum|vitae|final|updated|update|new|copy|latest|draft|version|v\d+|en|eng|english|pdf|docx?)$/i;
+  var TITLE_WORD = /\b(engineer|manager|architect|developer|analyst|consultant|director|specialist|senior|lead|officer|scientist|designer|head|vp|president|executive|associate|intern|technician|administrator|coordinator|professional|solutions?|sales|product|data|software|cloud)\b/i;
+  function nameFromFile(fileName) {
+    const words = String(fileName || "").replace(/\.[a-z0-9]+$/i, "").split(/[_\-\s.]+/).filter((w) => /^\p{L}[\p{L}'’]+$/u.test(w) && !NAME_STOP.test(w));
+    return words.length >= 2 && words.length <= 4 ? words : null;
+  }
+  function nameFromText(text) {
+    for (const raw of String(text || "").split(/\n/).map((s) => s.trim()).filter(Boolean).slice(0, 6)) {
+      const line = raw.split(/\s{2,}|\s[|•·]\s/)[0].trim();
+      if (/@|\d|resume|curriculum|vitae|\bcv\b/i.test(line) || TITLE_WORD.test(line)) continue;
+      const words = line.split(/\s+/);
+      if (words.length < 2 || words.length > 4) continue;
+      if (words.every((w) => /^\p{Lu}[\p{L}'’\-.]*$/u.test(w))) return words;
+    }
+    return null;
+  }
+  function pickCvName(fileName, text) {
+    const f = nameFromFile(fileName), t = nameFromText(text);
+    const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+    let w = null;
+    if (f && t) w = t.some((x) => f.some((y) => same(x, y))) ? t : null;
+    else w = t || f;
+    if (!w) return null;
+    return { firstName: properCase(w[0]), lastName: properCase(w[w.length - 1]) };
+  }
+  // The text read is capped (4s) so the first job never waits on it; past that the file name alone decides.
+  async function cvName(budget = 4e3) {
+    const doc = await savedCv().catch(() => void 0);
+    if (!doc) return null;
+    const read = (async () => {
+      if (!W.__ohCv) {
+        await chrome.runtime.sendMessage({ type: "UA_WD_CV_LOAD" }).catch(() => null);
+        for (let i = 0; i < 40 && !W.__ohCv; i++) await new Promise((r2) => setTimeout(r2, 100));
+      }
+      return W.__ohCv ? await W.__ohCv.text(doc.base64, doc.mime) : "";
+    })().catch(() => "");
+    const text = await within(read, budget).catch(() => "") || "";
+    return pickCvName(doc.fileName, text);
   }
   var cvReady = Promise.resolve();
   var cvReading = null;

@@ -4150,3 +4150,22 @@ console.log('v17.53: SpeedyApply with no profile stays out of sight');
   })());
   eq('re-checked when SpeedyApply\'s profile changes, no reload needed', /if \(area === 'local' && \(c\.profile \|\| c\.autofillAccount\)\) saQuietWithoutProfile\(\)/.test(src), true);
 }
+
+/* ── v17.54: first / last name from your own CV when no profile has them ── */
+console.log('v17.54: name from your CV');
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const pc = eng.slice(eng.indexOf('  function properCase('), eng.indexOf('  async function buildProfile('));
+  const nm = eng.slice(eng.indexOf('  var NAME_STOP = '), eng.indexOf('  // The text read is capped'));
+  const pick = new Function(pc + nm + '\nreturn pickCvName;')();
+  const f = 'Maxmilliam_Okafor_CV20260825153251.pdf';
+  eq('the CV file name alone gives the name', JSON.stringify(pick(f, '')), JSON.stringify({ firstName: 'Maxmilliam', lastName: 'Okafor' }));
+  eq('…and the CV\'s heading agrees with it', JSON.stringify(pick(f, 'MAXMILLIAM OKAFOR\nDublin, Ireland | max@example.com\nSenior Solutions Architect')), JSON.stringify({ firstName: 'Maxmilliam', lastName: 'Okafor' }));
+  eq('a job-title line is never taken for a name', JSON.stringify(pick('resume.pdf', 'Senior Solutions Architect\nCloud Engineer')), 'null');
+  eq('heading and file name that disagree → no guess', JSON.stringify(pick('Jane_Doe_CV.pdf', 'John Smith\nEngineer')), 'null');
+  eq('"CV_final.pdf" gives nothing', JSON.stringify(pick('CV_final.pdf', '')), 'null');
+  eq('a contact line (email / phone) is skipped', JSON.stringify(pick('cv.pdf', '+353 87 000 0000 | a@b.com\nAda Lovelace\nAnalyst')), JSON.stringify({ firstName: 'Ada', lastName: 'Lovelace' }));
+  eq('only filled when a profile is missing it, and saved to the extension\'s Profile without overwriting',
+    /if \(!p\.personal\.firstName \|\| !p\.personal\.lastName\) \{\s*const nm = await cvName\(\)/.test(eng) && /if \(String\(cur\[k\] \|\| ""\)\.trim\(\)\) delete add\[k\];/.test(eng), true);
+  eq('the CV text read never holds the first job more than 4s', /async function cvName\(budget = 4e3\)/.test(eng) && /await within\(read, budget\)/.test(eng), true);
+}

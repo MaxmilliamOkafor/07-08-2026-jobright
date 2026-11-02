@@ -4729,3 +4729,16 @@ other ATS test forms still submit.
   no SpeedyApply profile it fills nothing — this extension fills instead — so
   its autofill box and message popups are now hidden until you add a
   SpeedyApply profile, when they come back without a reload.
+
+## v17.54 — your name from your own CV
+
+The 23:29 log showed "Given Name(s) / Family Name is required" about 30 times an
+hour, because no saved profile had a first or last name (only an email).
+- When every profile is missing the name, the Workday engine now reads it from
+  your CV: the file name (`Maxmilliam_Okafor_CV….pdf`) and the CV's first lines.
+  When both give a name they must agree, or nothing is guessed. Job-title lines
+  ("Senior Solutions Architect") and contact lines are never taken for a name.
+- The name is then saved to this extension's Profile (only fields that are empty
+  there), so it is found once, not on every job.
+- Reading the CV text is capped at 4 seconds, so the first job never waits on it;
+  past that, the file name alone decides.
