@@ -4704,3 +4704,20 @@ other ATS test forms still submit.
   A run now keeps one per job in progress: the previous one closes when the
   next opens and when the queue moves on. A tailor tab you opened yourself by
   pressing Tailor is never closed.
+
+## v17.52 — fixes from the 16:57 debug log
+
+- **Save and Continue found on slow / unusual Workday pages.** GSK, CareSource
+  and JLL stopped on "Couldn't find the Next / Save and Continue button". The
+  engine now waits up to 8s for it to draw and also accepts a visible "Save and
+  Continue" / "Next" button outside the page footer.
+- **"Decline to answer" found when Workday writes "don’t"** with a curly
+  apostrophe (Huntington's Gender, Ethnicity and Veteran questions), and for
+  "I don’t want to answer", "Not Declared", "Undisclosed".
+- **"How did you hear about us"** also tries Company Website, Career Site and
+  "Other" branches (JLL had no "LinkedIn").
+- **A missing name is said plainly.** Your saved profile in this extension held
+  only your email, so first and last name could only come from Jobright's
+  profile; where that did not reach Workday, the boxes stayed empty and the run
+  met "Given Name(s) is required" again and again. The engine now flags "Your
+  profile has no first name — add it in the extension's Profile".

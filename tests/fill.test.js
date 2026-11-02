@@ -4119,3 +4119,15 @@ console.log('v17.51: "Application Submitted" ends the job and opens the next one
   })());
   eq('Intel: county "Dublin" also tried as "Co. Dublin" / "County Dublin"', /for \(const v of \[base, `Co\. \$\{base\}`, `County \$\{base\}`, `\$\{base\} County`, `Co \$\{base\}`\]\)/.test(eng), true);
 }
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const rxSrc = eng.slice(eng.indexOf('  var rx = '), eng.indexOf('\n', eng.indexOf('  var rx = ')));
+  const dec = new Function(rxSrc + '\n' + eng.slice(eng.indexOf('  var DECLINE_RX = '), eng.indexOf(']);', eng.indexOf('  var DECLINE_RX = ')) + 3) + '\nreturn DECLINE_RX;')();
+  eq('Huntington: "I don’t wish to answer" (curly apostrophe) is the decline option', dec.test('I don’t wish to answer'), true);
+  eq('…so are "I don’t want to answer", "Not Declared", "Undisclosed"', ['I don’t want to answer', 'Not Declared', 'Undisclosed'].every((t) => dec.test(t)), true);
+  eq('…but a real answer is not', ['Male', 'Yes, I am a veteran', 'I am not a protected veteran'].some((t) => dec.test(t)), false);
+  eq('GSK / CareSource: a late Save and Continue is waited for (8s), and found outside the footer too',
+    /const btn = nextButton\(\) \?\? await waitFor\(nextButton, 8e3, 250\)\.catch\(\(\) => null\);/.test(eng) && /qa\("button, \[role='button'\]"\)\.find\(\(b\) => isVisible\(b\) && !b\.disabled && !b\.closest\('\[id\^="ua-"\], plasmo-csui'\) && NEXT_TEXT_RX\.test\(text\(b\)\)\)/.test(eng), true);
+  eq('JLL: "How did you hear" also tries Company Website / Career Site / Other', /\[\["Company Website", "Other"\], true\]/.test(eng) && /"Careers Website", "Other"\]\) if \(await selectDropdown/.test(eng), true);
+  eq('no first / last name in any profile → said plainly, not "Given Name(s) is required" later', /Your profile has no \$\{what\} — add it in the extension's Profile/.test(eng), true);
+}

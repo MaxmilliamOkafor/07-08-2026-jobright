@@ -261,6 +261,11 @@
     "not wish",
     "prefer not",
     "don'?t wish",
+    // Workday writes "don’t" with a curly apostrophe (Huntington's Gender / Ethnicity / Veteran).
+    "don[’']?t (wish|want|care)",
+    "not (declared|disclosed|specified|to say)",
+    "undisclosed",
+    "wish not",
     "do not want",
     "choose not",
     "not to (answer|disclose|self.?identify)",
@@ -1313,9 +1318,11 @@
     return `${host2}|${reqId}`;
   }
   function nextButton() {
+    // Any visible "Save and Continue" / "Next" button counts, not only the footer's:
+    // GSK, CareSource and JLL draw it elsewhere, and the run stopped on "Couldn't find".
     return byAid("next") ?? qa("footer button, [data-automation-id*='footer'] button").find(
       (b) => isVisible(b) && (NEXT_TEXT_RX.test(text(b)) || SUBMIT_RX.test(text(b)))
-    ) ?? null;
+    ) ?? qa("button, [role='button']").find((b) => isVisible(b) && !b.disabled && !b.closest('[id^="ua-"], plasmo-csui') && NEXT_TEXT_RX.test(text(b))) ?? null;
   }
   function activeStepName() {
     const s = byAid("progressActive");
@@ -2137,7 +2144,14 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       [["Job Board", "Other"], true],
       [["Online Job Board", "Other"], true],
       [["Job Posting", "Other"], true],
-      [["Website", "Other"], true]
+      [["Website", "Other"], true],
+      // JLL and others: other names for the same branches, then any "Other".
+      [["Social Media Sites", src], false],
+      [["Professional Networking Site", src], false],
+      [["Online Advertisement", src], false],
+      [["Career Site", "Other"], true],
+      [["Company Website", "Other"], true],
+      [["Other", "Other"], true]
     ];
     for (const [path, fallbackFirst] of paths) {
       if (await multiselectPick(c, path[path.length - 1], { path, min: 0.75, fallbackFirst })) {
@@ -2145,7 +2159,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         return true;
       }
     }
-    for (const v of ["Job Board", "Online Job Board", "Social Media", "Internet"]) if (await selectDropdown(c, v, 0.75)) return true;
+    for (const v of [`${src} Job Posting`, "Job Board", "Online Job Board", "Social Media", "Internet", "Company Website", "Careers Website", "Other"]) if (await selectDropdown(c, v, 0.75)) return true;
     return false;
   }
   async function myInformation(ctx) {
@@ -2167,6 +2181,12 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       if (!readValue(c)) await selectRadio(c, ctx.profile.answers.previouslyWorkedHere ? "Yes" : "No");
     }
     if (await fill(ctx, "country", me.address.country)) await waitStable(500, 8e3);
+    // No name in any profile this engine can read: say so, rather than press on and
+    // meet "Given Name(s) is required" (CareSource, GSK, SailPoint, Genpact).
+    for (const [k, v, what] of [["firstName", me.firstName, "first name"], ["lastName", me.lastName, "last name"]]) {
+      const el = field(k);
+      if (el && !v && !readValue(containerOf(el))) ctx.flag(labelOf(containerOf(el)) || what, `Your profile has no ${what} — add it in the extension's Profile (side panel)`);
+    }
     await fill(ctx, "firstName", me.firstName);
     await fill(ctx, "lastName", me.lastName);
     if (me.preferredName && me.preferredName !== me.firstName) {
@@ -2736,7 +2756,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     return ctx;
   }
   async function clickNext(ctx) {
-    const btn = nextButton();
+    // A slow Workday page draws its footer late: wait for it rather than give up at once.
+    const btn = nextButton() ?? await waitFor(nextButton, 8e3, 250).catch(() => null);
     if (!btn) throw new NeedsHuman("Couldn't find the Next / Save and Continue button.");
     if (isSubmitButton(btn)) return "stop";
     const before = `${activeStepName()}|${detectPage()}`;
