@@ -803,6 +803,29 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('a plain Jobright job page is not affected', count(), before + 1);
   }
 
+  console.log('\nA run\'s Jobright tailor tabs do not pile up ("multiple tabs are opening randomly")');
+  {
+    const env = makeChrome();
+    env.store.ua_qa = true;                 // the one-tab queue is running
+    env.store.ua_queue_tailor = true;       // "Tailor resume for each job"
+    load(env);
+    await tick();
+    const T = (id) => `https://jobright.ai/jobs/info/${id}?plugin_tailor=1&jr_id=${id}`;
+    const isTailor = () => [...env.tabs.values()].filter((t) => /plugin_tailor/.test(t.url)).length;
+    for (const id of ['a1', 'b2', 'c3']) { await new Promise((r) => env.chrome.tabs.create({ url: T(id) }, r)); await tick(20); }
+    eq('three jobs tailored → one tailor tab open, the latest', [isTailor(), [...env.tabs.values()].some((t) => /c3/.test(t.url))], [1, true]);
+    const runner = await new Promise((r) => env.chrome.tabs.create({ url: 'https://a.com/job1', __uaOwnTab: true }, r));
+    env.listeners.msg.forEach((l) => l({ type: 'UA_NAV_NEXT', url: 'https://a.com/job2' }, { tab: { id: runner.id, windowId: 1, active: false } }, () => {}));
+    await tick(20);
+    eq('…and it closes when the queue moves to the next job', isTailor(), 0);
+    env.listeners.msg.forEach((l) => l({ type: 'UA_TAILOR_INTENT' }, { tab: { id: 7 } }, () => {}));
+    await new Promise((r) => env.chrome.tabs.create({ url: T('mine') }, r));
+    await tick(20);
+    env.listeners.msg.forEach((l) => l({ type: 'UA_NAV_NEXT', url: 'https://a.com/job3' }, { tab: { id: runner.id, windowId: 1, active: false } }, () => {}));
+    await tick(20);
+    eq('a tailor tab you opened yourself is never closed', isTailor(), 1);
+  }
+
   console.log('\nA job tab on Chrome\'s error page (Workday "HTTP ERROR 406") is retried once, then failed with the reason');
   {
     const env = makeChrome();

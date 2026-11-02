@@ -4072,3 +4072,62 @@ console.log('v17.50: education years, Jobright not typed over, the skills box he
   eq('…but a sidebar stuck on "Autofilling" (signed out, an error) cannot hang the run', /Jobright still says Autofilling but has stopped typing — carrying on without it/.test(run) && /if \(!jrStuck && jrAutofilling\(\)\)/.test(run), true);
   eq('the box is held to 10 whoever adds: picking an 11th refused, extras removed', /for \(const t of \['pointerdown', 'mousedown', 'mouseup', 'click', 'keydown'\]\) document\.addEventListener\(t, wdSkillsGuard, true\);/.test(src) && /if \(chips\.length <= WD_SKILLS_MAX\) return;/.test(src), true);
 }
+
+/* ── v17.51: the queue moves on the moment the page says the job was submitted ── */
+console.log('v17.51: "Application Submitted" ends the job and opens the next one at once');
+{
+  const mk = (s) => { const m = {};
+    new Function('exports', 'S', `const hardSuccessSignal = () => S.hard, submitAttempted = () => S.tried, isWorkday = () => S.wd;
+      const document = { body: { innerText: S.text } };
+      ${body('wdSubmittedDialog')} ${body('jobSubmittedNow')} exports.f = jobSubmittedNow;`)(m, s); return m.f; };
+  const wdText = 'Application Submitted Your application has successfully been submitted. You have no more tasks.';
+  eq('CrowdStrike: Workday\'s "Application Submitted" dialog after our Submit → done', mk({ hard: true, tried: true, wd: true, text: wdText })(false), true);
+  eq('…even when the Submit press was not recorded (Jobright pressed it)', mk({ hard: true, tried: false, wd: true, text: wdText })(true), true);
+  eq('a confirmation that appears while the job runs → done', mk({ hard: true, tried: false, wd: false, text: 'Thank you for applying' })(false), true);
+  eq('an old "thank you" already on the page when the job began, no submit → not done', mk({ hard: true, tried: false, wd: false, text: 'Thank you for applying' })(true), false);
+  eq('no success message → not done', mk({ hard: false, tried: true, wd: true, text: 'My Information' })(false), false);
+  const q = body('processQ');
+  eq('the in-tab queue watches every 400ms and goes straight to the next job', /_qDoneIv = setInterval\(\(\) => \{ if \(c\.status !== 'applying'\) clearInterval\(_qDoneIv\); else if \(jobSubmittedNow\(seenAtStart\)\) finishSubmitted\(\); \}, 400\);/.test(q) && /finishSubmitted = async[\s\S]{0,700}goNext\(\);/.test(q), true);
+  eq('…a page that reloaded onto the confirmation is finished before any form probing', q.indexOf('if (seenAtStart && (submitAttempted() || wdSubmittedDialog())) return void await finishSubmitted();') < q.indexOf('probeApplyTarget('), true);
+  eq('the side-panel queue reports done the moment the page says so', /if \(jobSubmittedNow\(seenAtStart\)\) \{ clearInterval\(doneIv\);[^\n]*finalize\('done', null\); \}/.test(body('processManagedJob')), true);
+  eq('goNext stops the watcher so it cannot pass the next job', /function goNext\(\) \{\s*clearInterval\(_qDoneIv\);/.test(src), true);
+}
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  eq('the Workday engine never uploads the CV into the extension\'s own resume box (20s lost per job)', /qa\(sel\("fileInput"\) \+ ', input\[type="file"\]'\)\.filter\(\(i\) => !i\.closest\('\[id\^="ua-"\], \.ua-panel, plasmo-csui'\)\)/.test(eng), true);
+}
+{
+  const g = src.slice(0, src.indexOf('window.__uaAutoReason'));
+  eq('Fully Automated stands aside while another tool\'s "Automation In Progress" run (LazyApply) is on the page', /if \(queueRunning && isRunnerTab\(\)\) return true;\s*if \(foreignRunActive\(\)\) return false;[^\n]*\n\s*return toggleOn;/.test(g), true);
+  eq('…ours is never taken for it (it lives in a closed shadow root; anything under #ua-* is skipped)', /if \(el\.closest\('\[id\^="ua-"\]'\) \|\| !el\.getClientRects\(\)\.length\) continue;/.test(g), true);
+}
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const tc = (() => { const i = eng.indexOf('async function translateChoice('); let d = 0; for (let k = eng.indexOf('{', i); k < eng.length; k++) { if (eng[k] === '{') d++; else if (eng[k] === '}' && !--d) return eng.slice(i, k + 1); } })();
+  const run = async (value, options, llmPick) => { const logs = []; let wrote = null;
+    const f = new Function('ctx', 'c', 'value', 'kindOf', 'optionsOf', 'labelOf', 'similarity', 'writeValue',
+      `return (async () => { ${tc.replace(/^async function translateChoice\(ctx, c, value\) \{/, '').replace(/\}\s*$/, '')} })();`);
+    const r = await f({ settings: { llmAnswers: true }, llm: async () => JSON.stringify({ option: llmPick }), log: (m) => logs.push(m) }, {}, value,
+      () => 'dropdown', async () => options, () => 'Degree', (a, b) => (a === b ? 1 : 0), async (_c, v) => { wrote = v; return true; });
+    return wrote; };
+  asyncChecks.push((async () => {
+    eq('"Master of Science, AI and ML" is never written as "Master of Arts (MA)" — the plain "Master\'s Degree" instead',
+      await run('Master of Science, Artificial Intelligence and Machine Learning', ['Bachelor of Arts (BA)', 'Master of Arts (MA)', "Master's Degree"], 'Master of Arts (MA)'), "Master's Degree");
+    eq('…and with no plain option, left for a person rather than wrong', await run('Master of Science', ['Master of Arts (MA)', 'PhD'], 'Master of Arts (MA)'), null);
+    eq('a right match still goes through', await run('Master of Science', ['Master of Science (MSc)', 'Master of Arts (MA)'], 'Master of Science (MSc)'), 'Master of Science (MSc)');
+    eq('an MBA is not mistaken for an arts degree', await run('MBA', ['Master of Business Administration (MBA)'], 'Master of Business Administration (MBA)'), 'Master of Business Administration (MBA)');
+  })());
+  eq('Intel: county "Dublin" also tried as "Co. Dublin" / "County Dublin"', /for \(const v of \[base, `Co\. \$\{base\}`, `County \$\{base\}`, `\$\{base\} County`, `Co \$\{base\}`\]\)/.test(eng), true);
+}
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const rxSrc = eng.slice(eng.indexOf('  var rx = '), eng.indexOf('\n', eng.indexOf('  var rx = ')));
+  const dec = new Function(rxSrc + '\n' + eng.slice(eng.indexOf('  var DECLINE_RX = '), eng.indexOf(']);', eng.indexOf('  var DECLINE_RX = ')) + 3) + '\nreturn DECLINE_RX;')();
+  eq('Huntington: "I don’t wish to answer" (curly apostrophe) is the decline option', dec.test('I don’t wish to answer'), true);
+  eq('…so are "I don’t want to answer", "Not Declared", "Undisclosed"', ['I don’t want to answer', 'Not Declared', 'Undisclosed'].every((t) => dec.test(t)), true);
+  eq('…but a real answer is not', ['Male', 'Yes, I am a veteran', 'I am not a protected veteran'].some((t) => dec.test(t)), false);
+  eq('GSK / CareSource: a late Save and Continue is waited for (8s), and found outside the footer too',
+    /const btn = nextButton\(\) \?\? await waitFor\(nextButton, 8e3, 250\)\.catch\(\(\) => null\);/.test(eng) && /qa\("button, \[role='button'\]"\)\.find\(\(b\) => isVisible\(b\) && !b\.disabled && !b\.closest\('\[id\^="ua-"\], plasmo-csui'\) && NEXT_TEXT_RX\.test\(text\(b\)\)\)/.test(eng), true);
+  eq('JLL: "How did you hear" also tries Company Website / Career Site / Other', /\[\["Company Website", "Other"\], true\]/.test(eng) && /"Careers Website", "Other"\]\) if \(await selectDropdown/.test(eng), true);
+  eq('no first / last name in any profile → said plainly, not "Given Name(s) is required" later', /Your profile has no \$\{what\} — add it in the extension's Profile/.test(eng), true);
+}
