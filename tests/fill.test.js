@@ -2417,7 +2417,7 @@ console.log('iCIMS gets through its login and stays through');
 eq('an application page is never mistaken for a sign-in wall',
   /function looksLikeAuthPage\(\) \{\n    \/\/ The URL is the ATS telling us sign-in is done\. It outranks any field\.\n    if \(pastTheApplyStep\(\)\) return false;/.test(src), true);
 eq('the generic opener does not click Apply from inside the application',
-  /if \(pastTheApplyStep\(\)\) return true;\n    while \(clicks < limit\) \{/.test(src), true);
+  src.includes('    if (pastTheApplyStep()) return true;\n') && src.includes("if (isWorkday() && /\\/job\\/.+\\/apply(\\/|$)/i.test(location.pathname) && !findApplyManually()) return true;\n    while (clicks < limit) {"), true);
 /* My own guard from the previous iCIMS change listed /apply, /login and
    /register and missed /candidate — which is how the run went back to /job. */
 eq('and neither does the iCIMS driver, which is where the loop started',
@@ -4094,7 +4094,7 @@ console.log('v17.51: "Application Submitted" ends the job and opens the next one
 }
 {
   const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
-  eq('the Workday engine never uploads the CV into the extension\'s own resume box (20s lost per job)', /qa\(sel\("fileInput"\) \+ ', input\[type="file"\]'\)\.filter\(\(i\) => !i\.closest\('\[id\^="ua-"\], \.ua-panel, plasmo-csui'\)\)/.test(eng), true);
+  eq('the Workday engine never uploads the CV into the extension\'s own resume box (20s lost per job)', /qa\(sel\("fileInput"\) \+ ', input\[type="file"\]'\)\.map\(fileInputFor\)\)\]\.filter\(\(i\) => i && !i\.closest\('\[id\^="ua-"\], \.ua-panel, plasmo-csui'\)\)/.test(eng), true);
 }
 {
   const g = src.slice(0, src.indexOf('window.__uaAutoReason'));
@@ -4168,4 +4168,55 @@ console.log('v17.54: name from your CV');
   eq('only filled when a profile is missing it, and saved to the extension\'s Profile without overwriting',
     /if \(!p\.personal\.firstName \|\| !p\.personal\.lastName\) \{\s*const nm = await cvName\(\)/.test(eng) && /if \(String\(cur\[k\] \|\| ""\)\.trim\(\)\) delete add\[k\];/.test(eng), true);
   eq('the CV text read never holds the first job more than 4s', /async function cvName\(budget = 4e3\)/.test(eng) && /await within\(read, budget\)/.test(eng), true);
+}
+
+/* ── v17.55: what the 23:29 log showed stalling the queue ── */
+console.log('v17.55: uploads, unknown pages, sign-in, Apply loops, degree');
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const fn = (name) => { const i = eng.indexOf(name); let d = 0; for (let k = eng.indexOf('{', i); k < eng.length; k++) { if (eng[k] === '{') d++; else if (eng[k] === '}' && !--d) return eng.slice(i, k + 1); } };
+  // Upload: the real input, not the "Select files" button in front of it.
+  const input = { tag: 'input', matches: (s) => /type="file"/.test(s) };
+  const button = { tag: 'button', matches: () => false, closest: () => zone, parentElement: null };
+  const zone = { q: input };
+  const fileInputFor = new Function('q', fn('function fileInputFor(') + '\nreturn fileInputFor;')((s, root) => (root === zone ? input : null));
+  eq('live Workday: the "Select files" button resolves to its hidden file input', fileInputFor(button), input);
+  eq('…an input stays itself', fileInputFor(input), input);
+  eq('the upload no longer gives up on the button in the same second', /const input = fileInputFor\(target\);/.test(eng), true);
+  // Unrecognised page → the way on, then the application's own address once.
+  const manualApplyUrl = new Function(fn('function manualApplyUrl(') + '\nreturn manualApplyUrl;')();
+  eq('stuck posting → its Apply Manually address', manualApplyUrl('https://msd.wd5.myworkdayjobs.com/en-US/SearchJobs/job/Data-Specialist_R424115-1?source=x'), 'https://msd.wd5.myworkdayjobs.com/en-US/SearchJobs/job/Data-Specialist_R424115-1/apply/applyManually');
+  eq('…from inside the application too', manualApplyUrl('https://x.wd1.myworkdayjobs.com/en-US/C/job/Eng_R1/apply/autofillWithResume'), 'https://x.wd1.myworkdayjobs.com/en-US/C/job/Eng_R1/apply/applyManually');
+  eq('…and nothing for a page that is not a job', manualApplyUrl('https://x.wd1.myworkdayjobs.com/en-US/C/login'), '');
+  const dflt = eng.slice(eng.indexOf('      default: {\n        // 22 jobs'), eng.indexOf('  var APPLY_MANUALLY_RX'));
+  eq('unknown page: Apply Manually / Use My Last Application first, Apply on a posting, then the address once, then you — never before ~12 tries',
+    /APPLY_MANUALLY_RX\) \?\? byAid\("useLastApplication"\)/.test(dflt) && /ctx\.run\.attempts <= 3/.test(dflt) && /ctx\.run\.attempts === 8/.test(dflt) && /sessionStorage\.getItem\(k\)/.test(dflt) && /ctx\.run\.attempts > 12\) throw new NeedsHuman/.test(dflt), true);
+  const AM = new Function(eng.slice(eng.indexOf('  var APPLY_MANUALLY_RX'), eng.indexOf('\n', eng.indexOf('  var APPLY_MANUALLY_RX'))) + '\nreturn APPLY_MANUALLY_RX;')();
+  eq('"Apply Manually" is known by its words (English, German, Spanish)', ['Apply Manually', 'Manuell bewerben', 'Postularse manualmente'].every((t) => AM.test(t)) && !AM.test('Autofill with Resume'), true);
+  // Sign-in: one record of accounts, read by both.
+  eq('the engine reads the built-in flow\'s account record (per employer, wd1/wd5 alike)', /if \(await accountKnown\(host2\)\) return \{ cred: master, master \};/.test(eng) && /if \(made\[siteKey\(host2\)\] \|\| made\[host2\]\) return true;/.test(eng), true);
+  eq('…and writes its own accounts there too', /if \(state === "account"\) set2\.ua_created_accounts = \{ \.\.\.d\.ua_created_accounts \|\| \{\}, \[siteKey\(\)\]: Date\.now\(\) \};/.test(eng), true);
+  eq('Sign In / Create Account pressed through its click_filter cover, waited for up to 5s', /\?\? coveredSubmit\(key2, label\);/.test(eng) && /await waitFor\(find, 5e3, 250\)/.test(eng), true);
+  eq('a checkbox that did not tick is tried via its label and wrapper', /for \(const el of \[box, label, box\.closest\("label"\), box\.parentElement\]\)/.test(eng), true);
+  eq('My Information: fields waited for before filling; an AI answer capped at 20s',
+    /async function fillAndNext\(ctx, handler\) \{[\s\S]{0,200}await waitFor\(\(\) => qa\('\[data-automation-id\^="formField-"\]'\)\.some\(isVisible\), 1e4, 250\)/.test(eng) && /type: "wd:llm", system, prompt, json: true, maxTokens: 600 \}\), 2e4\)/.test(eng), true);
+  // Built-in flow: Workday's own "file accepted" rows; Apply that is not Apply.
+  eq('the built-in uploader sees Workday\'s file-upload-successful row (Workday empties the input)', /\[data-automation-id="file-upload-successful"\],\[data-automation-id="file-upload-item"\]/.test(src), true);
+  const notRe = new Function(src.slice(src.indexOf('  const APPLY_NOT_RE'), src.indexOf('\n', src.indexOf('  const APPLY_NOT_RE'))) + '\nreturn APPLY_NOT_RE;')();
+  eq('"time left to apply · End Date" and "Zurück zur Stellenausschreibung" are never pressed as Apply', ['time left to applyEnd Date: January 5', 'Zurück zur Stellenausschreibung', 'Back to job posting'].every((t) => notRe.test(t)), true);
+  eq('…but Apply / Bewerben / Apply Now are', ['Apply', 'Bewerben', 'Apply Now', 'Postuler'].some((t) => notRe.test(t)), false);
+  eq('ids containing "apply" must be a real button or link', /&& applyControl\(el\)\) return el;/.test(src) && /return control && t\.length <= 48 && !APPLY_NOT_RE\.test\(t\);/.test(src), true);
+  // Degree: right kind of the same level before leaving it blank.
+  const tc = fn('async function translateChoice(');
+  const run = async (value, options, llmPick) => { let wrote = null;
+    const f = new Function('ctx', 'c', 'value', 'kindOf', 'optionsOf', 'labelOf', 'similarity', 'writeValue',
+      `return (async () => { ${tc.replace(/^async function translateChoice\(ctx, c, value\) \{/, '').replace(/\}\s*$/, '')} })();`);
+    await f({ settings: { llmAnswers: true }, llm: async () => JSON.stringify({ option: llmPick }), log: () => {} }, {}, value,
+      () => 'dropdown', async () => options, () => 'Degree', (a, b) => (a === b ? 1 : 0), async (_c, v) => { wrote = v; return true; });
+    return wrote; };
+  asyncChecks.push((async () => {
+    eq('Marmon: MSc with an M.A. pick → the list\'s "Master of Science (M.S.)"', await run('Master of Science, Artificial Intelligence and Machine Learning', ['Master of Arts (M.A.)', 'Master of Science (M.S.)', 'Bachelor of Arts (B.A.)'], 'Master of Arts (M.A.)'), 'Master of Science (M.S.)');
+    eq('…or a plain "Masters (or equivalent)"', await run('Master of Science', ['Master of Arts (M.A.)', 'Masters (or equivalent)'], 'Master of Arts (M.A.)'), 'Masters (or equivalent)');
+    eq('…never an MBA or MEng in its place', await run('Master of Science', ['Master of Arts (M.A.)', 'Master of Business Administration (MBA)', 'Master of Engineering'], 'Master of Arts (M.A.)'), null);
+  })());
 }

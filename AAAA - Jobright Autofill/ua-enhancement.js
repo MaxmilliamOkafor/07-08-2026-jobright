@@ -4429,7 +4429,10 @@
   function resumeAlreadyAttached() {
     for (const inp of resumeFileInputs()) if (inp.files && inp.files.length) return true;
     // The ATS usually renders the accepted file as a chip / filename row.
+    // Workday's are file-upload-successful / file-upload-item — and it empties the
+    // input once it has the file, so without these a good upload read as failed.
     const chips = deepAll('[class*="filename" i],[class*="file-name" i],[data-automation-id="file-name"],' +
+      '[data-automation-id="file-upload-successful"],[data-automation-id="file-upload-item"],' +
       '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],spl-file-upload', 80);
     // "PDF, DOC, DOCX up to 5MB" and "e.g. resume.pdf" are instructions, not an
     // attachment. Reading them as one made us skip the upload entirely and then
@@ -15498,6 +15501,18 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
      Application" bring in wrong data — and "useMyLastApplication" contains
      "apply", so the [data-automation-id*="apply"] selector below could take it. */
   const WD_NEVER_PRESS_AID_RE = /^(autofillWithResume|useMyLastApplication|useLastApplication)$/i;
+  /* An id or class containing "apply" is not an Apply button by itself. Booz
+     Allen's "time left to apply · End Date" label and Littelfuse's "Zurück zur
+     Stellenausschreibung" (back to the posting) both matched and were pressed —
+     the second sent the job back to the posting, Apply again, round until the
+     5-minute cap. A control, then, and one that does not say back / deadline. */
+  const APPLY_NOT_RE = /time left|end date|closing date|deadline|posted on|\bback\b|zur[üu]ck|retour|volver|voltar|torna(re)? |terug|wr[óo][ćc]|戻る|返回/i;
+  function applyControl(el) {
+    const tag = (el.tagName || '').toLowerCase();
+    const control = /^(button|a|input|spl-button|oj-button)$/.test(tag) || el.getAttribute('role') === 'button';
+    const t = normLabel(el.textContent || el.value || el.getAttribute('aria-label') || '');
+    return control && t.length <= 48 && !APPLY_NOT_RE.test(t);
+  }
   function findApplyButton() {
     const known = ['.jobs-apply-button', 'button.jobs-apply-button--top-card', '#indeedApplyButton',
       '#applyButtonLinkContainer a', 'button[data-testid*="apply" i]', 'a[data-testid*="apply" i]',
@@ -15505,7 +15520,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       'button[aria-label*="apply" i]', 'a[aria-label*="apply" i]', 'spl-button[data-test*="apply" i]'];
     for (const sel of known) {
       for (const el of deepAll(sel, 8)) {
-        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent)) && !WD_NEVER_PRESS_AID_RE.test(el.getAttribute('data-automation-id') || '')) return el;
+        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent)) && !WD_NEVER_PRESS_AID_RE.test(el.getAttribute('data-automation-id') || '') && applyControl(el)) return el;
       }
     }
     const cands = deepAll('button,a[role="button"],a,[role="button"],input[type=button],input[type=submit],spl-button,oj-button', 400)
@@ -15623,6 +15638,9 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     // Inside the application already: an Apply link here leads back to the job
     // description, and from there round the login again. See pastTheApplyStep.
     if (pastTheApplyStep()) return true;
+    // Inside Workday's application (…/job/…/apply/…) the only "apply" control left
+    // leads back to the posting; the steps from here are the sign-in and the form.
+    if (isWorkday() && /\/job\/.+\/apply(\/|$)/i.test(location.pathname) && !findApplyManually()) return true;
     while (clicks < limit) {
       if (hasApplicationForm()) return true;
       // If a "Start Your Application" choice modal is up, pick Apply Manually and WAIT

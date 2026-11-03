@@ -4742,3 +4742,38 @@ hour, because no saved profile had a first or last name (only an email).
   there), so it is found once, not on every job.
 - Reading the CV text is capped at 4 seconds, so the first job never waits on it;
   past that, the file name alone decides.
+
+## v17.55 — what kept the 23:29 queue from moving
+
+From the 23:29 debug log (79 timeouts since 17:00):
+- **CV upload ("Upload didn't confirm", 20+ jobs).** On live Workday a
+  "Select files" button sits in front of the hidden file input, and the engine
+  handed the CV to the button: no input inside it, so it gave up in the same
+  second. It now always finds the real input. The built-in uploader also
+  recognises Workday's own "file accepted" row (`file-upload-successful`); Workday
+  empties the input once it has the file, so a good upload read as failed.
+  New test page: `tests/e2e/workday-live-upload.html` (fails on v17.54, passes now).
+- **"Unrecognised page" (22 jobs).** After sign-in, or when Apply never opened, the
+  engine now presses Apply Manually / Use My Last Application (known by its words,
+  not only Workday's ids), presses Apply on a posting, and after ~12s opens the
+  job's own `…/apply/applyManually` address once, before asking you.
+- **Sign In / Create Account going round in circles.** The built-in flow and the
+  engine kept separate account records under different keys: one said "account
+  already created here — Sign In", the other "No saved account — Create Account".
+  Both now read and write the same per-employer record.
+- **"Couldn't find the submit button on the sign-in form" (8).** Workday's button is
+  hidden under a transparent click cover; the cover is now pressed, and the button
+  is waited for up to 5s.
+- **"Couldn't tick the account terms box" (7).** Tried on the box, its label and its
+  wrapper, waiting up to 1s each for it to register.
+- **Apply loop until the 5-minute cap.** The generic Apply finder pressed anything
+  whose id contained "apply": Booz Allen's "time left to apply · End Date" label,
+  and inside Littelfuse's application "Zurück zur Stellenausschreibung" (back to
+  the posting). It now needs a real button or link that does not say back /
+  deadline, and stands down once inside Workday's `/apply/` pages.
+- **My Information.** Fields are waited for (up to 10s) before filling, and an AI
+  answer is capped at 20s.
+- **Degree left blank (Marmon).** When the suggested option is the wrong kind
+  (arts for a science degree), a same-level option of the right kind ("Master of
+  Science (M.S.)") or one naming only the level ("Masters (or equivalent)") is
+  used; an MBA or MEng is never put in its place.
