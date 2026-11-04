@@ -4777,3 +4777,25 @@ From the 23:29 debug log (79 timeouts since 17:00):
   (arts for a science degree), a same-level option of the right kind ("Master of
   Science (M.S.)") or one naming only the level ("Masters (or equivalent)") is
   used; an MBA or MEng is never put in its place.
+
+## v17.56 — Turning on Fully Automated no longer makes the sidebar disappear
+
+The cause, reproduced in Chromium on v17.55:
+1. Switching Fully Automated on starts the automation, which presses Jobright's
+   Autofill.
+2. Jobright's panel switches to its filling view, which has no form inputs.
+3. On an account with limited credits that view carries a line like "Upgrade to
+   Turbo to autofill answers with AI" or "N credits left".
+4. The credits/upgrade remover climbs up from that line to find the box to hide.
+   It only stopped at form inputs, so it climbed all the way to the panel's main
+   container and hid the whole sidebar: the switch, the queue and the log. The
+   cards, re-added every 3s, landed inside the hidden panel.
+
+Now:
+- **The remover stops short of the sidebar.** It never climbs into Jobright's
+  sidebar root, anything holding our controls, or anything half the window
+  tall. Only the credits box goes. (Test page: before, the whole panel hidden;
+  now only the "Upgrade to Turbo" box.)
+- **Our controls are never left invisible.** Every 3s, a container around them
+  that was hidden as a credits box, or by a tuck that should have ended, is
+  shown again. A sidebar you hide yourself with the toolbar icon is left alone.

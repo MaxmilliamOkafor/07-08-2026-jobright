@@ -3961,6 +3961,18 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
 }
 
 
+
+/* ── 89. the credits remover never takes the whole sidebar ── */
+console.log('"When I toggle Fully Automated everything disappears": the credits remover stops short of the sidebar');
+{
+  const fk = body('findKillTarget');
+  eq('it never climbs into the sidebar root or anything holding our controls', /const SIDEBAR_KEEP_SEL = '#jobright-helper-id,\.jobright-helper-content-container,#ua-fa-card,\[id\^="ua-sb"\],\[id\^="ua-"\]';/.test(fk) && /n\.querySelector\(SIDEBAR_KEEP_SEL\)/.test(fk), true);
+  eq('…nor into anything half the window tall', /getBoundingClientRect\(\)\.height > \(window\.innerHeight \|\| 800\) \* 0\.5/.test(fk), true);
+  eq('the whole-element pass skips them too', /el\.matches\('#jobright-helper-id,\.jobright-helper-content-container,\[id\^="ua-"\]'\)/.test(body('killPaywallElements')), true);
+  eq('anything hidden around our controls is shown again every 3s', /unhideAroundOurControls\(\);\n\s+const root = findSidebarRoot\(\);/.test(body('injectSidebarUI')) && /removeAttribute\('data-ua-killed'\)/.test(body('unhideAroundOurControls')), true);
+}
+
+
 setTimeout(() => Promise.all(asyncChecks).then(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

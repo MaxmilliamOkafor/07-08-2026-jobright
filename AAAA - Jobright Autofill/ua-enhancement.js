@@ -15093,7 +15093,30 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     return card;
   }
 
+  /* Our controls can never be left invisible: anything hidden around them —
+     by the paywall remover above, or a tuck that should have ended — is shown
+     again. Runs with injectSidebarUI (every 3s). A sidebar you hid yourself
+     with the toolbar icon is a host with no marker, and is left alone. */
+  function unhideAroundOurControls() {
+    try {
+      const mine = (typeof window.__uaDeepQueryAll === 'function') ? window.__uaDeepQueryAll('#ua-fa-card') : [];
+      for (const c of mine) {
+        for (let n = c.parentElement; n; n = n.parentElement) {
+          if (n.getAttribute && n.getAttribute('data-ua-killed')) {
+            n.removeAttribute('data-ua-killed');
+            ['display', 'visibility', 'height', 'width', 'margin', 'padding', 'overflow'].forEach((k) => n.style.removeProperty(k));
+            LOG('Sidebar: a container our controls are in had been hidden as a "credits" box — shown again');
+          }
+        }
+        const host = c.getRootNode && c.getRootNode().host;
+        if (host && host.getAttribute && host.getAttribute('data-ua-sa-tucked') && !_saDriving) {
+          host.style.display = ''; host.removeAttribute('data-ua-sa-tucked');
+        }
+      }
+    } catch (_) {}
+  }
   function injectSidebarUI() {
+    unhideAroundOurControls();
     const root = findSidebarRoot();
     if (!root) return;
     const fa = buildFullAutoCard();
@@ -19649,8 +19672,17 @@ a[href*="/checkout" i],
        the page DOM (not Jobright's shadow root) climbed eight levels to <html> and
        hid the WHOLE application — every field zero-sized, "No submit button found",
        and the job recorded as done. Stop at anything that holds form controls. */
+    /* …nor into the sidebar itself. "When I toggle Fully Automated everything
+       disappears": Autofill switches Jobright's panel to its filling view, which
+       has no inputs and can carry "N credits left" / "Upgrade to Turbo …", so
+       the climb reached the panel's main container and hid all of it — the
+       switch, the queue and the log with it. Never the sidebar root, never
+       anything holding our controls, never anything half the window tall. */
+    const SIDEBAR_KEEP_SEL = '#jobright-helper-id,.jobright-helper-content-container,#ua-fa-card,[id^="ua-sb"],[id^="ua-"]';
     const isPage = (n) => n === document.body || n === document.documentElement ||
-      !!(n.querySelector && n.querySelector('input:not([type=hidden]),textarea,select,form,[role="combobox"]'));
+      !!(n.querySelector && n.querySelector('input:not([type=hidden]),textarea,select,form,[role="combobox"]')) ||
+      !!(n.matches && n.matches(SIDEBAR_KEEP_SEL)) || !!(n.querySelector && n.querySelector(SIDEBAR_KEEP_SEL)) ||
+      (() => { try { return n.getBoundingClientRect().height > (window.innerHeight || 800) * 0.5; } catch (_) { return false; } })();
     for (let i = 0; i < limit && cur; i++) {
       const txt = (cur.textContent || '').trim();
       if (!txt) break;
@@ -19707,6 +19739,7 @@ a[href*="/checkout" i],
           // Don't kill if this element ALSO wraps a clearly-different
           // control (the whole sidebar contains "Upgrade to Turbo" too).
           if (/(your\s+autofill\s+information|upload\s+resume|tailor\s+resume|match\s+score|completion|add\s+this\s+job|submit\s+application)/i.test(txt)) continue;
+          if (el.matches && (el.matches('#jobright-helper-id,.jobright-helper-content-container,[id^="ua-"]') || el.querySelector('#jobright-helper-id,.jobright-helper-content-container,[id^="ua-"]'))) continue;
           el.style.setProperty('display', 'none', 'important');
           el.setAttribute('data-ua-killed', '1');
         }
