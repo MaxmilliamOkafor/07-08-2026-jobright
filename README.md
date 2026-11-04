@@ -4799,3 +4799,61 @@ Now:
 - **Our controls are never left invisible.** Every 3s, a container around them
   that was hidden as a credits box, or by a tuck that should have ended, is
   shown again. A sidebar you hide yourself with the toolbar icon is left alone.
+
+## v17.57 — fixes from the 22:44 debug log
+
+**1. Each job is applied on its own page.** In the log, Google and Amazon jobs
+were recorded on a Stripe Greenhouse form, a Workday form and another Google
+form. 5 of the 9 failed or timed-out Google and Amazon jobs were on another
+job's page, and 3 more were marked done for an application made on another
+job's page. The single-tab runner took the first job marked "applying"
+as its own. A runner tab that had frozen or been replaced left its job on
+"applying", so the next tab picked that one up on whatever page it was on.
+Now:
+- The runner remembers by id which job it opened (`ua_q_current`) and resolves
+  its job that way. The watchdog that replaces a frozen runner uses the same
+  id.
+- Jobs left "applying" by a frozen or replaced runner go back into the queue.
+  The second time a job freezes the runner, it is skipped with that reason.
+  Queue Manager tabs are never touched.
+- A page on another queued job's site is never taken for the current job.
+
+**2. Workday: the account flow and the engine stop contradicting each other.**
+The log shows "account already created here — switching to Sign In" 58 times
+against "No saved account — switching to Create Account" 66 times. v17.55
+already gave both one account record. Two gaps remained:
+- The built-in account flow now waits while the engine is driving the page.
+  The engine exposes `busy()` for this.
+- The built-in flow also reads the engine's records, per employer, so a wd5
+  record counts on a wd1 page.
+
+**3. Verification codes.**
+- **Oracle.** The PIN screen ("Enter verification code digit 1 of six") was
+  found 21 times. Each time the answer was "no mailbox is connected": reading
+  codes from Gmail is opt-in, and it was off. Now, the first time a code is
+  needed, a small box on the page asks once. **Allow** turns on "Read codes
+  from my signed-in Gmail" (the same tick as in the Queue Manager), and the job
+  carries on. **Not now** is remembered for a day.
+- **Greenhouse.** The "Security code" is 8 letters and digits ("enter the
+  8-character code"), and the mailbox only knew digit codes. The page now tells
+  the mailbox how long the code is: Greenhouse's "8-character", Oracle's "of
+  six", or the number of one-digit boxes. A letters-and-digits code of that
+  length after the word "code" is read. The old pattern was case-insensitive,
+  so "Your code expires in 10 minutes" would have handed back "expires"; that
+  no longer happens.
+
+**4. Google Careers.** "Submit was clicked but no confirmation appeared" 7
+times. Submit was never really pressed:
+- Google's cookie bar ("OK, got it") sat over the button on all 18 tries, and
+  the accept-button pattern didn't know that wording. It does now, along with
+  "Accept & continue" and "Okay".
+- The résumé box is a bare file input with no label. When a page asks for a
+  résumé and has exactly one file box, that box gets the CV.
+- The phone box received "+353 87 426 1508" next to Google's own "Country
+  calling code" picker, and Google rejected it. A picker that names itself the
+  country / calling / dial code now counts, so the box gets the local number.
+- "Personalize your Google Careers profile with job recommendations…?" is
+  answered No, like other mailing preferences.
+
+Amazon needed nothing of its own: every Amazon job in the log was one of
+fix 1's other-page cases.

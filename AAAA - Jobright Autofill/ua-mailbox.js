@@ -218,8 +218,33 @@
     return out;
   }
 
-  const CODE_RE = /\b(?:code|otp|pin|token)\b[^0-9a-z]{0,24}([0-9]{4,8}|[A-Z0-9]{6,10})\b/i;
-  const BARE_CODE_RE = /\b([0-9]{6})\b/;
+  /* The code in a verification email. Digits first ("Your PIN is 482913").
+     Then a letters-and-digits code such as Greenhouse's 8-character security
+     code ("…into the security code field on your application: bZ7wQm2K"): a
+     word of the length the page asks for, after the word "code", that cannot
+     be plain English — it has a digit or a capital after its first letter.
+     The old single pattern was case-insensitive, so "code expires in 10
+     minutes" handed back "expires". */
+  const CODE_WORD_RE = /\b(?:code|otp|pin|passcode|token)\b/i;
+  const DIGITS_NEAR_RE = /\b(?:code|otp|pin|passcode)\b[^0-9]{0,80}?\b(\d{4,8})\b/i;
+  function pickCode(text, len) {
+    const t = String(text || '').replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
+    const n = Number(len) || 0;
+    const d = t.match(DIGITS_NEAR_RE);
+    if (d && (!n || d[1].length === n)) return d[1];
+    const at = t.search(CODE_WORD_RE);
+    if (at >= 0) {
+      const after = t.slice(at, at + 400);
+      for (const m of after.matchAll(/\b([A-Za-z0-9]{6,10})\b/g)) {
+        const w = m[1];
+        if (n && w.length !== n) continue;
+        if (/\d/.test(w) ? /[A-Za-z]/.test(w) || /^\d+$/.test(w) : /[A-Z]/.test(w.slice(1))) return w;
+      }
+    }
+    if (d) return d[1];
+    const bare = t.match(/\b(\d{6})\b/);
+    return bare ? bare[1] : null;
+  }
 
   /* A link is only ever offered when its host belongs to the ATS or employer we
      are already on. Inboxes contain phishing, and an unattended agent that opens
@@ -264,8 +289,7 @@
       const haystack = subject + '\n' + body;
       const link = pickLink(haystack, hints && hints.hosts, hints && hints.kind);
       // A reset is only ever a link; a "code" in a reset mail is not ours to type anywhere.
-      const m = hints && hints.kind === 'reset' ? null : (haystack.match(CODE_RE) || haystack.match(BARE_CODE_RE));
-      const code = m ? m[1] : null;
+      const code = hints && hints.kind === 'reset' ? null : pickCode(haystack, hints && hints.len);
       if (link || code) {
         log(`Verification mail found for ${(hints && hints.hosts || []).join(', ') || 'this job'} — ${link ? 'link' : 'code'}`);
         // The body itself is deliberately not returned or stored.
@@ -289,7 +313,6 @@
      ones that read like a verification email, and nothing is kept. */
   const FEED_LABELS = ['', '%5Esq_ig_i_notification'];   // the inbox, and Gmail's "Updates" tab
   const VERIFY_WORDS_RE = /verif|confirm|identity|one.?time|passcode|security code|your code|code requested|pin\b|otp\b|sign.?in code|log.?in code/i;
-  const CODE_NEAR_RE = /(?:code|pin|passcode|otp)[^0-9]{0,80}?\b(\d{4,8})\b/i;
   const xmlText = (s) => String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/\s+/g, ' ').trim();
   const tag = (block, name) => { const m = block.match(new RegExp('<' + name + '\\b[^>]*>([\\s\\S]*?)</' + name + '>', 'i')); return m ? xmlText(m[1]) : ''; };
@@ -324,11 +347,11 @@
           if (e.issued && e.issued < cutoff) continue;
           const text = e.title + ' ' + e.summary;
           if (!VERIFY_WORDS_RE.test(text)) continue;
-          const m = text.match(CODE_NEAR_RE) || text.match(/\b(\d{6})\b/);
-          if (!m) continue;
+          const code = pickCode(text, hints && hints.len);
+          if (!code) continue;
           const hay = (e.from + ' ' + text).toLowerCase();
           const tie = [...tokens].some((t) => hay.includes(t));
-          found.push({ code: m[1], issued: e.issued, tie, subject: e.title.slice(0, 140) });
+          found.push({ code, issued: e.issued, tie, subject: e.title.slice(0, 140) });
         }
       }
     }
@@ -407,7 +430,7 @@
         }
         if (!hosts.length) return sendResponse({ ok: false, reason: 'no-hosts' });
         const kind = msg.kind === 'reset' ? 'reset' : '';
-        const hints = { hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0, kind };
+        const hints = { hosts, companies: (msg.companies || []).slice(0, 3), since: Number(msg.since) || 0, kind, len: Math.min(12, Number(msg.len) || 0) };
         try {
           let r = apiOn ? await findVerification(hints) : { ok: false, reason: 'not-connected' };
           // The API route is not set up, or found nothing yet: try the signed-in Gmail
@@ -420,5 +443,6 @@
     }
   });
 
+  try { globalThis.__uaMailPickCode = pickCode; } catch (_) {}
   log('Mailbox module loaded (read-only, verification mail only)');
 })();

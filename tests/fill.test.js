@@ -4232,3 +4232,78 @@ console.log('v17.55: uploads, unknown pages, sign-in, Apply loops, degree');
     eq('…never an MBA or MEng in its place', await run('Master of Science', ['Master of Arts (M.A.)', 'Master of Business Administration (MBA)', 'Master of Engineering'], 'Master of Arts (M.A.)'), null);
   })());
 }
+
+/* ── 90. v17.57: the debug log of 4 Nov 22:44 ── */
+console.log('v17.57: each job on its own page; one Workday account record; codes; Google Careers');
+{
+  // 1. The runner's current job is THE job it opened, by id — not the first "applying".
+  const mkRunner = (queue, stored, mgr = false) => new Function('queue', 'st', '_mgrDriving', 'LOG',
+    `const Q_CURRENT_KEY = 'ua_q_current';\n${body('currentRunnerJob')}\n${body('requeueStaleApplying')}\nreturn { currentRunnerJob, requeueStaleApplying };`)(
+    queue, { get: async () => stored }, mgr, () => {});
+  asyncChecks.push((async () => {
+    const q = [
+      { id: 'google', url: 'https://www.google.com/about/careers/applications/jobs/results/1', status: 'applying', startedAt: 1 },
+      { id: 'stripe', url: 'https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=8', status: 'applying', startedAt: 5 },
+      { id: 'next', url: 'https://x.com', status: 'pending' },
+    ];
+    let r = mkRunner(q, 'stripe');
+    eq('the runner takes the job it opened (by id), not the first "applying" one', (await r.currentRunnerJob()).id, 'stripe');
+    eq('…without an id, the most recently started', (await mkRunner(q, '').currentRunnerJob()).id, 'stripe');
+    eq('a job left "applying" by a frozen tab goes back to pending', [r.requeueStaleApplying(q[1]), q[0].status, q[0].runnerTries], [1, 'pending', 1]);
+    q[0].status = 'applying'; r.requeueStaleApplying(q[1]);
+    eq('…and the second time it froze there it is skipped, with the reason', [q[0].status, /froze on this job twice/.test(q[0].error)], ['timeout', true]);
+    const q2 = [{ id: 'a', status: 'applying' }, { id: 'b', status: 'applying' }];
+    eq('the Queue Manager\'s own tabs are never touched', [mkRunner(q2, 'a', true).requeueStaleApplying(q2[0]), q2[1].status], [0, 'applying']);
+  })());
+  const gn = body('goNext');
+  eq('goNext records which job it opened and clears leftovers first',
+    /requeueStaleApplying\(n\);\s*n\.status = 'applying';[\s\S]{0,120}st\.set\(Q_CURRENT_KEY, n\.id\)/.test(gn), true);
+  eq('processQ resolves its job by id, after putting leftovers back', /const c = await currentRunnerJob\(\);\s*if \(await requeueStaleApplying\(c\)\)/.test(body('processQ')), true);
+  eq('a page on ANOTHER queued job\'s site is never taken for this job (Google job on a Stripe page)',
+    /here !== own && here !== c\.landedHost && queue\.some\(\(j\) => j !== c/.test(body('onCurrentJobPage')), true);
+  eq('the watchdog replaces a frozen runner with the job it was on (ua_q_current)', /const curId = await get\('ua_q_current'\);[\s\S]{0,200}applying\.find\(\(j\) => j\.id === curId\)/.test(orch), true);
+
+  // 2. Workday: one account record; the built-in flow waits while the engine drives.
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  eq('the engine says when it is driving the page', /busy: \(\) => isActive\(\),/.test(eng), true);
+  eq('…and the built-in account flow waits for it instead of clicking the other way',
+    /if \(window\.__uaWdEngine && typeof window\.__uaWdEngine\.busy === 'function' && window\.__uaWdEngine\.busy\(\)\) return 'working';/.test(body('fillWorkdayCreateAccount')), true);
+  const accountExistsFor = new Function('st', `${body('accountKeyFor')}\n${body('accountExistsFor')}\nreturn accountExistsFor;`)(
+    { get: async (k) => (k === 'ua_wd_login' ? { sites: { 'acme.wd5.myworkdayjobs.com': { state: 'account' } } } : {}) });
+  asyncChecks.push((async () => {
+    eq('the built-in flow reads the engine\'s accounts, per employer (wd5 record, wd1 page)', await accountExistsFor('acme.wd1.myworkdayjobs.com'), true);
+    eq('…not another employer\'s', await accountExistsFor('other.wd1.myworkdayjobs.com'), false);
+  })());
+
+  // 3. Verification codes: the length the page asks for; one click to allow Gmail.
+  const lenOf = (text, boxes = []) => new Function('document', 'codeBoxGroup', `${src.match(/  const NUM_WORDS = [^\n]*\n/)[0]}${body('verificationCodeLength')}\nreturn verificationCodeLength;`)(
+    { body: { innerText: text } }, () => boxes)();
+  eq('Greenhouse "enter the 8-character code" → 8', lenOf('A verification code was sent to you. To submit your application, enter the 8-character code to confirm you\'re a human.'), 8);
+  eq('Oracle "digit 1 of six" boxes → 6', lenOf('Enter verification code digit 1 of six.'), 6);
+  eq('…or the number of one-digit boxes', lenOf('Confirm your identity', [1, 2, 3, 4, 5, 6]), 6);
+  eq('the mailbox is told the length', /len: verificationCodeLength\(\)/.test(src), true);
+  const rv = body('resolveEmailVerification');
+  eq('Gmail reading off → asked once on the page; Allow carries on with this job',
+    /if \(!offered\) \{[\s\S]{0,300}if \(await offerGmailCodeReading\(\)\) \{ deadline = Date\.now\(\) \+ \(maxWaitMs \|\| 90000\); continue; \}/.test(rv), true);
+  const offer = body('offerGmailCodeReading');
+  eq('…Allow turns on the same opt-in as the Queue Manager tick', /st\.set\('ua_mail_gmail_session', true\)/.test(offer), true);
+  eq('…"Not now" is kept for a day, and the prompt sits in its own shadow root', /24 \* 3600 \* 1000/.test(offer) && /attachShadow\(\{ mode: 'open' \}\)/.test(offer), true);
+
+  // 4. Google Careers.
+  const COOKIE = new Function('return ' + src.match(/const COOKIE_ACCEPT_RE = (\/[^\n]*\/i);/)[1])();
+  const plainOf = new Function('label', src.match(/        const plain = [^\n]*\n/)[0] + 'return plain;');
+  const accepts = (l) => COOKIE.test(l) || COOKIE.test(plainOf(l));
+  eq('Google Careers\' cookie bar "OK, got it" is dismissed (it sat over Submit 18 times)', accepts('OK, got it'), true);
+  eq('…and "Accept & continue", "Okay"', accepts('Accept & continue') && accepts('Okay'), true);
+  eq('…but not "OK, submit" or "Continue to review"', accepts('OK, submit') || accepts('Continue to review'), false);
+  const yn = (q) => new Function('q', src.match(/    if \(\/\\bpersonali\[sz\]e[^\n]*\n/)[0] + 'return null;')(q.toLowerCase());
+  eq('"Personalize your Google Careers profile with job recommendations…?" → No', yn('Personalize your Google Careers profile with job recommendations and related content?'), 'no');
+  eq('…a real question about you is left to the other rules', yn('Do you have experience with personalised marketing campaigns?'), null);
+  eq('…and it is decided inside determineYesNo, next to the other opt-ins', /if \(SMS_OPTIN_RE\.test\(q\)\) return 'no';\n[^\n]*\n    if \(\/\\bpersonali/.test(body('determineYesNo')), true);
+  const rfi = body('resumeFileInputs');
+  eq('one bare file box on a page that asks for a résumé is the CV slot (Google: "Upload your résumé*")',
+    /if \(docs\.length === 1 && all\.length === 1\)/.test(rfi) && /r\[ée\]sum\[ée\]\|cv\|curriculum/.test(rfi), true);
+  const dcb = body('dialCodeBeside');
+  eq('a picker named "Country calling code" beside the phone box gives the code, so the box gets the local number',
+    /country \(calling \|dial\(l\?ing\)\? \)\?code\|calling code/.test(dcb), true);
+}

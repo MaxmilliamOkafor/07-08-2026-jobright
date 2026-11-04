@@ -3922,6 +3922,10 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       return false;
     },
     page: () => lastPage || detectPage(),
+    /** The engine is driving this page right now (its own sign-in / create
+     *  account included): the built-in account flow waits instead of clicking
+     *  the other way. */
+    busy: () => isActive(),
     stop: () => {
       clearMode();
       void stopRun();
