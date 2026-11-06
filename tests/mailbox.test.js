@@ -105,14 +105,20 @@ eq('and no link at all returns null', pick('Your code is 481920', HOSTS), null);
 
 /* ── 5. codes ─────────────────────────────────────────────────────────────── */
 console.log('one-time codes are extracted');
-const CODE_RE = new Function('return ' + src.match(/const CODE_RE = (\/[\s\S]*?\/i);/)[1])();
-const BARE = new Function('return ' + src.match(/const BARE_CODE_RE = (\/[\s\S]*?\/);/)[1])();
-const codeOf = (t) => { const m = t.match(CODE_RE) || t.match(BARE); return m ? m[1] : null; };
+const pickCode = new Function(src.match(/  const CODE_WORD_RE[\s\S]*?\n  function pickCode[\s\S]*?\n  \}\n/)[0] + '\nreturn pickCode;')();
+const codeOf = (t, n) => pickCode(t, n);
 eq('"Your verification code is 481920"', codeOf('Your verification code is 481920'), '481920');
 eq('"Code: 4819"', codeOf('Code: 4819'), '4819');
 eq('"one-time PIN 55213"', codeOf('Your one-time PIN 55213'), '55213');
 eq('a bare six-digit code is picked up', codeOf('Enter 902114 to continue'), '902114');
 eq('ordinary prose yields nothing', codeOf('Thanks for applying to Guidehouse.'), null);
+// Greenhouse's security code: 8 letters and digits, after "code", in an HTML mail.
+eq('Greenhouse: "…security code field on your application: bZ7wQmXK" (8 characters)',
+  codeOf('<p>Copy and paste this code into the security code field on your application:</p><h1>bZ7wQmXK</h1>', 8), 'bZ7wQmXK');
+eq('…an all-letter code with capitals inside it too', codeOf('Your security code: hTqzWbPa', 8), 'hTqzWbPa');
+eq('"code expires in 10 minutes" never hands back "expires"', codeOf('Your code expires in 10 minutes. Thanks for applying'), null);
+eq('…and a digit code after such words is still found', codeOf('This code expires in 10 minutes: 482913', 6), '482913');
+eq('Oracle\'s six-digit PIN with the length the page asked for', codeOf('Enter this PIN to confirm your identity on our careers site: 968134', 6), '968134');
 
 /* ── 6. the content-script side ───────────────────────────────────────────── */
 console.log('the wall is detected and handed over when no mailbox is connected');
@@ -190,7 +196,7 @@ console.log('verification codes from the signed-in Gmail feed');
     `<entry><title>${e.t}</title><summary>${e.s}</summary><issued>${e.i || now}</issued><author><name>${e.n}</name><email>${e.m || 'x@y.com'}</email></author></entry>`).join('')}</feed>`;
   const mk = (pages) => {
     const x = {};
-    new Function('exports', 'fetch', `const MAX_AGE_MIN = 15; const log = () => {}; ${chunk}; exports.find = findViaGmailSession; exports.parse = parseAtom;`)(x,
+    new Function('exports', 'pickCode', 'fetch', `const MAX_AGE_MIN = 15; const log = () => {}; ${chunk}; exports.find = findViaGmailSession; exports.parse = parseAtom;`)(x, pickCode,
       async (url) => { const body = pages[url.replace(/^https:\/\/mail\.google\.com\/mail\//, '')]; return body == null ? { ok: false, text: async () => '' } : { ok: true, text: async () => body }; });
     return x;
   };

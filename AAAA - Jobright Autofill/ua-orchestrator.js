@@ -893,7 +893,12 @@
     // Unreachable long enough to be stuck rather than busy. Take the tab away
     // from whatever is holding it and put the run back on its feet.
     const q = (await get(K.Q)) || [];
-    const current = q.find((j) => j.status === 'applying') || q.find((j) => j.status === 'pending');
+    /* The job the runner was on — by id (ua_q_current), else the most recently
+       started. "The first job marked applying" was the OLDEST leftover, so the
+       replacement tab reopened an old job's page and the run continued there. */
+    const curId = await get('ua_q_current');
+    const applying = q.filter((j) => j.status === 'applying').sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    const current = (curId && applying.find((j) => j.id === curId)) || applying[0] || q.find((j) => j.status === 'pending');
     // Nothing left to resume: replacing the tab would only produce another tab
     // with no content script in it, which would look frozen in turn.
     if (!current || !current.url) { await set({ [RUNNER_SILENT_KEY]: 0 }); return; }

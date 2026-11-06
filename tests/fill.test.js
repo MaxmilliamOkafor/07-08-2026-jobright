@@ -2417,7 +2417,7 @@ console.log('iCIMS gets through its login and stays through');
 eq('an application page is never mistaken for a sign-in wall',
   /function looksLikeAuthPage\(\) \{\n    \/\/ The URL is the ATS telling us sign-in is done\. It outranks any field\.\n    if \(pastTheApplyStep\(\)\) return false;/.test(src), true);
 eq('the generic opener does not click Apply from inside the application',
-  /if \(pastTheApplyStep\(\)\) return true;\n    while \(clicks < limit\) \{/.test(src), true);
+  src.includes('    if (pastTheApplyStep()) return true;\n') && src.includes("if (isWorkday() && /\\/job\\/.+\\/apply(\\/|$)/i.test(location.pathname) && !findApplyManually()) return true;\n    while (clicks < limit) {"), true);
 /* My own guard from the previous iCIMS change listed /apply, /login and
    /register and missed /candidate — which is how the run went back to /job. */
 eq('and neither does the iCIMS driver, which is where the loop started',
@@ -3961,6 +3961,18 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
 }
 
 
+
+/* ── 89. the credits remover never takes the whole sidebar ── */
+console.log('"When I toggle Fully Automated everything disappears": the credits remover stops short of the sidebar');
+{
+  const fk = body('findKillTarget');
+  eq('it never climbs into the sidebar root or anything holding our controls', /const SIDEBAR_KEEP_SEL = '#jobright-helper-id,\.jobright-helper-content-container,#ua-fa-card,\[id\^="ua-sb"\],\[id\^="ua-"\]';/.test(fk) && /n\.querySelector\(SIDEBAR_KEEP_SEL\)/.test(fk), true);
+  eq('…nor into anything half the window tall', /getBoundingClientRect\(\)\.height > \(window\.innerHeight \|\| 800\) \* 0\.5/.test(fk), true);
+  eq('the whole-element pass skips them too', /el\.matches\('#jobright-helper-id,\.jobright-helper-content-container,\[id\^="ua-"\]'\)/.test(body('killPaywallElements')), true);
+  eq('anything hidden around our controls is shown again every 3s', /unhideAroundOurControls\(\);\n\s+const root = findSidebarRoot\(\);/.test(body('injectSidebarUI')) && /removeAttribute\('data-ua-killed'\)/.test(body('unhideAroundOurControls')), true);
+}
+
+
 setTimeout(() => Promise.all(asyncChecks).then(() => {
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
@@ -4094,7 +4106,7 @@ console.log('v17.51: "Application Submitted" ends the job and opens the next one
 }
 {
   const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
-  eq('the Workday engine never uploads the CV into the extension\'s own resume box (20s lost per job)', /qa\(sel\("fileInput"\) \+ ', input\[type="file"\]'\)\.filter\(\(i\) => !i\.closest\('\[id\^="ua-"\], \.ua-panel, plasmo-csui'\)\)/.test(eng), true);
+  eq('the Workday engine never uploads the CV into the extension\'s own resume box (20s lost per job)', /qa\(sel\("fileInput"\) \+ ', input\[type="file"\]'\)\.map\(fileInputFor\)\)\]\.filter\(\(i\) => i && !i\.closest\('\[id\^="ua-"\], \.ua-panel, plasmo-csui'\)\)/.test(eng), true);
 }
 {
   const g = src.slice(0, src.indexOf('window.__uaAutoReason'));
@@ -4130,4 +4142,168 @@ console.log('v17.51: "Application Submitted" ends the job and opens the next one
     /const btn = nextButton\(\) \?\? await waitFor\(nextButton, 8e3, 250\)\.catch\(\(\) => null\);/.test(eng) && /qa\("button, \[role='button'\]"\)\.find\(\(b\) => isVisible\(b\) && !b\.disabled && !b\.closest\('\[id\^="ua-"\], plasmo-csui'\) && NEXT_TEXT_RX\.test\(text\(b\)\)\)/.test(eng), true);
   eq('JLL: "How did you hear" also tries Company Website / Career Site / Other', /\[\["Company Website", "Other"\], true\]/.test(eng) && /"Careers Website", "Other"\]\) if \(await selectDropdown/.test(eng), true);
   eq('no first / last name in any profile → said plainly, not "Given Name(s) is required" later', /Your profile has no \$\{what\} — add it in the extension's Profile/.test(eng), true);
+}
+
+/* ── v17.53: SpeedyApply's "No profiles available. Please contact support" popup ── */
+console.log('v17.53: SpeedyApply with no profile stays out of sight');
+{
+  const mk = () => { const nodes = {}; const doc = { head: { appendChild: (n) => { nodes[n.id] = n; n.remove = () => delete nodes[n.id]; } },
+    getElementById: (id) => nodes[id] || null, createElement: () => ({}) }; return { doc, nodes }; };
+  const fnSrc = body('saQuietWithoutProfile');
+  const run = async (env, settings) => new Function('document', 'saSettings', 'SA_QUIET_ID', `return (${fnSrc.replace(/^async function saQuietWithoutProfile/, 'async function')})();`)(env.doc, async () => settings, 'ua-sa-quiet');
+  asyncChecks.push((async () => {
+    const e = mk();
+    await run(e, { hasProfile: false });
+    eq('no SpeedyApply profile → its autofill box and popups are hidden', !!e.nodes['ua-sa-quiet'] && /speedyapply-autofill,speedyapply-modal\{display:none!important\}/.test(e.nodes['ua-sa-quiet'].textContent), true);
+    await run(e, { hasProfile: true });
+    eq('…and shown again once you add a profile', !!e.nodes['ua-sa-quiet'], false);
+    const f = mk(); await run(f, null);
+    eq('SpeedyApply not built in (no settings) → nothing changed', !!f.nodes['ua-sa-quiet'], false);
+  })());
+  eq('re-checked when SpeedyApply\'s profile changes, no reload needed', /if \(area === 'local' && \(c\.profile \|\| c\.autofillAccount\)\) saQuietWithoutProfile\(\)/.test(src), true);
+}
+
+/* ── v17.54: first / last name from your own CV when no profile has them ── */
+console.log('v17.54: name from your CV');
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const pc = eng.slice(eng.indexOf('  function properCase('), eng.indexOf('  async function buildProfile('));
+  const nm = eng.slice(eng.indexOf('  var NAME_STOP = '), eng.indexOf('  // The text read is capped'));
+  const pick = new Function(pc + nm + '\nreturn pickCvName;')();
+  const f = 'Maxmilliam_Okafor_CV20260825153251.pdf';
+  eq('the CV file name alone gives the name', JSON.stringify(pick(f, '')), JSON.stringify({ firstName: 'Maxmilliam', lastName: 'Okafor' }));
+  eq('…and the CV\'s heading agrees with it', JSON.stringify(pick(f, 'MAXMILLIAM OKAFOR\nDublin, Ireland | max@example.com\nSenior Solutions Architect')), JSON.stringify({ firstName: 'Maxmilliam', lastName: 'Okafor' }));
+  eq('a job-title line is never taken for a name', JSON.stringify(pick('resume.pdf', 'Senior Solutions Architect\nCloud Engineer')), 'null');
+  eq('heading and file name that disagree → no guess', JSON.stringify(pick('Jane_Doe_CV.pdf', 'John Smith\nEngineer')), 'null');
+  eq('"CV_final.pdf" gives nothing', JSON.stringify(pick('CV_final.pdf', '')), 'null');
+  eq('a contact line (email / phone) is skipped', JSON.stringify(pick('cv.pdf', '+353 87 000 0000 | a@b.com\nAda Lovelace\nAnalyst')), JSON.stringify({ firstName: 'Ada', lastName: 'Lovelace' }));
+  eq('only filled when a profile is missing it, and saved to the extension\'s Profile without overwriting',
+    /if \(!p\.personal\.firstName \|\| !p\.personal\.lastName\) \{\s*const nm = await cvName\(\)/.test(eng) && /if \(String\(cur\[k\] \|\| ""\)\.trim\(\)\) delete add\[k\];/.test(eng), true);
+  eq('the CV text read never holds the first job more than 4s', /async function cvName\(budget = 4e3\)/.test(eng) && /await within\(read, budget\)/.test(eng), true);
+}
+
+/* ── v17.55: what the 23:29 log showed stalling the queue ── */
+console.log('v17.55: uploads, unknown pages, sign-in, Apply loops, degree');
+{
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  const fn = (name) => { const i = eng.indexOf(name); let d = 0; for (let k = eng.indexOf('{', i); k < eng.length; k++) { if (eng[k] === '{') d++; else if (eng[k] === '}' && !--d) return eng.slice(i, k + 1); } };
+  // Upload: the real input, not the "Select files" button in front of it.
+  const input = { tag: 'input', matches: (s) => /type="file"/.test(s) };
+  const button = { tag: 'button', matches: () => false, closest: () => zone, parentElement: null };
+  const zone = { q: input };
+  const fileInputFor = new Function('q', fn('function fileInputFor(') + '\nreturn fileInputFor;')((s, root) => (root === zone ? input : null));
+  eq('live Workday: the "Select files" button resolves to its hidden file input', fileInputFor(button), input);
+  eq('…an input stays itself', fileInputFor(input), input);
+  eq('the upload no longer gives up on the button in the same second', /const input = fileInputFor\(target\);/.test(eng), true);
+  // Unrecognised page → the way on, then the application's own address once.
+  const manualApplyUrl = new Function(fn('function manualApplyUrl(') + '\nreturn manualApplyUrl;')();
+  eq('stuck posting → its Apply Manually address', manualApplyUrl('https://msd.wd5.myworkdayjobs.com/en-US/SearchJobs/job/Data-Specialist_R424115-1?source=x'), 'https://msd.wd5.myworkdayjobs.com/en-US/SearchJobs/job/Data-Specialist_R424115-1/apply/applyManually');
+  eq('…from inside the application too', manualApplyUrl('https://x.wd1.myworkdayjobs.com/en-US/C/job/Eng_R1/apply/autofillWithResume'), 'https://x.wd1.myworkdayjobs.com/en-US/C/job/Eng_R1/apply/applyManually');
+  eq('…and nothing for a page that is not a job', manualApplyUrl('https://x.wd1.myworkdayjobs.com/en-US/C/login'), '');
+  const dflt = eng.slice(eng.indexOf('      default: {\n        // 22 jobs'), eng.indexOf('  var APPLY_MANUALLY_RX'));
+  eq('unknown page: Apply Manually / Use My Last Application first, Apply on a posting, then the address once, then you — never before ~12 tries',
+    /APPLY_MANUALLY_RX\) \?\? byAid\("useLastApplication"\)/.test(dflt) && /ctx\.run\.attempts <= 3/.test(dflt) && /ctx\.run\.attempts === 8/.test(dflt) && /sessionStorage\.getItem\(k\)/.test(dflt) && /ctx\.run\.attempts > 12\) throw new NeedsHuman/.test(dflt), true);
+  const AM = new Function(eng.slice(eng.indexOf('  var APPLY_MANUALLY_RX'), eng.indexOf('\n', eng.indexOf('  var APPLY_MANUALLY_RX'))) + '\nreturn APPLY_MANUALLY_RX;')();
+  eq('"Apply Manually" is known by its words (English, German, Spanish)', ['Apply Manually', 'Manuell bewerben', 'Postularse manualmente'].every((t) => AM.test(t)) && !AM.test('Autofill with Resume'), true);
+  // Sign-in: one record of accounts, read by both.
+  eq('the engine reads the built-in flow\'s account record (per employer, wd1/wd5 alike)', /if \(await accountKnown\(host2\)\) return \{ cred: master, master \};/.test(eng) && /if \(made\[siteKey\(host2\)\] \|\| made\[host2\]\) return true;/.test(eng), true);
+  eq('…and writes its own accounts there too', /if \(state === "account"\) set2\.ua_created_accounts = \{ \.\.\.d\.ua_created_accounts \|\| \{\}, \[siteKey\(\)\]: Date\.now\(\) \};/.test(eng), true);
+  eq('Sign In / Create Account pressed through its click_filter cover, waited for up to 5s', /\?\? coveredSubmit\(key2, label\);/.test(eng) && /await waitFor\(find, 5e3, 250\)/.test(eng), true);
+  eq('a checkbox that did not tick is tried via its label and wrapper', /for \(const el of \[box, label, box\.closest\("label"\), box\.parentElement\]\)/.test(eng), true);
+  eq('My Information: fields waited for before filling; an AI answer capped at 20s',
+    /async function fillAndNext\(ctx, handler\) \{[\s\S]{0,200}await waitFor\(\(\) => qa\('\[data-automation-id\^="formField-"\]'\)\.some\(isVisible\), 1e4, 250\)/.test(eng) && /type: "wd:llm", system, prompt, json: true, maxTokens: 600 \}\), 2e4\)/.test(eng), true);
+  // Built-in flow: Workday's own "file accepted" rows; Apply that is not Apply.
+  eq('the built-in uploader sees Workday\'s file-upload-successful row (Workday empties the input)', /\[data-automation-id="file-upload-successful"\],\[data-automation-id="file-upload-item"\]/.test(src), true);
+  const notRe = new Function(src.slice(src.indexOf('  const APPLY_NOT_RE'), src.indexOf('\n', src.indexOf('  const APPLY_NOT_RE'))) + '\nreturn APPLY_NOT_RE;')();
+  eq('"time left to apply · End Date" and "Zurück zur Stellenausschreibung" are never pressed as Apply', ['time left to applyEnd Date: January 5', 'Zurück zur Stellenausschreibung', 'Back to job posting'].every((t) => notRe.test(t)), true);
+  eq('…but Apply / Bewerben / Apply Now are', ['Apply', 'Bewerben', 'Apply Now', 'Postuler'].some((t) => notRe.test(t)), false);
+  eq('ids containing "apply" must be a real button or link', /&& applyControl\(el\)\) return el;/.test(src) && /return control && t\.length <= 48 && !APPLY_NOT_RE\.test\(t\);/.test(src), true);
+  // Degree: right kind of the same level before leaving it blank.
+  const tc = fn('async function translateChoice(');
+  const run = async (value, options, llmPick) => { let wrote = null;
+    const f = new Function('ctx', 'c', 'value', 'kindOf', 'optionsOf', 'labelOf', 'similarity', 'writeValue',
+      `return (async () => { ${tc.replace(/^async function translateChoice\(ctx, c, value\) \{/, '').replace(/\}\s*$/, '')} })();`);
+    await f({ settings: { llmAnswers: true }, llm: async () => JSON.stringify({ option: llmPick }), log: () => {} }, {}, value,
+      () => 'dropdown', async () => options, () => 'Degree', (a, b) => (a === b ? 1 : 0), async (_c, v) => { wrote = v; return true; });
+    return wrote; };
+  asyncChecks.push((async () => {
+    eq('Marmon: MSc with an M.A. pick → the list\'s "Master of Science (M.S.)"', await run('Master of Science, Artificial Intelligence and Machine Learning', ['Master of Arts (M.A.)', 'Master of Science (M.S.)', 'Bachelor of Arts (B.A.)'], 'Master of Arts (M.A.)'), 'Master of Science (M.S.)');
+    eq('…or a plain "Masters (or equivalent)"', await run('Master of Science', ['Master of Arts (M.A.)', 'Masters (or equivalent)'], 'Master of Arts (M.A.)'), 'Masters (or equivalent)');
+    eq('…never an MBA or MEng in its place', await run('Master of Science', ['Master of Arts (M.A.)', 'Master of Business Administration (MBA)', 'Master of Engineering'], 'Master of Arts (M.A.)'), null);
+  })());
+}
+
+/* ── 90. v17.57: the debug log of 4 Nov 22:44 ── */
+console.log('v17.57: each job on its own page; one Workday account record; codes; Google Careers');
+{
+  // 1. The runner's current job is THE job it opened, by id — not the first "applying".
+  const mkRunner = (queue, stored, mgr = false) => new Function('queue', 'st', '_mgrDriving', 'LOG',
+    `const Q_CURRENT_KEY = 'ua_q_current';\n${body('currentRunnerJob')}\n${body('requeueStaleApplying')}\nreturn { currentRunnerJob, requeueStaleApplying };`)(
+    queue, { get: async () => stored }, mgr, () => {});
+  asyncChecks.push((async () => {
+    const q = [
+      { id: 'google', url: 'https://www.google.com/about/careers/applications/jobs/results/1', status: 'applying', startedAt: 1 },
+      { id: 'stripe', url: 'https://job-boards.greenhouse.io/embed/job_app?for=stripe&token=8', status: 'applying', startedAt: 5 },
+      { id: 'next', url: 'https://x.com', status: 'pending' },
+    ];
+    let r = mkRunner(q, 'stripe');
+    eq('the runner takes the job it opened (by id), not the first "applying" one', (await r.currentRunnerJob()).id, 'stripe');
+    eq('…without an id, the most recently started', (await mkRunner(q, '').currentRunnerJob()).id, 'stripe');
+    eq('a job left "applying" by a frozen tab goes back to pending', [r.requeueStaleApplying(q[1]), q[0].status, q[0].runnerTries], [1, 'pending', 1]);
+    q[0].status = 'applying'; r.requeueStaleApplying(q[1]);
+    eq('…and the second time it froze there it is skipped, with the reason', [q[0].status, /froze on this job twice/.test(q[0].error)], ['timeout', true]);
+    const q2 = [{ id: 'a', status: 'applying' }, { id: 'b', status: 'applying' }];
+    eq('the Queue Manager\'s own tabs are never touched', [mkRunner(q2, 'a', true).requeueStaleApplying(q2[0]), q2[1].status], [0, 'applying']);
+  })());
+  const gn = body('goNext');
+  eq('goNext records which job it opened and clears leftovers first',
+    /requeueStaleApplying\(n\);\s*n\.status = 'applying';[\s\S]{0,120}st\.set\(Q_CURRENT_KEY, n\.id\)/.test(gn), true);
+  eq('processQ resolves its job by id, after putting leftovers back', /const c = await currentRunnerJob\(\);\s*if \(await requeueStaleApplying\(c\)\)/.test(body('processQ')), true);
+  eq('a page on ANOTHER queued job\'s site is never taken for this job (Google job on a Stripe page)',
+    /here !== own && here !== c\.landedHost && queue\.some\(\(j\) => j !== c/.test(body('onCurrentJobPage')), true);
+  eq('the watchdog replaces a frozen runner with the job it was on (ua_q_current)', /const curId = await get\('ua_q_current'\);[\s\S]{0,200}applying\.find\(\(j\) => j\.id === curId\)/.test(orch), true);
+
+  // 2. Workday: one account record; the built-in flow waits while the engine drives.
+  const eng = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-wd-engine.js'), 'utf8');
+  eq('the engine says when it is driving the page', /busy: \(\) => isActive\(\),/.test(eng), true);
+  eq('…and the built-in account flow waits for it instead of clicking the other way',
+    /if \(window\.__uaWdEngine && typeof window\.__uaWdEngine\.busy === 'function' && window\.__uaWdEngine\.busy\(\)\) return 'working';/.test(body('fillWorkdayCreateAccount')), true);
+  const accountExistsFor = new Function('st', `${body('accountKeyFor')}\n${body('accountExistsFor')}\nreturn accountExistsFor;`)(
+    { get: async (k) => (k === 'ua_wd_login' ? { sites: { 'acme.wd5.myworkdayjobs.com': { state: 'account' } } } : {}) });
+  asyncChecks.push((async () => {
+    eq('the built-in flow reads the engine\'s accounts, per employer (wd5 record, wd1 page)', await accountExistsFor('acme.wd1.myworkdayjobs.com'), true);
+    eq('…not another employer\'s', await accountExistsFor('other.wd1.myworkdayjobs.com'), false);
+  })());
+
+  // 3. Verification codes: the length the page asks for; one click to allow Gmail.
+  const lenOf = (text, boxes = []) => new Function('document', 'codeBoxGroup', `${src.match(/  const NUM_WORDS = [^\n]*\n/)[0]}${body('verificationCodeLength')}\nreturn verificationCodeLength;`)(
+    { body: { innerText: text } }, () => boxes)();
+  eq('Greenhouse "enter the 8-character code" → 8', lenOf('A verification code was sent to you. To submit your application, enter the 8-character code to confirm you\'re a human.'), 8);
+  eq('Oracle "digit 1 of six" boxes → 6', lenOf('Enter verification code digit 1 of six.'), 6);
+  eq('…or the number of one-digit boxes', lenOf('Confirm your identity', [1, 2, 3, 4, 5, 6]), 6);
+  eq('the mailbox is told the length', /len: verificationCodeLength\(\)/.test(src), true);
+  const rv = body('resolveEmailVerification');
+  eq('Gmail reading off → asked once on the page; Allow carries on with this job',
+    /if \(!offered\) \{[\s\S]{0,300}if \(await offerGmailCodeReading\(\)\) \{ deadline = Date\.now\(\) \+ \(maxWaitMs \|\| 90000\); continue; \}/.test(rv), true);
+  const offer = body('offerGmailCodeReading');
+  eq('…Allow turns on the same opt-in as the Queue Manager tick', /st\.set\('ua_mail_gmail_session', true\)/.test(offer), true);
+  eq('…"Not now" is kept for a day, and the prompt sits in its own shadow root', /24 \* 3600 \* 1000/.test(offer) && /attachShadow\(\{ mode: 'open' \}\)/.test(offer), true);
+
+  // 4. Google Careers.
+  const COOKIE = new Function('return ' + src.match(/const COOKIE_ACCEPT_RE = (\/[^\n]*\/i);/)[1])();
+  const plainOf = new Function('label', src.match(/        const plain = [^\n]*\n/)[0] + 'return plain;');
+  const accepts = (l) => COOKIE.test(l) || COOKIE.test(plainOf(l));
+  eq('Google Careers\' cookie bar "OK, got it" is dismissed (it sat over Submit 18 times)', accepts('OK, got it'), true);
+  eq('…and "Accept & continue", "Okay"', accepts('Accept & continue') && accepts('Okay'), true);
+  eq('…but not "OK, submit" or "Continue to review"', accepts('OK, submit') || accepts('Continue to review'), false);
+  const yn = (q) => new Function('q', src.match(/    if \(\/\\bpersonali\[sz\]e[^\n]*\n/)[0] + 'return null;')(q.toLowerCase());
+  eq('"Personalize your Google Careers profile with job recommendations…?" → No', yn('Personalize your Google Careers profile with job recommendations and related content?'), 'no');
+  eq('…a real question about you is left to the other rules', yn('Do you have experience with personalised marketing campaigns?'), null);
+  eq('…and it is decided inside determineYesNo, next to the other opt-ins', /if \(SMS_OPTIN_RE\.test\(q\)\) return 'no';\n[^\n]*\n    if \(\/\\bpersonali/.test(body('determineYesNo')), true);
+  const rfi = body('resumeFileInputs');
+  eq('one bare file box on a page that asks for a résumé is the CV slot (Google: "Upload your résumé*")',
+    /if \(docs\.length === 1 && all\.length === 1\)/.test(rfi) && /r\[ée\]sum\[ée\]\|cv\|curriculum/.test(rfi), true);
+  const dcb = body('dialCodeBeside');
+  eq('a picker named "Country calling code" beside the phone box gives the code, so the box gets the local number',
+    /country \(calling \|dial\(l\?ing\)\? \)\?code\|calling code/.test(dcb), true);
 }

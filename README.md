@@ -4721,3 +4721,165 @@ other ATS test forms still submit.
   profile; where that did not reach Workday, the boxes stayed empty and the run
   met "Given Name(s) is required" again and again. The engine now flags "Your
   profile has no first name — add it in the extension's Profile".
+
+## v17.53 — SpeedyApply's "No profiles available" popup stays hidden
+
+- SpeedyApply (built in) showed its profile picker on every application with
+  "No profiles available. Please contact support if the issue persists." With
+  no SpeedyApply profile it fills nothing — this extension fills instead — so
+  its autofill box and message popups are now hidden until you add a
+  SpeedyApply profile, when they come back without a reload.
+
+## v17.54 — your name from your own CV
+
+The 23:29 log showed "Given Name(s) / Family Name is required" about 30 times an
+hour, because no saved profile had a first or last name (only an email).
+- When every profile is missing the name, the Workday engine now reads it from
+  your CV: the file name (`Maxmilliam_Okafor_CV….pdf`) and the CV's first lines.
+  When both give a name they must agree, or nothing is guessed. Job-title lines
+  ("Senior Solutions Architect") and contact lines are never taken for a name.
+- The name is then saved to this extension's Profile (only fields that are empty
+  there), so it is found once, not on every job.
+- Reading the CV text is capped at 4 seconds, so the first job never waits on it;
+  past that, the file name alone decides.
+
+## v17.55 — what kept the 23:29 queue from moving
+
+From the 23:29 debug log (79 timeouts since 17:00):
+- **CV upload ("Upload didn't confirm", 20+ jobs).** On live Workday a
+  "Select files" button sits in front of the hidden file input, and the engine
+  handed the CV to the button: no input inside it, so it gave up in the same
+  second. It now always finds the real input. The built-in uploader also
+  recognises Workday's own "file accepted" row (`file-upload-successful`); Workday
+  empties the input once it has the file, so a good upload read as failed.
+  New test page: `tests/e2e/workday-live-upload.html` (fails on v17.54, passes now).
+- **"Unrecognised page" (22 jobs).** After sign-in, or when Apply never opened, the
+  engine now presses Apply Manually / Use My Last Application (known by its words,
+  not only Workday's ids), presses Apply on a posting, and after ~12s opens the
+  job's own `…/apply/applyManually` address once, before asking you.
+- **Sign In / Create Account going round in circles.** The built-in flow and the
+  engine kept separate account records under different keys: one said "account
+  already created here — Sign In", the other "No saved account — Create Account".
+  Both now read and write the same per-employer record.
+- **"Couldn't find the submit button on the sign-in form" (8).** Workday's button is
+  hidden under a transparent click cover; the cover is now pressed, and the button
+  is waited for up to 5s.
+- **"Couldn't tick the account terms box" (7).** Tried on the box, its label and its
+  wrapper, waiting up to 1s each for it to register.
+- **Apply loop until the 5-minute cap.** The generic Apply finder pressed anything
+  whose id contained "apply": Booz Allen's "time left to apply · End Date" label,
+  and inside Littelfuse's application "Zurück zur Stellenausschreibung" (back to
+  the posting). It now needs a real button or link that does not say back /
+  deadline, and stands down once inside Workday's `/apply/` pages.
+- **My Information.** Fields are waited for (up to 10s) before filling, and an AI
+  answer is capped at 20s.
+- **Degree left blank (Marmon).** When the suggested option is the wrong kind
+  (arts for a science degree), a same-level option of the right kind ("Master of
+  Science (M.S.)") or one naming only the level ("Masters (or equivalent)") is
+  used; an MBA or MEng is never put in its place.
+
+## v17.56 — Turning on Fully Automated no longer makes the sidebar disappear
+
+The cause, reproduced in Chromium on v17.55:
+1. Switching Fully Automated on starts the automation, which presses Jobright's
+   Autofill.
+2. Jobright's panel switches to its filling view, which has no form inputs.
+3. On an account with limited credits that view carries a line like "Upgrade to
+   Turbo to autofill answers with AI" or "N credits left".
+4. The credits/upgrade remover climbs up from that line to find the box to hide.
+   It only stopped at form inputs, so it climbed all the way to the panel's main
+   container and hid the whole sidebar: the switch, the queue and the log. The
+   cards, re-added every 3s, landed inside the hidden panel.
+
+Now:
+- **The remover stops short of the sidebar.** It never climbs into Jobright's
+  sidebar root, anything holding our controls, or anything half the window
+  tall. Only the credits box goes. (Test page: before, the whole panel hidden;
+  now only the "Upgrade to Turbo" box.)
+- **Our controls are never left invisible.** Every 3s, a container around them
+  that was hidden as a credits box, or by a tuck that should have ended, is
+  shown again. A sidebar you hide yourself with the toolbar icon is left alone.
+
+## v17.57 — fixes from the 22:44 debug log
+
+**1. Each job is applied on its own page.** In the log, Google and Amazon jobs
+were recorded on a Stripe Greenhouse form, a Workday form and another Google
+form. 5 of the 9 failed or timed-out Google and Amazon jobs were on another
+job's page, and 3 more were marked done for an application made on another
+job's page. The single-tab runner took the first job marked "applying"
+as its own. A runner tab that had frozen or been replaced left its job on
+"applying", so the next tab picked that one up on whatever page it was on.
+Now:
+- The runner remembers by id which job it opened (`ua_q_current`) and resolves
+  its job that way. The watchdog that replaces a frozen runner uses the same
+  id.
+- Jobs left "applying" by a frozen or replaced runner go back into the queue.
+  The second time a job freezes the runner, it is skipped with that reason.
+  Queue Manager tabs are never touched.
+- A page on another queued job's site is never taken for the current job.
+
+**2. Workday: the account flow and the engine stop contradicting each other.**
+The log shows "account already created here — switching to Sign In" 58 times
+against "No saved account — switching to Create Account" 66 times. v17.55
+already gave both one account record. Two gaps remained:
+- The built-in account flow now waits while the engine is driving the page.
+  The engine exposes `busy()` for this.
+- The built-in flow also reads the engine's records, per employer, so a wd5
+  record counts on a wd1 page.
+
+**3. Verification codes.**
+- **Oracle.** The PIN screen ("Enter verification code digit 1 of six") was
+  found 21 times. Each time the answer was "no mailbox is connected": reading
+  codes from Gmail is opt-in, and it was off. Now, the first time a code is
+  needed, a small box on the page asks once. **Allow** turns on "Read codes
+  from my signed-in Gmail" (the same tick as in the Queue Manager), and the job
+  carries on. **Not now** is remembered for a day.
+- **Greenhouse.** The "Security code" is 8 letters and digits ("enter the
+  8-character code"), and the mailbox only knew digit codes. The page now tells
+  the mailbox how long the code is: Greenhouse's "8-character", Oracle's "of
+  six", or the number of one-digit boxes. A letters-and-digits code of that
+  length after the word "code" is read. The old pattern was case-insensitive,
+  so "Your code expires in 10 minutes" would have handed back "expires"; that
+  no longer happens.
+
+**4. Google Careers.** "Submit was clicked but no confirmation appeared" 7
+times. Submit was never really pressed:
+- Google's cookie bar ("OK, got it") sat over the button on all 18 tries, and
+  the accept-button pattern didn't know that wording. It does now, along with
+  "Accept & continue" and "Okay".
+- The résumé box is a bare file input with no label. When a page asks for a
+  résumé and has exactly one file box, that box gets the CV.
+- The phone box received "+353 87 426 1508" next to Google's own "Country
+  calling code" picker, and Google rejected it. A picker that names itself the
+  country / calling / dial code now counts, so the box gets the local number.
+- "Personalize your Google Careers profile with job recommendations…?" is
+  answered No, like other mailing preferences.
+
+Amazon needed nothing of its own: every Amazon job in the log was one of
+fix 1's other-page cases.
+
+## v17.58 — rebased onto Jobright 1.25.2
+
+Jobright 1.25.2 changes three of their files and adds one. All were merged by
+the steps under "Applying the next Jobright patch".
+- **`helper-app.41ea2652.js`** (their sidebar app): theirs, with our two edits
+  re-applied. Each anchor is still in 1.25.2 exactly once, and the "Not Now"
+  handler is still the popup's `onCancel`. The two edits:
+  - "Add this job first" is answered "Not Now" and never drawn;
+  - their standard autofill does not start on a tab our run or engine owns
+    (`__uaOwnsAutofill`).
+- **`static/background/index.js`** (their worker): theirs, with our five
+  `importScripts` lines re-appended (orchestrator, mailbox, diagnostics,
+  debugger, SpeedyApply host). Their changes:
+  - Ashby saves now also commit Ashby's SMS "texting consent" answer;
+  - their field-reporting filter no longer depends on the page's source.
+  Nothing collides with ours: still 4 `active:!0` and 6 `chrome.alarms` uses,
+  and no `UA_` messages, side panel, context menus or `beforeunload`.
+- **`agent-submission-sync.7f769d2a.js`** (new, `jobright.ai` pages only,
+  `document_start`, top frame): when their worker confirms an application,
+  it tells Jobright's own `/agent` page. It never runs on an application page
+  and does not hold messages open.
+- **Manifest:** version 1.25.2, and the new script placed first among theirs,
+  after ours, as in their own order. Their permissions were already all in
+  ours, and every resource of theirs that exists on disk was already listed.
+  `_metadata/` was not copied.

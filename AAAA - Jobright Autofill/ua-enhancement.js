@@ -2198,6 +2198,8 @@
        answered these No every time. Checked before the strong-No list because its
        "authorize" escape would turn "I authorize Acme to text me" into Yes. */
     if (SMS_OPTIN_RE.test(q)) return 'no';
+    // Google Careers: "Personalize your Google Careers profile with job recommendations and related content?" — a mailing preference, not a question about you.
+    if (/\bpersonali[sz]e\b[^?]{0,80}\b(recommendations?|related content|career content|job alerts?)\b|\b(receive|get|send (me|you))\b[^?]{0,30}\b(job (alerts?|recommendations?)|career content)\b/.test(q)) return 'no';
     // "Are you a current or former government official / employee?" (Mastercard, SmartRecruiters).
     if (/\b(government|public)\s+(official|employee|servant|officer)|politically exposed|\bgovernment[- ]owned\b.*\b(employ|work)/.test(q)) return 'no';
 
@@ -3966,6 +3968,22 @@
           if (m) return m[1];
         }
       }
+      /* A picker that NAMES itself the country code — Google Careers' "Country
+         calling code" select next to "Primary phone" — counts even when the
+         phone group holds other boxes too. Its chosen option is the code. */
+      box = el.parentElement;
+      for (let i = 0; i < 6 && box && box !== document.body; i++, box = box.parentElement) {
+        for (const x of box.querySelectorAll('select,[role="combobox"],[aria-haspopup="listbox"]')) {
+          if (x === el || x.contains(el)) continue;
+          const name = (x.getAttribute('aria-label') || '') + ' ' + (x.name || '') + ' ' + (x.id || '') + ' ' + ((x.labels && x.labels[0] && x.labels[0].textContent) || '');
+          if (!/country (calling |dial(l?ing)? )?code|calling code|dial(l?ing)? code/i.test(name)) continue;
+          const t = x.tagName === 'SELECT'
+            ? ((x.selectedOptions && x.selectedOptions[0] && x.selectedOptions[0].text) || '')
+            : (x.textContent || '');
+          const m = t.match(/\+\s?(\d{1,4})\b/);
+          if (m) return m[1];
+        }
+      }
     } catch (_) {}
     return '';
   }
@@ -4414,7 +4432,8 @@
     return false;
   }
   function resumeFileInputs() {
-    return deepAll('input[type="file"]', 60).filter((el) => {
+    const all = deepAll('input[type="file"]', 60);
+    const found = all.filter((el) => {
       if (isCoverLetterSlot(el)) return false;
       const hay = [el.name, el.id, el.accept, el.getAttribute('aria-label'),
         el.getAttribute('data-automation-id'), el.getAttribute('data-testid'), getLabel(el)].join(' ');
@@ -4423,13 +4442,28 @@
       try { return !!el.closest('[class*="upload" i],[class*="dropzone" i],[class*="attach" i],[class*="resume" i],[class*="file" i]'); }
       catch (_) { return false; }
     });
+    if (found.length) return found;
+    /* Google Careers: "Upload your résumé*" over one bare <input type=file>
+       (accept=".pdf,.docx", generated class names, no label of its own). The
+       page asks for a résumé and has exactly one document box — that is it. */
+    try {
+      const docs = all.filter((el) => !isCoverLetterSlot(el) && (!el.accept || /pdf|doc|application\//i.test(el.accept)));
+      if (docs.length === 1 && all.length === 1) {
+        const copy = (document.body && document.body.innerText || '').slice(0, 20000);
+        if (/\b(upload|attach|add|browse)\b[^.\n]{0,30}\b(r[ée]sum[ée]|cv|curriculum)\b|\b(r[ée]sum[ée]|cv)\b[^.\n]{0,20}\b(is )?required/i.test(copy)) return docs;
+      }
+    } catch (_) {}
+    return found;
   }
   // Is a file already attached? Checked before touching anything, so we never
   // re-upload over a good attachment (and never reach a remove button).
   function resumeAlreadyAttached() {
     for (const inp of resumeFileInputs()) if (inp.files && inp.files.length) return true;
     // The ATS usually renders the accepted file as a chip / filename row.
+    // Workday's are file-upload-successful / file-upload-item — and it empties the
+    // input once it has the file, so without these a good upload read as failed.
     const chips = deepAll('[class*="filename" i],[class*="file-name" i],[data-automation-id="file-name"],' +
+      '[data-automation-id="file-upload-successful"],[data-automation-id="file-upload-item"],' +
       '[class*="attachment" i],[class*="uploaded" i],[class*="file-item" i],spl-file-upload', 80);
     // "PDF, DOC, DOCX up to 5MB" and "e.g. resume.pdf" are instructions, not an
     // attachment. Reading them as one made us skip the upload entirely and then
@@ -12197,6 +12231,11 @@
   async function fillWorkdayCreateAccount(submit) {
     if (!isWorkday()) return 'stop';
     if (_authDeadEnd) return 'stop';
+    /* The Workday engine is mid-step on this page (its own sign-in / create
+       account): wait. Both acting at once was the ping-pong — the engine went
+       "No saved account → Create Account" while this went "already created →
+       Sign In", 60+ times in one run. */
+    try { if (window.__uaWdEngine && typeof window.__uaWdEngine.busy === 'function' && window.__uaWdEngine.busy()) return 'working'; } catch (_) {}
     if (submit && wdAuthState().reset) { const rs = await wdResetStep(); if (rs) return rs; }
     let pwFields = $$('input[type=password]').filter(isVisible);
     if (!pwFields.length) return 'stop'; // not on a create-account / sign-in page
@@ -12442,7 +12481,46 @@
       if (location.href.includes(p.slice(0, Math.min(p.length, 25)))) return true;
     } catch (_) {}
     try { if (new URL(c.url).hostname === location.hostname) return true; } catch (_) {}
+    /* "Any page with a form or an Apply button" — but not a page that is ANOTHER
+       queued job's (its site is that job's and not this one's): that is the
+       Rakuten page being taken for the Rackspace job. A careers-site link that
+       leads on to its ATS on a new site still counts. */
+    try {
+      const here = location.hostname, own = new URL(c.url).hostname;
+      if (here !== own && here !== c.landedHost && queue.some((j) => j !== c && (() => { try { return new URL(j.url).hostname === here; } catch (_) { return false; } })())) return false;
+    } catch (_) {}
     return hasApplicationForm() || hasApplyButton();
+  }
+  const Q_CURRENT_KEY = 'ua_q_current';
+  /* The runner's job: the one goNext opened (ua_q_current), else the most
+     recently started one still applying — never the oldest. */
+  async function currentRunnerJob() {
+    let id = '';
+    try { id = (await st.get(Q_CURRENT_KEY)) || ''; } catch (_) {}
+    const byId = id && queue.find((j) => j.id === id && j.status === 'applying');
+    if (byId) return byId;
+    const applying = queue.filter((j) => j.status === 'applying');
+    return applying.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0] || null;
+  }
+  /* Jobs left marked applying by a runner tab that froze or was replaced go back
+     in the queue — twice at most; a job that took the runner down twice is
+     recorded as timed out instead of being retried for ever. Never while the
+     Queue Manager runs (its jobs are its own). Returns how many changed. */
+  function requeueStaleApplying(keep) {
+    let changed = 0;
+    try {
+      if (_mgrDriving) return 0;
+      for (const j of queue) {
+        if (j === keep || j.status !== 'applying') continue;
+        j.runnerTries = (j.runnerTries || 0) + 1;
+        if (j.runnerTries >= 2) {
+          j.status = 'timeout'; j.error = 'The runner tab froze on this job twice — skipped'; j.completedAt = Date.now();
+        } else { j.status = 'pending'; j.startedAt = null; j.landedHost = ''; }
+        changed++;
+      }
+      if (changed) LOG(`Queue: ${changed} job(s) left "applying" by a frozen or replaced runner tab — back in the queue`);
+    } catch (_) {}
+    return changed;
   }
 
   // ===== MANAGER MODE (OptimHire-style orchestration) =====
@@ -12838,7 +12916,14 @@
     // run for good.
     if (!isRunnerTab() && !(await confirmRunnerTab())) return;
     setAutomationFlag(true);
-    const c = queue.find(j => j.status === 'applying');
+    /* THE job this runner opened — by id. It was "the first job marked
+       applying": every runner-tab replacement left its job marked applying for
+       good (39 in one export), and each page the runner then opened was taken
+       for the oldest of them — 60 of 94 jobs were applied on another job's page
+       and recorded under the wrong one (Rackspace's row held a Rakuten
+       application, CrowdStrike's "done" was GE Vernova). */
+    const c = await currentRunnerJob();
+    if (await requeueStaleApplying(c)) { await saveQ(); renderQ(); }
     if (c) {
       try {
         // Give a page that is still drawing a moment before deciding it is not this job's.
@@ -13050,8 +13135,11 @@
     }
     const n = queue.find(j => j.status === 'pending');
     if (n) {
+      requeueStaleApplying(n);
       n.status = 'applying';
       n.startedAt = Date.now();
+      n.landedHost = '';
+      st.set(Q_CURRENT_KEY, n.id);
       // LazyApply: save stoppedAt index for session resumption
       const idx = queue.indexOf(n);
       st.set('ua_q_stopped_at', idx);
@@ -15090,7 +15178,30 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     return card;
   }
 
+  /* Our controls can never be left invisible: anything hidden around them —
+     by the paywall remover above, or a tuck that should have ended — is shown
+     again. Runs with injectSidebarUI (every 3s). A sidebar you hid yourself
+     with the toolbar icon is a host with no marker, and is left alone. */
+  function unhideAroundOurControls() {
+    try {
+      const mine = (typeof window.__uaDeepQueryAll === 'function') ? window.__uaDeepQueryAll('#ua-fa-card') : [];
+      for (const c of mine) {
+        for (let n = c.parentElement; n; n = n.parentElement) {
+          if (n.getAttribute && n.getAttribute('data-ua-killed')) {
+            n.removeAttribute('data-ua-killed');
+            ['display', 'visibility', 'height', 'width', 'margin', 'padding', 'overflow'].forEach((k) => n.style.removeProperty(k));
+            LOG('Sidebar: a container our controls are in had been hidden as a "credits" box — shown again');
+          }
+        }
+        const host = c.getRootNode && c.getRootNode().host;
+        if (host && host.getAttribute && host.getAttribute('data-ua-sa-tucked') && !_saDriving) {
+          host.style.display = ''; host.removeAttribute('data-ua-sa-tucked');
+        }
+      }
+    } catch (_) {}
+  }
   function injectSidebarUI() {
+    unhideAroundOurControls();
     const root = findSidebarRoot();
     if (!root) return;
     const fa = buildFullAutoCard();
@@ -15498,6 +15609,18 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
      Application" bring in wrong data — and "useMyLastApplication" contains
      "apply", so the [data-automation-id*="apply"] selector below could take it. */
   const WD_NEVER_PRESS_AID_RE = /^(autofillWithResume|useMyLastApplication|useLastApplication)$/i;
+  /* An id or class containing "apply" is not an Apply button by itself. Booz
+     Allen's "time left to apply · End Date" label and Littelfuse's "Zurück zur
+     Stellenausschreibung" (back to the posting) both matched and were pressed —
+     the second sent the job back to the posting, Apply again, round until the
+     5-minute cap. A control, then, and one that does not say back / deadline. */
+  const APPLY_NOT_RE = /time left|end date|closing date|deadline|posted on|\bback\b|zur[üu]ck|retour|volver|voltar|torna(re)? |terug|wr[óo][ćc]|戻る|返回/i;
+  function applyControl(el) {
+    const tag = (el.tagName || '').toLowerCase();
+    const control = /^(button|a|input|spl-button|oj-button)$/.test(tag) || el.getAttribute('role') === 'button';
+    const t = normLabel(el.textContent || el.value || el.getAttribute('aria-label') || '');
+    return control && t.length <= 48 && !APPLY_NOT_RE.test(t);
+  }
   function findApplyButton() {
     const known = ['.jobs-apply-button', 'button.jobs-apply-button--top-card', '#indeedApplyButton',
       '#applyButtonLinkContainer a', 'button[data-testid*="apply" i]', 'a[data-testid*="apply" i]',
@@ -15505,7 +15628,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       'button[aria-label*="apply" i]', 'a[aria-label*="apply" i]', 'spl-button[data-test*="apply" i]'];
     for (const sel of known) {
       for (const el of deepAll(sel, 8)) {
-        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent)) && !WD_NEVER_PRESS_AID_RE.test(el.getAttribute('data-automation-id') || '')) return el;
+        if (el && isVisible(el) && !el.disabled && !APPLY_BAD_RE.test(normLabel(el.textContent)) && !WD_NEVER_PRESS_AID_RE.test(el.getAttribute('data-automation-id') || '') && applyControl(el)) return el;
       }
     }
     const cands = deepAll('button,a[role="button"],a,[role="button"],input[type=button],input[type=submit],spl-button,oj-button', 400)
@@ -15554,14 +15677,16 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
      it go away everywhere, whereas Decline on some implementations opens a
      preferences dialog — a second, larger blocker. */
   const COOKIE_BANNER_RE = /\b(cookie|cookies|consent|privacy preferences|tracking technolog)/i;
-  const COOKIE_ACCEPT_RE = /^(accept|accept all|accept cookies|accept all cookies|allow all|allow cookies|i agree|agree|got it|ok|understood|continue|akzeptieren|alle akzeptieren|tout accepter|aceptar)$/i;
+  const COOKIE_ACCEPT_RE = /^(accept|accept all|accept cookies|accept all cookies|accept (and|&) continue|agree (and|&) continue|allow all|allow cookies|i agree|agree|got it|ok|okay|i understand|understood|continue|akzeptieren|alle akzeptieren|tout accepter|aceptar)$/i;
 
   async function dismissCookieBanner() {
     try {
       const btns = deepAll('button,a,[role="button"]', 200).filter(isVisible);
       for (const b of btns) {
         const label = (b.textContent || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-        if (!label || label.length > 30 || !COOKIE_ACCEPT_RE.test(label)) continue;
+        // Google Careers' bar says "OK, got it": punctuation and a leading "OK" are not part of the meaning.
+        const plain = label.replace(/[,.!:;]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^ok(ay)? (?=\S)/i, '');
+        if (!label || label.length > 30 || !(COOKIE_ACCEPT_RE.test(label) || COOKIE_ACCEPT_RE.test(plain))) continue;
         // It must actually be in a consent banner — "OK" and "Continue" are
         // everywhere, and pressing the wrong one advances the application.
         let scope = b, banner = null;
@@ -15623,6 +15748,9 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     // Inside the application already: an Apply link here leads back to the job
     // description, and from there round the login again. See pastTheApplyStep.
     if (pastTheApplyStep()) return true;
+    // Inside Workday's application (…/job/…/apply/…) the only "apply" control left
+    // leads back to the posting; the steps from here are the sign-in and the form.
+    if (isWorkday() && /\/job\/.+\/apply(\/|$)/i.test(location.pathname) && !findApplyManually()) return true;
     while (clicks < limit) {
       if (hasApplicationForm()) return true;
       // If a "Start Your Application" choice modal is up, pick Apply Manually and WAIT
@@ -15706,6 +15834,25 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       return { email, password: String(a.accountPassword || ''), hasProfile: !!(prof && prof.nameData && (prof.nameData.firstName || prof.nameData.lastName)) };
     } catch (_) { return null; }
   }
+  /* SpeedyApply with no profile kept showing its profile picker on every
+     application — "No profiles available. Please contact support if the issue
+     persists." With no profile it fills nothing (this extension fills instead),
+     so its autofill box and message popups stay hidden until you add a
+     SpeedyApply profile; then they come back without a reload. */
+  const SA_QUIET_ID = 'ua-sa-quiet';
+  async function saQuietWithoutProfile() {
+    const sa = await saSettings();
+    const quiet = !!sa && !sa.hasProfile;
+    let s = document.getElementById(SA_QUIET_ID);
+    if (quiet && !s) {
+      s = document.createElement('style');
+      s.id = SA_QUIET_ID;
+      s.textContent = 'speedyapply-autofill,speedyapply-modal{display:none!important}';
+      (document.head || document.documentElement).appendChild(s);
+    } else if (!quiet && s) s.remove();
+  }
+  setTimeout(() => { saQuietWithoutProfile().catch(() => {}); }, 0);
+  try { chrome.storage.onChanged.addListener((c, area) => { if (area === 'local' && (c.profile || c.autofillAccount)) saQuietWithoutProfile().catch(() => {}); }); } catch (_) {}
   async function saWorkdayAccount() {
     if (!isWorkday()) return null;
     const sa = await saSettings();
@@ -15760,7 +15907,10 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       const m = (await st.get('ua_created_accounts')) || {};
       if (m[accountKeyFor(host)]) return true;
       // Tolerate records written under a raw host before the key was normalised.
-      return !!m[String(host || location.hostname || '').toLowerCase()];
+      if (m[String(host || location.hostname || '').toLowerCase()]) return true;
+      // …and the Workday engine's record (per host): one account record for both.
+      const k = accountKeyFor(host), sites = (((await st.get('ua_wd_login')) || {}).sites) || {};
+      return Object.keys(sites).some((h) => accountKeyFor(h) === k && /^(account|verify)$/.test(String((sites[h] || {}).state || '')));
     } catch (_) { return false; }
   }
   /* ── ATS ACCOUNT WALLS ─────────────────────────────────────────────────────
@@ -15957,10 +16107,60 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   /* Ask the service worker for the code or link. The worker's mailbox module is
      read-only and bounded to recent mail from THIS employer — see the header of
      ua-mailbox.js for why each of those limits is there. */
+  /* How long the code is, when the page says: Greenhouse "enter the 8-character
+     code", Oracle's "digit 1 of six" boxes, or simply the number of boxes. The
+     mailbox uses it to tell a code from an ordinary word. */
+  const NUM_WORDS = { four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  function verificationCodeLength() {
+    try {
+      const copy = (document.body && document.body.innerText || '').slice(0, 6000);
+      const m = copy.match(/\b(\d{1,2}|four|five|six|seven|eight|nine|ten)[- ](?:character|digit|letter)s?\b[^.\n]{0,30}\bcode\b/i) ||
+        copy.match(/\bdigit \d of (\d{1,2}|four|five|six|seven|eight|nine|ten)\b/i);
+      if (m) { const n = NUM_WORDS[m[1].toLowerCase()] || Number(m[1]); if (n >= 4 && n <= 12) return n; }
+      const g = codeBoxGroup();
+      if (g.length) return g.length;
+    } catch (_) {}
+    return 0;
+  }
+
+  /* Reading codes from your Gmail is opt-in. When a code is needed and it is
+     off, ask once, on the page, rather than only writing it to the log: one
+     click on "Allow" turns on "Read codes from my signed-in Gmail" (the same
+     tick as in the Queue Manager) and this job carries on. "Not now" is kept
+     for the day so the question does not come back on every job. */
+  const MAIL_OFFER_KEY = 'ua_mail_offer_declined';
+  async function offerGmailCodeReading() {
+    try {
+      const no = await st.get(MAIL_OFFER_KEY);
+      if (no && Date.now() - no < 24 * 3600 * 1000) return false;
+    } catch (_) {}
+    if (document.getElementById('ua-mail-offer')) return false;
+    const host = document.createElement('div');
+    host.id = 'ua-mail-offer';
+    host.style.cssText = 'position:fixed;z-index:2147483647;right:16px;bottom:16px;max-width:360px';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<style>.b{font:13px/1.45 system-ui,sans-serif;background:#fff;color:#1f2328;border:1px solid #d0d7de;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 14px}' +
+      '.r{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}button{font:inherit;border-radius:6px;padding:5px 12px;cursor:pointer;border:1px solid #d0d7de;background:#f6f8fa;color:#1f2328}' +
+      'button.y{background:#1f6feb;border-color:#1f6feb;color:#fff}</style>' +
+      '<div class="b"><b>This page needs the code that was just emailed to you.</b><br>' +
+      'Let the extension read verification codes from the Gmail you are signed in to in this browser? It only looks at the last few minutes of mail, only at verification emails, and keeps nothing.' +
+      '<div class="r"><button class="n">Not now</button><button class="y">Allow</button></div></div>';
+    (document.body || document.documentElement).appendChild(host);
+    const answer = await new Promise((res) => {
+      root.querySelector('.y').addEventListener('click', () => res(true));
+      root.querySelector('.n').addEventListener('click', () => res(false));
+      setTimeout(() => res(null), 120000);
+    });
+    try { host.remove(); } catch (_) {}
+    if (answer === true) { await st.set('ua_mail_gmail_session', true); LOG('Reading verification codes from your signed-in Gmail — turned on'); return true; }
+    if (answer === false) { try { await st.set(MAIL_OFFER_KEY, Date.now()); } catch (_) {} }
+    return false;
+  }
+
   function askMailboxForVerification(hosts, companies, since) {
     return new Promise((res) => {
       try {
-        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies, since: since || 0 }, (r) => {
+        chrome.runtime.sendMessage({ type: 'UA_MAIL_FIND_VERIFICATION', hosts, companies, since: since || 0, len: verificationCodeLength() }, (r) => {
           void chrome.runtime.lastError;
           res(r || { ok: false, reason: 'no-reply' });
         });
@@ -15984,13 +16184,13 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     // The employer's own domain too: the mail often comes from the company, not
     // from the ATS that rendered the page.
     const company = pageCompanyName();
-    const deadline = Date.now() + (maxWaitMs || 90000);
+    let deadline = Date.now() + (maxWaitMs || 90000);
     // Only mail sent since this wall appeared (with slack for clock skew) — an
     // older code belongs to a previous job and is rejected.
     const since = Date.now() - 3 * 60000;
     const tried = new Set();
     const startedAt = Date.now();
-    let resent = false;
+    let resent = false, offered = false;
 
     while (Date.now() < deadline) {
       if (autoStopped()) return false;
@@ -16028,6 +16228,12 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         try { reportNeedsHuman('verification code — sign in to Gmail in this browser'); } catch (_) {}
         return false;
       } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
+        if (!offered) {
+          offered = true;
+          LOG('Email verification needed and reading codes from Gmail is off — asking you once on the page');
+          noteProgress('waiting for you to allow reading the code from Gmail');
+          if (await offerGmailCodeReading()) { deadline = Date.now() + (maxWaitMs || 90000); continue; }
+        }
         LOG('Email verification needed and no mailbox is connected — this job needs you. Tick "Read codes from my signed-in Gmail" in the Queue Manager to clear these automatically.');
         try { reportNeedsHuman('email verification'); } catch (_) {}
         return false;
@@ -19612,8 +19818,17 @@ a[href*="/checkout" i],
        the page DOM (not Jobright's shadow root) climbed eight levels to <html> and
        hid the WHOLE application — every field zero-sized, "No submit button found",
        and the job recorded as done. Stop at anything that holds form controls. */
+    /* …nor into the sidebar itself. "When I toggle Fully Automated everything
+       disappears": Autofill switches Jobright's panel to its filling view, which
+       has no inputs and can carry "N credits left" / "Upgrade to Turbo …", so
+       the climb reached the panel's main container and hid all of it — the
+       switch, the queue and the log with it. Never the sidebar root, never
+       anything holding our controls, never anything half the window tall. */
+    const SIDEBAR_KEEP_SEL = '#jobright-helper-id,.jobright-helper-content-container,#ua-fa-card,[id^="ua-sb"],[id^="ua-"]';
     const isPage = (n) => n === document.body || n === document.documentElement ||
-      !!(n.querySelector && n.querySelector('input:not([type=hidden]),textarea,select,form,[role="combobox"]'));
+      !!(n.querySelector && n.querySelector('input:not([type=hidden]),textarea,select,form,[role="combobox"]')) ||
+      !!(n.matches && n.matches(SIDEBAR_KEEP_SEL)) || !!(n.querySelector && n.querySelector(SIDEBAR_KEEP_SEL)) ||
+      (() => { try { return n.getBoundingClientRect().height > (window.innerHeight || 800) * 0.5; } catch (_) { return false; } })();
     for (let i = 0; i < limit && cur; i++) {
       const txt = (cur.textContent || '').trim();
       if (!txt) break;
@@ -19670,6 +19885,7 @@ a[href*="/checkout" i],
           // Don't kill if this element ALSO wraps a clearly-different
           // control (the whole sidebar contains "Upgrade to Turbo" too).
           if (/(your\s+autofill\s+information|upload\s+resume|tailor\s+resume|match\s+score|completion|add\s+this\s+job|submit\s+application)/i.test(txt)) continue;
+          if (el.matches && (el.matches('#jobright-helper-id,.jobright-helper-content-container,[id^="ua-"]') || el.querySelector('#jobright-helper-id,.jobright-helper-content-container,[id^="ua-"]'))) continue;
           el.style.setProperty('display', 'none', 'important');
           el.setAttribute('data-ua-killed', '1');
         }

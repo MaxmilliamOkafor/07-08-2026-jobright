@@ -1108,8 +1108,15 @@
     if (!box) return false;
     const isOn = () => box.checked || box.getAttribute("aria-checked") === "true";
     if (isOn() === checked) return true;
-    await humanClick(box);
-    await sleep(80);
+    // Workday's account-terms box sits under its label / a click overlay and
+    // updates late: one click and an 80 ms look paused 7 sign-ups in an evening.
+    const label = box.id ? q(`label[for="${CSS.escape(box.id)}"]`) : null;
+    for (const el of [box, label, box.closest("label"), box.parentElement]) {
+      if (!el) continue;
+      await humanClick(el);
+      if (await waitFor(() => isOn() === checked, 1e3, 80).catch(() => false)) return true;
+      if (isOn() !== checked && el === box) { try { box.click(); } catch {} if (isOn() === checked) return true; }
+    }
     return isOn() === checked;
   }
   async function checkInGroup(target, wanted) {
@@ -1214,11 +1221,21 @@
     const m = q(sel("dateMonth"), target)?.value ?? "";
     return [y, m].filter(Boolean).join("-");
   }
+  /* The real <input type="file"> for an upload control. On live Workday the
+     "Select files" button (select-files) comes before the hidden input, and the
+     upload was handed the button: no input inside it, so it gave up in the same
+     second — "Upload didn't confirm" on 20 jobs in one evening. */
+  function fileInputFor(target) {
+    if (!target) return null;
+    if (target.matches('input[type="file"]')) return target;
+    const zone = target.closest('[data-automation-id="file-upload-drop-zone"], [data-automation-id^="formField-"], section, fieldset') ?? target.parentElement;
+    return q('input[type="file"]', target) ?? (zone ? q('input[type="file"]', zone) : null);
+  }
   function uploadedFileNames(root2 = document) {
     return qa(sel("fileUploaded"), root2).filter(isVisible).map(text);
   }
   async function uploadFile(target, file) {
-    const input = target.matches('input[type="file"]') ? target : q('input[type="file"]', target);
+    const input = fileInputFor(target);
     if (!input) return false;
     const dt = new DataTransfer();
     dt.items.add(file);
@@ -1367,7 +1384,7 @@
     }
     if (VERIFY_EMAIL_RX.test(body) && !anyAid("password") && !next)
       return "verifyEmail";
-    if (anyAid("autofillWithResume") || anyAid("applyManually")) return "applyMethod";
+    if (anyAid("autofillWithResume") || anyAid("applyManually") || buttonByText(APPLY_MANUALLY_RX)) return "applyMethod";
     const PAGES = [
       ["pageReview", "review"],
       ["pageSelfId", "selfIdentify"],
@@ -1651,8 +1668,19 @@
     const btns = qa("button, [role='button'], input[type='submit']", scope).filter(isVisible);
     return btns.find((b) => b.type === "submit" && !/forgot/i.test(text(b))) ?? btns.find((b) => /^\s*(submit|continue)\s*$/i.test(text(b) || b.value || "")) ?? btns.find((b) => label.test(text(b))) ?? null;
   }
+  // Workday's Sign In / Create Account button is often not itself visible: a
+  // transparent click_filter beside it takes the clicks. Looking only for a visible
+  // button paused 8 sign-ins in an evening; it may also be drawn a moment late.
+  function coveredSubmit(key2, label) {
+    for (const b of qa(sel(key2))) {
+      const f = b.parentElement?.querySelector(sel("clickFilter"));
+      if (f && isVisible(f)) return f;
+    }
+    return qa(sel("clickFilter")).find((f) => isVisible(f) && label.test(f.getAttribute("aria-label") || text(f.parentElement))) ?? null;
+  }
   async function submit(key2, label, pw = null) {
-    const btn = byAid(key2) ?? submitNear(pw, label) ?? buttonByText(label);
+    const find = () => byAid(key2) ?? submitNear(pw, label) ?? buttonByText(label) ?? coveredSubmit(key2, label);
+    const btn = find() ?? await waitFor(find, 5e3, 250).catch(() => null);
     if (!btn) throw new NeedsHuman("Couldn't find the submit button on the sign-in form.");
     await humanClick(btn);
     await sleep(400);
@@ -1969,8 +1997,12 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       const sci = (s) => /\bscience\b|\b[mb]\.?\s?sc\b|\(m?b?sc?\)|\bm\.?s\.?$|\bb\.?s\.?$|\bms\b|\bbs\b/i.test(s);
       const art = (s) => /\barts?\b|\([mb]\.?a\.?\)|\b[mb]\.?a\.?$/i.test(s) && !/\bbusiness\b|\bmba\b/i.test(s);
       if (exact && ((sci(value) && art(exact) && !sci(exact)) || (art(value) && sci(exact) && !art(exact)))) {
-        const lvl = /master/i.test(value) ? /^master'?s?(\s+degree)?$/i : /bachelor/i.test(value) ? /^bachelor'?s?(\s+degree)?$/i : null;
-        exact = lvl ? options.find((o) => lvl.test(o.trim())) : void 0;
+        // Marmon's list had no plain "Master's", so the degree was left blank:
+        // a same-level option of the right kind first, then one naming only the level.
+        const lvl = /master|\bm\.?sc?\b|\bms\b/i.test(value) ? /\bmaster|\bgraduate\b|\bpost-?graduate\b/i : /bachelor|\bb\.?sc?\b|\bbs\b/i.test(value) ? /\bbachelor|\bundergraduate\b/i : null;
+        const right = (o) => sci(value) ? sci(o) && !art(o) : art(o) && !sci(o);
+        const plain = (o) => !sci(o) && !art(o) && !/\b(business|mba|education|fine|laws?|engineering|philosophy|public|social|nursing|divinity|music|architecture)\b/i.test(o);
+        exact = lvl ? options.find((o) => lvl.test(o) && right(o)) ?? options.find((o) => lvl.test(o) && plain(o)) : void 0;
         if (!exact) { ctx.log(`"${value}": no matching option ("${pick2}" is a different degree)`); return false; }
       }
       if (!exact) return false;
@@ -2314,7 +2346,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   async function uploadDocuments(ctx) {
     // Never the extension's own "add a resume" box (#ua-resume-file in its panel):
     // picking it cost 20s per job and added the CV to your resume list again.
-    const inputs = qa(sel("fileInput") + ', input[type="file"]').filter((i) => !i.closest('[id^="ua-"], .ua-panel, plasmo-csui'));
+    const inputs = [...new Set(qa(sel("fileInput") + ', input[type="file"]').map(fileInputFor))].filter((i) => i && !i.closest('[id^="ua-"], .ua-panel, plasmo-csui'));
     if (!inputs.length) return;
     const cv = pickCv(ctx);
     const cl = pickCoverLetter(ctx);
@@ -2744,8 +2776,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         broadcast(run);
       },
       async llm(system, prompt) {
-        const r = await chrome.runtime.sendMessage({ type: "wd:llm", system, prompt, json: true, maxTokens: 600 });
-        if (!r?.ok) throw new Error(r ? r.error : "LLM unavailable");
+        // Capped: an answer that never came held My Information for 2 minutes in silence.
+        const r = await within(chrome.runtime.sendMessage({ type: "wd:llm", system, prompt, json: true, maxTokens: 600 }), 2e4);
+        if (!r?.ok) throw new Error(r ? r.error : "LLM unavailable or too slow");
         return r.text;
       },
       async save() {
@@ -2796,6 +2829,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     return "stop";
   }
   async function fillAndNext(ctx, handler) {
+    // The step bar can say "My Information" before its fields are drawn; filling
+    // then found nothing and went straight to looking for Next.
+    await waitFor(() => qa('[data-automation-id^="formField-"]').some(isVisible), 1e4, 250).catch(() => null);
     if (handler) await handler(ctx);
     await genericFill(ctx);
     await ctx.save();
@@ -2838,7 +2874,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       }
       case "applyMethod": {
         await waitForExternalDocs(ctx);
-        const btn = byAid("applyManually");
+        const btn = byAid("applyManually") ?? buttonByText(APPLY_MANUALLY_RX);
         if (!btn) throw new NeedsHuman('Choose "Apply Manually", then click Resume.');
         ctx.log("Apply method: Apply Manually");
         await humanClick(btn);
@@ -2906,12 +2942,49 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         await sleep(1e4);
         return "stop";
       }
-      default:
+      default: {
+        // 22 jobs in one evening paused here: right after signing in (Workday's bar
+        // still on "Create Account/Sign In") and on postings whose Apply never
+        // opened. The way on is nearly always one of these, in this order.
         ctx.run.attempts++;
-        if (ctx.run.attempts > 5) throw new NeedsHuman("Unrecognised page. Move to the next step yourself, then click Resume.");
+        const choice = byAid("applyManually") ?? buttonByText(APPLY_MANUALLY_RX) ?? byAid("useLastApplication");
+        if (choice && isVisible(choice)) {
+          ctx.log(`Apply method: ${text(choice) || "Apply Manually"}`);
+          await humanClick(choice);
+          await waitStable(600);
+          return "next";
+        }
+        if (ctx.run.attempts <= 3 && !qa('[data-automation-id^="formField-"]').some(isVisible)) {
+          const apply = byAid("applyButton") ?? qa("a, button").find((b) => isVisible(b) && APPLY_TEXT_RX.test(text(b)));
+          if (apply && isVisible(apply)) {
+            ctx.log("Pressing Apply");
+            await humanClick(apply);
+            await waitStable(600);
+            return "next";
+          }
+        }
+        if (ctx.run.attempts === 8) {
+          const url = manualApplyUrl(location.href);
+          const k = `ua-wd-manual|${url}`;
+          if (url && url !== location.href.replace(/[?#].*$/, "") && !sessionStorage.getItem(k)) {
+            sessionStorage.setItem(k, "1");
+            ctx.log("Page never became the application — opening it directly (Apply Manually)", "warn");
+            await ctx.save();
+            location.href = url;
+            await sleep(1e4);
+            return "stop";
+          }
+        }
+        if (ctx.run.attempts > 12) throw new NeedsHuman("Unrecognised page. Move to the next step yourself, then click Resume.");
         await sleep(1500);
         return "continue";
+      }
     }
+  }
+  var APPLY_MANUALLY_RX = /^(apply manually|manuell bewerben|postuler manuellement|(postularse|aplicar|solicitar) manualmente|candidatar-se manualmente|candidatura manuale|handmatig solliciteren)$/i;
+  function manualApplyUrl(href) {
+    const base = String(href).replace(/[?#].*$/, "").replace(/\/apply(\/.*)?$/, "").replace(/\/$/, "");
+    return /\/job\//.test(base) ? `${base}/apply/applyManually` : "";
   }
   async function loop(run) {
     if (active) return;
@@ -3174,11 +3247,23 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   }
   async function noteSite(state) {
     try {
-      const d = await ST.get(LOGIN_KEY);
+      const d = await ST.get([LOGIN_KEY, "ua_created_accounts"]);
       const login = Object.assign({ sites: {} }, d[LOGIN_KEY] || {});
       login.sites = Object.assign({}, login.sites, { [tenantHost()]: { state, ts: Date.now() } });
-      await ST.set({ [LOGIN_KEY]: login });
+      const set2 = { [LOGIN_KEY]: login };
+      if (state === "account") set2.ua_created_accounts = { ...d.ua_created_accounts || {}, [siteKey()]: Date.now() };
+      await ST.set(set2);
     } catch {
+    }
+  }
+  async function accountKnown(host2) {
+    try {
+      const d = await ST.get([LOGIN_KEY, "ua_created_accounts"]);
+      const made = d.ua_created_accounts || {};
+      if (made[siteKey(host2)] || made[host2]) return true;
+      return Object.entries(d[LOGIN_KEY]?.sites || {}).some(([h, s]) => siteKey(h) === siteKey(host2) && (s?.state === "account" || s?.state === "verify"));
+    } catch {
+      return false;
     }
   }
   function createTried(host2, add = false) {
@@ -3198,6 +3283,11 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         const site = (login.sites || {})[host2] || {};
         const master = email && password ? { email, password } : null;
         if (site.state === "account" || site.state === "verify") return { cred: master, master };
+        // The built-in flow keeps its own record, per employer (wd1 / wd5 alike).
+        // Unread, the two disagreed: "account already created here — switching to
+        // Sign In", then "No saved account — switching to Create Account", round
+        // and round until the job timed out.
+        if (await accountKnown(host2)) return { cred: master, master };
         const page = detectPage();
         if (page === "createAccount") createTried(host2, true);
         if (page === "signIn" && !createTried(host2)) return { cred: null, master: null };
@@ -3567,6 +3657,25 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         if (!p.summary) p.summary = cv.summary;
       }, () => void 0);
     }
+    if (!p.personal.firstName || !p.personal.lastName) {
+      const nm = await cvName().catch(() => null);
+      if (nm) {
+        const add = {};
+        if (!p.personal.firstName) p.personal.firstName = add.first_name = nm.firstName;
+        if (!p.personal.lastName) p.personal.lastName = add.last_name = nm.lastName;
+        console.info(`[UA] Name taken from your CV: ${p.personal.firstName} ${p.personal.lastName} — saved to the extension's Profile`);
+        try {
+          const raw = (await ST.get("ua_profile")).ua_profile;
+          const cur = parse(raw) || {};
+          for (const k of Object.keys(add)) if (String(cur[k] || "").trim()) delete add[k];
+          if (Object.keys(add).length) {
+            const next = { ...cur, ...add };
+            await ST.set({ ua_profile: typeof raw === "string" ? JSON.stringify(next) : next });
+          }
+        } catch {
+        }
+      }
+    }
     for (const k of ["firstName", "lastName", "preferredName"]) p.personal[k] = properCase(p.personal[k] || "");
     return p;
   }
@@ -3577,6 +3686,50 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (!r || !r.base64) return void 0;
     const base64 = String(r.base64).split(",").pop() || "";
     return { fileName: r.fileName || r.name || "Resume.pdf", mime: r.mimeType || "application/pdf", base64 };
+  }
+  /* Your name from your own CV, for when no profile has it. The run kept meeting
+     "Given Name(s) / Family Name is required" (30 times an hour) because the
+     saved profile held only an email. Two sources, which must agree when both
+     speak: the file name ("Maxmilliam_Okafor_CV2026….pdf") and the CV's first
+     lines. A job-title line ("Senior Solutions Architect") is never a name. */
+  var NAME_STOP = /^(cv|resume|résumé|curriculum|vitae|final|updated|update|new|copy|latest|draft|version|v\d+|en|eng|english|pdf|docx?)$/i;
+  var TITLE_WORD = /\b(engineer|manager|architect|developer|analyst|consultant|director|specialist|senior|lead|officer|scientist|designer|head|vp|president|executive|associate|intern|technician|administrator|coordinator|professional|solutions?|sales|product|data|software|cloud)\b/i;
+  function nameFromFile(fileName) {
+    const words = String(fileName || "").replace(/\.[a-z0-9]+$/i, "").split(/[_\-\s.]+/).filter((w) => /^\p{L}[\p{L}'’]+$/u.test(w) && !NAME_STOP.test(w));
+    return words.length >= 2 && words.length <= 4 ? words : null;
+  }
+  function nameFromText(text) {
+    for (const raw of String(text || "").split(/\n/).map((s) => s.trim()).filter(Boolean).slice(0, 6)) {
+      const line = raw.split(/\s{2,}|\s[|•·]\s/)[0].trim();
+      if (/@|\d|resume|curriculum|vitae|\bcv\b/i.test(line) || TITLE_WORD.test(line)) continue;
+      const words = line.split(/\s+/);
+      if (words.length < 2 || words.length > 4) continue;
+      if (words.every((w) => /^\p{Lu}[\p{L}'’\-.]*$/u.test(w))) return words;
+    }
+    return null;
+  }
+  function pickCvName(fileName, text) {
+    const f = nameFromFile(fileName), t = nameFromText(text);
+    const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+    let w = null;
+    if (f && t) w = t.some((x) => f.some((y) => same(x, y))) ? t : null;
+    else w = t || f;
+    if (!w) return null;
+    return { firstName: properCase(w[0]), lastName: properCase(w[w.length - 1]) };
+  }
+  // The text read is capped (4s) so the first job never waits on it; past that the file name alone decides.
+  async function cvName(budget = 4e3) {
+    const doc = await savedCv().catch(() => void 0);
+    if (!doc) return null;
+    const read = (async () => {
+      if (!W.__ohCv) {
+        await chrome.runtime.sendMessage({ type: "UA_WD_CV_LOAD" }).catch(() => null);
+        for (let i = 0; i < 40 && !W.__ohCv; i++) await new Promise((r2) => setTimeout(r2, 100));
+      }
+      return W.__ohCv ? await W.__ohCv.text(doc.base64, doc.mime) : "";
+    })().catch(() => "");
+    const text = await within(read, budget).catch(() => "") || "";
+    return pickCvName(doc.fileName, text);
   }
   var cvReady = Promise.resolve();
   var cvReading = null;
@@ -3769,6 +3922,10 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       return false;
     },
     page: () => lastPage || detectPage(),
+    /** The engine is driving this page right now (its own sign-in / create
+     *  account included): the built-in account flow waits instead of clicking
+     *  the other way. */
+    busy: () => isActive(),
     stop: () => {
       clearMode();
       void stopRun();
