@@ -4857,3 +4857,29 @@ times. Submit was never really pressed:
 
 Amazon needed nothing of its own: every Amazon job in the log was one of
 fix 1's other-page cases.
+
+## v17.58 — rebased onto Jobright 1.25.2
+
+Jobright 1.25.2 changes three of their files and adds one. All were merged by
+the steps under "Applying the next Jobright patch".
+- **`helper-app.41ea2652.js`** (their sidebar app): theirs, with our two edits
+  re-applied. Each anchor is still in 1.25.2 exactly once, and the "Not Now"
+  handler is still the popup's `onCancel`. The two edits:
+  - "Add this job first" is answered "Not Now" and never drawn;
+  - their standard autofill does not start on a tab our run or engine owns
+    (`__uaOwnsAutofill`).
+- **`static/background/index.js`** (their worker): theirs, with our five
+  `importScripts` lines re-appended (orchestrator, mailbox, diagnostics,
+  debugger, SpeedyApply host). Their changes:
+  - Ashby saves now also commit Ashby's SMS "texting consent" answer;
+  - their field-reporting filter no longer depends on the page's source.
+  Nothing collides with ours: still 4 `active:!0` and 6 `chrome.alarms` uses,
+  and no `UA_` messages, side panel, context menus or `beforeunload`.
+- **`agent-submission-sync.7f769d2a.js`** (new, `jobright.ai` pages only,
+  `document_start`, top frame): when their worker confirms an application,
+  it tells Jobright's own `/agent` page. It never runs on an application page
+  and does not hold messages open.
+- **Manifest:** version 1.25.2, and the new script placed first among theirs,
+  after ours, as in their own order. Their permissions were already all in
+  ours, and every resource of theirs that exists on disk was already listed.
+  `_metadata/` was not copied.
