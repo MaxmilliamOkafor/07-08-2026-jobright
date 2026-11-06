@@ -127,7 +127,11 @@
     } catch (_) {}
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-      if (changes.ua_aa) { toggleOn = changes.ua_aa.newValue === true; ready = true; }
+      if (changes.ua_aa) {
+        toggleOn = changes.ua_aa.newValue === true; ready = true;
+        // Switched OFF: that includes an Autofill you pressed on this Workday application.
+        if (!toggleOn) { try { document.documentElement.removeAttribute('data-ua-oneclick'); } catch (_) {} }
+      }
       if (changes.ua_qa) queueRunning = changes.ua_qa.newValue === true;
       if (changes.ua_runner_tab) runnerTabId = typeof changes.ua_runner_tab.newValue === 'number' ? changes.ua_runner_tab.newValue : null;
     });
@@ -16487,8 +16491,13 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         el.setAttribute('data-ua-auto', '1');
         el.removeAttribute('data-ua-grace');
       } else {
+        /* The grace window is for the navigation AWAY from a job that just
+           ended. Only an actual end starts one: this is also called on every
+           page load with no job at all, and a grace window there kept the
+           page's own "Leave site?" off on pages the switch had left alone. */
+        const wasOn = el.getAttribute('data-ua-auto') === '1';
         el.removeAttribute('data-ua-auto');
-        el.setAttribute('data-ua-grace', String(Date.now() + AUTO_FLAG_GRACE_MS));
+        if (wasOn) el.setAttribute('data-ua-grace', String(Date.now() + AUTO_FLAG_GRACE_MS));
       }
     } catch (_) {}
   }

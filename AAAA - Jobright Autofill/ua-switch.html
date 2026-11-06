@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autofill switch</title>
+<style>
+  :root { --bg: #ffffff; --fg: #111827; --muted: #4b5563; --line: #e5e7eb; --on: #059669; --off: #6b7280; --run: #d97706; --btn: #f3f4f6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111418; --fg: #f3f4f6; --muted: #a1a8b3; --line: #2a2f36; --on: #10b981; --off: #6b7280; --run: #f59e0b; --btn: #1c2127; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 300px; background: var(--bg); color: var(--fg); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { padding: 16px; }
+  .switch { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px;
+    border: 2px solid var(--line); border-radius: 14px; background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; text-align: left; }
+  .switch:focus-visible { outline: 3px solid var(--on); outline-offset: 2px; }
+  .label { display: flex; flex-direction: column; }
+  .label small { color: var(--muted); font-size: 12px; }
+  .state { font-size: 26px; font-weight: 800; letter-spacing: .02em; }
+  .track { flex: 0 0 auto; width: 64px; height: 36px; border-radius: 18px; background: var(--off); position: relative; transition: background .15s; }
+  .knob { position: absolute; top: 4px; left: 4px; width: 28px; height: 28px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .15s; }
+  [aria-checked="true"] .track { background: var(--on); }
+  [aria-checked="true"] .knob { transform: translateX(28px); }
+  [aria-checked="true"] .state { color: var(--on); }
+  [aria-checked="false"] .state { color: var(--off); }
+  .switch.running .track { background: var(--run); }
+  .switch.running .state { color: var(--run); }
+  p.what { margin: 12px 2px 14px; color: var(--muted); }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--btn); color: var(--fg); font: inherit; cursor: pointer; }
+  .row button:hover, .switch:hover { border-color: var(--muted); }
+  .keys { margin: 12px 2px 0; color: var(--muted); font-size: 11.5px; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<main>
+  <button id="sw" class="switch" role="switch" aria-checked="false" aria-describedby="what">
+    <span class="label"><small>Autofill</small><span id="state" class="state">…</span></span>
+    <span class="track" aria-hidden="true"><span class="knob"></span></span>
+  </button>
+  <p id="what" class="what"></p>
+  <div class="row">
+    <button id="jr" type="button" title="Open Jobright's sidebar on this tab">Open Jobright</button>
+    <button id="qm" type="button">Queue Manager</button>
+  </div>
+  <p class="keys"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> switches it OFF from any tab. The badge on this icon always shows ON, OFF or RUN.</p>
+</main>
+<script src="ua-switch.js"></script>
+</body>
+</html>

@@ -17,7 +17,7 @@ ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 step "JavaScript syntax"
-for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
+for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/ua-switch-gate.js "$EXT"/ua-switch.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
   if node --check "$f" 2>/dev/null; then ok "$(basename "$f")"; else bad "$(basename "$f")"; fi
 done
 
@@ -96,6 +96,9 @@ node tests/diagnostics.test.js "$EXT/ua-diagnostics.js" || fails=$((fails + 1))
 
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
+
+step "The one autofill switch (SpeedyApply told \"disabled\" while it is OFF)"
+node tests/switch-gate.test.js "$EXT/ua-switch-gate.js" || fails=$((fails + 1))
 
 step "SpeedyApply embedded (its files unchanged, its background kept to its own data)"
 node tests/speedyapply-host.test.js "$EXT" || fails=$((fails + 1))

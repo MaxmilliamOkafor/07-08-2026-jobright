@@ -3469,6 +3469,11 @@ the new bundle removed a file the manifest still points at, or if the appended
      `ua-queue.js`, `ua-page-hooks.js`, `ua-diagnostics.js` — and only entries
      that exist on disk; Jobright's list names ~50 assets it does not ship.
    - `side_panel.default_path` = `ua-queue.html`.
+   - `ua-switch-gate.js` right after `ua-enhancement.js`: `<all_urls>`,
+     `document_start`, `all_frames: true` (it must come before SpeedyApply's
+     scripts).
+   - `action.default_popup` = `ua-switch.html` (the autofill switch), and
+     `commands["ua-switch-off"]` (Alt+Shift+A).
    - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
      `identity`.
    - Their new content scripts go after ours, in their order (1.24.0 added four;
@@ -4883,3 +4888,48 @@ the steps under "Applying the next Jobright patch".
   after ours, as in their own order. Their permissions were already all in
   ours, and every resource of theirs that exists on disk was already listed.
   `_metadata/` was not copied.
+
+## v17.59 — one autofill switch, on the toolbar, that really turns everything off
+
+**The switch is the toolbar icon.** Its badge always shows the state:
+**ON** (green), **OFF** (grey), or **RUN** (amber, a queue is applying). Click
+the icon for one large switch. The popup keeps "Open Jobright" (what the icon
+did before) and "Queue Manager". It is the same switch as "🤖 Fully
+Automated" in the sidebar, which was hard to reach while it was off, since the
+sidebar isn't loaded then. **Alt+Shift+A** switches it OFF from any tab; you
+can change the key at chrome://extensions/shortcuts. Like Alt+A in the page,
+the shortcut never switches it ON: that stays a deliberate click.
+
+**OFF now means off for everything in the extension, not just our own
+autofill.** A browser test opened a Greenhouse form and a Workday posting by
+hand (not as queue jobs), with the switch OFF and SpeedyApply's own setting
+on. On v17.58:
+- SpeedyApply's Workflow Add-on filled first name, last name, email and phone;
+- it added its floating button to the page;
+- the site's "Leave site?" warning was blocked.
+Now:
+- **SpeedyApply** is told autofill is disabled, through the two questions it
+  asks before acting: its content script's `getAutofillConfig` and its
+  add-on's `autofillEnabled` read. A new `ua-switch-gate.js` answers them in
+  every frame. SpeedyApply's files and its own stored setting are unchanged,
+  and a tab one of our runs owns still gets its real setting.
+- **"Leave site?"** works as the site intended. Two reasons it didn't:
+  - every page load started a "job just ended" grace window, even with no
+    job;
+  - a `window.onbeforeunload` handler's returned warning was dropped.
+  With the switch ON, or on a run's tab, it is still suppressed, as before.
+- **Jobright's "applied" popup** isn't sent to a tab, unless you opened
+  Jobright there yourself.
+- **A running queue stops** when you switch OFF, from any of the controls:
+  its job tabs close and unfinished jobs go back into the queue. The
+  single-tab runner and an Autofill you pressed on Workday stop too.
+- As before: our autofill and the Workday engine stand down, and Jobright's
+  helper isn't loaded unless you open it on a tab.
+
+**Tests:**
+- `tests/e2e/switch-off.js` checks all of the above in Chromium, 15 checks.
+  On the v17.58 build the same script fails the badge check and five of the
+  six Greenhouse checks.
+- `tests/switch-gate.test.js` (19) and the orchestrator suite (14 new) cover
+  the badge, stopping the queue, the shortcut and the popup filter.
+- `tests/e2e/leave-site.js` now checks both states.
