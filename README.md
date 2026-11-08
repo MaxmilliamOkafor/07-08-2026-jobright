@@ -4933,3 +4933,37 @@ Now:
 - `tests/switch-gate.test.js` (19) and the orchestrator suite (14 new) cover
   the badge, stopping the queue, the shortcut and the popup filter.
 - `tests/e2e/leave-site.js` now checks both states.
+
+## v17.60 — rebased onto Jobright 1.26.0
+
+Jobright 1.26.0 changes nine of their files and adds one. All were merged by
+the steps under "Applying the next Jobright patch".
+- **Copied as theirs** (none had edits of ours): `contents`,
+  `applied-success-popup`, `ats-submission-resume`,
+  `clearcompany-submission-attribution`, `successfactors-submission-network-main`,
+  `global.css`.
+- **New:** `oraclecloud-profile-snapshot-main.37216759.js`. Their worker
+  injects it into Oracle Cloud pages when their sidebar app asks for a
+  profile snapshot, so with the switch OFF it never runs. It is not a content
+  script.
+- **`helper-app.41ea2652.js`** (their sidebar app): theirs, with our two edits
+  re-applied. Each anchor is still in 1.26.0 exactly once, and the "Not Now"
+  handler is still the popup's `onCancel`. The two edits:
+  - "Add this job first" is answered "Not Now";
+  - their standard autofill stands down on a tab our run owns.
+- **`static/background/index.js`** (their worker): theirs, with our five
+  `importScripts` lines re-appended.
+  - 14 new page injections: Oracle education, employment, skills, dates and
+    conditional questions; Eightfold dependent fields; Rippling's Google
+    Places; iCIMS frame visibility. All are requested by their sidebar app
+    while it fills, so all are covered by the switch.
+  - Nothing collides with ours: the same counts of `active:!0` (4),
+    `chrome.alarms` (6), `action.onClicked` (1) and `openTailorTab` (1); the
+    same `atsAppliedSuccessPopup` and `iconClicked` messages; and no `UA_`
+    messages, side panel, context menus, commands, popups or `beforeunload`.
+- **Manifest:** version 1.26.0. Their manifest now lists fewer permissions
+  (no `tabs` or `activeTab`) and fewer web-accessible resources. Ours keeps
+  the full set we need. `_metadata/` was not copied.
+
+On 1.26.0, all unit checks pass, and so do the switch browser test
+(`tests/e2e/switch-off.js`, 15/15) and the leave-page browser test (11/11).
