@@ -59,6 +59,7 @@
         "<all_urls>"
       ],
       "js": [
+        "ua-keepalive.js",
         "ua-enhancement.js"
       ],
       "css": [],

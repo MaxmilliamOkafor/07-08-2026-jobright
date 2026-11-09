@@ -156,7 +156,7 @@ eq('the no-progress cut-off defaults to 15s', /stallMs: 15 \* 1000/.test(orch), 
 eq('the hard cap per job is 3 minutes', /jobTimeoutMs: 3 \* 60 \* 1000/.test(orch), true);
 // A 15s window is only meaningful if the beat is fast enough to fill it, and if
 // work in progress is credited AS it happens rather than at the end of a pass.
-eq('the heartbeat is fast enough for a 15s window (3 beats)', /beatIv = setInterval\(beat, 5000\);/.test(src), true);
+eq('the heartbeat is fast enough for a 15s window (3 beats)', /beatIv = uaEvery\(beat, 5000\);/.test(src), true);
 eq('the stall check polls every 3s', /\}, 3000\);/.test(src), true);
 eq('each filled field counts as progress, so a long form is not a stall',
   /noteProgress\('filling fields'\);   \/\/ per field/.test(src), true);
@@ -216,8 +216,8 @@ console.log('per-job cap extends while working');
 {
   const m = src.match(/const JOB_EXTEND_MS[\s\S]*?function jobTimeoutExtension\(startedAt\) \{[\s\S]*?\n  \}/);
   eq('jobTimeoutExtension exists', !!m, true);
-  const mk = (busy, idle, qTimeout) => new Function('isBusy', 'stalledFor', 'qTimeout',
-    m[0] + '\nreturn jobTimeoutExtension;')(() => busy, () => idle, qTimeout);
+  const mk = (busy, idle, qTimeout) => new Function('isBusy', 'stalledFor', 'qTimeout', 'frozenSince',
+    m[0] + '\nreturn jobTimeoutExtension;')(() => busy, () => idle, qTimeout, () => 0);
   const now = Date.now();
   eq('busy at 150s → 45s more', mk(true, 0, 150000)(now - 150000), 45000);
   eq('progressed 10s ago → 45s more', mk(false, 10000, 150000)(now - 150000), 45000);

@@ -626,7 +626,7 @@
   function checkAbort() {
     if (abortFlag) throw new Aborted();
   }
-  var sleep = (ms) => new Promise((r) => setTimeout(r, ms)).then(checkAbort);
+  var sleep = (ms) => new Promise((r) => globalThis.__uaKeep ? globalThis.__uaKeep.timeout(r, ms) : setTimeout(r, ms)).then(checkAbort);
   function isVisible(el) {
     if (!el || !(el instanceof HTMLElement)) return false;
     if (el.closest('[aria-hidden="true"]')) return false;

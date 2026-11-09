@@ -3815,7 +3815,15 @@
     };
   } catch (_) {}
   const queueDriving = () => (qActive && !qPaused) || _mgrDriving;
-  const sleep = ms => new Promise(r => setTimeout(r, Math.max(25, ms * (queueDriving() ? qSpeedFactor : 1))));
+  /* v17.60: during a run, waits keep time in a background tab (ua-keepalive.js);
+     without the helper, or with no run, these are setTimeout/setInterval. */
+  const _uaKeep = () => (typeof globalThis !== 'undefined' && globalThis.__uaKeep) || null;
+  const uaTimeout = (fn, ms) => (_uaKeep() ? _uaKeep().timeout(fn, ms) : setTimeout(fn, ms));
+  const uaEvery = (fn, ms) => (_uaKeep() ? _uaKeep().every(fn, ms) : setInterval(fn, ms));
+  const uaStopEvery = (id) => { if (_uaKeep()) _uaKeep().stopEvery(id); else clearInterval(id); };
+  // Time this tab spent frozen by Chrome since t0 — left out of job clocks.
+  const frozenSince = (t0) => { try { return (_uaKeep() && t0) ? _uaKeep().frozenSince(t0) : 0; } catch (_) { return 0; } };
+  const sleep = ms => new Promise(r => uaTimeout(r, Math.max(25, ms * (queueDriving() ? qSpeedFactor : 1))));
   // Scale a fixed delay the same way, for the waits that are not plain sleeps.
   const scaled = (ms, floor) => Math.max(floor || 60, Math.round(ms * (queueDriving() ? qSpeedFactor : 1)));
   function speedFactorFor(s) { return ({ 1: 1, 1.5: 0.66, 2: 0.45, 3: 0.3 })[s] || 1; }
@@ -6079,7 +6087,7 @@
     try { return await fn(); }
     finally { _busyDepth--; noteProgress(what); }
   }
-  function stalledFor() { return Date.now() - _lastProgressAt; }
+  function stalledFor() { return Math.max(0, Date.now() - _lastProgressAt - frozenSince(_lastProgressAt)); }
   function isStalled() { return stalledFor() > _stallLimitMs; }
   /* The per-job cap is a wall clock, and a wall clock cannot tell a stuck job from
      a slow one. A Workday tenant that needs an account plus five pages, or an
@@ -6092,7 +6100,7 @@
   const JOB_RECENT_PROGRESS_MS = 30000;
   const JOB_HARD_CEIL_MS = 5 * 60 * 1000;
   function jobTimeoutExtension(startedAt) {
-    const age = Date.now() - (startedAt || Date.now());
+    const age = Math.max(0, Date.now() - (startedAt || Date.now()) - frozenSince(startedAt));
     const ceil = Math.max(JOB_HARD_CEIL_MS, qTimeout);
     if (age >= ceil) return 0;
     if (!isBusy() && stalledFor() >= JOB_RECENT_PROGRESS_MS) return 0;
@@ -11882,6 +11890,21 @@
     // Remember WHICH tab, so the marker can be rebuilt after a cross-site hop.
     myTabId().then((id) => { if (id != null) { try { st.set(RUNNER_TAB_KEY, id); } catch (_) {} } });
   }
+  /* v17.60: hold this tab awake (ua-keepalive.js) only while a run is driving
+     it — the runner tab of a running queue, or a Queue Manager job. Any other
+     tab is left exactly as Chrome would treat it. */
+  function keepAliveWanted() {
+    try { return (qActive && !qPaused && isRunnerTab()) || _mgrDriving || document.documentElement.getAttribute('data-ua-auto') === '1'; } catch (_) { return false; }
+  }
+  function syncKeepAlive() {
+    try { const k = _uaKeep(); if (k) k.set(keepAliveWanted()); } catch (_) {}
+  }
+  try {
+    if (window.self === window.top) {
+      setInterval(syncKeepAlive, 2000);
+      document.addEventListener('visibilitychange', syncKeepAlive);
+    }
+  } catch (_) {}
   function unmarkRunnerTab() {
     try { if (typeof window.name === 'string' && window.name.indexOf(RUNNER_PREFIX) === 0) window.name = window.name.slice(RUNNER_PREFIX.length); } catch (_) {}
     _runnerTabConfirmed = false;
@@ -12655,14 +12678,23 @@
       // storage write is the fallback for the case where the worker is mid-restart
       // and the message is dropped. The orchestrator de-duplicates on (id, ts), so
       // whichever arrives second is a no-op.
-      clearInterval(stallIv); clearInterval(beatIv);
+      uaStopEvery(stallIv); uaStopEvery(beatIv);
       const ts = Date.now();
       try { chrome.runtime.sendMessage({ type: 'UA_JOB_RESULT', id: c.id, status, error: error || null, ts }, () => void chrome.runtime.lastError); } catch (_) {}
       await st.set('ua_mgr_advance', { id: c.id, status, ts });
       LOG(`Manager mode: job ${status} — manager will close this tab`);
     };
+    let frozenCredited = 0;
     const onTimeout = async () => {
       if (finalized) return;
+      // Time Chrome held this tab frozen is not the job's: give it back once.
+      const owed = frozenSince(jobStart) - frozenCredited;
+      if (owed >= 1000) {
+        frozenCredited += owed;
+        LOG(`Job cap reached, but Chrome froze this tab for ${Math.round(owed / 1000)}s — that time is not counted`);
+        tId = setTimeout(onTimeout, owed);
+        return;
+      }
       if (detectCaptcha()) { showCaptchaBanner(detectCaptcha()?.provider); tId = setTimeout(onTimeout, 60000); return; }
       const more = jobTimeoutExtension(jobStart);
       if (more) {
@@ -12671,7 +12703,7 @@
         tId = setTimeout(onTimeout, more);
         return;
       }
-      const took = Math.round((Date.now() - jobStart) / 1000);
+      const took = Math.round((Date.now() - jobStart - frozenSince(jobStart)) / 1000);
       await finalize('timeout', `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`);
     };
     tId = setTimeout(onTimeout, qTimeout);
@@ -12681,7 +12713,7 @@
        will not accept anything costs ~75s now instead of six minutes, and the
        slot is handed straight to the next job. A CAPTCHA is a human wait, not a
        stall, so it is exempt. */
-    stallIv = setInterval(() => {
+    stallIv = uaEvery(() => {
       if (finalized) return;
       pollPageProgress();
       // Actively filling, uploading, submitting or verifying: the countdown does
@@ -12709,7 +12741,7 @@
       } catch (_) {}
     };
     beat();   // straight away: a page that just reloaded should not look silent
-    beatIv = setInterval(beat, 5000);
+    beatIv = uaEvery(beat, 5000);
     // The page says it was sent → done now, so the manager opens the next job.
     {
       const seenAtStart = hardSuccessSignal();
@@ -12937,11 +12969,20 @@
           // LazyApply: start timeout timer — auto-skip if job stalls
           clearTimeout(_qTimeoutId);
           const jobStart = jobStartFor(c);
+          let frozenCredited = 0;
           const onJobTimeout = async () => {
             // Guard: if the main flow already finalized this job (done/failed/skipped)
             // in the meantime, do nothing — otherwise the timeout would also call
             // goNext(), double-advancing and silently SKIPPING the next queued job.
             if (c.status !== 'applying') return;
+            // Time Chrome held this tab frozen is not the job's: give it back once.
+            const owed = frozenSince(jobStart) - frozenCredited;
+            if (owed >= 1000) {
+              frozenCredited += owed;
+              LOG(`Queue: job cap reached, but Chrome froze this tab for ${Math.round(owed / 1000)}s — that time is not counted`);
+              _qTimeoutId = setTimeout(onJobTimeout, owed);
+              return;
+            }
             // A visible captcha is a HUMAN wait, not a stuck page — extend instead of
             // skipping so the job isn't thrown away while the user solves it.
             if (detectCaptcha()) {
@@ -12956,7 +12997,7 @@
               _qTimeoutId = setTimeout(onJobTimeout, more);
               return;
             }
-            const took = Math.round((Date.now() - jobStart) / 1000) || Math.round(qTimeout / 1000);
+            const took = Math.round((Date.now() - jobStart - frozenSince(jobStart)) / 1000) || Math.round(qTimeout / 1000);
             LOG(`Queue: job timed out after ${took}s — auto-skipping`);
             c.status = 'timeout';
             c.error = `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`;

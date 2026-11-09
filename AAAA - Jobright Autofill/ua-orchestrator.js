@@ -1046,6 +1046,20 @@
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg || typeof msg !== 'object') return;
 
+      /* v17.60 — a tab a run is driving asks not to be unloaded by Chrome while
+         it fills a job (ua-keepalive.js), and gives that back when the run lets
+         go of it. Only the asking tab, only this one setting. */
+      if (msg.type === 'UA_KEEP_TAB') {
+        if (!sender || sender.id !== chrome.runtime.id || !sender.tab || typeof sender.tab.id !== 'number' || sender.frameId) return;
+        try {
+          chrome.tabs.update(sender.tab.id, { autoDiscardable: !msg.on }, () => {
+            void chrome.runtime.lastError;
+            try { sendResponse({ ok: true }); } catch (_) {}
+          });
+        } catch (_) { try { sendResponse({ ok: false }); } catch (_) {} return; }
+        return true;
+      }
+
       /* Your Workday engine (ua-wd-engine.js) reading your CV: the reader, with
          pdf.js, is put into that tab only now, never on every page. */
       if (msg.type === 'UA_WD_CV_LOAD') {

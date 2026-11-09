@@ -4967,3 +4967,25 @@ the steps under "Applying the next Jobright patch".
 
 On 1.26.0, all unit checks pass, and so do the switch browser test
 (`tests/e2e/switch-off.js`, 15/15) and the leave-page browser test (11/11).
+
+## v17.60 — background job tabs keep running at full speed
+
+Chrome slows tabs you are not looking at (timers at most once a second, later
+once a minute), and may freeze or unload them. A run fills jobs in exactly those
+tabs, so short waits stretched out, and a frozen runner tab stopped answering and
+was replaced — the 9 Nov log had 3 jobs ended as "The runner tab froze on this
+job twice". New `ua-keepalive.js`, used only while a run drives the tab (the
+runner tab of a running queue, or a Queue Manager job):
+
+- **Timers that keep time in the background.** Waits, the job heartbeat and the
+  stall check run on a small worker's clock, which Chrome does not slow. Where a
+  site's security policy refuses the worker, the normal timer is used.
+- **The tab is held awake.** A Web Lock is held for the run (Chrome does not
+  freeze a tab holding one) and the service worker marks the tab not
+  discardable, then hands it back when the run lets go.
+- **Frozen time is not counted.** If Chrome freezes the tab anyway, that time is
+  left out of the stall clock and the per-job time limit, so a job is not
+  skipped for Chrome's pause.
+
+Any other tab is untouched: no worker, no lock, no setting changed.
+Tests: `tests/keepalive.test.js` (30 checks), in `tests/run.sh`.
