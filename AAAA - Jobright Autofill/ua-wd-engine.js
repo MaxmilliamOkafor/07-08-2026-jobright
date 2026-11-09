@@ -113,6 +113,7 @@
     "申请已提交",
     "感谢您的申请"
   ]);
+  var JOB_GONE_RX = /(?:the\s+)?page\s+you(?:\s+are|['’]re)\s+looking\s+for\s+(?:doesn['’]t|does\s+not|no\s+longer)\s+exists?|die\s+seite,?\s+die\s+sie\s+suchen,?\s+(?:ist\s+nicht\s+(?:mehr\s+)?vorhanden|existiert\s+nicht)|la\s+page\s+que\s+vous\s+(?:recherchez|cherchez)\s+n['’]existe\s+pas|la\s+p[áa]gina\s+que\s+(?:busca|buscas|est[áa]\s+buscando)\s+no\s+existe|de\s+pagina\s+die\s+u\s+zoekt,?\s+bestaat\s+niet|la\s+pagina\s+che\s+stai\s+cercando\s+non\s+esiste|a\s+p[áa]gina\s+que\s+(?:voc[êe]\s+)?(?:procura|est[áa]\s+procurando)\s+n[ãa]o\s+existe/i;
   var ALREADY_APPLIED_RX = rx([
     "you(?:'ve|’ve| have) already applied",
     "already applied (for|to) this (job|position|role)",
@@ -1373,6 +1374,7 @@
     if (SUBMITTED_RX.test(body) && !next)
       return "submitted";
     if (ALREADY_APPLIED_RX.test(body) && !anyAid("progressActive")) return "alreadyApplied";
+    if (JOB_GONE_RX.test(body) && !anyAid("progressActive") && !qa('[data-automation-id^="formField-"]').some(isVisible)) return "jobGone";
     if (SOMETHING_WRONG_RX.test(body) && !qa('[data-automation-id^="formField-"]').some(isVisible)) return "somethingWrong";
     if (anyAid("verifyPassword") || anyAid("createAccountSubmit")) return "createAccount";
     if (anyAid("signInSubmit") || anyAid("password") && anyAid("email")) return "signIn";
@@ -2925,6 +2927,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         throw new NeedsHuman("You're on your candidate home page. Open the job (or the draft under My Applications), then click Resume.");
       case "alreadyApplied":
         throw new Error("You have already applied for this job (Workday allows one application per job)");
+      case "jobGone":
+        throw new Error("The job no longer exists — the posting was taken down");
       case "somethingWrong": {
         const k = `ua-wd-refresh|${location.pathname}`;
         const n = Number(sessionStorage.getItem(k) || 0);

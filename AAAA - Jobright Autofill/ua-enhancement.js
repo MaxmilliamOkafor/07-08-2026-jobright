@@ -1375,6 +1375,15 @@
     } catch (_) { return ''; }
   }
 
+  /* Prose someone would write to a hiring team — not a name, email, phone,
+     link or one-line value. */
+  function looksLikeLetterText(v, el) {
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return false;
+    try { if (el && el.tagName === 'INPUT' && /^(email|tel|url|number|date|search|password)$/i.test(el.type || '')) return false; } catch (_) {}
+    if (/^(https?:\/\/|www\.)\S+$/i.test(s) || /^\S+@\S+\.\S+$/.test(s) || /^[+()\d\s.-]{6,}$/.test(s)) return false;
+    return s.length >= 60 && s.split(/\s+/).length >= 8;
+  }
   function tailorCoverText(text, opts) {
     let out = String(text == null ? '' : text).trim();
     if (!out) return '';
@@ -1747,7 +1756,12 @@
     /* The message to the hiring team — see tailorCoverText. Naming the employer
        is the difference between a letter and a form letter, and an optional box
        with nothing specific to say is better left empty. */
-    if (COVER_FIELD_RE.test(q) && (isFreeTextControl(el) || (el && el.tagName === 'TEXTAREA'))) {
+    /* v17.61 — only a LETTER is a letter. On Pinpoint every box's question text
+       took in the whole section, which says "Cover Letter", so your first name,
+       last name and LinkedIn URL were each given the opener ("I am writing to
+       apply to Premierleague. Maxmilliam") and the phone box was left empty. A
+       name, address, number or link is never tailored, whatever the label. */
+    if (COVER_FIELD_RE.test(q) && (isFreeTextControl(el) || (el && el.tagName === 'TEXTAREA')) && looksLikeLetterText(v, el)) {
       const company = pageCompanyName();
       if (company) return tailorCoverText(v, { company, title: pageJobTitle() });
       let required = false;
@@ -6201,9 +6215,21 @@
       return true;
     } catch (_) { return false; }
   }
-  function pageHasFailure() {
-    try { return FAILURE_TEXT_RE.test((document.body && document.body.innerText || '').slice(0, 4000)); } catch (_) { return false; }
+  /* v17.61 — a posting that was taken down. Workday answers its old link with
+     "The page you are looking for doesn't exist." (German: "Die Seite, die Sie
+     suchen, ist nicht vorhanden."), which no check knew, so two removed jobs on
+     9 Nov each spent 150s being "filled" and were reported as "no Submit
+     control was found". */
+  const JOB_GONE_RE = /(?:the\s+)?page\s+you(?:\s+are|['’]re)\s+looking\s+for\s+(?:doesn['’]t|does\s+not|no\s+longer)\s+exists?|die\s+seite,?\s+die\s+sie\s+suchen,?\s+(?:ist\s+nicht\s+(?:mehr\s+)?vorhanden|existiert\s+nicht)|la\s+page\s+que\s+vous\s+(?:recherchez|cherchez)\s+n['’]existe\s+pas|la\s+p[áa]gina\s+que\s+(?:busca|buscas|est[áa]\s+buscando)\s+no\s+existe|de\s+pagina\s+die\s+u\s+zoekt,?\s+bestaat\s+niet|la\s+pagina\s+che\s+stai\s+cercando\s+non\s+esiste|a\s+p[áa]gina\s+que\s+(?:voc[êe]\s+)?(?:procura|est[áa]\s+procurando)\s+n[ãa]o\s+existe/i;
+  const JOB_GONE_REASON = 'The job no longer exists — the posting was taken down';
+  function pageJobGone() {
+    try { return JOB_GONE_RE.test((document.body && document.body.innerText || '').slice(0, 4000)) && !hasApplicationForm(); } catch (_) { return false; }
   }
+  function pageHasFailure() {
+    try { return FAILURE_TEXT_RE.test((document.body && document.body.innerText || '').slice(0, 4000)) || pageJobGone(); } catch (_) { return false; }
+  }
+  // The reason for a skip on a failure page: say which it was when we can tell.
+  function failureSkipReason() { return pageJobGone() ? JOB_GONE_REASON : 'Already applied / posting closed'; }
 
   // ===== CAPTCHA GATE (ported from OptimHire 2.6.4) =====
   // A VISIBLE captcha means no amount of filling/retrying will progress — the only move
@@ -7683,6 +7709,10 @@
        flow only spent the job's time budget on a page with nothing to fill; the
        queue's already-applied check reads the same notice and skips the job. */
     // Workday's own error page that refreshing didn't fix: nothing to fill — skip, don't stall.
+    if (r.page === 'jobGone' || pageJobGone()) {
+      LOG('Workday engine: ' + JOB_GONE_REASON + ' — skipping this job');
+      return 'closed';
+    }
     if (r.page === 'somethingWrong' || /something went wrong/i.test(r.reason || '')) {
       LOG(`Workday engine: ${r.reason || 'Workday error page'} — skipping this job`);
       return 'closed';
@@ -11392,13 +11422,22 @@
 
   /* Fix one field the page complained about. Returns a short description of
      what was done (for the log), or '' when nothing could be done. */
+  /* v17.61 — a box with no label but an error that names it ("Please enter a
+     first name." on Gem): the message is the label. Only plain field names are
+     taken; the answer still comes from your profile. */
+  function labelFromErrorText(message) {
+    const m = String(message || '').trim().match(/^(?:please\s+)?(?:enter|provide|type|fill\s+in|add|input)\s+(?:in\s+)?(?:a\s+|an\s+|your\s+|the\s+)?(?:valid\s+)?([a-z][a-z /-]{1,30}?)\s*[.!]?$/i);
+    if (!m) return '';
+    const name = m[1].trim().toLowerCase();
+    return /^(first|last|given|family|full|middle|preferred)?\s*name$|^(sur|last|first|full)name$|^(phone|mobile|telephone)( number)?$|^e-?mail( address)?$|^location$|^city$|^(home |postal |street )?address$|^(post|zip|postal)\s*code$|^country$|^linkedin( (url|profile))?$/.test(name) ? name : '';
+  }
   async function fixFieldError(item, p) {
     const { el, kind, message } = item;
     const n = (_errFixTries.get(el) || 0) + 1;
     _errFixTries.set(el, n);
     if (n > 4) return '';
     const cur = el.tagName === 'SELECT' ? '' : String(el.value || '');
-    const label = item.label || getLabel(el) || '';
+    const label = item.label || getLabel(el) || labelFromErrorText(message) || '';
     const numIn = (re) => { const m = String(message).match(re); return m ? Number(m[1].replace(/,/g, '')) : NaN; };
     const setText = (v) => { try { el.focus({ preventScroll: true }); } catch (_) {} nativeSet(el, v); try { el.dispatchEvent(new Event('blur', { bubbles: true, composed: true })); } catch (_) {} return true; };
 
@@ -12629,6 +12668,7 @@
     try {
       let copy = '';
       try { copy = (document.body && document.body.innerText || '').slice(0, 4000); } catch (_) {}
+      if (pageJobGone()) return JOB_GONE_REASON;
       if (CLOSED_POSTING_RE.test(copy) && !hasApplicationForm()) return 'The posting has closed';
       if (captchaBlocksSignIn()) {
         const c = detectCaptcha();
@@ -12792,7 +12832,7 @@
         }
         return void await finalize('skipped', 'Not an application page — no form, no Apply button, no known ATS');
       }
-      if (pageHasFailure()) return void await finalize('skipped', 'Already applied / posting closed');
+      if (pageHasFailure()) return void await finalize('skipped', failureSkipReason());
       clearSubmitAttempt();   // this job has not submitted anything yet
       _uaJobKey = String(c.id || c.url || '');
       _authDeadEnd = ''; _authSkip = false; _wdCreatedThisJob = false;
@@ -13064,7 +13104,7 @@
           if (pageHasFailure()) {
             LOG('Failure signal (already-applied / closed) — skipping');
             clearTimeout(_qTimeoutId);
-            c.status = 'skipped'; c.error = 'Already applied / posting closed'; c.completedAt = Date.now();
+            c.status = 'skipped'; c.error = failureSkipReason(); c.completedAt = Date.now();
             qStats.skipped++;
             await saveQ(); await saveStats(); renderQ(); updateCtrl();
             await sleep(500); goNext(); return;
@@ -17700,7 +17740,11 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       LOG(`Fully Automated: starting full automation for ${ats || 'Workday'}`);
       await sleep(scaled(1500, 750));
       await dispatchATSAutomation();
-      jrFinish(confirmSubmitted() ? 'done' : (_wdAssistActive ? 'assist' : 'stopped'), confirmSubmitted() ? '' : (_wdAssistActive ? 'Workday assist: you press Next' : 'Fully Automated pass ended without a confirmed submit'));
+      // v17.61: say WHY nothing was submitted when the pass stood down on purpose
+      // (another tool such as LazyApply applying here, or the switch off).
+      let standDown = '';
+      try { if (autoStopped()) standDown = (window.__uaAutoReason ? window.__uaAutoReason() : 'automation off'); } catch (_) {}
+      jrFinish(confirmSubmitted() ? 'done' : (_wdAssistActive ? 'assist' : 'stopped'), confirmSubmitted() ? '' : (_wdAssistActive ? 'Workday assist: you press Next' : (standDown ? 'Left alone — ' + standDown : 'Fully Automated pass ended without a confirmed submit')));
     }
     if (runnerActive) {
       // Resumes after a manual reload too: window.name carries the runner tag

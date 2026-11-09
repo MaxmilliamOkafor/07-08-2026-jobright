@@ -4989,3 +4989,28 @@ runner tab of a running queue, or a Queue Manager job):
 
 Any other tab is untouched: no worker, no lock, no setting changed.
 Tests: `tests/keepalive.test.js` (30 checks), in `tests/run.sh`.
+
+## v17.61 — what the 9 Nov log showed
+
+- **Your name and links no longer get the cover-letter opener.** On Pinpoint
+  (Premier League) each box's question text took in the whole section, which
+  says "Cover Letter", so First Name was sent as "I am writing to apply to
+  Premierleague. Maxmilliam" — Last Name and LinkedIn too — and the phone box
+  ended up empty. The opener now goes only on real prose (60+ characters, 8+
+  words), never on a name, email, phone, link or one-line value, nor into an
+  email/tel/url box.
+- **A removed posting is skipped at once.** Workday answers the link of a job
+  that was taken down with "The page you are looking for doesn't exist."
+  ("Die Seite, die Sie suchen, ist nicht vorhanden." in German). Two such jobs
+  (RELX, ista) each spent ~150s and were reported as "no Submit control was
+  found". Now: skipped, "The job no longer exists — the posting was taken
+  down" (EN/DE/FR/ES/NL/IT/PT). New page: `tests/e2e/workday-gone.html`.
+- **A box with no label is named by its error.** Gem's boxes have no labels,
+  only "Please enter a first name." The error fixer now reads plain field
+  names (name, phone, email, location, city, address, postcode, country,
+  LinkedIn) from such a message and fills them from your profile.
+- **"Left alone — …"** When Fully Automated stands down because another tool
+  (e.g. LazyApply) is applying on the page, the Debugger now says so instead of
+  "pass ended without a confirmed submit" (7 of the 10 "stopped" jobs).
+
+Tests: `tests/failures-1109.test.js` (48 checks), in `tests/run.sh`.
