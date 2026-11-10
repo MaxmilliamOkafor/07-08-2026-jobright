@@ -5068,3 +5068,32 @@ answer only from the removed first-option fallback). All 23 site pages in
 `tests/e2e` were run on this build: 21 submit, the removed-posting page is
 skipped with its reason, and `form-unknown.html` stops on "What is the name of
 your current manager?" — a question it has no true answer for.
+
+## v17.63 — the five jobs v17.62 left unfixed
+
+From the 9 Nov 22:24 log:
+
+- **Phenom "School or University\*"** (Adobe, OpenText, BCG): the box only
+  counts a suggestion clicked from its list; typed text is cleared on blur.
+  The extension now types your school, clicks the suggestion that *is* your
+  school, and when the list has no such entry picks its own "Other", which is
+  what the form says to do. It never picks a different school. Each school box
+  gets its own school from your education history.
+- **OpenText "State\*" after Country**: a list that fills itself from another
+  answer is given up to 4 seconds to get its choices before it is read. (The
+  empty State in the log came from Country having been set to "Afghanistan",
+  the first-option guess v17.62 removed.)
+- **TeamTailor "Standorte\*" checkboxes**: each box was labelled with a city,
+  so all 32 were treated as location boxes and had "Dublin, Ireland" typed in
+  until the 300s cap. Checkboxes and radios are never location boxes now, and
+  nothing ever rewrites what a checkbox submits.
+- **iCIMS profile password**: after sign-in, iCIMS's application page can ask
+  for "Password" and "Password (Re-enter)". Those required boxes now get your
+  saved ATS password, the same one the extension uses for every account it
+  creates, and the account is recorded so the next job here signs in.
+- **Oracle (JPMC) emailed PIN**: when reading codes from Gmail is off or Gmail
+  is signed out, the job is now skipped at once with what to switch on. Before,
+  it went back to the same wall three times until the 300s cap.
+
+Tests: `tests/v1763.test.js` (27 checks, in `tests/run.sh`) and
+`tests/e2e/dom-1763.js` (14 checks in Chromium).

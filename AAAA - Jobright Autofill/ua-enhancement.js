@@ -2847,6 +2847,11 @@
   // Is this input a location / city / address autocomplete?
   function isLocationField(el) {
     if (!el || (el.tagName !== 'INPUT' && el.getAttribute('contenteditable') !== 'true')) return false;
+    /* v17.63 — a checkbox or radio is a CHOICE, never a place search. TeamTailor's
+       "Standorte*" list (Düsseldorf / Köln / Berlin … 32 boxes) has the city as
+       each box's label, so every box matched "city" and got "Dublin, Ireland"
+       typed into it — 32 "location commits" a pass, until the 300s cap. */
+    if (el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type || '')) return false;
     const hay = [getLabel(el), el.name, el.id, el.placeholder, el.getAttribute('aria-label'),
       el.getAttribute('autocomplete'), el.getAttribute('data-automation-id')]
       .filter(Boolean).join(' ').toLowerCase();
@@ -3034,7 +3039,7 @@
     // Lever's picker first — it is Lever's own list, not an ARIA listbox.
     try { if (await leverLocation(p)) return 1; } catch (_) {}
     // deepAll, not $$: the field can sit behind a shadow boundary.
-    const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button])', 300)
+    const inputs = deepAll('input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio])', 300)
       // Lever's box belongs to leverLocation: retyping it here would clear the pick.
       .filter(el => isVisible(el) && isLocationField(el) && !el.matches('input.location-input[name="location"]'));
     let committed = 0;
@@ -3802,7 +3807,23 @@
         continue;
       }
       if (el.type === 'radio') continue;
+      /* v17.63 — "Create a password" on the application itself (iCIMS
+         /candidate?from=login: "Password" + "Password (Re-enter)", required).
+         It is past the sign-in, so the account-wall code never runs there, and
+         the job sat until the 300s cap. Your saved ATS password — the one every
+         account the extension creates uses — goes in both. */
+      if (el.type === 'password') {
+        if (await fillProfilePassword(el)) fixed++;
+        continue;
+      }
       if (el.tagName === 'SELECT') {
+        /* v17.63 — a list that fills itself from another answer (State after
+           Country, on Phenom/OpenText) is empty for a moment after that answer.
+           Read then, it had no choices and was left "Please select". */
+        if (!selectOptions(el).some(o => o.value && o.index > 0 && (o.text || '').trim())) {
+          await waitUntil(() => selectOptions(el).some(o => o.value && o.index > 0 && (o.text || '').trim()), 4000, 200);
+          if (hasFieldValue(el)) continue;
+        }
         const opts = selectOptions(el).filter(o => o.value && o.index > 0);
         // Decision-aware pick (reads the real option wording); then EEO/decline; then
         // first real option as a last resort so a required select is never left blank.
@@ -3835,6 +3856,12 @@
         continue;
       }
       if (isLocationField(el)) { continue; } // already handled by resolveLocationFields
+      // v17.63: a search box whose answer must be PICKED from its list (Phenom's
+      // "School or University*": typed text is cleared on blur).
+      if (isPickListField(el)) {
+        if (await commitPickList(el, pickListValue(el, lbl, p))) fixed++;
+        continue;
+      }
       /* A react-select's search box carries aria-required, so it lands here — and
          typing "Yes" into it is what left Greenhouse questions showing "Yes" with
          "This field is required." under them. Pick the option instead. */
@@ -3859,6 +3886,119 @@
     }
     if (fixed) LOG(`Guarantor filled ${fixed} still-required field(s)`);
     return fixed;
+  }
+
+  /* ── v17.63: search-and-pick boxes ─────────────────────────────────────────
+     Phenom's "School or University*" (Adobe, OpenText, BCG …) is a text box
+     whose value only counts when a suggestion is clicked; typed text is cleared
+     on blur. It says so under the box: 'Please select "Other" from the list if
+     no results are found'. We type your school, click the suggestion that IS
+     your school, and when the list has no such entry, its own "Other" — which
+     is exactly what the form asks for. Never some other school. */
+  const PICK_LIST_HINT_RE = /select\s+["“'‘]?other["”'’]?\s+(from|in)\s+the\s+(list|drop.?down)|if no (results|matches) (are )?(found|shown)|(select|choose|pick) (one |an option |a value )?from the (list|suggestions)/i;
+  const PICK_LIST_SUBJECT_RE = /school|universit|institution|college|field of study|\bmajor\b|discipline/i;
+  function isPickListField(el) {
+    try {
+      if (!el || el.tagName !== 'INPUT' || !/^(text|search|)$/i.test(el.type || '')) return false;
+      if (isWorkday() || isLocationField(el) || isSelectSearchBox(el) || isTransientSearchBox(el)) return false;
+      const lbl = String(getLabel(el) || '');
+      const box = el.closest('.form-group,.field,[class*="field"],[class*="Field"],li') || el.parentElement;
+      const near = lbl + ' ' + ((box && box.textContent) || '').slice(0, 400);
+      if (PICK_LIST_HINT_RE.test(near)) return true;
+      const typeahead = el.getAttribute('role') === 'combobox' || /list|both/i.test(el.getAttribute('aria-autocomplete') || '');
+      return typeahead && PICK_LIST_SUBJECT_RE.test(lbl);
+    } catch (_) { return false; }
+  }
+  // Which of your schools this box is for: the one already typed in it, else the
+  // n-th school box on the page gets your n-th school.
+  function pickListValue(el, lbl, p) {
+    try {
+      if (/school|universit|institution|college/i.test(lbl || '')) {
+        const list = (Array.isArray(p.education) ? p.education : []).map(e => e && (e.school || e.university)).filter(Boolean);
+        const typed = String(el.value || '').trim();
+        if (typed) { const m = list.find(s => wdSimilarity(typed, s) >= 0.85); if (m) return m; }
+        const boxes = deepAll('input', 300).filter(x => isVisible(x) && isPickListField(x) && /school|universit|institution|college/i.test(getLabel(x) || ''));
+        const i = boxes.indexOf(el);
+        if (i >= 0 && list[i]) return list[i];
+        return list[0] || p.school || p.university || '';
+      }
+    } catch (_) {}
+    return guessFieldValue(lbl, p, el) || '';
+  }
+  const PICK_OTHER_RE = /^\s*(other|others|not listed|none of the above|my (school|institution) is not listed)\b/i;
+  const _pickTries = new WeakMap();
+  function pickListItems(el) {
+    const dd = findAutocompleteDropdown(el);
+    const scope = dd ? [dd] : [];
+    let items = [];
+    for (const root of scope) items = items.concat($$('[role="option"],li,[class*="option"],[class*="suggestion"],[class*="item"]', root));
+    if (!items.length) items = deepAll('[role="option"]', 200);
+    return items.filter(isVisible).filter(it => {
+      const t = (it.textContent || '').trim();
+      return t.length > 1 && t.length < 200 && !it.querySelector('[role="option"],li');
+    });
+  }
+  async function pickListSearch(el, query) {
+    try { nativeSet(el, ''); } catch (_) {}
+    await typeInto(el, query);
+    let items = [];
+    await waitUntil(() => (items = pickListItems(el)).length > 0, 4000, 200);
+    return items;
+  }
+  async function pickListClick(el, item) {
+    scrollIfNeeded(item);
+    realClick(item);
+    await sleep(400);
+    try { el.dispatchEvent(new Event('blur', { bubbles: true, composed: true })); } catch (_) {}
+    await sleep(200);
+    if (!String(el.value || '').trim()) return false;
+    // Not locationAccepted: its "please select" test matches this box's own hint.
+    const box = el.closest('.form-group,.field,[class*="field"],[class*="Field"],li') || el.parentElement;
+    return !/is required|required field|invalid/i.test((box && box.textContent) || '');
+  }
+  async function commitPickList(el, wanted) {
+    const n = (_pickTries.get(el) || 0) + 1;
+    _pickTries.set(el, n);
+    if (n > 2) return false;
+    const label = String(getLabel(el) || 'field').replace(/\s+/g, ' ').slice(0, 60);
+    try {
+      if (wanted) {
+        const items = await pickListSearch(el, wanted);
+        const texts = items.map(it => (it.textContent || '').replace(/\s+/g, ' ').trim());
+        const i = wdBestIndex(texts, wanted, 0.8);
+        if (i >= 0 && await pickListClick(el, items[i])) { LOG('Picked "' + texts[i].slice(0, 60) + '" from the list for "' + label + '"'); return true; }
+        const o = items.findIndex(it => PICK_OTHER_RE.test(it.textContent || ''));
+        if (o >= 0 && await pickListClick(el, items[o])) { LOG('"' + wanted + '" is not in the list for "' + label + '" — picked its "Other", as the form asks'); return true; }
+      }
+      // The list only offers "Other" when you search for it.
+      const box = el.closest('.form-group,.field,[class*="field"],[class*="Field"],li') || el.parentElement;
+      if (wanted && /\bother\b/i.test(String(getLabel(el) || '') + ' ' + ((box && box.textContent) || '').slice(0, 400))) {
+        const items = await pickListSearch(el, 'Other');
+        const o = items.findIndex(it => PICK_OTHER_RE.test(it.textContent || ''));
+        if (o >= 0 && await pickListClick(el, items[o])) { LOG('"' + wanted + '" is not in the list for "' + label + '" — picked its "Other", as the form asks'); return true; }
+      }
+      try { nativeSet(el, ''); } catch (_) {}
+      LOG('"' + label + '": no suggestion matches your profile' + (wanted ? ' ("' + String(wanted).slice(0, 40) + '")' : '') + ' — left for you');
+      DIAG('field.unanswered', label, { kind: 'no-matching-option' });
+    } catch (e) { LOG('pick-list error:', e?.message || e); }
+    return false;
+  }
+  /* The account password an application page asks you to set. Only on the
+     application itself (the sign-in pages have their own code) and only into
+     boxes that are still empty. */
+  let _profilePwLogged = false;
+  async function fillProfilePassword(el) {
+    try {
+      if (!el || el.disabled || el.readOnly || String(el.value || '')) return false;
+      if (!(pastTheApplyStep() || hasApplicationForm())) return false;
+      const pw = await getAppPassword();
+      if (!pw) return false;
+      el.focus({ preventScroll: true });
+      reactTypeValue(el, pw);
+      try { el.dispatchEvent(new Event('change', { bubbles: true, composed: true })); el.dispatchEvent(new Event('blur', { bubbles: true, composed: true })); } catch (_) {}
+      if (!_profilePwLogged) { _profilePwLogged = true; LOG('The application asks for an account password — entered your saved ATS password'); try { await markAccountCreated(location.hostname); } catch (_) {} }
+      return String(el.value || '') === pw;
+    } catch (_) { return false; }
   }
 
   /* Answering a required field can reveal MORE required fields (conditional
@@ -4154,6 +4294,9 @@
 
   function nativeSet(el, val) {
     if (!el || el.disabled || el.readOnly) return false;
+    // v17.63: a checkbox / radio's .value is WHAT IT SUBMITS ("Düsseldorf"), not
+    // text to type. Writing an answer there changed the submitted choice.
+    if (el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type || '')) return false;
     if (el.tagName !== 'SELECT' && val !== '' && isTrapField(el)) {
       if (!_trapLogged.has(el)) { _trapLogged.add(el); LOG(`Left a bot-trap field empty ("${(el.name || el.id || 'unnamed').slice(0, 40)}") — filling it would get the application binned as spam`); }
       return false;
@@ -16534,6 +16677,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       } else if (r && r.reason === 'gmail-not-signed-in') {
         LOG('Verification code needed, but Gmail is not signed in in this browser — sign in to Gmail in Chrome, or the job needs you');
         try { reportNeedsHuman('verification code — sign in to Gmail in this browser'); } catch (_) {}
+        if (!_authDeadEnd) { _authDeadEnd = `${location.hostname} emailed a verification code and Gmail is not signed in in this browser — sign in to Gmail in Chrome so the extension can read these codes`; _authSkip = true; }
         return false;
       } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
         if (!offered) {
@@ -16544,6 +16688,10 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         }
         LOG('Email verification needed and no mailbox is connected — this job needs you. Tick "Read codes from my signed-in Gmail" in the Queue Manager to clear these automatically.');
         try { reportNeedsHuman('email verification'); } catch (_) {}
+        /* v17.63 — skip now, with the reason. Returning alone sent the run
+           back to the same wall, which re-asked and re-waited three times until
+           the 300s cap (JPMC on Oracle, 9 Nov). */
+        if (!_authDeadEnd) { _authDeadEnd = `${location.hostname} emailed a verification code and reading codes from Gmail is off — tick "Read codes from my signed-in Gmail" in the Queue Manager to clear these automatically`; _authSkip = true; }
         return false;
       }
       // A code that never came (or expired): ask for a new one, once.

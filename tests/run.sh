@@ -103,6 +103,9 @@ node tests/failures-1109.test.js "$EXT" || fails=$((fails + 1))
 step "Fixes from the two 9 Nov logs (v17.62)"
 node tests/v1762.test.js "$EXT" || fails=$((fails + 1))
 
+step "The five jobs v17.62 left unfixed (v17.63)"
+node tests/v1763.test.js "$EXT" || fails=$((fails + 1))
+
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
 
