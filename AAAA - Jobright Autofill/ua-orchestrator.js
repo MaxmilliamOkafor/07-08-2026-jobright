@@ -1046,6 +1046,20 @@
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!msg || typeof msg !== 'object') return;
 
+      /* v17.60 — a tab a run is driving asks not to be unloaded by Chrome while
+         it fills a job (ua-keepalive.js), and gives that back when the run lets
+         go of it. Only the asking tab, only this one setting. */
+      if (msg.type === 'UA_KEEP_TAB') {
+        if (!sender || sender.id !== chrome.runtime.id || !sender.tab || typeof sender.tab.id !== 'number' || sender.frameId) return;
+        try {
+          chrome.tabs.update(sender.tab.id, { autoDiscardable: !msg.on }, () => {
+            void chrome.runtime.lastError;
+            try { sendResponse({ ok: true }); } catch (_) {}
+          });
+        } catch (_) { try { sendResponse({ ok: false }); } catch (_) {} return; }
+        return true;
+      }
+
       /* Your Workday engine (ua-wd-engine.js) reading your CV: the reader, with
          pdf.js, is put into that tab only now, never on every page. */
       if (msg.type === 'UA_WD_CV_LOAD') {
@@ -1307,11 +1321,124 @@
     });
   } catch (_) {}
 
+  /* ── THE ONE AUTOFILL SWITCH ───────────────────────────────────────────────
+     One switch, `ua_aa`, for everything this extension does by itself. It is on
+     the toolbar icon (badge ON / OFF / RUN, click for the switch), on a keyboard
+     shortcut that switches it OFF from any tab (Alt+Shift+A, changeable at
+     chrome://extensions/shortcuts), and in the sidebar as
+     "🤖 Fully Automated" — all the same switch.
+
+     OFF means nothing fills, clicks, submits or pops up:
+       • our autofill and the Workday engine stand down (they already ask it);
+       • SpeedyApply is told autofill is disabled (ua-switch-gate.js);
+       • Jobright's helper is not loaded unless you open it on a tab yourself;
+       • Jobright's "applied" popup is not sent to the tab;
+       • "Leave site?" works as the site intended;
+       • a running queue is stopped — its job tabs close and unfinished jobs go
+         back into the queue, to be started again from the Queue Manager — and
+         so is the single-tab runner.
+     Turning it OFF from anywhere (popup, shortcut, sidebar, Alt+A) does all of it. */
+  const SWITCH_KEYS = ['ua_aa', K.ACTIVE, K.PAUSED, K.OLD_RUNNER];
+  async function switchState() {
+    const d = await new Promise((r) => { try { chrome.storage.local.get(SWITCH_KEYS, (v) => { void chrome.runtime.lastError; r(v || {}); }); } catch (_) { r({}); } });
+    const queue = d[K.ACTIVE] === true, runner = d[K.OLD_RUNNER] === true;
+    return { on: d.ua_aa === true, queue, paused: d[K.PAUSED] === true, runner, running: queue || runner };
+  }
+  // One stop at a time: switching OFF from the toolbar also fires the storage listener below.
+  let _stopping = null;
+  function stopEverything(why) {
+    if (_stopping) return _stopping;
+    _stopping = (async () => {
+      const st0 = await switchState();
+      if (st0.queue) { await stop(); await log(`Autofill switched OFF (${why}) — queue stopped; unfinished jobs are back in the queue`, 'warn'); }
+      if (st0.runner) { await set({ [K.OLD_RUNNER]: false }); await log(`Autofill switched OFF (${why}) — single-tab run stopped`, 'warn'); }
+    })().catch(() => {}).finally(() => { _stopping = null; });
+    return _stopping;
+  }
+  async function setSwitch(on, why) {
+    await set({ ua_aa: !!on });
+    if (!on) await stopEverything(why);
+    await paintBadge();
+    return switchState();
+  }
+  async function paintBadge() {
+    try {
+      if (!chrome.action) return;
+      const st1 = await switchState();
+      const [text, color, title] = st1.running
+        ? ['RUN', '#d97706', 'Autofill: a run is going — click to switch everything OFF']
+        : st1.on ? ['ON', '#059669', 'Autofill: ON — click to switch it OFF']
+          : ['OFF', '#6b7280', 'Autofill: OFF — nothing fills or pops up. Click to switch it ON'];
+      chrome.action.setBadgeText({ text }, () => void chrome.runtime.lastError);
+      chrome.action.setBadgeBackgroundColor({ color }, () => void chrome.runtime.lastError);
+      try { chrome.action.setBadgeTextColor && chrome.action.setBadgeTextColor({ color: '#ffffff' }, () => void chrome.runtime.lastError); } catch (_) {}
+      chrome.action.setTitle({ title }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
+  self.__uaPaintBadge = paintBadge;
+  try {
+    chrome.storage.onChanged.addListener((c, area) => {
+      if (area !== 'local' || !SWITCH_KEYS.some((k) => k in c)) return;
+      // Switched OFF from the sidebar or Alt+A: the same as from the toolbar.
+      if (c.ua_aa && c.ua_aa.oldValue === true && c.ua_aa.newValue !== true) stopEverything('switch');
+      paintBadge();
+    });
+  } catch (_) {}
+  try {
+    chrome.commands && chrome.commands.onCommand.addListener((cmd) => {
+      // OFF only, like Alt+A in the page: switching ON is a deliberate click on
+      // the switch, never a stray key (a stray Alt+A used to start applications).
+      if (cmd !== 'ua-switch-off') return;
+      setSwitch(false, 'keyboard shortcut').catch(() => {});
+    });
+  } catch (_) {}
+  try {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (!msg || (msg.type !== 'UA_SWITCH' && msg.type !== 'UA_OPEN_JOBRIGHT')) return false;
+      (async () => {
+        if (msg.type === 'UA_OPEN_JOBRIGHT') {
+          // Exactly what Jobright's own toolbar icon did before the switch took the icon.
+          const tabId = msg.tabId;
+          if (typeof tabId !== 'number') return sendResponse({ ok: false });
+          markUserOpened(tabId);
+          try { chrome.tabs.sendMessage(tabId, { message: 'iconClicked' }, () => void chrome.runtime.lastError); } catch (_) {}
+          return sendResponse({ ok: true });
+        }
+        if (msg.op === 'get') return sendResponse(await switchState());
+        return sendResponse(await setSwitch(msg.on === true, msg.source || 'toolbar'));
+      })().catch(() => { try { sendResponse({ ok: false }); } catch (_) {} });
+      return true;
+    });
+  } catch (_) {}
+
+  /* Jobright's "applied" popup, sent by its worker to the tab after it sees a
+     submission. With the switch OFF it reaches only a tab you opened Jobright on
+     yourself (or jobright.ai, or a run's tab). */
+  try {
+    if (chrome.tabs && chrome.tabs.sendMessage) {
+      const rawTabSend = chrome.tabs.sendMessage.bind(chrome.tabs);
+      chrome.tabs.sendMessage = function (tabId, message, ...rest) {
+        if (!message || typeof message !== 'object' || message.type !== 'atsAppliedSuccessPopup' || typeof tabId !== 'number') return rawTabSend(tabId, message, ...rest);
+        const cb = rest.find((a) => typeof a === 'function');
+        const opts = rest.filter((a) => typeof a !== 'function');
+        const p = (async () => {
+          let url = '';
+          try { const t = await new Promise((r) => chrome.tabs.get(tabId, (v) => { void chrome.runtime.lastError; r(v); })); url = (t && (t.url || t.pendingUrl)) || ''; } catch (_) {}
+          if (await jobrightAllowedIn(tabId, url)) return rawTabSend(tabId, message, ...opts);
+          return undefined;   // autofill is OFF and you did not open Jobright here
+        })();
+        if (cb) { p.then((r) => cb(r), () => cb(undefined)); return undefined; }
+        return p;
+      };
+    }
+  } catch (_) {}
+
   /* Boot / restart recovery. The service worker is torn down when idle; every
      wake-up re-reconciles tabs and refills slots so a run never silently dies. */
   async function boot() {
     try {
       installMenus();
+      paintBadge();
       // A single-tab run survives a worker restart, so pick its watch back up.
       if ((await get(K.OLD_RUNNER)) === true) armRunnerWatch();
       if ((await get(K.ACTIVE)) === true) {

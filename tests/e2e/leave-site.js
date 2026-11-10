@@ -1,5 +1,6 @@
-/* Real-browser check that the page hooks never raise "Leave site? Changes you made
-   may not be saved." — neither on their own nor when a page asks for it. A node fake
+/* Real-browser check that, while autofill is ON, the page hooks never raise
+   "Leave site? Changes you made may not be saved." — neither on their own nor
+   when a page asks for it — and that with it OFF the site's own prompt works. A node fake
    cannot model this: what arms the prompt is Chrome's handling of returnValue, and
    assigning it ANY value (even undefined, which becomes "undefined") arms it.
    Usage: node tests/e2e/leave-site.js */
@@ -11,9 +12,12 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ua-leave-'));
 fs.writeFileSync(path.join(dir, 'next.html'), '<p>next</p>');
 let pass = 0, fail = 0;
 const eq = (name, got, want) => { if (got === want) { pass++; console.log('  ok   ' + name); } else { fail++; console.log(`  FAIL ${name}\n       got  ${got}\n       want ${want}`); } };
-async function dialogOnLeave(b, pageCode, withHooks) {
+/* switchOn: the mark ua-switch-gate.js puts on a frame while autofill is ON
+   (or a run owns the tab). With it, no prompt; without it, the site's own. */
+async function dialogOnLeave(b, pageCode, withHooks, switchOn = true) {
   const f = path.join(dir, 'p' + Math.random().toString(36).slice(2) + '.html');
-  fs.writeFileSync(f, `<button id=b>x</button>${withHooks ? `<script>${hooks}</script>` : ''}<script>${pageCode}</script>`);
+  const mark = switchOn ? "<script>document.documentElement.setAttribute('data-ua-on','1')</script>" : '';
+  fs.writeFileSync(f, `<button id=b>x</button>${withHooks ? `${mark}<script>${hooks}</script>` : ''}<script>${pageCode}</script>`);
   const p = await b.newPage();
   let dialog = 'none';
   p.on('dialog', async (d) => { dialog = d.type(); await d.accept(); });
@@ -28,14 +32,18 @@ async function dialogOnLeave(b, pageCode, withHooks) {
   const b = await chromium.launch();
   console.log('the harness can see the prompt');
   eq('a page that asks for it, without our hooks, gets it', await dialogOnLeave(b, "addEventListener('beforeunload', e => e.preventDefault());", false), 'beforeunload');
-  console.log('with the page hooks installed');
-  for (const [name, code] of [
+  console.log('with the page hooks installed and autofill ON');
+  const CASES = [
     ['a page that asks for nothing', ''],
     ['addEventListener + preventDefault()', "addEventListener('beforeunload', e => e.preventDefault());"],
     ['returnValue = string', "addEventListener('beforeunload', e => { e.returnValue = 'x'; });"],
     ['window.onbeforeunload returning a string', "window.onbeforeunload = () => 'unsaved';"],
     ['its own capture-phase listener', "addEventListener('beforeunload', e => e.preventDefault(), true);"],
-  ]) eq(`${name} → no prompt`, await dialogOnLeave(b, code, true), 'none');
+  ];
+  for (const [name, code] of CASES) eq(`${name} → no prompt`, await dialogOnLeave(b, code, true), 'none');
+  console.log('with the page hooks installed and autofill OFF: the site\'s own "Leave site?" works');
+  for (const [name, code] of CASES.slice(1)) eq(`${name} → the site's prompt`, await dialogOnLeave(b, code, true, false), 'beforeunload');
+  eq('a page that asks for nothing → no prompt', await dialogOnLeave(b, '', true, false), 'none');
   await b.close();
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

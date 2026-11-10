@@ -32,7 +32,7 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
    "undefined" and arms the prompt. The fake used to treat undefined as "not
    armed", which is how the page hooks shipped a line that raised the very dialog
    they were written to stop (tests/e2e/leave-site.js checks the real thing). */
-function makeEnv({ automating }) {
+function makeEnv({ automating, on = () => true }) {
   const listeners = new Map();
   class Ev {
     constructor(type) { this.type = type; this.defaultPrevented = false; this._rv = ''; this.stopped = false; }
@@ -55,7 +55,8 @@ function makeEnv({ automating }) {
     const i = l.indexOf(fn);
     if (i >= 0) l.splice(i, 1);
   };
-  const root = { getAttribute: (k) => (k === 'data-ua-auto' && automating() ? '1' : null) };
+  // data-ua-on: ua-switch-gate.js sets it while autofill is ON or a run owns the tab.
+  const root = { getAttribute: (k) => ((k === 'data-ua-auto' && automating()) || (k === 'data-ua-on' && on()) ? '1' : null) };
   const win = {
     document: { documentElement: root },
     EventTarget,
@@ -122,10 +123,10 @@ for (const [how, handler] of Object.entries(ARMERS)) {
    page the run had already handed back, on a tab the queue skipped. Each one is
    a frozen page waiting for a human to click Leave.
 
-   It is unconditional now, and the cost is named rather than hidden: a form you
-   were filling in BY HAND in one of these tabs will no longer warn you before
-   you navigate away from it. */
-console.log('and it stays off when no job is running — that is the point');
+   So with autofill ON it is off between jobs too, not only during one. With
+   autofill OFF the extension stays out of the way, and the site's own warning
+   protects a form you are filling in by hand. */
+console.log('with autofill ON it stays off when no job is running — that is the point');
 for (const [how, handler] of Object.entries(ARMERS)) {
   const env = makeEnv({ automating: () => false });
   env.win.addEventListener('beforeunload', handler);
@@ -137,7 +138,22 @@ for (const [how, handler] of Object.entries(ARMERS)) {
   eq(`idle, window.onbeforeunload = fn + ${how} → still no prompt`, env.fire(), false);
 }
 
-console.log('no state can bring it back');
+console.log('with autofill OFF, the site\'s own "Leave site?" works as without the extension');
+for (const [how, handler] of Object.entries(ARMERS)) {
+  const env = makeEnv({ automating: () => false, on: () => false });
+  env.win.addEventListener('beforeunload', handler);
+  eq(`switch OFF, addEventListener + ${how} → the site's prompt`, env.fire(), true);
+}
+{
+  const env = makeEnv({ automating: () => false, on: () => false });
+  env.win.onbeforeunload = ARMERS['preventDefault()'];
+  eq('switch OFF, window.onbeforeunload = fn → the site\'s prompt', env.fire(), true);
+  const run = makeEnv({ automating: () => true, on: () => false });
+  run.win.addEventListener('beforeunload', ARMERS['preventDefault()']);
+  eq('…but a job driving the tab still suppresses it (its data-ua-auto)', run.fire(), false);
+}
+
+console.log('with autofill ON, no run state can bring it back');
 {
   let automating = false;
   const env = makeEnv({ automating: () => automating });
@@ -148,8 +164,8 @@ console.log('no state can bring it back');
   automating = false;
   eq('and fired again after the run ends', env.fire(), false);
 }
-eq('the gate is a constant, not a flag that can flip back',
-  /const beforeUnloadSilenced = \(\) => true;/.test(src), true);
+eq('the gate is the switch (data-ua-on) or a job driving the tab',
+  /const beforeUnloadSilenced = \(\) => \{\n    try \{ if \(root && root\.getAttribute\('data-ua-on'\) === '1'\) return true; \} catch \(_\) \{\}\n    return automating\(\);\n  \};/.test(src), true);
 eq('and the wrapper asks it, not the automation flag',
   /if \(!beforeUnloadSilenced\(\)\) return listener\.apply\(this, arguments\);/.test(src), true);
 /* confirm/alert/prompt are NOT unconditional — those must still behave normally

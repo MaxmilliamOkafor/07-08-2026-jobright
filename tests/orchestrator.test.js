@@ -851,6 +851,77 @@ const job = (id, url, status) => ({ id, url, title: id, status: status || 'pendi
     eq('…and the next job starts', env.store.ua_q[1].status, 'applying');
   }
 
+  /* ── The one autofill switch: badge, OFF stops a run, Jobright's popup held back ── */
+  console.log('\nThe one autofill switch (toolbar badge and popup, shortcut, sidebar)');
+  {
+    const env = makeChrome();
+    const badge = {};
+    env.chrome.action = {
+      setBadgeText: (o, cb) => { badge.text = o.text; cb && cb(); },
+      setBadgeBackgroundColor: (o, cb) => { badge.color = o.color; cb && cb(); },
+      setBadgeTextColor: (o, cb) => cb && cb(),
+      setTitle: (o, cb) => { badge.title = o.title; cb && cb(); },
+      onClicked: { addListener: () => {} },
+    };
+    const commands = [];
+    env.chrome.commands = { onCommand: { addListener: (l) => commands.push(l) } };
+    env.store.ua_q = [job('a', 'https://a.com/1'), job('b', 'https://a.com/2')];
+    env.store.ua_mgr_concurrency = 1;
+    load(env);
+    await tick(40);
+    eq('the badge says OFF when nothing is on', badge.text, 'OFF');
+    let st = await send(env.listeners, { type: 'UA_SWITCH', on: true, source: 'test' });
+    await tick(30);
+    eq('switching ON from the popup sets the switch and the badge says ON', [env.store.ua_aa, st.on, badge.text], [true, true, 'ON']);
+
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    eq('a running queue shows RUN', badge.text, 'RUN');
+    const jobTab = [...env.tabs.keys()][0];
+    st = await send(env.listeners, { type: 'UA_SWITCH', on: false, source: 'test' });
+    await tick(60);
+    eq('switching OFF stops the queue', [env.store.ua_aa, env.store.ua_mgr_active, st.running], [false, false, false]);
+    eq('…closes its job tab', env.tabs.has(jobTab), false);
+    eq('…and puts the unfinished job back in the queue', env.store.ua_q.map((j) => j.status), ['pending', 'pending']);
+    eq('…and the badge says OFF', badge.text, 'OFF');
+
+    // The sidebar ("🤖 Fully Automated") and Alt+A write the switch directly: the same happens.
+    env.chrome.storage.local.set({ ua_aa: true });
+    await tick(20);
+    await send(env.listeners, { type: 'UA_MGR_CMD', cmd: 'start' });
+    await tick(60);
+    env.chrome.storage.local.set({ ua_aa: false });
+    await tick(80);
+    eq('switching OFF in the sidebar stops a running queue too', env.store.ua_mgr_active, false);
+
+    // The single-tab runner, and the browser-wide shortcut (OFF only).
+    env.chrome.storage.local.set({ ua_aa: true, ua_qa: true });
+    await tick(20);
+    commands.forEach((l) => l('ua-switch-off'));
+    await tick(60);
+    eq('the keyboard shortcut switches OFF and stops the single-tab run', [env.store.ua_aa, env.store.ua_qa], [false, false]);
+    commands.forEach((l) => l('ua-switch-off'));
+    await tick(30);
+    eq('…and never switches it back ON', env.store.ua_aa, false);
+
+    // Jobright's "applied" popup: held back with the switch OFF, unless you opened Jobright on the tab.
+    const t = await new Promise((r) => env.chrome.tabs.create({ url: 'https://boards.greenhouse.io/x/jobs/1' }, r));
+    env.sent.length = 0;
+    await env.chrome.tabs.sendMessage(t.id, { type: 'atsAppliedSuccessPopup', event: { applied: true } }, { frameId: 0 });
+    eq('switch OFF: Jobright\'s "applied" popup is not sent to the page', env.sent.length, 0);
+    await env.chrome.tabs.sendMessage(t.id, { message: 'iconClicked' });
+    eq('…other messages to the tab are untouched', env.sent.length, 1);
+    await send(env.listeners, { type: 'UA_OPEN_JOBRIGHT', tabId: t.id });
+    env.sent.length = 0;
+    await env.chrome.tabs.sendMessage(t.id, { type: 'atsAppliedSuccessPopup', event: { applied: true } }, { frameId: 0 });
+    eq('…but on a tab you opened Jobright on yourself, it shows', env.sent.length, 1);
+    const t2 = await new Promise((r) => env.chrome.tabs.create({ url: 'https://jobs.lever.co/x/1' }, r));
+    await send(env.listeners, { type: 'UA_SWITCH', on: true });
+    env.sent.length = 0;
+    await env.chrome.tabs.sendMessage(t2.id, { type: 'atsAppliedSuccessPopup', event: { applied: true } }, { frameId: 0 });
+    eq('switch ON: it shows as before', env.sent.length, 1);
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

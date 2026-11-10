@@ -29,7 +29,9 @@
  * these overrides are page-wide — you must still get a real confirm box when you
  * are browsing.
  *
- * `beforeunload` is the exception, and it is unconditional. "Leave site? Changes
+ * `beforeunload` is the exception: it is suppressed whenever autofill is ON or a
+ * run owns the tab, not only while a job is driving (see beforeUnloadSilenced).
+ * With autofill OFF it is left alone. "Leave site? Changes
  * you made may not be saved." is never useful here and freezes the page until a
  * human clicks Leave. Gating it on the automation flag meant it kept returning in
  * the gaps — before a job claims the tab, after the run hands it back, on a tab
@@ -84,8 +86,18 @@
 
      Everything else the page does in its beforeunload handler still runs —
      analytics, cleanup, saving a draft. Only its ability to raise the prompt is
-     taken away. */
-  const beforeUnloadSilenced = () => true;
+     taken away.
+
+     …while autofill is ON or a run owns the tab. With the switch OFF the
+     extension stays out of the way entirely, and that includes this: the site's
+     own "Leave site?" warning protects a form you are filling in by hand, as it
+     would without the extension. ua-switch-gate.js marks the frame with
+     data-ua-on="1" while the switch is ON or a run owns the tab; a job's own
+     data-ua-auto / grace window counts as well. */
+  const beforeUnloadSilenced = () => {
+    try { if (root && root.getAttribute('data-ua-on') === '1') return true; } catch (_) {}
+    return automating();
+  };
 
   // "Remove X?", "Delete this attachment?", "Discard your changes?" — anything
   // whose effect is to throw away work already done on the page.
@@ -316,7 +328,17 @@
       set(fn) {
         if (registered) { try { origRemove.call(window, 'beforeunload', registered); } catch (_) {} }
         handler = typeof fn === 'function' ? fn : null;
-        registered = handler ? wrapBeforeUnload(handler) : null;
+        /* Registered through addEventListener, a handler's returned string no
+           longer arms the prompt the way the property does. While the shield is
+           down (autofill OFF) that is put back, so the site's own warning works
+           exactly as without the extension. */
+        const shielded = handler ? wrapBeforeUnload(handler) : null;
+        registered = handler ? function (e) {
+          if (beforeUnloadSilenced()) return shielded.apply(this, arguments);
+          const r = handler.apply(this, arguments);
+          if (r != null) { try { e.preventDefault(); e.returnValue = String(r); } catch (_) {} }
+          return r;
+        } : null;
         if (registered) { try { origAdd.call(window, 'beforeunload', registered); } catch (_) {} }
       },
     });

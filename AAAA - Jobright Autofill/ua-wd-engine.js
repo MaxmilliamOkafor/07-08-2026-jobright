@@ -113,6 +113,7 @@
     "申请已提交",
     "感谢您的申请"
   ]);
+  var JOB_GONE_RX = /(?:the\s+)?page\s+you(?:\s+are|['’]re)\s+looking\s+for\s+(?:doesn['’]t|does\s+not|no\s+longer)\s+exists?|die\s+seite,?\s+die\s+sie\s+suchen,?\s+(?:ist\s+nicht\s+(?:mehr\s+)?vorhanden|existiert\s+nicht)|la\s+page\s+que\s+vous\s+(?:recherchez|cherchez)\s+n['’]existe\s+pas|la\s+p[áa]gina\s+que\s+(?:busca|buscas|est[áa]\s+buscando)\s+no\s+existe|de\s+pagina\s+die\s+u\s+zoekt,?\s+bestaat\s+niet|la\s+pagina\s+che\s+stai\s+cercando\s+non\s+esiste|a\s+p[áa]gina\s+que\s+(?:voc[êe]\s+)?(?:procura|est[áa]\s+procurando)\s+n[ãa]o\s+existe/i;
   var ALREADY_APPLIED_RX = rx([
     "you(?:'ve|’ve| have) already applied",
     "already applied (for|to) this (job|position|role)",
@@ -626,7 +627,7 @@
   function checkAbort() {
     if (abortFlag) throw new Aborted();
   }
-  var sleep = (ms) => new Promise((r) => setTimeout(r, ms)).then(checkAbort);
+  var sleep = (ms) => new Promise((r) => globalThis.__uaKeep ? globalThis.__uaKeep.timeout(r, ms) : setTimeout(r, ms)).then(checkAbort);
   function isVisible(el) {
     if (!el || !(el instanceof HTMLElement)) return false;
     if (el.closest('[aria-hidden="true"]')) return false;
@@ -1373,6 +1374,7 @@
     if (SUBMITTED_RX.test(body) && !next)
       return "submitted";
     if (ALREADY_APPLIED_RX.test(body) && !anyAid("progressActive")) return "alreadyApplied";
+    if (JOB_GONE_RX.test(body) && !anyAid("progressActive") && !qa('[data-automation-id^="formField-"]').some(isVisible)) return "jobGone";
     if (SOMETHING_WRONG_RX.test(body) && !qa('[data-automation-id^="formField-"]').some(isVisible)) return "somethingWrong";
     if (anyAid("verifyPassword") || anyAid("createAccountSubmit")) return "createAccount";
     if (anyAid("signInSubmit") || anyAid("password") && anyAid("email")) return "signIn";
@@ -2128,11 +2130,27 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       await waitStable(300, 5e3);
     }
   }
+  function thisMonth() {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`;
+  }
   async function markCurrentRole(ctx, sectionEl) {
     const first = blocks(sectionEl, "jobTitleF")[0];
     if (!first) return;
     const box = field("currentlyF", first);
-    if (!box) return;
+    if (!box) {
+      // v17.62: no "I currently work here" box on this tenant. Workday then
+      // requires To; a current role ends "this month" (shi.wd12: "The field
+      // To is required" stopped the engine and the job timed out at 300s).
+      const start0 = dateContainer(first, "start");
+      const end0 = dateContainer(first, "end");
+      if (start0 && readValue(start0) && end0 && !readValue(end0)) {
+        handled.add(end0);
+        if (await setDate(end0, thisMonth())) ctx.log('Set To to this month on your most recent role (no end date, and this site has no "I currently work here" box)');
+        await waitStable(300, 4e3);
+      }
+      return;
+    }
     const c = containerOf(box);
     if (readValue(c) === "true") return;
     const start = dateContainer(first, "start");
@@ -2269,6 +2287,13 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       if (end) {
         handled.add(end);
         if (!await setDate(end, w.end)) ctx.flag(`${w.company} end date`, "Date didn't stick");
+      }
+    } else if (w.current && !cur) {
+      // A current role where the site has no "currently work here" box: To is this month.
+      const end = dateContainer(block, "end");
+      if (end && !readValue(end)) {
+        handled.add(end);
+        if (!await setDate(end, thisMonth())) ctx.flag(`${w.company} end date`, "Date didn't stick");
       }
     }
     const bullets = ctx.docs?.tailored?.roles[w.id] ?? w.bullets;
@@ -2925,6 +2950,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         throw new NeedsHuman("You're on your candidate home page. Open the job (or the draft under My Applications), then click Resume.");
       case "alreadyApplied":
         throw new Error("You have already applied for this job (Workday allows one application per job)");
+      case "jobGone":
+        throw new Error("The job no longer exists — the posting was taken down");
       case "somethingWrong": {
         const k = `ua-wd-refresh|${location.pathname}`;
         const n = Number(sessionStorage.getItem(k) || 0);

@@ -3469,6 +3469,11 @@ the new bundle removed a file the manifest still points at, or if the appended
      `ua-queue.js`, `ua-page-hooks.js`, `ua-diagnostics.js` — and only entries
      that exist on disk; Jobright's list names ~50 assets it does not ship.
    - `side_panel.default_path` = `ua-queue.html`.
+   - `ua-switch-gate.js` right after `ua-enhancement.js`: `<all_urls>`,
+     `document_start`, `all_frames: true` (it must come before SpeedyApply's
+     scripts).
+   - `action.default_popup` = `ua-switch.html` (the autofill switch), and
+     `commands["ua-switch-off"]` (Alt+Shift+A).
    - permissions += `sidePanel`, `alarms`, `contextMenus`, `notifications`,
      `identity`.
    - Their new content scripts go after ours, in their order (1.24.0 added four;
@@ -4883,3 +4888,212 @@ the steps under "Applying the next Jobright patch".
   after ours, as in their own order. Their permissions were already all in
   ours, and every resource of theirs that exists on disk was already listed.
   `_metadata/` was not copied.
+
+## v17.59 — one autofill switch, on the toolbar, that really turns everything off
+
+**The switch is the toolbar icon.** Its badge always shows the state:
+**ON** (green), **OFF** (grey), or **RUN** (amber, a queue is applying). Click
+the icon for one large switch. The popup keeps "Open Jobright" (what the icon
+did before) and "Queue Manager". It is the same switch as "🤖 Fully
+Automated" in the sidebar, which was hard to reach while it was off, since the
+sidebar isn't loaded then. **Alt+Shift+A** switches it OFF from any tab; you
+can change the key at chrome://extensions/shortcuts. Like Alt+A in the page,
+the shortcut never switches it ON: that stays a deliberate click.
+
+**OFF now means off for everything in the extension, not just our own
+autofill.** A browser test opened a Greenhouse form and a Workday posting by
+hand (not as queue jobs), with the switch OFF and SpeedyApply's own setting
+on. On v17.58:
+- SpeedyApply's Workflow Add-on filled first name, last name, email and phone;
+- it added its floating button to the page;
+- the site's "Leave site?" warning was blocked.
+Now:
+- **SpeedyApply** is told autofill is disabled, through the two questions it
+  asks before acting: its content script's `getAutofillConfig` and its
+  add-on's `autofillEnabled` read. A new `ua-switch-gate.js` answers them in
+  every frame. SpeedyApply's files and its own stored setting are unchanged,
+  and a tab one of our runs owns still gets its real setting.
+- **"Leave site?"** works as the site intended. Two reasons it didn't:
+  - every page load started a "job just ended" grace window, even with no
+    job;
+  - a `window.onbeforeunload` handler's returned warning was dropped.
+  With the switch ON, or on a run's tab, it is still suppressed, as before.
+- **Jobright's "applied" popup** isn't sent to a tab, unless you opened
+  Jobright there yourself.
+- **A running queue stops** when you switch OFF, from any of the controls:
+  its job tabs close and unfinished jobs go back into the queue. The
+  single-tab runner and an Autofill you pressed on Workday stop too.
+- As before: our autofill and the Workday engine stand down, and Jobright's
+  helper isn't loaded unless you open it on a tab.
+
+**Tests:**
+- `tests/e2e/switch-off.js` checks all of the above in Chromium, 15 checks.
+  On the v17.58 build the same script fails the badge check and five of the
+  six Greenhouse checks.
+- `tests/switch-gate.test.js` (19) and the orchestrator suite (14 new) cover
+  the badge, stopping the queue, the shortcut and the popup filter.
+- `tests/e2e/leave-site.js` now checks both states.
+
+## v17.60 — rebased onto Jobright 1.26.0
+
+Jobright 1.26.0 changes nine of their files and adds one. All were merged by
+the steps under "Applying the next Jobright patch".
+- **Copied as theirs** (none had edits of ours): `contents`,
+  `applied-success-popup`, `ats-submission-resume`,
+  `clearcompany-submission-attribution`, `successfactors-submission-network-main`,
+  `global.css`.
+- **New:** `oraclecloud-profile-snapshot-main.37216759.js`. Their worker
+  injects it into Oracle Cloud pages when their sidebar app asks for a
+  profile snapshot, so with the switch OFF it never runs. It is not a content
+  script.
+- **`helper-app.41ea2652.js`** (their sidebar app): theirs, with our two edits
+  re-applied. Each anchor is still in 1.26.0 exactly once, and the "Not Now"
+  handler is still the popup's `onCancel`. The two edits:
+  - "Add this job first" is answered "Not Now";
+  - their standard autofill stands down on a tab our run owns.
+- **`static/background/index.js`** (their worker): theirs, with our five
+  `importScripts` lines re-appended.
+  - 14 new page injections: Oracle education, employment, skills, dates and
+    conditional questions; Eightfold dependent fields; Rippling's Google
+    Places; iCIMS frame visibility. All are requested by their sidebar app
+    while it fills, so all are covered by the switch.
+  - Nothing collides with ours: the same counts of `active:!0` (4),
+    `chrome.alarms` (6), `action.onClicked` (1) and `openTailorTab` (1); the
+    same `atsAppliedSuccessPopup` and `iconClicked` messages; and no `UA_`
+    messages, side panel, context menus, commands, popups or `beforeunload`.
+- **Manifest:** version 1.26.0. Their manifest now lists fewer permissions
+  (no `tabs` or `activeTab`) and fewer web-accessible resources. Ours keeps
+  the full set we need. `_metadata/` was not copied.
+
+On 1.26.0, all unit checks pass, and so do the switch browser test
+(`tests/e2e/switch-off.js`, 15/15) and the leave-page browser test (11/11).
+
+## v17.60 — background job tabs keep running at full speed
+
+Chrome slows tabs you are not looking at (timers at most once a second, later
+once a minute), and may freeze or unload them. A run fills jobs in exactly those
+tabs, so short waits stretched out, and a frozen runner tab stopped answering and
+was replaced — the 9 Nov log had 3 jobs ended as "The runner tab froze on this
+job twice". New `ua-keepalive.js`, used only while a run drives the tab (the
+runner tab of a running queue, or a Queue Manager job):
+
+- **Timers that keep time in the background.** Waits, the job heartbeat and the
+  stall check run on a small worker's clock, which Chrome does not slow. Where a
+  site's security policy refuses the worker, the normal timer is used.
+- **The tab is held awake.** A Web Lock is held for the run (Chrome does not
+  freeze a tab holding one) and the service worker marks the tab not
+  discardable, then hands it back when the run lets go.
+- **Frozen time is not counted.** If Chrome freezes the tab anyway, that time is
+  left out of the stall clock and the per-job time limit, so a job is not
+  skipped for Chrome's pause.
+
+Any other tab is untouched: no worker, no lock, no setting changed.
+Tests: `tests/keepalive.test.js` (30 checks), in `tests/run.sh`.
+
+## v17.61 — what the 9 Nov log showed
+
+- **Your name and links no longer get the cover-letter opener.** On Pinpoint
+  (Premier League) each box's question text took in the whole section, which
+  says "Cover Letter", so First Name was sent as "I am writing to apply to
+  Premierleague. Maxmilliam" — Last Name and LinkedIn too — and the phone box
+  ended up empty. The opener now goes only on real prose (60+ characters, 8+
+  words), never on a name, email, phone, link or one-line value, nor into an
+  email/tel/url box.
+- **A removed posting is skipped at once.** Workday answers the link of a job
+  that was taken down with "The page you are looking for doesn't exist."
+  ("Die Seite, die Sie suchen, ist nicht vorhanden." in German). Two such jobs
+  (RELX, ista) each spent ~150s and were reported as "no Submit control was
+  found". Now: skipped, "The job no longer exists — the posting was taken
+  down" (EN/DE/FR/ES/NL/IT/PT). New page: `tests/e2e/workday-gone.html`.
+- **A box with no label is named by its error.** Gem's boxes have no labels,
+  only "Please enter a first name." The error fixer now reads plain field
+  names (name, phone, email, location, city, address, postcode, country,
+  LinkedIn) from such a message and fills them from your profile.
+- **"Left alone — …"** When Fully Automated stands down because another tool
+  (e.g. LazyApply) is applying on the page, the Debugger now says so instead of
+  "pass ended without a confirmed submit" (7 of the 10 "stopped" jobs).
+
+Tests: `tests/failures-1109.test.js` (48 checks), in `tests/run.sh`.
+
+## v17.62 — wrong answers and long dead ends in the two 9 Nov logs
+
+Truthfulness first:
+
+- **A dropdown nothing matches is left for you — never given the first
+  option.** Three "any option beats a blank" fallbacks put down "Afghanistan"
+  as your country and "I am a contractor at OpenText" as your status. Now only
+  a single-choice list is taken unasked; otherwise the job stops and the
+  Debugger names the question. "Current status with <employer>?" picks the
+  option that says you have no tie, when there is one.
+- **A field's question is its own text, not its section's.**
+  `getFullQuestionText` returned all the text of the nearest container. On
+  Pinpoint, Aplitrak and Current Vacancies that was a whole section (or
+  included page `<script>` text and a dropdown's option list), so an Email box
+  got your name. A container holding other fields is passed over; script,
+  style and option text is never part of a question or label.
+- **Address line 2 no longer answers essays.** The rule matched the bare words
+  "building", "unit", "floor", "apt" inside sentences — Ashby's "What are you
+  most proud of building?" got a town name. Whole words only, never a question.
+- **New label rules:** Town, County, Postcode / Post Code / Eircode, and
+  "Earliest date you could join" (your notice period).
+
+Dead ends that ran for minutes (or hours):
+
+- **A search button is never the application's Submit.** On careers.syntax.com
+  an expired link landed on the job search; the run pressed "Search Jobs" for
+  2h20. Search / alert / subscribe / sign-in buttons and search forms are left
+  alone.
+- **The per-job time limit survives page reloads.** Each page load armed a
+  fresh full limit ("Timed out after 8498s"); now it arms the time left.
+- **An Apply button that only opens a menu** (SuccessFactors career sites such
+  as careers.ey.com): its application link is followed. Three EY jobs spent
+  180s each pressing it.
+- **Skipped at once, with the real reason:** a job board login that says the
+  email or password is wrong (CV-Library), a sign-up that says the email is
+  already taken (Welcome to the Jungle), a "Join our Talent Community" page
+  where the job used to be (BCG), a page with no form at all (was "Form
+  filled but no Submit"), and Ashby's "Missing entry for required field: …".
+- **SmartRecruiters location:** "Dublin, Dublin" has no suggestions; the town
+  alone, then town + country, are tried.
+- **Workday:** a current role on a site with no "I currently work here" box
+  gets To = this month ("The field To is required" stopped shi.wd12).
+
+Tests: `tests/v1762.test.js` (86 checks, in `tests/run.sh`) and
+`tests/e2e/dom-1762.js` (15 checks in Chromium).
+
+Also in v17.62: when your answer is known but not on a dropdown's list (you
+live in a country the list does not name), the list's own "Other" is chosen;
+and "Where did you hear about this job?" is answered by rule (it used to get an
+answer only from the removed first-option fallback). All 23 site pages in
+`tests/e2e` were run on this build: 21 submit, the removed-posting page is
+skipped with its reason, and `form-unknown.html` stops on "What is the name of
+your current manager?" — a question it has no true answer for.
+
+## v17.63 — the five jobs v17.62 left unfixed
+
+From the 9 Nov 22:24 log:
+
+- **Phenom "School or University\*"** (Adobe, OpenText, BCG): the box only
+  counts a suggestion clicked from its list; typed text is cleared on blur.
+  The extension now types your school, clicks the suggestion that *is* your
+  school, and when the list has no such entry picks its own "Other", which is
+  what the form says to do. It never picks a different school. Each school box
+  gets its own school from your education history.
+- **OpenText "State\*" after Country**: a list that fills itself from another
+  answer is given up to 4 seconds to get its choices before it is read. (The
+  empty State in the log came from Country having been set to "Afghanistan",
+  the first-option guess v17.62 removed.)
+- **TeamTailor "Standorte\*" checkboxes**: each box was labelled with a city,
+  so all 32 were treated as location boxes and had "Dublin, Ireland" typed in
+  until the 300s cap. Checkboxes and radios are never location boxes now, and
+  nothing ever rewrites what a checkbox submits.
+- **iCIMS profile password**: after sign-in, iCIMS's application page can ask
+  for "Password" and "Password (Re-enter)". Those required boxes now get your
+  saved ATS password, the same one the extension uses for every account it
+  creates, and the account is recorded so the next job here signs in.
+- **Oracle (JPMC) emailed PIN**: when reading codes from Gmail is off or Gmail
+  is signed out, the job is now skipped at once with what to switch on. Before,
+  it went back to the same wall three times until the 300s cap.
+
+Tests: `tests/v1763.test.js` (27 checks, in `tests/run.sh`) and
+`tests/e2e/dom-1763.js` (14 checks in Chromium).

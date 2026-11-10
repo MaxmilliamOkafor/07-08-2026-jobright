@@ -15,9 +15,11 @@
       "48": "icon48.plasmo.aced7582.png",
       "64": "icon64.plasmo.8bb5e6e0.png",
       "128": "icon128.plasmo.3c1ed2d2.png"
-    }
+    },
+    "default_popup": "ua-switch.html",
+    "default_title": "Autofill switch"
   },
-  "version": "1.25.2",
+  "version": "1.26.0",
   "author": "Jobright.ai",
   "name": "Jobright Autofill – Instant Job Applications, Job Match, AI Tailor Resume",
   "description": "1-click to autofill millions of job applications. The best way to manage job hunt and tailor resumes — Trusted by 500K+ job seekers",
@@ -57,11 +59,22 @@
         "<all_urls>"
       ],
       "js": [
+        "ua-keepalive.js",
         "ua-enhancement.js"
       ],
       "css": [],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "ua-switch-gate.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
     },
     {
       "matches": [
@@ -284,5 +297,14 @@
   ],
   "side_panel": {
     "default_path": "ua-queue.html"
+  },
+  "commands": {
+    "ua-switch-off": {
+      "suggested_key": {
+        "default": "Alt+Shift+A",
+        "mac": "Alt+Shift+A"
+      },
+      "description": "Switch autofill OFF (from any tab)"
+    }
   }
 }

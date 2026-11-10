@@ -17,7 +17,7 @@ ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 step "JavaScript syntax"
-for f in "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
+for f in "$EXT"/ua-keepalive.js "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/ua-switch-gate.js "$EXT"/ua-switch.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
   if node --check "$f" 2>/dev/null; then ok "$(basename "$f")"; else bad "$(basename "$f")"; fi
 done
 
@@ -51,7 +51,7 @@ const hooks = (m.content_scripts || []).find((c) => (c.js || []).includes('ua-pa
 hooks ? ok('ua-page-hooks declared') : no('ua-page-hooks.js content script missing');
 hooks && hooks.world === 'MAIN' ? ok('ua-page-hooks runs in the MAIN world') : no('ua-page-hooks must set "world": "MAIN" or it cannot override the page\'s confirm()');
 hooks && hooks.run_at === 'document_start' ? ok('ua-page-hooks runs at document_start') : no('ua-page-hooks must run at document_start');
-csJs.indexOf('ua-enhancement.js') <= 1 ? ok('ua-enhancement runs early') : no('ua-enhancement must be an early content script');
+csJs.indexOf('ua-enhancement.js') <= 2 ? ok('ua-enhancement runs early') : no('ua-enhancement must be an early content script');
 (m.side_panel || {}).default_path === 'ua-queue.html' ? ok('side panel wired to the queue manager') : no('side_panel.default_path');
 for (const perm of ['storage', 'tabs', 'scripting', 'sidePanel', 'alarms', 'contextMenus'])
   (m.permissions || []).includes(perm) ? ok('permission: ' + perm) : no('permission missing: ' + perm);
@@ -94,8 +94,23 @@ step "CSV import (queue manager panel)"
 node tests/queue-panel.test.js "$EXT/ua-queue.js" || fails=$((fails + 1))
 node tests/diagnostics.test.js "$EXT/ua-diagnostics.js" || fails=$((fails + 1))
 
+step "Background job tabs keep running (v17.60)"
+node tests/keepalive.test.js "$EXT" || fails=$((fails + 1))
+
+step "Fixes for the 9 Nov failures (v17.61)"
+node tests/failures-1109.test.js "$EXT" || fails=$((fails + 1))
+
+step "Fixes from the two 9 Nov logs (v17.62)"
+node tests/v1762.test.js "$EXT" || fails=$((fails + 1))
+
+step "The five jobs v17.62 left unfixed (v17.63)"
+node tests/v1763.test.js "$EXT" || fails=$((fails + 1))
+
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
+
+step "The one autofill switch (SpeedyApply told \"disabled\" while it is OFF)"
+node tests/switch-gate.test.js "$EXT/ua-switch-gate.js" || fails=$((fails + 1))
 
 step "SpeedyApply embedded (its files unchanged, its background kept to its own data)"
 node tests/speedyapply-host.test.js "$EXT" || fails=$((fails + 1))
