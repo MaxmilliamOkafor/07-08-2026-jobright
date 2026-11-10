@@ -125,8 +125,10 @@ eq('opens with a pointer sequence, then keyboard, then typeahead',
   /Typeahead: many comboboxes only render options once you type/.test(src), true);
 eq('never invents a demographic answer',
   /gender\|disability\|veteran\|race\|ethnic[\s\S]{0,200}?prefer not\|decline/.test(src), true);
-eq('blind last-resort pick is limited to REQUIRED fields',
-  /if \(!pick && required\) pick = real\[0\];/.test(src), true);
+// v17.62: no blind pick at all — only a list with a single choice is taken unasked.
+eq('a required dropdown is never given the first of several options',
+  /if \(!pick && required && real\.length === 1\) pick = real\[0\];/.test(src) &&
+  !/if \(!pick && required\) pick = real\[0\];/.test(src) && !/if \(!opt\) opt = opts\[0\];/.test(src), true);
 eq('it verifies the control actually took a value', /return comboHasValue\(combo\);/.test(src), true);
 eq('placeholder text is not mistaken for an answer',
   /isPlaceholder|please select/.test(src), true);

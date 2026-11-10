@@ -100,6 +100,9 @@ node tests/keepalive.test.js "$EXT" || fails=$((fails + 1))
 step "Fixes for the 9 Nov failures (v17.61)"
 node tests/failures-1109.test.js "$EXT" || fails=$((fails + 1))
 
+step "Fixes from the two 9 Nov logs (v17.62)"
+node tests/v1762.test.js "$EXT" || fails=$((fails + 1))
+
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
 

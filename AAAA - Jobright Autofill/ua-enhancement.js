@@ -1448,6 +1448,27 @@
     return m ? '+' + m[1] : '';
   }
 
+  /* A sentence asking for an answer in your own words — not the name of a box. */
+  function looksLikeOpenQuestion(label) {
+    const t = String(label || '').replace(/\s+/g, ' ').trim();
+    if (!t) return false;
+    return /\?/.test(t) || t.length > 70 ||
+      /^(what|why|how|which|who|when|describe|tell|share|explain|give|please (describe|tell|share|explain|give))\b/i.test(t);
+  }
+  // Questions about a past or present tie to the employer, and the options
+  // that truthfully say there is none.
+  const PRIOR_TIE_Q_RE = /\b(current|employment|working) (status|relationship) with\b|\bever (worked|been employed)\b|\b(worked|been employed) (for|at|by|with)\b.{0,60}\b(before|previously|in the past)\b|\b(current|former|previous) (employee|contractor|worker)\b/i;
+  const NO_PRIOR_TIE_OPTION_RE = /\bnever\b|\bnot (a |an )?(current|former|previous)\b|\bhave not (worked|been)\b|\bexternal (candidate|applicant)\b|\bnone of the above\b|\bnot (currently )?(employed|affiliated|associated)\b|^\s*no\b/i;
+  /* The list's explicit "Other" — only when we KNOW your answer (a place, a
+     source, a name; not a yes/no) and it is simply not among the options. */
+  const OTHER_OPTION_RE = /^\s*(other|others|other country|other location|not listed|none of the above|elsewhere|rest of (the )?world)\s*(\(.*\))?\s*$/i;
+  function otherOptionFor(opts, lbl, p, el) {
+    try {
+      const known = String(guessFieldValue(lbl, p, el) || '').trim();
+      if (!known || /^(yes|no|true|false|n\/a)$/i.test(known)) return null;
+      return opts.find((o) => OTHER_OPTION_RE.test(o.text || '')) || null;
+    } catch (_) { return null; }
+  }
   function guessValue(label, p) {
     // Trimmed: "Name*" became "name " and missed ^name$ — Ashby's required
     // full-name box was left empty and the form could never be sent.
@@ -1476,8 +1497,12 @@
     // "state" was matching as a SUBSTRING of "statement" — a "Personal Statement" essay
     // field was getting the literal US-state value stuffed into it. Word-bounded now.
     // "Country/Region Code" (SuccessFactors) is the phone dial code, not a region.
+    // v17.62: UK/IE forms say Town, County and Postcode (Current Vacancies left
+    // County and Postcode empty until the job timed out).
+    if (/^town$|^town (or |and )?city$|^(home |current )?town$/.test(l)) return p.city || '';
+    if (/\bcounty\b/.test(l) && !/country/.test(l)) return p.county || p.state || p.region || '';
     if (/\bstate\b|province|region/.test(l) && !/statement|country (region )?code/.test(l)) return p.state || '';
-    if (/zip|postal/.test(l)) return p.postal_code || p.zip || '';
+    if (/zip|postal|post ?code|\beircode\b/.test(l)) return p.postal_code || p.zip || p.postcode || '';
     if (/country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
     // Line 2 before the general address rule — it caught "Address Line 2" and
     // wrote the street into both lines (Oracle showed it twice).
@@ -1609,7 +1634,12 @@
     if (/\bage\b|18.*years|over.*18|at.*least.*18/.test(l)) return 'Yes';
     if (/agree|acknowledge|certif|attest|confirm|consent/.test(l)) return 'Yes';
     if (/please.?specify|other.?please/.test(l)) return p.city || p.state || '';
-    if (/hear.?about.*position|referral.?source/.test(l)) return DEFAULTS.howHeard;
+    // v17.62: "Where did you hear about this job?" (Jobvite) matched no rule;
+    // it only ever got an answer from the first-option fallback, now removed.
+    if (/hear.?about.*position|referral.?source|(how|where) did you (first )?(hear|find out|learn|come across)|hear about (this|the|us|our)|how did you find (this|the|us|our)/.test(l)) return p.how_heard || p.howHeard || DEFAULTS.howHeard;
+    // v17.62: "Earliest date you could join e.g. Immediately, 1 month, 3 months"
+    // (Workable) matched nothing and the required box stayed empty for 300s.
+    if (/earliest (possible )?(date|time|day).{0,20}(join|start|begin|commence)|when (can|could|would) you (be able to )?(start|join|begin|commence)|date you (can|could) (start|join)|how soon (can|could) you (start|join)/.test(l)) return p.notice_period || p.availability || DEFAULTS.availability;
     if (/earliest.?start|when.*available|join.?date/.test(l)) return DEFAULTS.availability;
     if (/current.?salary|previous.?salary|last.?salary/.test(l)) return p.current_salary || DEFAULTS.salary;
     if (/desired.?salary|expected.?compensation|salary.?expectation/.test(l)) return p.expected_salary || DEFAULTS.salary;
@@ -1624,7 +1654,11 @@
     if (/shift|work.?schedule|flexible.?hours/.test(l)) return 'Yes';
     if (/overtime/.test(l)) return 'Yes';
     if (/clearance.?level/.test(l)) return p.clearance_level || '';
-    if (/address.?(line)?.*2|apt|suite|unit|apartment|floor|building/.test(l)) return p.address_line_2 || '';
+    /* v17.62: whole words, and never a question. The bare words matched inside
+       sentences — Ashby's "What are you most proud of building?" was answered
+       with your address line 2 (a town name), and "unit" sits inside
+       "opportunity" and "community". */
+    if ((/address.?(line)?.*2/.test(l) || /\b(apt|suite|unit|apartment|floor|building)\b/.test(l)) && !looksLikeOpenQuestion(label)) return p.address_line_2 || '';
     if (/city.*(state|region)|location.*(city|metro)|current.?location|based.?in/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
     if (/notice.?period|how.*soon|days.?notice/.test(l)) return p.notice_period || DEFAULTS.notice;
     if (/visa.?status|immigration.?status|work.?status/.test(l)) return p.visa_status || DEFAULTS.authorized;
@@ -2058,6 +2092,53 @@
 
   // ===================== MASTER KNOCKOUT QUESTION ANSWERING SYSTEM =====================
   // Comprehensive handling for radio, button-style, select, and text knockout questions
+  /* v17.62 — a field's question is ITS OWN text, not its section's.
+     This used to return all the text of the nearest container that matched,
+     whatever it held. On Pinpoint that was the whole "Personal Details"
+     section; on Aplitrak one block around every box; on Current Vacancies a
+     block with the page's own <script> in it. Every field there then carried
+     every other field's label ("First Name Last Name Email Address Phone …
+     Cover Letter"), so an Email box got your name and names got the
+     cover-letter opener. A container is only used when it belongs to this one
+     field, and script/style text is never part of a question. */
+  function visibleTextOf(node) {
+    try {
+      if (!node) return '';
+      if (!node.querySelector || !node.querySelector('script,style,noscript,template,select')) return node.textContent || '';
+      const c = node.cloneNode(true);
+      c.querySelectorAll('script,style,noscript,template,select').forEach((x) => x.remove());
+      return c.textContent || '';
+    } catch (_) { return (node && node.textContent) || ''; }
+  }
+  const QTEXT_CTRL_SEL = 'input:not([type=hidden]):not([type=file]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]),textarea,select';
+  /* Does container p hold another question's box besides el? One companion
+     control is normal (a dial-code select beside the phone box, a search box
+     inside a dropdown); a second text box is another field. Choice groups
+     (radio / checkbox) keep the old rule — their container is the question. */
+  function holdsOtherFields(p, el) {
+    try {
+      const t = String(el.type || '').toLowerCase();
+      if (t === 'radio' || t === 'checkbox') return false;
+      const pairOk = (c) => {
+        const ct = String(c.type || '').toLowerCase();
+        return c.tagName === 'SELECT' || el.tagName === 'SELECT' || ct === 'search' || t === 'search' || t === 'tel' || ct === 'tel' ||
+          c.getAttribute('role') === 'combobox' || el.getAttribute('role') === 'combobox';
+      };
+      let others = 0, plain = 0;
+      for (const c of p.querySelectorAll(QTEXT_CTRL_SEL)) {
+        if (c === el) continue;
+        const ct = String(c.type || '').toLowerCase();
+        if (ct === 'radio' || ct === 'checkbox') continue;
+        let vis = true;
+        try { vis = isVisible(c); } catch (_) {}
+        if (!vis) continue;
+        others++;
+        if (!pairOk(c)) plain++;
+        if (others > 1) return true;
+      }
+      return plain > 0;
+    } catch (_) { return false; }
+  }
   function getFullQuestionText(el) {
     if (!el) return '';
     const containers = ['.question', '[class*="question"]', '[class*="Question"]', '.field',
@@ -2065,7 +2146,9 @@
       '[class*="form-field"]', '[class*="formElement"]', '[class*="input-group"]'];
     for (const sel of containers) {
       const p = el.closest(sel);
-      if (p) return p.textContent?.trim().replace(/\s+/g, ' ') || '';
+      if (!p) continue;
+      if (holdsOtherFields(p, el)) continue;      // a section, not this field's own block
+      return visibleTextOf(p).trim().replace(/\s+/g, ' ') || '';
     }
     return getLabel(el);
   }
@@ -3734,8 +3817,21 @@
         }
         if (!opt && /gender|disability|veteran|race|ethnic|sex\b/i.test(lbl || ''))
           opt = opts.find(o => /prefer not|decline|not to/i.test(o.text));
-        if (!opt) opt = opts[0];
+        // "What is your current status with <employer>?" — you are an outside
+        // applicant: the option that says so, never one that claims a tie.
+        if (!opt && PRIOR_TIE_Q_RE.test(lbl || '')) opt = opts.find(o => NO_PRIOR_TIE_OPTION_RE.test(o.text));
+        /* v17.62 — NOT the first option. "Any option beats a blank" put down
+           "Afghanistan" as your country and "I am a contractor at OpenText" as
+           your status on 9 Nov: an untrue answer is worse than a job that
+           stops and says which question it needs. Only a list with a single
+           choice is taken unasked. */
+        if (!opt && opts.length === 1) opt = opts[0];
+        // Your answer is known but is not on the list ("country where you
+        // reside": Poland / Ukraine / Ireland / Germany / Other, and you live
+        // elsewhere): the list's own "Other" is the true answer.
+        if (!opt) opt = otherOptionFor(opts, lbl, p, el);
         if (opt) { setSelectValue(el, opt.value); fixed++; }
+        else { LOG('Required dropdown "' + String(lbl || '').slice(0, 60) + '": no option matches your profile — left for you rather than guessed'); DIAG('field.unanswered', String(lbl || 'dropdown').slice(0, 120), { kind: 'no-matching-option' }); }
         continue;
       }
       if (isLocationField(el)) { continue; } // already handled by resolveLocationFields
@@ -5073,7 +5169,9 @@
     }
     // Last resort, and ONLY for a required field: an empty required dropdown
     // blocks submission outright, so any sane option beats leaving it blank.
-    if (!pick && required) pick = real[0];
+    // v17.62: only when the list has ONE choice. The first of several is a
+    // guess, and a guess on an application can be an untrue statement.
+    if (!pick && required && real.length === 1) pick = real[0];
     if (!pick) {
       try { combo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })); } catch (_) {}
       if (typed) { try { nativeSet(typeBox, ''); } catch (_) {} }   // our search text is not an answer
@@ -5319,6 +5417,19 @@
 
   // ===================== FIELD LABEL EXTRACTION =====================
   function splitCamelCase(s) { return (s || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_\-]/g, ' ').toLowerCase(); }
+  /* v17.62 — the words of a label, without the control it wraps. A <label>
+     around a <select> read as "Country*Please Select Afghanistan Albania …
+     United States …": the word "States" then matched the State rule, your
+     county was looked for among countries, and nothing matched. */
+  function labelWords(node) {
+    try {
+      if (!node) return '';
+      if (!node.querySelector || !node.querySelector('select,textarea,script,style,noscript,template')) return (node.textContent || '').trim();
+      const c = node.cloneNode(true);
+      c.querySelectorAll('select,textarea,script,style,noscript,template').forEach((x) => x.remove());
+      return (c.textContent || '').trim();
+    } catch (_) { return (node && node.textContent || '').trim(); }
+  }
   function getLabel(el) {
     if (!el) return '';
     if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
@@ -5334,7 +5445,7 @@
     if (el.id) {
       let lbl = null;
       try { lbl = scope.querySelector(`label[for="${CSS.escape(el.id)}"]`); } catch (_) {}
-      if (lbl) return lbl.textContent.trim();
+      if (lbl) return labelWords(lbl);
     }
     // A GENERIC placeholder ("Enter your answer", "Type here", "Select…") tells us nothing
     // about the field and was previously returned here — shadowing the real question label
@@ -5350,7 +5461,7 @@
     const container = el.closest('.form-group,.field,.question,[class*="Field"],[class*="Question"],[class*="form-row"],li,.form-item,.ant-form-item,.ant-row,[data-testid],[role="group"],.css-1wa3eu0-placeholder,.MuiFormControl-root,.MuiGrid-item,fieldset,[class*="formElement"],[class*="input-group"],[class*="form-field"]');
     if (container) {
       const lbl = container.querySelector('label,[class*="label"],[class*="Label"],legend,[class*="title"],[class*="prompt"],[class*="question-text"]');
-      if (lbl && lbl !== el && !lbl.contains(el)) return lbl.textContent.trim();
+      if (lbl && lbl !== el && !lbl.contains(el)) return labelWords(lbl);
     }
     // Fall back to a specific (non-generic) placeholder before the last-ditch sibling/name guesses.
     if (specificPlaceholder) return specificPlaceholder;
@@ -5823,12 +5934,10 @@
       if (!opt && !isEEO) opt = choiceByMeaning(sel, lbl, p);
       if (opt) { setSelectValue(sel, opt.value); filled++; }
       else if (isFieldRequired(sel) && opts.length) {
-        // Blindly picking option[0] when we have NO confident match used to run
-        // unconditionally — including on OPTIONAL dropdowns and EEO fields, where it
-        // could select a wrong SPECIFIC value (e.g. a random gender/race) instead of
-        // leaving an optional field alone. Now this last resort only fires when the
-        // field is actually REQUIRED (so the form would otherwise be unsubmittable).
-        setSelectValue(sel, opts[0].value); filled++;
+        // v17.62: never the first option because nothing matched — see
+        // guaranteeRequiredFields. A single-choice list is the only exception.
+        if (opts.length === 1) { setSelectValue(sel, opts[0].value); filled++; }
+        else { const other = otherOptionFor(opts, lbl, p, sel); if (other) { setSelectValue(sel, other.value); filled++; } }
       }
     }
 
@@ -6113,6 +6222,12 @@
   const JOB_EXTEND_MS = 45000;
   const JOB_RECENT_PROGRESS_MS = 30000;
   const JOB_HARD_CEIL_MS = 5 * 60 * 1000;
+  // What is left of this job's time limit, counted from when the job started
+  // (frozen time left out), never less than a second.
+  function jobTimeLeft(startedAt) {
+    const age = Math.max(0, Date.now() - (startedAt || Date.now()) - frozenSince(startedAt));
+    return Math.max(1000, qTimeout - age);
+  }
   function jobTimeoutExtension(startedAt) {
     const age = Math.max(0, Date.now() - (startedAt || Date.now()) - frozenSince(startedAt));
     const ceil = Math.max(JOB_HARD_CEIL_MS, qTimeout);
@@ -6198,9 +6313,53 @@
   // Why a job ended without a confirmed submission. These are different failures:
   // "no Submit control" usually means the form has another page or the button sits
   // in a frame we did not reach; "no confirmation" means it probably did send.
+  /* v17.62 — pages no amount of filling gets past. Each of these ran for one
+     to three minutes on 9 Nov and was then reported as something else ("no
+     Submit control", "no confirmation appeared"):
+       • a job board's login that says the email or password is wrong (CV-Library)
+       • a sign-up that says the email is already taken (Welcome to the Jungle)
+       • a "Join our Talent Community" page where the job used to be (BCG)
+     A reason string, or ''. Checked only after the normal flow has had its go. */
+  const LOGIN_REFUSED_RE = /(e-?mail( address)?|username|user ?name|login)\s*(or|and|\/)\s*password\s*(you(['’]ve| have)? entered\s*|provided\s*|combination\s*)?(is|are|was|were)?\s*(incorrect|invalid|wrong|not (recognised|recognized|correct|valid))|incorrect (e-?mail|username|password|login)|invalid (login|credentials|e-?mail or password|username or password|password)|wrong (password|credentials|e-?mail or password)/i;
+  const EMAIL_TAKEN_RE = /e-?mail( address)?\s*(is|has)?\s*(already)\s*(been\s*)?(taken|registered|in use|used|exists?)|already (have|has) an account|account (with|for) (this|that) e-?mail( address)? already exists|e-?mail( address)? already exists/i;
+  const TALENT_COMMUNITY_RE = /\bjoin\b.{0,24}\btalent\s*(community|network|pool)\b|\btalent\s*(community|network)\s*(sign.?up|registration)\b/i;
+  function talentCommunityPage() {
+    try {
+      if (/\/(jobs?|positions?|postings?|requisitions?|vacanc\w*|apply|application)(\/|$|\?)/i.test(location.pathname)) return false;
+      const heads = [document.title || ''];
+      for (const h of document.querySelectorAll('h1,h2,h3')) heads.push(h.textContent || '');
+      return heads.some((t) => TALENT_COMMUNITY_RE.test(String(t).replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ')));
+    } catch (_) { return false; }
+  }
+  function pageDeadEnd() {
+    try {
+      const host = location.hostname.replace(/^www\./, '');
+      const text = (document.body && document.body.innerText || '').slice(0, 6000);
+      let pw = 0;
+      try { pw = authPasswordFields().length; } catch (_) {}
+      if (pw && !isWorkday()) {
+        if (LOGIN_REFUSED_RE.test(text)) return host + ' refused the sign-in (it says the email or password is incorrect) — sign in there once yourself, then run this job again';
+        if (EMAIL_TAKEN_RE.test(text)) return 'An account already exists for your email on ' + host + ' with a password the extension does not have — sign in there once yourself, then run this job again';
+      }
+      if (talentCommunityPage()) return 'The link leads to a talent-community sign-up, not a job application';
+    } catch (_) {}
+    return '';
+  }
+  // A form's own summary of what is missing (Ashby: "Your form needs
+  // corrections — Missing entry for required field: …").
+  function formSummaryError() {
+    try {
+      const text = (document.body && document.body.innerText || '').slice(0, 8000);
+      const m = text.match(/missing entry for required field:?\s*([^\n]{2,140})/i);
+      return m ? 'the form says a required answer is missing: ' + m[1].trim() : '';
+    } catch (_) { return ''; }
+  }
   function submitFailureReason(validationStuck) {
     if (_authDeadEnd) return _authDeadEnd;
-    if (validationStuck) { const e = remainingErrorSummary(); return 'Validation errors could not be resolved' + (e ? ' — ' + e : ''); }
+    if (validationStuck) { const e = remainingErrorSummary() || formSummaryError(); return 'Validation errors could not be resolved' + (e ? ' — ' + e : ''); }
+    // Nothing on the page to fill at all (a job list, a closed link): say that,
+    // not "Form filled".
+    try { if (!submitAttempted() && !hasApplicationForm()) return 'No application form was found on the page — nothing was filled or submitted'; } catch (_) {}
     if (!submitAttempted()) return 'Form filled but no Submit control was found — nothing was submitted';
     return 'Submit was clicked but no confirmation appeared';
   }
@@ -6532,6 +6691,20 @@
     '^\\s*apply\\b', '\\bapply\\s+now\\b', '\\bapply\\s+(for|to)\\b', '\\beasy\\s+apply\\b',
   ].join('|'), 'i');
 
+  /* v17.62 — the selector list above matches ANY input[type=submit]. On
+     careers.syntax.com the job link had expired into the job SEARCH page: the
+     run typed your town into "Search by Location" and pressed "Search Jobs",
+     the page reloaded, and it did so again — for two hours and twenty minutes.
+     A button that searches, sets a job alert, subscribes or signs in, or that
+     sits in a search form, is never the end of an application. */
+  const NOT_APPLICATION_SUBMIT_RE = /\b(search|suchen|suche|rechercher|recherche|buscar|zoeken|cerca|find jobs?|job alerts?|create alert|subscribe|newsletter|sign ?in|log ?in|login)\b/i;
+  function notAnApplicationSubmit(btn) {
+    try {
+      const label = controlLabel(btn);
+      if (label && label.length <= 60 && NOT_APPLICATION_SUBMIT_RE.test(label) && !/\b(submit|send) (my |your |the )?application\b/i.test(label)) return true;
+      return !!(btn.closest && btn.closest('[role="search"],form[action*="search" i],form[id*="search" i],form[class*="search" i],form[name*="search" i]'));
+    } catch (_) { return false; }
+  }
   function controlLabel(el) {
     try {
       const raw = (el.innerText || el.textContent || el.value ||
@@ -6771,6 +6944,7 @@
     for (const sel of submitSels) {
       let btn = $(sel);
       if (!submitEnabled(btn)) { for (const r of fieldRoots().slice(1)) { const b = r.querySelector(sel); if (submitEnabled(b)) { btn = b; break; } } }
+      if (submitEnabled(btn) && notAnApplicationSubmit(btn)) { LOG('Not the application\'s Submit (' + (controlLabel(btn) || sel).slice(0, 40) + ') — left alone'); continue; }
       if (submitEnabled(btn)) { LOG('Clicking submit:', sel); await clearOverSubmit(btn); await sleep(500); realClick(btn); markSubmitAttempt(); return 'submitted'; }
     }
     // Fallback: button by text
@@ -12669,6 +12843,7 @@
       let copy = '';
       try { copy = (document.body && document.body.innerText || '').slice(0, 4000); } catch (_) {}
       if (pageJobGone()) return JOB_GONE_REASON;
+      if (talentCommunityPage()) return 'The link leads to a talent-community sign-up, not a job application';
       if (CLOSED_POSTING_RE.test(copy) && !hasApplicationForm()) return 'The posting has closed';
       if (captchaBlocksSignIn()) {
         const c = detectCaptcha();
@@ -12746,7 +12921,7 @@
       const took = Math.round((Date.now() - jobStart - frozenSince(jobStart)) / 1000);
       await finalize('timeout', `Timed out after ${took}s (last activity: ${isBusy() ? _busyWhat : _lastProgressWhat})`);
     };
-    tId = setTimeout(onTimeout, qTimeout);
+    tId = setTimeout(onTimeout, jobTimeLeft(jobStart));   // v17.62: what is left of the limit, not a fresh one
 
     /* Give up on a job that is going NOWHERE, rather than waiting out the full
        per-job cap. A page stuck on a spinner, a redirect loop, or a form that
@@ -12861,7 +13036,8 @@
       for (let attempt = 0; attempt < 2 && !success && !finalized; attempt++) {
         if (attempt === 0) {
           await withRetry(async () => { await dispatchATSAutomation(); }, 'Manager job automation', 0);
-          if (_authDeadEnd) break;        // cannot get past the sign-in: fail now, with the reason
+          if (!_authDeadEnd && !confirmSubmitted()) { const de = pageDeadEnd(); if (de) { _authDeadEnd = de; _authSkip = true; LOG('Dead end: ' + de); } }
+          if (_authDeadEnd) break;       // cannot get past the sign-in: fail now, with the reason
         } else {
           /* Second and final attempt: top up whatever is still empty and press
              the button again. No driver, no page walk — if the first pass could
@@ -13047,7 +13223,10 @@
             renderQ(); updateCtrl();
             goNext();
           };
-          _qTimeoutId = setTimeout(onJobTimeout, qTimeout);
+          /* v17.62 — the time LEFT, not a fresh full timer. Every page load armed
+             the whole limit again, so a job whose page kept reloading never
+             reached it ("Timed out after 8498s"). */
+          _qTimeoutId = setTimeout(onJobTimeout, jobTimeLeft(jobStart));
 
           // Submitted → recorded and on to the next job at once, not after the fill code returns.
           const finishSubmitted = async () => {
@@ -13122,6 +13301,7 @@
           let success = false, validationStuck = false;
           for (let attempt = 0; attempt < 2 && !success; attempt++) {
             await withRetry(async () => { await dispatchATSAutomation(); }, 'Queue job automation');
+            if (!_authDeadEnd && !confirmSubmitted()) { const de = pageDeadEnd(); if (de) { _authDeadEnd = de; _authSkip = true; LOG('Dead end: ' + de); } }
             if (_authDeadEnd) break;      // cannot get past the sign-in: fail now, with the reason
             // Verify submission (poll for a confirmation signal).
             await withBusy('verifying submission', async () => {
@@ -15860,14 +16040,57 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       if (btn.tagName === 'A' && btn.target === '_blank') btn.target = '_self';
       LOG('Clicking Apply: ' + (btn.textContent || btn.value || '').trim().slice(0, 30));
       scrollIfNeeded(btn);
+      const hrefBefore = location.href;
       realClick(btn);
       noteProgress('clicked Apply');
       clicks++;
       // Condition-based wait — fires the moment a form OR the choice modal appears,
       // instead of a fixed multi-second delay (faster Apply on every ATS).
       await waitForApplyTarget(6000);
+      /* v17.62 — an Apply button that only opens a menu. On SuccessFactors
+         career sites (careers.ey.com) "Apply now" is a dropdown toggle: each
+         click opened or closed the menu, the page never changed, and three EY
+         jobs spent 180s each pressing it before "no Submit control was found".
+         The toggle carries the application link itself — follow it. */
+      if (location.href === hrefBefore && !hasApplicationForm() && !findApplyManually()) {
+        const target = applyLinkBehind(btn);
+        if (target) {
+          LOG('Apply only opened a menu — following its application link');
+          DIAG('apply.menu-link', target.slice(0, 160));
+          location.assign(target);
+          await waitUntil(() => location.href !== hrefBefore, 15000, 200);
+          return false;                      // the next page carries the job on
+        }
+      }
     }
     return clicks > 0;
+  }
+  /* The application link behind an Apply control that opens a menu instead of
+     navigating: the control's own href attribute (a <button href> on
+     SuccessFactors), else the site's hidden apply anchor, else an apply link
+     inside the same button group. Same site only; never a LinkedIn/Indeed
+     "apply with" option. '' when there is none. */
+  function applyLinkBehind(btn) {
+    try {
+      const isMenu = btn.getAttribute('data-toggle') === 'dropdown' || btn.getAttribute('data-bs-toggle') === 'dropdown' ||
+        btn.hasAttribute('aria-haspopup') || btn.hasAttribute('aria-expanded') || /dropdown-toggle/.test(String(btn.className || ''));
+      if (!isMenu) return '';
+      const ok = (href, text) => {
+        if (!href || /^(#|javascript:)/i.test(href.trim())) return '';
+        let u;
+        try { u = new URL(href, location.href); } catch (_) { return ''; }
+        if (!/^https?:$/.test(u.protocol) || u.hostname !== location.hostname) return '';
+        if (/linkedin|indeed|facebook|google|xing|seek|apple/i.test(u.href + ' ' + (text || ''))) return '';
+        if (!/apply|bewerb|postul|candidat|sollicit/i.test(u.pathname + ' ' + (text || ''))) return '';
+        return u.href === location.href ? '' : u.href;
+      };
+      const own = btn.tagName !== 'A' ? ok(btn.getAttribute('href') || btn.getAttribute('data-href') || '', btn.textContent) : '';
+      if (own) return own;
+      const group = btn.closest('.btn-group,.dropdown,.dropup,[class*="dropdown"]') || btn.parentElement;
+      const links = [...(group ? group.querySelectorAll('a[href]') : []), ...document.querySelectorAll('a.dialogApplyBtn[href]')];
+      for (const a of links) { const hit = ok(a.getAttribute('href') || '', a.textContent); if (hit) return hit; }
+    } catch (_) {}
+    return '';
   }
   // Stall watchdog stands down while this runs — see withBusy.
   async function openApplicationForm(...a) { return withBusy('opening the application', () => openApplicationForm__impl(...a)); }
@@ -16680,20 +16903,53 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     const field = host.shadowRoot.querySelector('spl-internal-form-field spl-input');
     const inp = field && field.shadowRoot && field.shadowRoot.querySelector('input');
     if (!inp || (inp.value || '').trim()) return false;
-    const q = locationQuery(p, true) || p.city;
-    if (!q) return false;
-    nativeSet(inp, q);
+    /* v17.62 — "Dublin, Dublin" (city, county) finds nothing in SmartRecruiters'
+       place search, the required City stayed empty and two jobs sat on step 1
+       until the time limit. Ask the way a person would: the town alone first
+       when the region only repeats it, then with the country. */
+    const queries = srLocationQueries(p);
+    if (!queries.length) return false;
+    let q = '', opt = null, manual = null;
+    for (const cand of queries) {
+      q = cand;
+      opt = null; manual = null;
+      if ((inp.value || '').trim()) { nativeSet(inp, ''); await sleep(120); }
+      nativeSet(inp, q);
+      await srWaitLocationOption(host, (o, m) => { opt = o; manual = m; });
+      if (opt) break;
+      LOG('SmartRecruiters: no location suggestion for "' + q + '"' + (cand !== queries[queries.length - 1] ? ' — trying another wording' : ''));
+    }
+    if (!opt) return false;
+    triggerMouse(opt); realClick(opt);
+    await sleep(scaled(400, 200));
+    LOG('SmartRecruiters: location picked from the suggestions ("' + q + '")');
+    return true;
+  }
+  // Wordings of your location for a place search, most specific that works first.
+  function srLocationQueries(p) {
+    const city = String(p.city || '').trim();
+    const region = String(p.state || p.region || '').trim();
+    const country = String(p.country || DEFAULTS.country || '').trim();
+    const same = (a, b) => a && b && a.toLowerCase() === b.toLowerCase();
+    const list = [];
+    if (city) {
+      if (region && !same(city, region)) list.push(city + ', ' + region);
+      list.push(city);
+      if (country) list.push(city + ', ' + country);
+    } else {
+      const q = locationQuery(p, true);
+      if (q) list.push(q);
+    }
+    return list.filter((x, i) => x && list.indexOf(x) === i);
+  }
+  async function srWaitLocationOption(host, report) {
     let opt = null, manual = null;
     await waitUntil(() => {
       manual = host.shadowRoot.querySelector("div[slot='menu'] spl-select-option[value='goToManualLocationMode']");
       opt = host.shadowRoot.querySelector("div[slot='menu'] spl-select-option:not([value='goToManualLocationMode']) .c-spl-autocomplete-default-option, div[slot='menu'] spl-select-option:not([value='goToManualLocationMode']) spl-typography-body");
-      return !!(opt || manual);
-    }, 5000, 150);
-    if (!opt) { LOG('SmartRecruiters: no location suggestion for "' + q + '"'); return false; }
-    triggerMouse(opt); realClick(opt);
-    await sleep(scaled(400, 200));
-    LOG('SmartRecruiters: location picked from the suggestions');
-    return true;
+      return !!opt;   // the "enter manually" row shows before the real suggestions load
+    }, 3500, 150);
+    report(opt, manual);
   }
   async function srPhone(p) {
     const host = deepAll('spl-phone-field', 2)[0];
@@ -18659,10 +18915,10 @@ Result: Shipped my first production change in week three and my notes doc became
     // Multi-option list
     const opts = btns.filter(b => /option|choice|answer/i.test(b.className || '') && (b.textContent || '').trim().length < 80);
     if (opts.length >= 2) {
-      // Prefer first non-negative option
-      const pick = opts.find(b => !/none|n\/a|other|decline|prefer not/i.test(b.textContent || '')) || opts[0];
-      pick.click();
-      return true;
+      // v17.62: a multiple-choice chat question is not answered by taking the
+      // first choice — that is a guess. Left for you.
+      LOG('Multiple-choice chat question left unanswered (no rule for it): ' + q.slice(0, 80));
+      return false;
     }
     // Fallback: type into input
     if (inputEl) {

@@ -2130,11 +2130,27 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       await waitStable(300, 5e3);
     }
   }
+  function thisMonth() {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`;
+  }
   async function markCurrentRole(ctx, sectionEl) {
     const first = blocks(sectionEl, "jobTitleF")[0];
     if (!first) return;
     const box = field("currentlyF", first);
-    if (!box) return;
+    if (!box) {
+      // v17.62: no "I currently work here" box on this tenant. Workday then
+      // requires To; a current role ends "this month" (shi.wd12: "The field
+      // To is required" stopped the engine and the job timed out at 300s).
+      const start0 = dateContainer(first, "start");
+      const end0 = dateContainer(first, "end");
+      if (start0 && readValue(start0) && end0 && !readValue(end0)) {
+        handled.add(end0);
+        if (await setDate(end0, thisMonth())) ctx.log('Set To to this month on your most recent role (no end date, and this site has no "I currently work here" box)');
+        await waitStable(300, 4e3);
+      }
+      return;
+    }
     const c = containerOf(box);
     if (readValue(c) === "true") return;
     const start = dateContainer(first, "start");
@@ -2271,6 +2287,13 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       if (end) {
         handled.add(end);
         if (!await setDate(end, w.end)) ctx.flag(`${w.company} end date`, "Date didn't stick");
+      }
+    } else if (w.current && !cur) {
+      // A current role where the site has no "currently work here" box: To is this month.
+      const end = dateContainer(block, "end");
+      if (end && !readValue(end)) {
+        handled.add(end);
+        if (!await setDate(end, thisMonth())) ctx.flag(`${w.company} end date`, "Date didn't stick");
       }
     }
     const bullets = ctx.docs?.tailored?.roles[w.id] ?? w.bullets;

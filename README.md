@@ -5014,3 +5014,57 @@ Tests: `tests/keepalive.test.js` (30 checks), in `tests/run.sh`.
   "pass ended without a confirmed submit" (7 of the 10 "stopped" jobs).
 
 Tests: `tests/failures-1109.test.js` (48 checks), in `tests/run.sh`.
+
+## v17.62 — wrong answers and long dead ends in the two 9 Nov logs
+
+Truthfulness first:
+
+- **A dropdown nothing matches is left for you — never given the first
+  option.** Three "any option beats a blank" fallbacks put down "Afghanistan"
+  as your country and "I am a contractor at OpenText" as your status. Now only
+  a single-choice list is taken unasked; otherwise the job stops and the
+  Debugger names the question. "Current status with <employer>?" picks the
+  option that says you have no tie, when there is one.
+- **A field's question is its own text, not its section's.**
+  `getFullQuestionText` returned all the text of the nearest container. On
+  Pinpoint, Aplitrak and Current Vacancies that was a whole section (or
+  included page `<script>` text and a dropdown's option list), so an Email box
+  got your name. A container holding other fields is passed over; script,
+  style and option text is never part of a question or label.
+- **Address line 2 no longer answers essays.** The rule matched the bare words
+  "building", "unit", "floor", "apt" inside sentences — Ashby's "What are you
+  most proud of building?" got a town name. Whole words only, never a question.
+- **New label rules:** Town, County, Postcode / Post Code / Eircode, and
+  "Earliest date you could join" (your notice period).
+
+Dead ends that ran for minutes (or hours):
+
+- **A search button is never the application's Submit.** On careers.syntax.com
+  an expired link landed on the job search; the run pressed "Search Jobs" for
+  2h20. Search / alert / subscribe / sign-in buttons and search forms are left
+  alone.
+- **The per-job time limit survives page reloads.** Each page load armed a
+  fresh full limit ("Timed out after 8498s"); now it arms the time left.
+- **An Apply button that only opens a menu** (SuccessFactors career sites such
+  as careers.ey.com): its application link is followed. Three EY jobs spent
+  180s each pressing it.
+- **Skipped at once, with the real reason:** a job board login that says the
+  email or password is wrong (CV-Library), a sign-up that says the email is
+  already taken (Welcome to the Jungle), a "Join our Talent Community" page
+  where the job used to be (BCG), a page with no form at all (was "Form
+  filled but no Submit"), and Ashby's "Missing entry for required field: …".
+- **SmartRecruiters location:** "Dublin, Dublin" has no suggestions; the town
+  alone, then town + country, are tried.
+- **Workday:** a current role on a site with no "I currently work here" box
+  gets To = this month ("The field To is required" stopped shi.wd12).
+
+Tests: `tests/v1762.test.js` (86 checks, in `tests/run.sh`) and
+`tests/e2e/dom-1762.js` (15 checks in Chromium).
+
+Also in v17.62: when your answer is known but not on a dropdown's list (you
+live in a country the list does not name), the list's own "Other" is chosen;
+and "Where did you hear about this job?" is answered by rule (it used to get an
+answer only from the removed first-option fallback). All 23 site pages in
+`tests/e2e` were run on this build: 21 submit, the removed-posting page is
+skipped with its reason, and `form-unknown.html` stops on "What is the name of
+your current manager?" — a question it has no true answer for.
