@@ -1,12 +1,12 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Jobright Debugger</title>
+<title>Debugger · Jobright Autofill</title>
 <style>
-:root{--bg:#0d0e12;--panel:#14161c;--panel2:#191c24;--line:#262a35;--txt:#e6e8ef;--mut:#8b90a0;--acc:#7c8cff;--ok:#34d399;--bad:#f87171;--warn:#fbbf24;--sk:#a3a3a3;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+:root{--bg:#0f1012;--panel:#16171a;--panel2:#1c1e22;--line:#2a2c31;--txt:#f1f2f4;--mut:#a3a8b0;--acc:#00f0a0;--ok:#34d399;--bad:#f87171;--warn:#fbbf24;--sk:#a3a3a3;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px/1.45 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
 button{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
-button:hover{border-color:#3a4050} button.acc{background:var(--acc);border-color:var(--acc);color:#fff} button.danger{color:var(--bad)}
+button:hover{border-color:#3a4050} button.acc{background:var(--acc);border-color:var(--acc);color:#04130d;font-weight:700} button.danger{color:var(--bad)}
 input,select{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 9px}
 header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
 header h1{font-size:15px;margin:0 8px 0 0;font-weight:700}
@@ -18,13 +18,13 @@ main{display:grid;grid-template-columns:300px 420px 1fr;height:calc(100% - 54px)
 section{border-right:1px solid var(--line);overflow:auto;min-height:0}
 section h2{position:sticky;top:0;margin:0;padding:10px 14px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);background:var(--panel);border-bottom:1px solid var(--line);z-index:1}
 .cause{padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer}
-.cause:hover{background:var(--panel2)} .cause.on{background:#1d2133;box-shadow:inset 3px 0 var(--acc)}
+.cause:hover{background:var(--panel2)} .cause.on{background:#14251f;box-shadow:inset 3px 0 var(--acc)}
 .cause .n{float:right;font-weight:700;color:var(--bad)} .cause .ats{margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
-.chip{font-size:11px;padding:1px 6px;border-radius:6px;background:#22263a;color:#c7cdf5}
+.chip{font-size:11px;padding:1px 6px;border-radius:6px;background:#22252b;color:#c9cdd4}
 .filters{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);position:sticky;top:37px;background:var(--bg);z-index:1;flex-wrap:wrap}
 .filters input{flex:1;min-width:120px}
 .job{padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;display:grid;grid-template-columns:10px 1fr;gap:8px}
-.job:hover{background:var(--panel2)} .job.on{background:#1d2133}
+.job:hover{background:var(--panel2)} .job.on{background:#14251f}
 .dot{width:9px;height:9px;border-radius:50%;margin-top:5px;background:var(--mut)}
 .s-done .dot{background:var(--ok)} .s-failed .dot,.s-timeout .dot{background:var(--bad)} .s-skipped .dot{background:var(--sk)} .s-applying .dot{background:var(--warn);animation:p 1.2s infinite}
 @keyframes p{50%{opacity:.3}}
@@ -40,7 +40,7 @@ section h2{position:sticky;top:0;margin:0;padding:10px 14px;font-size:12px;lette
 .reason{margin-top:8px;padding:8px 10px;border-radius:8px;background:#211717;border:1px solid #4a2222;color:#fca5a5;white-space:pre-wrap}
 .meta{color:var(--mut);font-size:12px;margin-top:6px}
 .tabs{display:flex;gap:4px;padding:8px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:1;flex-wrap:wrap}
-.tabs button.on{background:#232842;border-color:var(--acc)}
+.tabs button.on{background:#14251f;border-color:var(--acc)}
 .pane{padding:10px 16px}
 .tl{font-family:var(--mono);font-size:12px}
 .tl .r{display:grid;grid-template-columns:62px 64px 1fr;gap:8px;padding:2px 0;border-bottom:1px dashed #1c1f28}
@@ -65,7 +65,7 @@ img.shot{max-width:100%;border:1px solid var(--line);border-radius:8px}
 </style></head>
 <body>
 <header>
-  <h1>🐞 Jobright Debugger</h1>
+  <h1>Debugger</h1>
   <div class="stats" id="stats"></div>
   <div class="grow"></div>
   <label class="muted" style="font-size:12px"><input type="checkbox" id="live" checked> live</label>

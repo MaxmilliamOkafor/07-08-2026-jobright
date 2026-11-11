@@ -1366,9 +1366,9 @@
       if (!chrome.action) return;
       const st1 = await switchState();
       const [text, color, title] = st1.running
-        ? ['RUN', '#d97706', 'Autofill: a run is going — click to switch everything OFF']
-        : st1.on ? ['ON', '#059669', 'Autofill: ON — click to switch it OFF']
-          : ['OFF', '#6b7280', 'Autofill: OFF — nothing fills or pops up. Click to switch it ON'];
+        ? ['RUN', '#d97706', 'Jobright Autofill — a run is going. Click to open Jobright; the Autofill switch there stops it.']
+        : st1.on ? ['ON', '#059669', 'Jobright Autofill — autofill is ON. Click to open Jobright.']
+          : ['OFF', '#6b7280', 'Jobright Autofill — autofill is OFF: nothing fills or pops up. Click to open Jobright.'];
       chrome.action.setBadgeText({ text }, () => void chrome.runtime.lastError);
       chrome.action.setBadgeBackgroundColor({ color }, () => void chrome.runtime.lastError);
       try { chrome.action.setBadgeTextColor && chrome.action.setBadgeTextColor({ color: '#ffffff' }, () => void chrome.runtime.lastError); } catch (_) {}

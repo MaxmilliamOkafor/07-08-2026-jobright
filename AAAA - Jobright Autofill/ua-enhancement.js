@@ -15260,15 +15260,15 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     const shown = queue.slice(0, MAX);
     list.innerHTML = shown.map(j => {
       const label = j.companyName ? `${j.companyName} — ${j.title || ''}` : (j.title || shortUrl(j.url));
-      return `<div style="display:flex;align-items:center;gap:7px;padding:5px 8px;background:#0e0e0f;border:1px solid #242427;border-radius:7px">
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#0f1012;border:1px solid #2a2c31;border-radius:8px">
         <input type="checkbox" class="ua-sb-jobcb" data-id="${j.id}" ${selected.has(j.id) ? 'checked' : ''} style="accent-color:#00f0a0;width:13px;height:13px;flex-shrink:0">
         <div style="flex:1;min-width:0">
-          <div style="font-size:11px;color:#e7e7ea;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escHtml(j.url)}">${escHtml(label)}</div>
-          <div style="font-size:9px;font-weight:600;color:${STC[j.status] || '#9aa0a6'};text-transform:capitalize">${escHtml(j.status)}</div>
+          <div style="font-size:12px;color:#f1f2f4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escHtml(j.url)}">${escHtml(label)}</div>
+          <div style="font-size:11px;font-weight:600;color:${STC[j.status] || '#a3a8b0'};text-transform:capitalize">${escHtml(j.status)}</div>
         </div>
-        <button class="ua-sb-jobdel" data-id="${j.id}" title="Remove" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:15px;line-height:1;flex-shrink:0;padding:0 2px">×</button>
+        <button class="ua-sb-jobdel" data-id="${j.id}" title="Remove from queue" aria-label="Remove from queue" style="background:none;border:none;color:#a3a8b0;cursor:pointer;font-size:16px;line-height:1;flex-shrink:0;padding:2px 4px">×</button>
       </div>`;
-    }).join('') + (queue.length > MAX ? `<div style="font-size:10px;color:#6f6f76;text-align:center;padding:5px">+${queue.length - MAX} more</div>` : '');
+    }).join('') + (queue.length > MAX ? `<div style="font-size:11px;color:#7b818b;text-align:center;padding:5px">+${queue.length - MAX} more</div>` : '');
     list.querySelectorAll('.ua-sb-jobcb').forEach(cb => cb.addEventListener('change', () => {
       if (cb.checked) selected.add(cb.dataset.id); else selected.delete(cb.dataset.id);
       const selall = _sbSection.querySelector('#ua-sb-selall');
@@ -15279,80 +15279,130 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     if (selall) selall.checked = queue.length > 0 && queue.every(j => selected.has(j.id));
   }
 
+  /* v17.64 — one look for both cards. Scoped by id: the cards live inside
+     Jobright's sidebar (a shadow root), so nothing here can reach the page. */
+  const UA_CARD_CSS = `
+    #ua-fa-card,#ua-sb{--ua-bg:#16171a;--ua-bg2:#0f1012;--ua-line:#2a2c31;--ua-line2:#3a3d44;--ua-fg:#f1f2f4;--ua-mut:#a3a8b0;--ua-dim:#7b818b;--ua-acc:#00f0a0;--ua-acc-fg:#04130d;--ua-run:#f5a623;--ua-bad:#f47174;
+      margin:10px 12px;padding:14px;background:var(--ua-bg);border:1px solid var(--ua-line);border-radius:12px;color:var(--ua-fg);
+      font:13px/1.45 'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;text-align:left;box-sizing:border-box}
+    #ua-fa-card *,#ua-sb *{box-sizing:border-box;font-family:inherit}
+    #ua-fa-card .ua-row,#ua-sb .ua-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    #ua-fa-card .ua-eyebrow{display:block;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ua-mut)}
+    #ua-fa-card #ua-fa-state{display:block;font-size:20px;font-weight:800;letter-spacing:.01em;line-height:1.15;color:var(--ua-dim)}
+    #ua-fa-card[data-state="on"] #ua-fa-state{color:var(--ua-acc)}
+    #ua-fa-card[data-state="running"] #ua-fa-state{color:var(--ua-run)}
+    #ua-fa-card[data-state="on"]{border-color:#1d6b4f}
+    #ua-fa-card[data-state="running"]{border-color:#7a5516}
+    #ua-fa-toggle{flex:0 0 auto;width:52px;height:30px;border-radius:15px;border:none;background:#4a4e57;cursor:pointer;position:relative;padding:0;transition:background .15s}
+    #ua-fa-toggle span{position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+    #ua-fa-toggle[aria-checked="true"]{background:var(--ua-acc)}
+    #ua-fa-card[data-state="running"] #ua-fa-toggle{background:var(--ua-run)}
+    #ua-fa-toggle[aria-checked="true"] span{transform:translateX(22px)}
+    #ua-fa-what{margin:8px 0 0;font-size:12px;color:var(--ua-mut)}
+    #ua-fa-card button:focus-visible,#ua-sb button:focus-visible,#ua-sb input:focus-visible,#ua-sb textarea:focus-visible{outline:2px solid var(--ua-acc);outline-offset:2px}
+    #ua-sb .ua-title{font-size:14px;font-weight:700}
+    #ua-sb #ua-sb-count{font-size:11px;font-weight:700;color:var(--ua-acc);background:rgba(0,240,160,.1);border-radius:999px;padding:2px 9px;white-space:nowrap}
+    .ua-btn{appearance:none;padding:8px 10px;border:1px solid var(--ua-line2);border-radius:8px;background:transparent;color:var(--ua-fg);font-size:12px;font-weight:600;line-height:1.3;cursor:pointer;transition:background .12s,border-color .12s}
+    .ua-btn:hover{background:rgba(255,255,255,.06);border-color:#565a63}
+    .ua-btn:disabled{opacity:.5;cursor:default}
+    .ua-btn.ua-primary{width:100%;padding:11px;border:none;border-radius:10px;background:var(--ua-acc);color:var(--ua-acc-fg);font-size:13px;font-weight:700}
+    .ua-btn.ua-primary:hover{background:#2bf5b1}
+    .ua-btn.ua-wide{width:100%}
+    .ua-btn.ua-danger{color:var(--ua-bad);border-color:#5a2a2e}
+    .ua-btn.ua-stop{width:100%;padding:11px;border-radius:10px;font-size:13px;font-weight:700;color:var(--ua-bad);border-color:#5a2a2e;background:rgba(244,113,116,.08)}
+    #ua-sb .ua-stack{display:flex;flex-direction:column;gap:8px}
+    #ua-sb .ua-pair{display:flex;gap:8px}
+    #ua-sb .ua-pair>*{flex:1}
+    #ua-sb #ua-sb-drop{border:1px dashed var(--ua-line2);border-radius:8px;padding:10px;text-align:center;font-size:12px;color:var(--ua-mut);cursor:pointer;transition:all .15s}
+    #ua-sb label.ua-opt{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ua-fg);cursor:pointer;user-select:none}
+    #ua-sb label.ua-opt input{accent-color:var(--ua-acc);width:15px;height:15px;margin:0;flex:0 0 auto}
+    #ua-sb label.ua-opt small{color:var(--ua-dim);font-size:11px}
+    #ua-sb input[type=text],#ua-sb input[type=password],#ua-sb textarea{width:100%;background:var(--ua-bg2);border:1px solid var(--ua-line2);border-radius:8px;color:var(--ua-fg);font-size:12px;padding:8px}
+    #ua-sb textarea{min-height:64px;resize:vertical}
+    #ua-sb .ua-note{font-size:11px;color:var(--ua-dim);line-height:1.45}
+    #ua-sb .ua-sep{border:0;border-top:1px solid var(--ua-line);margin:2px 0}
+    #ua-sb .ua-label{font-size:12px;font-weight:600;color:var(--ua-mut)}
+    #ua-sb .ua-sb-sp{min-width:38px;height:26px;border-radius:13px;border:1px solid var(--ua-line2);background:transparent;color:var(--ua-mut);font-size:11px;font-weight:600;cursor:pointer}
+    #ua-sb #ua-sb-list{max-height:190px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+  `;
+  const UA_AUTOFILL_WHAT = {
+    off: 'Nothing fills, clicks or submits.',
+    on: 'Application pages are filled and submitted automatically.',
+    running: 'A run is applying. Switching off stops it.',
+  };
   function buildSidebarSection() {
     if (_sbSection) return _sbSection;
     const wrap = document.createElement('div');
     wrap.id = 'ua-sb';
     wrap.setAttribute('data-ua-keep', '1');
-    wrap.setAttribute('style', "margin:10px 12px;padding:13px 14px;background:#141416;border:1px solid #2a2a2d;border-radius:12px;font-family:'Inter',system-ui,-apple-system,sans-serif;color:#e7e7ea");
-    const greenBtn = 'padding:11px;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;width:100%;background:#00f0a0;color:#001b12';
-    const ghostBtn = 'padding:9px;border:1px solid #34343a;border-radius:9px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#e7e7ea';
-    wrap.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
-        <div style="font-size:13px;font-weight:700;color:#fff">⚡ Bulk Auto-Apply</div>
-        <div id="ua-sb-count" style="font-size:11px;font-weight:700;color:#9ff5d3;background:#0c2a20;border:1px solid #1c5743;border-radius:8px;padding:3px 9px">0 jobs</div>
+    wrap.innerHTML = `<style>${UA_CARD_CSS}</style>
+      <div class="ua-stack">
+      <div class="ua-row">
+        <div class="ua-title">Bulk apply</div>
+        <div id="ua-sb-count">0 jobs</div>
       </div>
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <button id="ua-sb-upload" style="${ghostBtn};flex:1">⬆ Upload CSV</button>
-        <button id="ua-sb-paste-toggle" style="${ghostBtn};flex:1">⛓ Paste URLs</button>
+      <div class="ua-pair">
+        <button id="ua-sb-upload" class="ua-btn">Upload CSV</button>
+        <button id="ua-sb-paste-toggle" class="ua-btn">Paste URLs</button>
       </div>
-      <div id="ua-sb-drop" style="border:1px dashed #2c5c4a;border-radius:9px;padding:9px;margin-bottom:8px;text-align:center;font-size:10.5px;color:#7d8b86;transition:all .15s;cursor:pointer">
-        …or drop a CSV here <span style="color:#5b6b66">(or a list of job URLs)</span>
-      </div>
+      <div id="ua-sb-drop">Drop a CSV or a list of job URLs here</div>
       <input type="file" id="ua-sb-file" accept=".csv,.txt,.tsv,.json" multiple style="display:none">
-      <div id="ua-sb-paste-wrap" style="display:none;margin-bottom:8px">
-        <textarea id="ua-sb-textarea" placeholder="Paste job URLs — one per line" style="width:100%;box-sizing:border-box;min-height:64px;background:#0e0e0f;border:1px solid #34343a;border-radius:9px;color:#e7e7ea;font-size:12px;padding:8px;resize:vertical"></textarea>
-        <button id="ua-sb-add" style="${ghostBtn};width:100%;margin-top:6px">Add to queue</button>
+      <div id="ua-sb-paste-wrap" style="display:none">
+        <textarea id="ua-sb-textarea" placeholder="Paste job URLs, one per line"></textarea>
+        <button id="ua-sb-add" class="ua-btn ua-wide" style="margin-top:6px">Add to queue</button>
       </div>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none">
-        <input type="checkbox" id="ua-sb-tailor" style="accent-color:#00f0a0;width:14px;height:14px"> Tailor resume for each job <span style="color:#6f6f76">(slower)</span>
-      </label>
-      <label title="SpeedyApply (installed separately) fills every Workday step; this extension only presses Apply / Next / Submit and moves the queue on. Off = this extension's Workday engine." style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none"><input type="checkbox" id="ua-sb-wdsa" style="accent-color:#00f0a0;width:13px;height:13px"> Workday: let SpeedyApply fill</label>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none"><input type="checkbox" id="ua-sb-skipapplied" style="accent-color:#00f0a0;width:13px;height:13px"> Skip jobs already applied to</label>
-      <button id="ua-sb-cred-toggle" style="${ghostBtn};width:100%;text-align:left;margin-bottom:8px">🔑 ATS account login (saved credentials)</button>
-      <div id="ua-sb-cred-wrap" style="display:none;margin-bottom:10px">
-        <input id="ua-sb-cred-email" type="text" placeholder="Email" autocomplete="off" style="width:100%;box-sizing:border-box;background:#0e0e0f;border:1px solid #34343a;border-radius:8px;color:#e7e7ea;font-size:12px;padding:8px;margin-bottom:6px">
+      <hr class="ua-sep">
+      <label class="ua-opt"><input type="checkbox" id="ua-sb-tailor"> Tailor resume for each job <small>(slower)</small></label>
+      <label class="ua-opt" title="SpeedyApply (installed separately) fills every Workday step; this extension only presses Apply / Next / Submit and moves the queue on. Off = this extension's Workday engine."><input type="checkbox" id="ua-sb-wdsa"> Workday: let SpeedyApply fill</label>
+      <label class="ua-opt"><input type="checkbox" id="ua-sb-skipapplied"> Skip jobs already applied to</label>
+      <div class="ua-row" style="justify-content:flex-start;gap:6px">
+        <span class="ua-label" style="margin-right:2px">Speed</span>
+        <button class="ua-sb-sp" data-sp="1">1x</button>
+        <button class="ua-sb-sp" data-sp="1.5">1.5x</button>
+        <button class="ua-sb-sp" data-sp="2">2x</button>
+        <button class="ua-sb-sp" data-sp="3">3x</button>
+      </div>
+      <button id="ua-sb-cred-toggle" class="ua-btn ua-wide" style="text-align:left">Account login for job sites</button>
+      <div id="ua-sb-cred-wrap" style="display:none">
+        <input id="ua-sb-cred-email" type="text" placeholder="Email" autocomplete="off" style="margin-bottom:6px">
         <div style="position:relative">
-          <input id="ua-sb-cred-pw" type="password" placeholder="Password (reused for ATS sign-ups)" autocomplete="new-password" spellcheck="false" style="width:100%;box-sizing:border-box;background:#0e0e0f;border:1px solid #34343a;border-radius:8px;color:#e7e7ea;font-size:12px;padding:8px;padding-right:38px">
-          <button id="ua-sb-cred-eye" type="button" title="Show password" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:14px;line-height:1;color:#9aa0a6;padding:4px">👁</button>
+          <input id="ua-sb-cred-pw" type="password" placeholder="Password (reused for job-site sign-ups)" autocomplete="new-password" spellcheck="false" style="padding-right:56px">
+          <button id="ua-sb-cred-eye" type="button" title="Show password" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:11px;font-weight:600;color:var(--ua-mut);padding:4px 6px">Show</button>
         </div>
-        <button id="ua-sb-cred-save" style="${ghostBtn};width:100%;margin-top:6px">Save credentials</button>
-        <div style="font-size:9px;color:#6f6f76;margin-top:5px;line-height:1.4">Used to auto-create / sign in to ATS accounts (Workday, iCIMS, Taleo, SuccessFactors…). The same email &amp; password are reused across sites.</div>
+        <button id="ua-sb-cred-save" class="ua-btn ua-wide" style="margin-top:6px">Save login</button>
+        <div class="ua-note" style="margin-top:6px">Used to create or sign in to accounts on job sites (Workday, iCIMS, Taleo, SuccessFactors…). The same email and password are reused across sites.</div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:11px">
-        <span style="font-size:11px;font-weight:600;color:#bfbfc4">Speed:</span>
-        <button class="ua-sb-sp" data-sp="1" style="min-width:30px;height:24px;border-radius:12px;border:1px solid #fff;background:#fff;color:#0e0e0f;font-size:11px;font-weight:700;cursor:pointer">1x</button>
-        <button class="ua-sb-sp" data-sp="1.5" style="min-width:30px;height:24px;border-radius:12px;border:1px solid #34343a;background:transparent;color:#bfbfc4;font-size:11px;font-weight:600;cursor:pointer">1.5x</button>
-        <button class="ua-sb-sp" data-sp="2" style="min-width:30px;height:24px;border-radius:12px;border:1px solid #34343a;background:transparent;color:#bfbfc4;font-size:11px;font-weight:600;cursor:pointer">2x</button>
-        <button class="ua-sb-sp" data-sp="3" style="min-width:30px;height:24px;border-radius:12px;border:1px solid #34343a;background:transparent;color:#bfbfc4;font-size:11px;font-weight:600;cursor:pointer">3x</button>
-      </div>
-      <div id="ua-sb-status" style="display:none;margin-bottom:9px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-          <span id="ua-sb-job" style="font-size:12px;font-weight:600;color:#e7e7ea">Job 0 of 0</span>
-          <span id="ua-sb-proc" style="font-size:11px;font-weight:600;color:#4ea1ff">Processing…</span>
+      <hr class="ua-sep">
+      <div id="ua-sb-status" style="display:none">
+        <div class="ua-row">
+          <span id="ua-sb-job" style="font-size:12px;font-weight:600">Job 0 of 0</span>
+          <span id="ua-sb-proc" style="font-size:12px;font-weight:600;color:var(--ua-run)">Processing…</span>
         </div>
-        <div style="margin-top:7px;height:5px;border-radius:4px;background:#2a2a2d;overflow:hidden"><div id="ua-sb-bar" style="height:100%;width:0%;border-radius:4px;background:linear-gradient(90deg,#00a86b,#00e58f);transition:width .4s"></div></div>
+        <div style="margin-top:7px;height:6px;border-radius:3px;background:var(--ua-line);overflow:hidden"><div id="ua-sb-bar" style="height:100%;width:0%;border-radius:3px;background:var(--ua-acc);transition:width .4s"></div></div>
       </div>
-      <button id="ua-sb-start" style="${greenBtn}">Start Applying</button>
-      <button id="ua-sb-mgr" style="${greenBtn};background:#161925;color:#6ee7b7;border:1px solid #2c2c30" title="Docked queue manager: runs jobs in parallel background tabs and stays in place while you browse">🗂 Queue Manager (parallel tabs)</button>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button id="ua-sb-dl" style="${ghostBtn};flex:1" title="One file with everything the Debugger and the recorder have: every job's timeline, page snapshot and screenshot, failures by cause, the queue, logs and settings (no passwords)">⬇ Download debug log</button>
-        <button id="ua-sb-dbg" style="${ghostBtn};flex:0 0 auto" title="Open the Debugger">🐞 Debugger</button>
+      <button id="ua-sb-start" class="ua-btn ua-primary">Start Applying</button>
+      <button id="ua-sb-stop" class="ua-btn ua-stop" style="display:none">Stop</button>
+      <div id="ua-sb-runrow" class="ua-pair" style="display:none">
+        <button id="ua-sb-pause" class="ua-btn">Pause</button>
+        <button id="ua-sb-skip" class="ua-btn">Skip</button>
       </div>
-      <button id="ua-sb-stop" style="${greenBtn};background:#000;color:#fff;border:1px solid #2c2c30;display:none">Stop</button>
-      <div id="ua-sb-runrow" style="display:none;gap:8px;margin-top:8px">
-        <button id="ua-sb-pause" style="${ghostBtn};flex:1">Pause</button>
-        <button id="ua-sb-skip" style="${ghostBtn};flex:1">Skip</button>
+      <button id="ua-sb-mgr" class="ua-btn ua-wide" title="Docked queue manager: runs jobs in parallel background tabs and stays in place while you browse">Open Queue Manager</button>
+      <div class="ua-pair">
+        <button id="ua-sb-dl" class="ua-btn" title="One file with everything the Debugger and the recorder have: every job's timeline, page snapshot and screenshot, failures by cause, the queue, logs and settings (no passwords)">Download debug log</button>
+        <button id="ua-sb-dbg" class="ua-btn" style="flex:0 0 auto" title="Open the Debugger">Debugger</button>
       </div>
-      <div id="ua-sb-manage" style="display:none;margin-top:12px;border-top:1px solid #242427;padding-top:11px">
-        <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap">
-          <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#bfbfc4;cursor:pointer;user-select:none"><input type="checkbox" id="ua-sb-selall" style="accent-color:#00f0a0;width:13px;height:13px"> All</label>
-          <button id="ua-sb-delsel" style="${ghostBtn};padding:6px 9px;flex:0 0 auto;font-size:11px">Delete selected</button>
-          <button id="ua-sb-clear" style="padding:6px 9px;border:1px solid #5a2330;border-radius:8px;background:transparent;color:#f87171;font-size:11px;font-weight:600;cursor:pointer">Clear all</button>
+      <div id="ua-sb-manage" style="display:none;border-top:1px solid var(--ua-line);padding-top:10px">
+        <div class="ua-row" style="margin-bottom:8px">
+          <label class="ua-opt"><input type="checkbox" id="ua-sb-selall"> All</label>
+          <span style="display:flex;gap:6px">
+            <button id="ua-sb-delsel" class="ua-btn" style="padding:5px 9px">Delete selected</button>
+            <button id="ua-sb-clear" class="ua-btn ua-danger" style="padding:5px 9px">Clear all</button>
+          </span>
         </div>
-        <div id="ua-sb-list" style="max-height:190px;overflow-y:auto;display:flex;flex-direction:column;gap:4px"></div>
+        <div id="ua-sb-list"></div>
       </div>
-      <div style="margin-top:10px;font-size:10px;color:#6f6f76;line-height:1.4">CSV / list of job URLs → opens each, runs Jobright Autofill, fills required fields &amp; submits automatically.</div>
+      <div class="ua-note">Add job links, then Start: each one is opened, filled and submitted for you.</div>
+      </div>
     `;
     // --- wire events (engine functions are in this same scope) ---
     const fileInput = wrap.querySelector('#ua-sb-file');
@@ -15368,8 +15418,8 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
        hidden feature. Text drops work too, so a list of URLs copied out of a
        spreadsheet or an email can be dragged straight in. */
     const dropZone = wrap.querySelector('#ua-sb-drop');
-    const idleStyle = { border: '1px dashed #2c5c4a', background: 'transparent', color: '#7d8b86' };
-    const overStyle = { border: '1px dashed #00f0a0', background: 'rgba(0,240,160,.08)', color: '#9ff5d3' };
+    const idleStyle = { border: '1px dashed #3a3d44', background: 'transparent', color: '#a3a8b0' };
+    const overStyle = { border: '1px dashed #00f0a0', background: 'rgba(0,240,160,.08)', color: '#00f0a0' };
     const paint = (st) => { if (dropZone) Object.assign(dropZone.style, st); };
     let dragDepth = 0;
     const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
@@ -15467,12 +15517,12 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     const credWrap = wrap.querySelector('#ua-sb-cred-wrap');
     const pwInput = wrap.querySelector('#ua-sb-cred-pw');
     const eyeBtn = wrap.querySelector('#ua-sb-cred-eye');
-    const maskPw = () => { pwInput.type = 'password'; eyeBtn.textContent = '👁'; eyeBtn.title = 'Show password'; };
+    const maskPw = () => { pwInput.type = 'password'; eyeBtn.textContent = 'Show'; eyeBtn.title = 'Show password'; };
     // View-password toggle.
     eyeBtn.addEventListener('click', () => {
       const hidden = pwInput.type === 'password';
       pwInput.type = hidden ? 'text' : 'password';
-      eyeBtn.textContent = hidden ? '🙈' : '👁';
+      eyeBtn.textContent = hidden ? 'Hide' : 'Show';
       eyeBtn.title = hidden ? 'Hide password' : 'Show password';
     });
     wrap.querySelector('#ua-sb-cred-toggle').addEventListener('click', async () => {
@@ -15491,7 +15541,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         if (em) { const pr = (await st.get(SK.PROF)) || {}; pr.email = em; await st.set(SK.PROF, pr); await st.set('ua_app_email', em); }
       } catch (_) {}
       maskPw(); // re-hide the password after saving, for safety
-      const btn = wrap.querySelector('#ua-sb-cred-save'); const t = btn.textContent; btn.textContent = 'Saved ✓'; setTimeout(() => { btn.textContent = t; }, 1500);
+      const btn = wrap.querySelector('#ua-sb-cred-save'); const t = btn.textContent; btn.textContent = 'Saved'; setTimeout(() => { btn.textContent = t; }, 1500);
       LOG('Saved ATS credentials');
     });
     // Speed selector (shared with the overlay; scales automation waits + job delay).
@@ -15533,28 +15583,41 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       dispatchATSAutomation();
     }
   }
+  function autofillState() {
+    const running = !!(qActive || _mgrDriving);
+    return running ? 'running' : (autoApply ? 'on' : 'off');
+  }
   function paintAutoToggle() {
     // Repaint EVERY toggle instance, not just _faCard. Jobright's React sidebar re-renders
     // can leave stale/duplicate cards in the shadow DOM; if we only painted _faCard, a copy
     // the user actually clicked could show the wrong state (the "won't turn off" bug). Deep-
     // query all toggles across shadow roots and sync the drawer checkbox too.
     try {
+      const state = autofillState();
       const toggles = (typeof window.__uaDeepQueryAll === 'function')
         ? window.__uaDeepQueryAll('#ua-fa-toggle')
         : [_faCard && _faCard.querySelector('#ua-fa-toggle')].filter(Boolean);
       for (const t of toggles) {
         if (!t) continue;
-        t.setAttribute('aria-checked', autoApply ? 'true' : 'false');
-        t.style.background = autoApply ? '#00f0a0' : '#3a3a42';
-        const knob = t.querySelector('span');
-        if (knob) knob.style.transform = autoApply ? 'translateX(20px)' : 'translateX(0)';
+        t.setAttribute('aria-checked', state === 'off' ? 'false' : 'true');
         const card = t.closest('#ua-fa-card');
+        if (card) card.setAttribute('data-state', state);
         const lbl = card && card.querySelector('#ua-fa-state');
-        if (lbl) { lbl.textContent = autoApply ? 'ON' : 'OFF'; lbl.style.color = autoApply ? '#00f0a0' : '#9aa0a6'; }
-        if (card) card.style.borderColor = autoApply ? '#1c8a5e' : '#1c5743';
+        if (lbl) lbl.textContent = state === 'running' ? 'RUNNING' : state === 'on' ? 'ON' : 'OFF';
+        const what = card && card.querySelector('#ua-fa-what');
+        if (what) what.textContent = UA_AUTOFILL_WHAT[state];
       }
       const d = document.getElementById('ua-aa'); if (d) d.checked = autoApply;
     } catch (_) {}
+  }
+  /* The switch in the sidebar is THE switch (v17.64: the toolbar popup is gone;
+     the icon opens Jobright as it always did). ON while a run is going means
+     "stop": the worker stops the queue or the single-tab run, exactly as the
+     popup's switch did. */
+  function onAutofillSwitch() {
+    if (autofillState() === 'off') return setAutoApply(true, true, 'switch');
+    try { chrome.runtime.sendMessage({ type: 'UA_SWITCH', on: false, source: 'sidebar' }, () => void chrome.runtime.lastError); } catch (_) {}
+    return setAutoApply(false, true, 'switch');
   }
   let _faCard = null;
   function buildFullAutoCard() {
@@ -15562,24 +15625,20 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     const card = document.createElement('div');
     card.id = 'ua-fa-card';
     card.setAttribute('data-ua-keep', '1');
-    card.setAttribute('style', "margin:10px 12px;padding:11px 13px;background:#0c2118;border:1px solid #1c5743;border-radius:12px;font-family:'Inter',system-ui,-apple-system,sans-serif");
-    card.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-        <div style="display:flex;flex-direction:column;line-height:1.3">
-          <span style="font-size:13px;font-weight:800;color:#9ff5d3">🤖 Fully Automated <span id="ua-fa-state" style="font-weight:800;color:#9aa0a6;margin-left:3px">OFF</span></span>
-          <span style="font-size:9px;color:#6f8f82;margin-top:2px">Auto-detect the ATS &amp; apply with zero clicks</span>
-        </div>
-        <button id="ua-fa-toggle" type="button" role="switch" aria-checked="false" title="Toggle fully-automated mode (Alt+A)" style="flex:0 0 auto;width:46px;height:24px;border-radius:13px;border:none;background:#3a3a42;cursor:pointer;position:relative;padding:0;transition:background .2s">
-          <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)"></span>
-        </button>
+    card.setAttribute('data-state', 'off');
+    card.innerHTML = `<style>${UA_CARD_CSS}</style>
+      <div class="ua-row">
+        <div><span class="ua-eyebrow">Autofill</span><span id="ua-fa-state" aria-live="polite">OFF</span></div>
+        <button id="ua-fa-toggle" type="button" role="switch" aria-checked="false" aria-label="Autofill" title="Switch autofill on or off (Alt+Shift+A switches it off from any tab)"><span></span></button>
       </div>
-      <button id="ua-fa-gaps" type="button" title="Fill the location / visa-sponsorship / EEO fields Jobright left blank (Alt+F)" style="width:100%;margin-top:9px;padding:7px;border:1px solid #1c5743;border-radius:8px;background:transparent;color:#9ff5d3;font-size:11px;font-weight:600;cursor:pointer">🩹 Fill gaps Jobright missed</button>`;
-    card.querySelector('#ua-fa-toggle').addEventListener('click', () => setAutoApply(!autoApply, true, 'switch'));
+      <p id="ua-fa-what">${UA_AUTOFILL_WHAT.off}</p>
+      <button id="ua-fa-gaps" type="button" class="ua-btn ua-wide" style="margin-top:10px" title="Fill the location, visa sponsorship and equal-opportunity fields Jobright left blank (Alt+F)">Fill fields Jobright missed</button>`;
+    card.querySelector('#ua-fa-toggle').addEventListener('click', () => onAutofillSwitch());
     card.querySelector('#ua-fa-gaps').addEventListener('click', async (ev) => {
       const b = ev.currentTarget; const t = b.textContent; b.textContent = 'Filling…'; b.disabled = true;
       try { await resolveLocationFields(); await answerChoiceGroups(); await fallbackFill(); await guaranteeRequiredFields(); }
       catch (e) { LOG('Fill-gaps error:', e?.message || e); }
-      b.textContent = 'Done ✓'; setTimeout(() => { b.textContent = t; b.disabled = false; }, 1400);
+      b.textContent = 'Done'; setTimeout(() => { b.textContent = t; b.disabled = false; }, 1400);
     });
     _faCard = card;
     setTimeout(paintAutoToggle, 0);
@@ -15638,6 +15697,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   }
 
   function updateSidebarUI() {
+    try { paintAutoToggle(); } catch (_) {}
     if (!_sbSection) return;
     renderSidebarQueue();
     const q = (id) => _sbSection.querySelector(id);
@@ -15674,10 +15734,10 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     _sbSection.querySelectorAll('.ua-sb-sp').forEach(b => {
       const on = parseFloat(b.dataset.sp) === qSpeed;
       b.style.background = on ? '#00f0a0' : 'transparent';
-      b.style.color = on ? '#06231a' : '#bfbfc4';
-      b.style.borderColor = on ? '#00f0a0' : '#34343a';
-      b.style.fontWeight = on ? '800' : '600';
-      b.style.boxShadow = on ? '0 0 0 2px rgba(0,240,160,.25)' : 'none';
+      b.style.color = on ? '#04130d' : '#a3a8b0';
+      b.style.borderColor = on ? '#00f0a0' : '#3a3d44';
+      b.style.fontWeight = on ? '700' : '600';
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
   }
   // Single source of truth for speed: updates the wait factor, persistence, and

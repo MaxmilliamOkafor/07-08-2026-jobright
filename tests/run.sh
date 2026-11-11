@@ -17,7 +17,7 @@ ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 step "JavaScript syntax"
-for f in "$EXT"/ua-keepalive.js "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/ua-switch-gate.js "$EXT"/ua-switch.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
+for f in "$EXT"/ua-keepalive.js "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/ua-switch-gate.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
   if node --check "$f" 2>/dev/null; then ok "$(basename "$f")"; else bad "$(basename "$f")"; fi
 done
 

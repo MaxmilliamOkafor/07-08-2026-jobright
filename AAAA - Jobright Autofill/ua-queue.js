@@ -263,7 +263,7 @@
       document.execCommand('copy');
       ta.remove();
       ok();
-    } catch (_) { log('Could not copy — use ⬇ Export instead', 'err'); }
+    } catch (_) { log('Could not copy — use Export CSV instead', 'err'); }
   }
 
   function exportCsv() {
@@ -482,7 +482,7 @@
     $('btnStart').disabled = on;
     $('btnStop').disabled = !on;
     $('btnPause').disabled = !on;
-    $('btnPause').textContent = paused ? '▶ Resume' : '⏸ Pause';
+    $('btnPause').textContent = paused ? 'Resume' : 'Pause';
   }
 
   /* ─────────────────────────── settings ─────────────────────────── */
@@ -564,7 +564,7 @@
         a.href = URL.createObjectURL(new Blob([r.json], { type: 'application/json' }));
         a.download = r.name; a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-        b.textContent = 'Saved ✓';
+        b.textContent = 'Saved';
       } else b.textContent = 'Could not prepare it';
       setTimeout(() => (b.textContent = t), 2500);
     });
@@ -804,6 +804,32 @@
   // Keep "…s ago" honest without re-rendering constantly.
   setInterval(() => { if (queue.length) render(); }, 15000);
 
+  /* ───────────────────── the one autofill switch ─────────────────────
+     The same switch as the Autofill card in Jobright's sidebar (the worker
+     owns it: "THE ONE AUTOFILL SWITCH" in ua-orchestrator.js). */
+  const askSwitch = (msg) => new Promise((r) => { try { chrome.runtime.sendMessage(msg, (v) => { void chrome.runtime.lastError; r(v || null); }); } catch (_) { r(null); } });
+  function paintSwitch(s) {
+    const sw = $('swMaster');
+    if (!sw) return;
+    if (!s) { $('swState').textContent = '?'; sw.title = 'The extension did not answer. Reload it in chrome://extensions.'; return; }
+    sw.setAttribute('aria-checked', s.on || s.running ? 'true' : 'false');
+    sw.classList.toggle('running', !!s.running);
+    $('swState').textContent = s.running ? 'RUN' : (s.on ? 'ON' : 'OFF');
+    sw.title = s.running ? 'A run is applying. Switching off stops it: job tabs close and unfinished jobs go back into the queue.'
+      : s.on ? 'Autofill is on: application pages are filled and submitted automatically.'
+        : 'Autofill is off: nothing fills, clicks or submits.';
+  }
+  const refreshSwitch = async () => paintSwitch(await askSwitch({ type: 'UA_SWITCH', op: 'get' }));
+  $('swMaster').addEventListener('click', async () => {
+    const sw = $('swMaster');
+    const live = sw.getAttribute('aria-checked') === 'true';
+    sw.disabled = true;
+    paintSwitch(await askSwitch({ type: 'UA_SWITCH', on: !live, source: 'queue manager' }));
+    sw.disabled = false;
+  });
+  try { chrome.storage.onChanged.addListener((c, area) => { if (area === 'local' && ['ua_aa', 'ua_mgr_active', 'ua_qa'].some((k) => k in c)) refreshSwitch(); }); } catch (_) {}
+  refreshSwitch();
+
   /* ─────────────────────────── boot ─────────────────────────── */
   (async () => {
     await loadQ();
@@ -838,6 +864,11 @@
    What it can do is bounded in ua-mailbox.js, not here: read-only scope, only
    mail from the last few minutes, only from the employer being applied to, and a
    link is only ever followed when it points back at that same employer. */
+/* v17.64: these functions sit outside the panel's own scope, where its helper `$`
+   does not reach. The missing helper threw at wireMailbox(), which stopped the
+   rest of the panel from starting: live updates and the first load of the
+   queue. */
+function $(id) { return document.getElementById(id); }   // a declaration: hoisted, so it exists when the panel calls wireMailbox()
 function mailSend(msg) {
   return new Promise((res) => {
     try { chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || {}); }); }

@@ -5097,3 +5097,20 @@ From the 9 Nov 22:24 log:
 
 Tests: `tests/v1763.test.js` (27 checks, in `tests/run.sh`) and
 `tests/e2e/dom-1763.js` (14 checks in Chromium).
+
+## v17.64 — one switch, one look
+
+- **The toolbar popup is gone.** Clicking the extension icon opens Jobright's
+  sidebar, as the original extension does. The Autofill switch is the first
+  card in that sidebar (OFF / ON / RUNNING, one toggle) and is also in the
+  Queue Manager header. The icon badge still shows ON, OFF or RUN, and
+  Alt+Shift+A still switches everything off from any tab.
+- **Sidebar cards restyled**: one colour set, larger text (nothing under 11px),
+  hover and keyboard-focus states, plain labels in place of emoji.
+- **Queue Manager restyled**: actions grouped (Add jobs, Queue, Fix and review),
+  Settings folded away so the job list is on screen, light and dark themes.
+  The Debugger uses the same colours.
+- **Queue Manager start-up bug fixed.** Its mailbox code called a helper that
+  did not exist in that scope, which threw and stopped the rest of the panel
+  from starting: the first load of the queue and stats, and live updates.
+  `tests/e2e/switch-off.js` now checks the panel starts without a script error.
