@@ -7490,6 +7490,8 @@
       // Same for an email-verification wall: nothing on this page can advance
       // until the code or link arrives.
       if (detectEmailVerificationWall()) await resolveEmailVerification(90000);
+      // v17.65 — a wall this job cannot pass ends the job now, not at its time limit.
+      if (jobDeadEnded()) { LOG('Multi-page: stopping — ' + _authDeadEnd); break; }
       LOG(`Multi-page: processing page ${page}`);
 
       /* Every wait in this loop is now speed-scaled. They were flat numbers, so
@@ -12463,6 +12465,8 @@
   const WD_LOCKED_RE = /\blocked\b|too many (failed |unsuccessful )?(attempts|tries|sign.?in)|temporarily (disabled|blocked|unavailable)|account (is )?(disabled|suspended)/i;
   const WD_FORGOT_RE = /forgot (your |my )?password|reset (your |my )?password|trouble signing in|can.?t sign in/i;
   let _authDeadEnd = '';                          // why this job cannot get past the sign-in
+  // v17.65 — set together with _authSkip once the job is known to be stuck for good.
+  function jobDeadEnded() { return !!(_authDeadEnd && _authSkip); }
   /* "You may have entered the wrong email address or password or your account
      might be locked." — you asked for that to skip the job at once: no further
      passwords (each one is a step towards a real lockout), no waiting. The job
@@ -16012,10 +16016,26 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   // "Apply" / "Apply Now" / "Easy Apply" before any form exists. Without this the
   // queue lands on the listing, finds no fields, and times out. We click through to
   // the actual application form first.
+  /* v17.65 — a careers site's own job SEARCH and job-ALERT boxes are not an
+     application. SuccessFactors job pages (Capgemini and others) show
+     "Search by Keyword", "Search by Location" and "how often to receive an
+     alert" above the job: three visible fields, so the JD page was taken for
+     the form, "Apply now" was never pressed, and 7 jobs ended with "no Submit
+     control". */
+  const JOB_SEARCH_LABEL_RE = /^\s*(search\b|search by\b|keywords?\b|job title,? keywords?\b)|\b(receive an alert|receive job alerts|job alerts?|alert frequency)\b/i;
+  const JOB_SEARCH_ATTR_RE = /keywordsearch|locationsearch|jobsearch|search[-_]?(q|query|term|keyword|location)\b|^q$|jobalert|alert[-_]?freq/i;
+  function isJobSearchWidget(el) {
+    try {
+      if (!el || !el.closest) return false;
+      if (el.closest('[role=search], form[role=search], form[action*="search" i], [class*="search-form" i], [class*="searchform" i], [class*="jobsearch" i], [id*="jobsearch" i], [class*="job-alert" i], [id*="jobalert" i], [class*="jobAlert"]')) return true;
+      if ([el.name, el.id].some((v) => v && JOB_SEARCH_ATTR_RE.test(v))) return true;
+      return JOB_SEARCH_LABEL_RE.test(getLabel(el) || '');
+    } catch (_) { return false; }
+  }
   function hasApplicationForm() {
     const hasFile = deepAll('input[type=file]').some(isVisible);
     if (hasFile) return true;
-    const fields = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter(isVisible);
+    const fields = deepAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=search]):not([type=checkbox]):not([type=radio]),textarea,select').filter((el) => isVisible(el) && !isJobSearchWidget(el));
     return fields.length >= 3;
   }
   /* ── GETTING FROM THE JOB DESCRIPTION INTO THE APPLICATION (every ATS) ──────
@@ -16740,7 +16760,11 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         if (!_authDeadEnd) { _authDeadEnd = `${location.hostname} emailed a verification code and Gmail is not signed in in this browser — sign in to Gmail in Chrome so the extension can read these codes`; _authSkip = true; }
         return false;
       } else if (r && (r.reason === 'disabled' || r.reason === 'not-connected')) {
-        if (!offered) {
+        /* v17.65 — only ask where you can see it. A queue job runs in a
+           background tab: the question sat there unseen for 120s and the job
+           ran out its 300s on the wall (Stripe, MongoDB on Greenhouse;
+           JPMC on Oracle, 11 Nov). Unseen, it skips at once with the reason. */
+        if (!offered && document.visibilityState === 'visible') {
           offered = true;
           LOG('Email verification needed and reading codes from Gmail is off — asking you once on the page');
           noteProgress('waiting for you to allow reading the code from Gmail');
@@ -17507,6 +17531,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       if (detectEmailVerificationWall()) {
         LOG('Oracle: identity check — a PIN has been emailed');
         await resolveEmailVerification(120000);
+        if (jobDeadEnded()) return;
         continue;
       }
       /* The email step and nothing else. An application section with one or
@@ -18002,6 +18027,7 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     await openApplicationForm();
     // Create an account / sign in with saved credentials if the ATS requires it.
     await handleAccountAuth();
+    if (jobDeadEnded()) { LOG('Not filling: ' + _authDeadEnd); return; }
     const url = location.href;
     /* Route to the platform-specific flow. The URL tests below only recognise a
        platform served from its own domain; detectATS() also reads the page's own

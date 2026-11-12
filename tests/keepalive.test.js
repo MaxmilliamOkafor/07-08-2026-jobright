@@ -45,12 +45,31 @@ function sandbox(opts = {}) {
         request: (name, fn) => { const l = { name, held: true }; locks.push(l); return Promise.resolve(fn()).then(() => { l.held = false; }); },
       },
     },
-    chrome: { runtime: { sendMessage: (m, cb) => { sent.push(m); cb && cb(); }, lastError: undefined } },
+    chrome: { runtime: { sendMessage: (m, cb) => {
+      sent.push(m);
+      // The service worker's clock (v17.65): answers UA_CLOCK after m.ms.
+      if (m.type === 'UA_CLOCK' && opts.clock) { setTimeout(() => cb && cb(opts.clock === 'broken' ? undefined : { ok: true }), m.ms); return; }
+      cb && cb();
+    }, lastError: undefined } },
   };
+  if (opts.rtc) {
+    const made = [];
+    ctx.RTCPeerConnection = class {
+      constructor() { made.push(this); this.closed = false; }
+      createDataChannel(label) { this.ch = { label, readyState: 'open', closed: false, close() { this.closed = true; this.readyState = 'closed'; } }; return this.ch; }
+      createOffer() { return Promise.resolve({ type: 'offer' }); }
+      createAnswer() { return Promise.resolve({ type: 'answer' }); }
+      setLocalDescription(d) { this.localDescription = d; return Promise.resolve(); }
+      setRemoteDescription() { return Promise.resolve(); }
+      addIceCandidate() { return Promise.resolve(); }
+      close() { this.closed = true; }
+    };
+    ctx.__rtcMade = made;
+  }
   ctx.globalThis = ctx;
   vm.createContext(ctx);
   vm.runInContext(src, ctx);
-  return { k: ctx.__uaKeep, sent, locks, listeners, doc, workers: () => workers, FakeWorker };
+  return { k: ctx.__uaKeep, rtcMade: ctx.__rtcMade, sent, locks, listeners, doc, workers: () => workers, FakeWorker };
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -117,6 +136,75 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok(fired, 'falls back to setTimeout when the worker is refused');
     s.k.set(false);
   }
+  // v17.65 — site refuses the worker: the extension's service worker keeps time.
+  {
+    const s = sandbox({ workerThrows: true, clock: true });
+    s.k.set(true);
+    let fired = false;
+    s.k.timeout(() => { fired = true; }, 5);
+    await wait(20);
+    ok(fired, 'extension clock: the wait ends when the service worker answers');
+    ok(s.sent.some((m) => m.type === 'UA_CLOCK' && m.ms === 5), 'extension clock: UA_CLOCK sent with the wait length');
+    ok(s.k.clock === 'extension', 'clock reports "extension" (' + s.k.clock + ')');
+    let cleared = false;
+    const id = s.k.timeout(() => { cleared = true; }, 5);
+    s.k.clear(id);
+    await wait(20);
+    ok(!cleared, 'extension clock: a cleared wait does not run when the answer arrives');
+    const t = Date.now(); await s.k.sleep(30);
+    ok(Date.now() - t >= 25, 'extension clock: sleep(30) waits about 30ms');
+    s.k.set(false);
+    const before = s.sent.filter((m) => m.type === 'UA_CLOCK').length;
+    let n = 0; s.k.timeout(() => { n++; }, 5); await wait(20);
+    ok(n === 1 && s.sent.filter((m) => m.type === 'UA_CLOCK').length === before, 'after the run, plain timers again (no UA_CLOCK)');
+  }
+  // Service worker cannot answer (extension reloaded): the page timer takes over.
+  {
+    const s = sandbox({ workerThrows: true, clock: 'broken' });
+    s.k.set(true);
+    let fired = 0;
+    s.k.timeout(() => { fired++; }, 5);
+    await wait(30);
+    ok(fired === 1, 'broken extension clock: the wait still runs, once');
+    const asked = s.sent.filter((m) => m.type === 'UA_CLOCK').length;
+    s.k.timeout(() => { fired++; }, 5);
+    await wait(20);
+    ok(fired === 2 && s.sent.filter((m) => m.type === 'UA_CLOCK').length === asked, 'broken extension clock is not asked again');
+    ok(s.k.clock === 'page', 'clock reports "page" once the extension clock failed');
+    s.k.set(false);
+  }
+  // Worker errors late with the extension clock available: waits move to it.
+  {
+    const s = sandbox({ clock: true });
+    s.k.set(true);
+    let fired = false;
+    s.k.timeout(() => { fired = true; }, 1000);
+    s.FakeWorker.last.onerror({ preventDefault() {} });
+    await wait(20);
+    ok(fired && s.sent.some((m) => m.type === 'UA_CLOCK' && m.ms === 0), 'a worker error moves waits to the extension clock');
+    s.k.set(false);
+  }
+  // v17.65 — loopback data channel for the length of a run.
+  {
+    const s = sandbox({ rtc: true });
+    ok(s.k.channel === 'none' && s.rtcMade.length === 0, 'no WebRTC connection for an idle tab');
+    s.k.set(true);
+    await wait(5);
+    ok(s.rtcMade.length === 2 && s.k.channel === 'open', 'a run opens one loopback data channel (two local ends)');
+    s.k.set(true);
+    ok(s.rtcMade.length === 2, 'set(true) twice does not open a second one');
+    s.k.set(false);
+    ok(s.k.channel === 'none' && s.rtcMade.every((p) => p.closed), 'the channel is closed when the run lets go');
+  }
+  {
+    const s = sandbox();
+    let threw = false; try { s.k.set(true); s.k.set(false); } catch (_) { threw = true; }
+    ok(!threw && s.k.channel === 'none', 'no RTCPeerConnection available: runs as before');
+  }
+  ok(!/iceServers/.test(src), 'the loopback channel uses no STUN/TURN servers');
+  ok(/msg\.type === 'UA_CLOCK'[\s\S]{0,200}sender\.id !== chrome\.runtime\.id[\s\S]{0,80}sender\.tab/.test(orch), "UA_CLOCK only from this extension's own tabs");
+  ok(orch.includes('Math.min(Number(msg.ms) || 0, 600000)'), 'UA_CLOCK waits at most ten minutes');
+
   // Worker refused late (onerror): pending timers still run.
   {
     const s = sandbox();

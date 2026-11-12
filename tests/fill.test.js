@@ -4285,8 +4285,9 @@ console.log('v17.57: each job on its own page; one Workday account record; codes
   eq('…or the number of one-digit boxes', lenOf('Confirm your identity', [1, 2, 3, 4, 5, 6]), 6);
   eq('the mailbox is told the length', /len: verificationCodeLength\(\)/.test(src), true);
   const rv = body('resolveEmailVerification');
+  // v17.65: asked only in a tab you can see (see tests/v1765.test.js).
   eq('Gmail reading off → asked once on the page; Allow carries on with this job',
-    /if \(!offered\) \{[\s\S]{0,300}if \(await offerGmailCodeReading\(\)\) \{ deadline = Date\.now\(\) \+ \(maxWaitMs \|\| 90000\); continue; \}/.test(rv), true);
+    /if \(!offered && document\.visibilityState === 'visible'\) \{[\s\S]{0,300}if \(await offerGmailCodeReading\(\)\) \{ deadline = Date\.now\(\) \+ \(maxWaitMs \|\| 90000\); continue; \}/.test(rv), true);
   const offer = body('offerGmailCodeReading');
   eq('…Allow turns on the same opt-in as the Queue Manager tick', /st\.set\('ua_mail_gmail_session', true\)/.test(offer), true);
   eq('…"Not now" is kept for a day, and the prompt sits in its own shadow root', /24 \* 3600 \* 1000/.test(offer) && /attachShadow\(\{ mode: 'open' \}\)/.test(offer), true);

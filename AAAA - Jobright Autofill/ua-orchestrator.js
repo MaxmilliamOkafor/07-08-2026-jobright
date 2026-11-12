@@ -1060,6 +1060,17 @@
         return true;
       }
 
+      /* v17.65 — the clock for a job tab whose site refuses ua-keepalive.js's
+         worker. Chrome cuts a background page's own timers to one a minute;
+         a wait kept here and answered by message is on time. Only this
+         extension's own tabs, top frame, and never longer than ten minutes. */
+      if (msg.type === 'UA_CLOCK') {
+        if (!sender || sender.id !== chrome.runtime.id || !sender.tab || typeof sender.tab.id !== 'number') return;
+        const ms = Math.max(0, Math.min(Number(msg.ms) || 0, 600000));
+        setTimeout(() => { try { sendResponse({ ok: true }); } catch (_) {} }, ms);
+        return true;
+      }
+
       /* Your Workday engine (ua-wd-engine.js) reading your CV: the reader, with
          pdf.js, is put into that tab only now, never on every page. */
       if (msg.type === 'UA_WD_CV_LOAD') {

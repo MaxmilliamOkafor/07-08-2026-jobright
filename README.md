@@ -5114,3 +5114,32 @@ Tests: `tests/v1763.test.js` (27 checks, in `tests/run.sh`) and
   did not exist in that scope, which threw and stopped the rest of the panel
   from starting: the first load of the queue and stats, and live updates.
   `tests/e2e/switch-off.js` now checks the panel starts without a script error.
+
+## v17.65 — background tabs keep pace; fewer wasted minutes
+
+From the 11 Nov 14:46 log (80 jobs: 16 done, 29 timed out, 21 failed).
+
+- **Background job tabs no longer crawl.** Greenhouse, Workday and others
+  refuse the small timer worker added in v17.60, so on those sites a hidden
+  job tab fell back to the page's own timers, which Chrome checks about once a
+  minute after five minutes in the background. Jobs ran out their time limit
+  mid-form ("answering dropdowns"). Now:
+  - when the worker is refused, the extension's own service worker keeps the
+    clock and messages the tab when each wait ends (`UA_CLOCK`, only from this
+    extension's tabs, at most 10 minutes per wait);
+  - for the length of a run the tab holds a WebRTC data channel connected to
+    itself, which Chrome exempts from that throttling, so the site's own
+    scripts and Jobright's autofill keep time too. It is local only: no
+    servers, nothing sent anywhere, and it closes when the run lets go of the tab.
+- **SuccessFactors (Capgemini): "Apply now" is pressed.** The job page's
+  "Search by Keyword / Location" and job-alert boxes counted as three form
+  fields, so the description page was taken for the application and 7 jobs
+  ended "no Submit control was found". Job-search and alert boxes no longer count.
+- **Verification-code walls with Gmail reading off skip at once.** The "allow
+  reading the code from Gmail?" question is now shown only in a tab you can
+  see. In a background queue tab it sat unseen for 120s, and the job then kept
+  filling until the 300s cap (Stripe and MongoDB on Greenhouse, JPMC and others
+  on Oracle). The job now stops at the wall with the reason.
+
+Tests: `tests/v1765.test.js` (31 checks), `tests/keepalive.test.js` (now 48),
+both in `tests/run.sh`, and `tests/e2e/dom-1765.js` (in Chromium).
