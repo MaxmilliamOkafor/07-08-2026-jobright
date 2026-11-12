@@ -5159,3 +5159,13 @@ both in `tests/run.sh`, and `tests/e2e/dom-1765.js` (in Chromium).
 
 Test: `tests/e2e/wd-school.js` (4 checks in Chromium, against a copy of
 Workday's search box).
+- **Workday start date: two weeks from the day you apply.** A start-date box
+  ("When can you start?", "Earliest start date", "Date available") gets today
+  plus 14 days, worked out on the day the application is filled in. A text box
+  or list keeps your saved availability, else "2 weeks".
+- **Never LazyApply's placeholder email.** LazyApply types
+  `default@lazyapply.com` into email boxes when its own profile has no email.
+  The create-account step kept any email already in the box, so accounts could
+  be made under that address. A placeholder (`@lazyapply.com`, `default@…`,
+  `@example.com`) is now replaced with your email, in the sign-up step and in
+  the fill pass, and is never saved as your account email.

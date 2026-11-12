@@ -1876,13 +1876,21 @@
     }
     return score >= 0.6 ? best : null;
   }
+  function startDateInTwoWeeks(now = new Date()) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14);
+    const p2 = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  }
   var RULES = [
     [Q.sponsorship, (_l, c) => yesNo(c.profile.answers.needsSponsorship)],
     [Q.authorized, (l, c) => yesNo(authorizedFor(l, c))],
     [Q.adult, () => "Yes"],
     [Q.salary, (_l, c) => c.profile.answers.salaryExpectation || null],
     [Q.notice, (_l, c) => c.profile.answers.noticePeriod || null],
-    [Q.startDate, (_l, c) => c.profile.answers.earliestStartDate || null],
+    /* v17.66 — your rule: on Workday a start DATE is two weeks from the day the
+       application is filled in. A date box gets that date; a text box or list
+       keeps your saved availability, else "2 weeks". */
+    [Q.startDate, (_l, c, _o, kind) => kind === "date" ? startDateInTwoWeeks() : c.profile.answers.earliestStartDate || "2 weeks"],
     [Q.relocate, (_l, c) => yesNo(c.profile.answers.willingToRelocate)],
     [Q.hybrid, (_l, c) => yesNo(c.profile.answers.openToHybrid)],
     [Q.onsite, (_l, c) => yesNo(c.profile.answers.openToOnsite)],

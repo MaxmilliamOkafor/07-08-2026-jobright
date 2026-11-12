@@ -3003,7 +3003,7 @@ console.log('v17.10 — site logins and the question bank');
     eq('a parent-domain login covers its sign-in host', (await run(store, 'passport.amazon.jobs') || {}).password, 'p2');
     eq('other sites keep the shared account', await run(store, 'ciena.wd5.myworkdayjobs.com'), null);
   })();
-  eq('the account steps use a site login first', /const site = await siteLogin\(\);\n\s*if \(site\) return site\.password;/.test(src) && /const site = await siteLogin\(\);\n\s*if \(site\) return site\.email;/.test(src), true);
+  eq('the account steps use a site login first', /const site = await siteLogin\(\);\n\s*if \(site\) return site\.password;/.test(src) && /const site = await siteLogin\(\);\n\s*if \(site && !isPlaceholderEmail\(site\.email\)\) return site\.email;/.test(src), true);
 }
 
 /* ── 66. v17.11: what the 141-job run hit ─────────────────────────────────── */
@@ -3894,7 +3894,7 @@ console.log('v17.38: SpeedyApply built in — Workday account flow, profile pick
 {
   // Its saved Workday account goes first (after a site-specific login).
   eq('Create Account uses SpeedyApply\'s saved password on Workday', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa\) return sa\.password;/.test(body('getAppPassword')), true);
-  eq('…and its email', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa\) return sa\.email;/.test(body('getAppEmail')), true);
+  eq('…and its email', /const sa = await saWorkdayAccount\(\);\n\s*if \(sa && !isPlaceholderEmail\(sa\.email\)\) return sa\.email;/.test(body('getAppEmail')), true);
   eq('sign-in tries the password that worked here before, then SpeedyApply\'s', body('workdayPasswordCandidates').indexOf('WD_SITE_PW_KEY') < body('workdayPasswordCandidates').indexOf('saWorkdayAccount'), true);
   eq('"use profile email" is honoured', /a\.useProfileEmail \? prof && prof\.contactData && prof\.contactData\.email : a\.accountEmail/.test(body('saSettings')), true);
   // The account page is handled at once: SpeedyApply only types, never presses.

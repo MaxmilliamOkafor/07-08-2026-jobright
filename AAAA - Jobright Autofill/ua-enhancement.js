@@ -1420,6 +1420,8 @@
     } catch (_) { return false; }
   }
   function availableDateFor(el, p) {
+    // v17.66 — your rule: on Workday, two weeks from the day you apply.
+    try { if (/(^|\.)(myworkdayjobs|myworkdaysite|myworkday|workdayjobs)\.com$/i.test(location.hostname)) return todayForField(el, 14); } catch (_) {}
     let days = 14;
     try { const n = toDays((p && (p.notice_period || p.notice)) || ''); if (n >= 0) days = n; } catch (_) {}
     if (/immediate/i.test(String((p && p.availability) || ''))) days = Math.min(days, 7);
@@ -6008,6 +6010,7 @@
 
   async function fallbackFill__impl() {
     LOG('Fallback fill starting — catching missed fields');
+    await replacePlaceholderEmails();
     const p = await getProfile();
     await loadAnswerBank();
     let filled = 0;
@@ -16413,12 +16416,31 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   // future account/application (even if the profile email later changes).
   async function getAppEmail() {
     const site = await siteLogin();
-    if (site) return site.email;
+    if (site && !isPlaceholderEmail(site.email)) return site.email;
     const sa = await saWorkdayAccount();
-    if (sa) return sa.email;
+    if (sa && !isPlaceholderEmail(sa.email)) return sa.email;
     let e = await st.get('ua_app_email');
-    if (!e) { e = ((await getProfile()).email || '').trim(); if (e) await st.set('ua_app_email', e); }
+    if (isPlaceholderEmail(e)) e = '';
+    if (!e) { e = ((await getProfile()).email || '').trim(); if (isPlaceholderEmail(e)) e = ''; if (e) await st.set('ua_app_email', e); }
     return e;
+  }
+  /* v17.66 — another tool's stand-in address, never yours: LazyApply puts
+     "default@lazyapply.com" in the email box when its own profile has none,
+     and new accounts were being created under it. */
+  function isPlaceholderEmail(v) {
+    return !!v && /^\s*(default|your\.?email|noreply|no-reply)@|@(lazyapply\.com|example\.(com|org|net)|domain\.com)\s*$/i.test(String(v));
+  }
+  async function replacePlaceholderEmails() {
+    let n = 0;
+    try {
+      const boxes = deepAll('input[type=email],input[type=text],input:not([type])', 300).filter((el) => isVisible(el) && isPlaceholderEmail(el.value));
+      if (!boxes.length) return 0;
+      const mine = await getAppEmail();
+      if (!mine) return 0;
+      for (const el of boxes) { el.focus({ preventScroll: true }); if (typeof reactTypeValue === 'function') reactTypeValue(el, mine); else nativeSet(el, mine); n++; }
+      if (n) LOG(`Replaced ${n} placeholder email(s) another tool typed with your email`);
+    } catch (_) {}
+    return n;
   }
   /* Remember which employers already have an account, so a return visit signs in
      instead of trying to create a duplicate.
@@ -16882,7 +16904,9 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
         const before = stepSignature();
 
         const emailField = authEmailField();
-        if (emailField && !(emailField.value || '').trim()) {
+        // v17.66 — a placeholder another tool typed (LazyApply's
+        // "default@lazyapply.com") is not an email: yours replaces it.
+        if (emailField && (!(emailField.value || '').trim() || isPlaceholderEmail(emailField.value))) {
           emailField.focus({ preventScroll: true });
           nativeSet(emailField, email);
           noteProgress('entering the account email');

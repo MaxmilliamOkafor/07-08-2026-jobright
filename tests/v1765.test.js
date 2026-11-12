@@ -49,5 +49,30 @@ console.log('Verification-code wall with no mailbox: skip now, with the reason')
   ok(/resolveEmailVerification\(120000\);\s*if \(jobDeadEnded\(\)\) return;/.test(fn('oracleEmailAndPin')), 'Oracle\'s PIN loop stops too');
 }
 
-console.log(`  v17.65: ${pass} passed, ${fail} failed`);
+console.log('v17.66 — Workday start date: two weeks from the day you apply');
+{
+  const eng = fs.readFileSync(path.join(EXT, 'ua-wd-engine.js'), 'utf8');
+  const m = /function startDateInTwoWeeks\(now = new Date\(\)\) \{[\s\S]*?\n  \}/.exec(eng);
+  ok(!!m, 'engine has startDateInTwoWeeks');
+  const f = m && new Function(m[0] + '\nreturn startDateInTwoWeeks;')();
+  ok(f && f(new Date(2026, 10, 12)) === '2026-11-26', '12 Nov 2026 → 2026-11-26');
+  ok(f && f(new Date(2026, 11, 25)) === '2027-01-08', 'across the year end: 25 Dec 2026 → 2027-01-08');
+  ok(/\[Q\.startDate, \(_l, c, _o, kind\) => kind === "date" \? startDateInTwoWeeks\(\)/.test(eng), 'a Workday start-date box gets that date');
+  ok(/myworkdayjobs[^\n]*location\.hostname\)\) return todayForField\(el, 14\)/.test(fn('availableDateFor')), 'the built-in flow uses 14 days on Workday too');
+  ok(/"date":\s*\n?\s*return setDate\(container, answer\)|case "date":\s*return setDate\(container, answer\);/.test(eng), 'date answers go through the Workday date setter');
+}
+
+console.log('v17.66 — a placeholder email another tool typed is replaced with yours');
+{
+  const isPh = new Function(fn('isPlaceholderEmail') + '\nreturn isPlaceholderEmail;')();
+  for (const v of ['default@lazyapply.com', 'DEFAULT@LAZYAPPLY.COM', 'anyone@lazyapply.com', 'john@example.com', 'your.email@gmail.com'])
+    ok(isPh(v), 'placeholder: ' + v);
+  for (const v of ['maxokafordev@gmail.com', 'max.okafor@outlook.com', 'm@lazyapplyfan.io', 'defaulter@gmail.com', ''])
+    ok(!isPh(v), 'real (or empty) kept: ' + JSON.stringify(v));
+  ok(/\(!\(emailField\.value \|\| ''\)\.trim\(\) \|\| isPlaceholderEmail\(emailField\.value\)\)/.test(fn('handleAccountAuth__impl')), 'create-account: a placeholder in the email box is overwritten');
+  ok(/isPlaceholderEmail\(e\)\) e = ''/.test(fn('getAppEmail')), 'a placeholder is never used as your account email');
+  ok(/await replacePlaceholderEmails\(\);/.test(fn('fallbackFill__impl')), 'the fill pass swaps placeholder emails for yours');
+}
+
+console.log(`  v17.65/66: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
