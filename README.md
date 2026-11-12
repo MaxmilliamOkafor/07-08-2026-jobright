@@ -5143,3 +5143,19 @@ From the 11 Nov 14:46 log (80 jobs: 16 done, 29 timed out, 21 failed).
 
 Tests: `tests/v1765.test.js` (31 checks), `tests/keepalive.test.js` (now 48),
 both in `tests/run.sh`, and `tests/e2e/dom-1765.js` (in Chromium).
+
+## v17.66 — Workday "School or University"
+
+- **The school box is filled.** Workday's school box only searches when Enter
+  is pressed. The built-in Workday flow typed the name and waited for results
+  that never came, so both "School or University" boxes stayed empty and the
+  page refused to continue ("The field School or University is required").
+  It now uses the Workday engine's search, which presses Enter.
+- **Never a school you did not attend.** A result is picked only when it is
+  your whole school name ("University of Derby" is not "University of Dundee"
+  or "Derby College"). The old fallbacks, "any word matches" and "the first
+  result", are gone. Not in the list → the list's own "Other" / "Not Listed".
+  Neither → left empty for you, with a log line saying why.
+
+Test: `tests/e2e/wd-school.js` (4 checks in Chromium, against a copy of
+Workday's search box).

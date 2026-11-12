@@ -1032,19 +1032,23 @@
     const input = q(sel("searchBox"), target) ?? q("input", target);
     if (!input) return false;
     const path = opts.path?.length ? opts.path : [wanted];
-    const terms = opts.noRetry || opts.path ? [path[0]] : searchTerms(wanted);
+    const terms = opts.terms?.length ? opts.terms : opts.noRetry || opts.path ? [path[0]] : searchTerms(wanted);
     const before = multiselectSelected(target).length;
     for (const term of terms) {
       await humanClick(input);
       setNativeValue(input, opts.path ? "" : term);
       if (!opts.path) pressEnter(input);
       await sleep(250);
-      if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, wanted, term, min);
+      if (!opts.path && !opts.fallbackFirst && !opts.match) await dropWrongPicks(target, before, wanted, opts.strict ? "" : term, min);
       for (let depth = 0; depth < 3; depth++) {
         const options = await settledOptions(depth ? 4e3 : 6e3);
         if (!options.length) break;
         const want = opts.path ? path[Math.min(depth, path.length - 1)] : wanted;
-        let match = bestMatch(options, want, min) ?? (term !== wanted ? bestMatch(options, term, Math.max(min, 0.85)) : null);
+        /* opts.match: the option is chosen by what it says (an "Other" entry),
+           not by likeness. opts.strict: a shorter search word only finds the
+           list, the option must still match the whole name. */
+        let match = opts.match ? options.find((o) => opts.match(text(o))) ?? null
+          : bestMatch(options, want, min) ?? (term !== wanted && !opts.strict ? bestMatch(options, term, Math.max(min, 0.85)) : null);
         if (!match && opts.fallbackFirst && (!opts.path || depth >= path.length - 1)) match = options[0];
         if (!match) break;
         const picked = text(match);
@@ -1055,7 +1059,7 @@
         await humanClick(match);
         await sleep(250);
         if (spinning()) await settledOptions(3e3);
-        if (!opts.path && !opts.fallbackFirst) await dropWrongPicks(target, before, picked, "", 0.85);
+        if (!opts.path && !opts.fallbackFirst && !opts.match) await dropWrongPicks(target, before, picked, "", 0.85);
         if (multiselectSelected(target).length > before || multiselectSelected(target).some((s) => similarity(picked, s) >= 0.85)) {
           blur(input);
           return true;
@@ -2329,16 +2333,36 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     }
     return best;
   }
+  /* v17.66 — Workday's "School or University" search box. Your school, found
+     by its full name or by its distinctive words ("Derby" for "University of
+     Derby") but only ever picked when the result matches the WHOLE name (≥0.8):
+     "University of Dundee" is not "University of Derby". Not in the tenant's
+     list → its own "Other" / "Not Listed" entry, which is what these forms ask
+     for. Never the first result, never a school you did not attend. */
+  var SCHOOL_FILLER_RX = /^(the|of|and|for|at|in|de|del|la|le|university|universit[yéaà]|universidad|universidade|universität|college|school|institute|institut|instituto|of technology|polytechnic|academy|campus)$/i;
+  var OTHER_SCHOOL_RX = /^\s*(other|others|not listed|school not listed|institution not listed|university not listed|none of the above|andere|sonstige|autre|otro|outro|altro|overig|inne)\b|\bnot (on the |in the )?list(ed)?\b/i;
+  function schoolSearchTerms(name) {
+    const n = String(name || "").replace(/\(.*?\)/g, " ").replace(/\s+/g, " ").trim();
+    if (!n) return [];
+    const words = n.split(/[\s,\-–]+/).filter((w) => w.length >= 3 && !SCHOOL_FILLER_RX.test(w));
+    const out = [n];
+    if (words.length) out.push(words.join(" "));
+    if (words.length > 1) out.push(words.sort((a, b) => b.length - a.length)[0]);
+    return [...new Set(out)];
+  }
+  async function pickSchool(target, name) {
+    if (multiselectSelected(target).length) return true;
+    if (name && await multiselectPick(target, name, { min: 0.8, strict: true, terms: schoolSearchTerms(name) })) return true;
+    for (const term of ["Other", "Not Listed"]) if (await multiselectPick(target, term, { match: (t) => OTHER_SCHOOL_RX.test(t), terms: [term] })) return true;
+    return false;
+  }
   async function fillEducation(ctx, block, e) {
     const school = field("schoolF", block);
     if (school) {
       const c = containerOf(school);
       handled.add(c);
       await pace(ctx);
-      let ok = await writeValue(c, e.school);
-      if (!ok && kindOf(c) === "multiselect") {
-        for (const other of ["Other", "Andere", "Sonstige", "Autre", "Otro", "Outro", "Altro", "Overig", "Inne"]) if (ok = await multiselectPick(c, other, { min: 0.8 })) break;
-      }
+      const ok = kindOf(c) === "multiselect" ? await pickSchool(c, e.school) : await writeValue(c, e.school);
       if (!ok) ctx.flag(`School: ${e.school}`, "Not in the tenant's school list");
     }
     let degree = e.degree;
@@ -3968,7 +3992,13 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
      *  flow uses this to put a month next to a year-only date ("MM/2021"). */
     setDate: (field2, ym2) => setDate(field2, ym2).catch(() => false),
     /** "Masters" → the plain master's option, never a specialised one (M.P.H., M.B.A.…). */
-    pickDegree: (options, wanted) => pickDegreeOption(options, wanted)
+    pickDegree: (options, wanted) => pickDegreeOption(options, wanted),
+    /** v17.66 — "School or University": your school, else the list's own
+     *  "Other" / "Not Listed". `input` is the search box; false if neither. */
+    pickSchool: (input, name) => {
+      const c = input && (input.closest('[data-automation-id^="formField-"]') || input.closest('[data-automation-id="multiselectInputContainer"]')?.parentElement || input.parentElement);
+      return c ? pickSchool(c, String(name || "")).catch(() => false) : Promise.resolve(false);
+    }
   };
   if (TOP && isWorkdayHost()) {
     const submitCountdown = (seconds = 3) => {

@@ -8753,23 +8753,34 @@
     const waitOptions = async (ms) => { const dl = Date.now() + ms; let o = optionEls(); while (!o.length && Date.now() < dl) { await sleep(150); o = optionEls(); } return o; };
     const pick = (opts, matcher) => { const m = opts.find(matcher); if (m) { realClick(m); return true; } return false; };
 
-    // 1) The real school name → select a matching suggestion.
-    if (name) {
-      typeNoBlur(name);
-      const opts = await waitOptions(2500);
-      const words = name.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-      if (pick(opts, o => { const t = (o.textContent || '').toLowerCase(); return t.includes(name.toLowerCase()) || (words.length && words.every(w => t.includes(w))) || words.some(w => t.includes(w)); })) { await sleep(400); return true; }
+    /* v17.66 — Workday's school box only searches when Enter is pressed. This
+       typed the name and waited for results that never came, so "School or
+       University" stayed empty and required (two of them, 12 Nov). And when
+       results did come, "any word matches" and "the first result" could pick
+       a school you never attended. Now: the engine's search (types, presses
+       Enter, picks only a whole-name match, else the list's own "Other" /
+       "Not Listed"); without the engine, the same rules here. */
+    const eng = window.__uaWdEngine;
+    if (eng && typeof eng.pickSchool === 'function') {
+      try { if (await eng.pickSchool(input, name)) { LOG('Workday: school picked' + (name ? ' (' + name + ')' : '')); return true; } } catch (_) {}
     }
-    // 2) Not found → "Not Listed" (the page's own instruction).
-    typeNoBlur('Not Listed');
-    let opts = await waitOptions(2000);
-    if (pick(opts, o => /not listed|not on (the )?list|none of|^\s*other\s*$/i.test((o.textContent || '').trim()))) { await sleep(400); return true; }
-    // 3) Open the field's picklist (☰) and choose Not Listed there.
-    const menuBtn = (input.closest('[data-automation-id="formField-school"],[data-automation-id^="education-"],div') || document)
-      .querySelector('button[aria-haspopup="listbox"],button[data-automation-id="promptOption"],button[aria-label*="search" i]');
-    if (menuBtn && isVisible(menuBtn)) { realClick(menuBtn); opts = await waitOptions(1500); if (pick(opts, o => /not listed|^\s*other\s*$/i.test((o.textContent || '').trim()))) { await sleep(400); return true; } }
-    // 4) Last resort: take the first real suggestion for the name so it's never left blank/invalid.
-    if (name) { typeNoBlur(name); opts = await waitOptions(1500); if (opts[0]) { realClick(opts[0]); await sleep(300); return true; } }
+    const enter = () => { for (const t of ['keydown', 'keypress', 'keyup']) { try { input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, composed: true, cancelable: true })); } catch (_) {} } };
+    const norm = (s) => String(s || '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(/[^a-z0-9À-ɏ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    // 1) The real school name: only an option that IS that school.
+    if (name) {
+      typeNoBlur(name); enter();
+      const opts = await waitOptions(4000);
+      const n = norm(name);
+      if (pick(opts, (o) => { const t = norm(o.textContent); return t === n || t.startsWith(n) || n.startsWith(t) && t.split(' ').length >= 2; })) { await sleep(400); return true; }
+    }
+    // 2) Not in the list → the list's own "Other" / "Not Listed".
+    for (const term of ['Not Listed', 'Other']) {
+      typeNoBlur(term); enter();
+      const opts = await waitOptions(3000);
+      if (pick(opts, (o) => /^\s*(other|others|not listed|none of the above)\b|\bnot (on the |in the )?list(ed)?\b/i.test((o.textContent || '').trim()))) { await sleep(400); return true; }
+    }
+    try { typeNoBlur(''); } catch (_) {}
+    LOG('Workday: "' + (name || 'your school') + '" is not in this school list and the list has no "Other" — left for you');
     return false;
   }
 
