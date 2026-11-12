@@ -2,12 +2,12 @@
    opened by hand (not as queue jobs) are left exactly as they are: no field
    filled, nothing clicked, no panel added — by this extension, by Jobright's
    helper or by the embedded SpeedyApply and its Workflow Add-on — and the
-   site's own "Leave site?" warning works. Then the toolbar popup switches it ON
+   site's own "Leave site?" warning works. Then the Queue Manager's Autofill switch turns it ON
    and the same page is filled.
 
    Usage:  node tests/e2e/switch-off.js            (the extension in this repo)
            EXT=/path/to/build node tests/e2e/switch-off.js
-           SHOTS=/dir  saves the popup's OFF / ON screenshots there
+           SHOTS=/dir  saves the switch's OFF / ON screenshots there
    Prints one line per check and exits non-zero on a failure. */
 let chromium;
 try { ({ chromium } = require('playwright')); } catch (_) { ({ chromium } = require(require('child_process').execSync('npm root -g').toString().trim() + '/playwright')); }
@@ -116,17 +116,22 @@ const eq = (name, got, want) => {
   eq('no panel or widget was added to the page', await added(wd), []);
   await wd.close();
 
-  /* ── The toolbar popup ── */
-  console.log('\nThe toolbar popup');
+  /* ── The switch (v17.64: no toolbar popup; it is in the Queue Manager header
+     and in the Autofill card in Jobright's sidebar) ── */
+  console.log('\nThe Autofill switch in the Queue Manager');
+  eq('the toolbar icon has no popup: it opens Jobright as it always did', await sw.evaluate(() => new Promise((r) => chrome.action.getPopup({}, r))), '');
   const pop = await ctx.newPage();
-  await pop.setViewportSize({ width: 300, height: 260 });
-  await pop.goto(`chrome-extension://${extId}/ua-switch.html`);
-  await pop.waitForTimeout(500);
-  eq('it shows OFF', [await pop.textContent('#state'), await pop.getAttribute('#sw', 'aria-checked')], ['OFF', 'false']);
+  const popErrs = []; pop.on('pageerror', (e) => popErrs.push(String(e)));
+  await pop.setViewportSize({ width: 440, height: 700 });
+  await pop.goto(`chrome-extension://${extId}/ua-queue.html`);
+  await pop.waitForTimeout(800);
+  eq('the Queue Manager starts without a script error', popErrs, []);
+  eq('it shows OFF', [await pop.textContent('#swState'), await pop.getAttribute('#swMaster', 'aria-checked')], ['OFF', 'false']);
   if (process.env.SHOTS) await pop.screenshot({ path: path.join(process.env.SHOTS, 'switch-off.png') });
-  await pop.click('#sw');
-  await pop.waitForTimeout(600);
-  eq('one click turns it ON', [await pop.textContent('#state'), await panel.evaluate(() => new Promise((r) => chrome.storage.local.get('ua_aa', (d) => r(d.ua_aa))))], ['ON', true]);
+  await pop.click('#swMaster');
+  await pop.waitForTimeout(900);
+  eq('the track turns green (dark or light theme)', ['rgb(0, 240, 160)', 'rgb(0, 143, 95)'].includes(await pop.evaluate(() => getComputedStyle(document.querySelector('#swMaster .track')).backgroundColor)), true);
+  eq('one click turns it ON', [await pop.textContent('#swState'),await panel.evaluate(() => new Promise((r) => chrome.storage.local.get('ua_aa', (d) => r(d.ua_aa))))], ['ON', true]);
   eq('…and the badge says ON', await badge(), 'ON');
   if (process.env.SHOTS) await pop.screenshot({ path: path.join(process.env.SHOTS, 'switch-on.png') });
 
@@ -140,9 +145,9 @@ const eq = (name, got, want) => {
   await gh2.close().catch(() => {});
 
   // And OFF again from the popup.
-  await pop.click('#sw');
+  await pop.click('#swMaster');
   await pop.waitForTimeout(600);
-  eq('one click turns it OFF again', [await pop.textContent('#state'), await badge()], ['OFF', 'OFF']);
+  eq('one click turns it OFF again', [await pop.textContent('#swState'), await badge()], ['OFF', 'OFF']);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   await ctx.close();

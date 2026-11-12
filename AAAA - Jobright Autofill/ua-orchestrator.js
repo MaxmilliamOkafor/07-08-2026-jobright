@@ -1060,6 +1060,17 @@
         return true;
       }
 
+      /* v17.65 — the clock for a job tab whose site refuses ua-keepalive.js's
+         worker. Chrome cuts a background page's own timers to one a minute;
+         a wait kept here and answered by message is on time. Only this
+         extension's own tabs, top frame, and never longer than ten minutes. */
+      if (msg.type === 'UA_CLOCK') {
+        if (!sender || sender.id !== chrome.runtime.id || !sender.tab || typeof sender.tab.id !== 'number') return;
+        const ms = Math.max(0, Math.min(Number(msg.ms) || 0, 600000));
+        setTimeout(() => { try { sendResponse({ ok: true }); } catch (_) {} }, ms);
+        return true;
+      }
+
       /* Your Workday engine (ua-wd-engine.js) reading your CV: the reader, with
          pdf.js, is put into that tab only now, never on every page. */
       if (msg.type === 'UA_WD_CV_LOAD') {
@@ -1366,9 +1377,9 @@
       if (!chrome.action) return;
       const st1 = await switchState();
       const [text, color, title] = st1.running
-        ? ['RUN', '#d97706', 'Autofill: a run is going — click to switch everything OFF']
-        : st1.on ? ['ON', '#059669', 'Autofill: ON — click to switch it OFF']
-          : ['OFF', '#6b7280', 'Autofill: OFF — nothing fills or pops up. Click to switch it ON'];
+        ? ['RUN', '#d97706', 'Jobright Autofill — a run is going. Click to open Jobright; the Autofill switch there stops it.']
+        : st1.on ? ['ON', '#059669', 'Jobright Autofill — autofill is ON. Click to open Jobright.']
+          : ['OFF', '#6b7280', 'Jobright Autofill — autofill is OFF: nothing fills or pops up. Click to open Jobright.'];
       chrome.action.setBadgeText({ text }, () => void chrome.runtime.lastError);
       chrome.action.setBadgeBackgroundColor({ color }, () => void chrome.runtime.lastError);
       try { chrome.action.setBadgeTextColor && chrome.action.setBadgeTextColor({ color: '#ffffff' }, () => void chrome.runtime.lastError); } catch (_) {}

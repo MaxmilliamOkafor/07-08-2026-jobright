@@ -3,99 +3,137 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Jobright Queue Manager</title>
+<title>Queue Manager · Jobright Autofill</title>
 <style>
-  :root{color-scheme:dark}
+  :root{color-scheme:dark;--bg:#0f1012;--surface:#16171a;--surface2:#1c1e22;--line:#2a2c31;--line2:#3a3d44;--fg:#f1f2f4;--mut:#a3a8b0;--dim:#7b818b;--acc:#00f0a0;--acc-fg:#04130d;--acc-soft:rgba(0,240,160,.1);--run:#f5a623;--run-soft:rgba(245,166,35,.12);--bad:#f47174;--bad-soft:rgba(244,113,116,.1);--info:#8ab4ff;--info-soft:rgba(138,180,255,.12)}
+  @media (prefers-color-scheme: light){
+    :root{color-scheme:light;--bg:#f6f7f8;--surface:#ffffff;--surface2:#f0f1f3;--line:#e1e3e7;--line2:#c9cdd3;--fg:#15171a;--mut:#555b66;--dim:#737985;--acc:#008f5f;--acc-fg:#ffffff;--acc-soft:rgba(0,143,95,.1);--run:#b26a00;--run-soft:rgba(178,106,0,.1);--bad:#c9353a;--bad-soft:rgba(201,53,58,.08);--info:#2f5fc4;--info-soft:rgba(47,95,196,.08)}
+  }
   *{box-sizing:border-box}
-  body{margin:0;background:#0f1117;color:#e2e8f0;font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-width:300px}
-  body.drag::after{content:'Drop CSV to import';position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(5,46,34,.85);border:2px dashed #34d399;color:#6ee7b7;font-size:15px;font-weight:700}
-  header{position:sticky;top:0;z-index:5;background:linear-gradient(135deg,#052e22,#0f1117);border-bottom:1px solid #1e2030;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .pulse{width:9px;height:9px;border-radius:50%;background:#6b7280;flex-shrink:0}
-  .pulse.on{background:#4ade80;animation:p 1.5s ease-in-out infinite}
-  .pulse.paused{background:#fbbf24;animation:none}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;min-width:300px}
+  body.drag::after{content:'Drop CSV to import';position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--bg) 88%,transparent);border:2px dashed var(--acc);color:var(--acc);font-size:15px;font-weight:700}
+  header{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px}
+  .pulse{width:9px;height:9px;border-radius:50%;background:var(--dim);flex-shrink:0}
+  .pulse.on{background:var(--acc);animation:p 1.5s ease-in-out infinite}
+  .pulse.paused{background:var(--run);animation:none}
   @keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
-  h1{font-size:13.5px;margin:0;color:#6ee7b7;font-weight:700;flex:1;white-space:nowrap}
-  .chip{font-size:10.5px;font-weight:700;color:#34d399;background:rgba(16,185,129,.13);padding:2px 8px;border-radius:10px}
-  #stats{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid #1e2030}
-  .stat{flex:1;min-width:64px;background:#161925;border:1px solid #232636;border-radius:9px;padding:7px 4px;text-align:center;font-size:10px;color:#94a3b8;cursor:pointer}
-  .stat:hover{border-color:#34d399}
-  .stat.sel{border-color:#34d399;background:#12211c}
-  .stat b{display:block;font-size:16px;color:#e2e8f0;margin-bottom:1px}
-  .s-pending b{color:#fbbf24}.s-applying b{color:#a78bfa}.s-done b{color:#4ade80}.s-failed b{color:#f87171}.s-skipped b{color:#94a3b8}
-  .bar{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid #1e2030;align-items:center}
-  button{border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;background:#232636;color:#cbd5e1}
-  button:hover{filter:brightness(1.15)}
-  button:active{transform:scale(.97)}
+  @media (prefers-reduced-motion: reduce){.pulse.on,.b-needsyou{animation:none}}
+  h1{font-size:14px;margin:0;font-weight:700;white-space:nowrap}
+  .chip{font-size:11px;font-weight:700;color:var(--acc);background:var(--acc-soft);padding:2px 9px;border-radius:999px;white-space:nowrap}
+  .grow{flex:1}
+  .sw{display:flex;align-items:center;gap:8px;border:0;background:none;padding:2px;cursor:pointer;color:var(--fg);font:inherit;border-radius:8px}
+  .sw small{font-size:11px;font-weight:600;color:var(--mut);letter-spacing:.04em;text-transform:uppercase}
+  .sw b{font-size:12px;font-weight:800;min-width:26px;text-align:right;color:var(--dim)}
+  .sw .track{width:40px;height:24px;border-radius:12px;background:var(--line2);position:relative;transition:background .15s;flex:0 0 auto}
+  .sw .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:transform .15s}
+  .sw[aria-checked="true"] .track{background:var(--acc)}
+  .sw[aria-checked="true"] .knob{transform:translateX(16px)}
+  .sw[aria-checked="true"] b{color:var(--acc)}
+  .sw.running .track{background:var(--run)}
+  .sw.running b{color:var(--run)}
+  .sw:hover{background:none}
+  :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+  #stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:6px;padding:12px 14px 4px}
+  .stat{flex:1;min-width:64px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 4px;text-align:center;font-size:11px;color:var(--mut);cursor:pointer}
+  .stat:hover{border-color:var(--line2)}
+  .stat.sel{border-color:var(--acc);background:var(--acc-soft)}
+  .stat b{display:block;font-size:17px;color:var(--fg);margin-bottom:1px;font-variant-numeric:tabular-nums}
+  .s-pending b{color:var(--run)}.s-applying b{color:var(--info)}.s-done b{color:var(--acc)}.s-failed b{color:var(--bad)}.s-skipped b{color:var(--mut)}
+  .bar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;align-items:center}
+  .group{padding:6px 14px 2px}
+  .group>h2{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim)}
+  .group .bar{padding:0 0 10px}
+  details.more{margin:0 0 8px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+  details.more>summary{cursor:pointer;padding:9px 12px;font-size:12px;font-weight:600;color:var(--fg);list-style:none;display:flex;align-items:center;justify-content:space-between;border-radius:10px}
+  details.more>summary::-webkit-details-marker{display:none}
+  details.more>summary::after{content:"";width:7px;height:7px;border-right:2px solid var(--mut);border-bottom:2px solid var(--mut);transform:rotate(45deg);transition:transform .15s;margin-right:4px}
+  details.more[open]>summary::after{transform:rotate(-135deg)}
+  details.more .settings{padding:4px 12px 12px}
+  button{border:1px solid var(--line2);border-radius:8px;padding:7px 11px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:background .12s,border-color .12s;background:transparent;color:var(--fg)}
+  button:hover{background:var(--surface2)}
+  button:active{transform:scale(.98)}
   button:disabled{opacity:.45;cursor:not-allowed}
-  .b-start{background:linear-gradient(135deg,#059669,#10b981);color:#fff;box-shadow:0 2px 8px rgba(16,185,129,.3)}
-  .b-stop{background:rgba(239,68,68,.15);color:#f87171}
-  .b-pause{background:rgba(251,191,36,.15);color:#fbbf24}
-  .b-accent{background:rgba(139,92,246,.16);color:#c4b5fd}
-  select,input[type=search],input[type=number],textarea{background:#161925;color:#e2e8f0;border:1px solid #232636;border-radius:8px;padding:7px 9px;font-size:12px;font-family:inherit}
-  label.opt{display:flex;align-items:center;gap:5px;font-size:11px;color:#94a3b8;cursor:pointer;white-space:nowrap}
-  label.opt input{accent-color:#10b981}
-  .progress-wrap{padding:8px 14px;border-bottom:1px solid #1e2030;display:none}
+  .b-start{background:var(--acc);border-color:var(--acc);color:var(--acc-fg);font-weight:700;padding:7px 18px}
+  .b-start:hover{background:var(--acc);filter:brightness(1.08)}
+  .b-stop{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+  .b-stop:hover{background:var(--bad-soft)}
+  .b-accent{background:var(--surface2)}
+  .b-danger{color:var(--bad)}
+  select,input[type=search],input[type=number],input[type=text],input[type=email],input[type=password],textarea{background:var(--surface);color:var(--fg);border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font-size:12px;font-family:inherit}
+  .settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px 18px;padding:0 0 10px}
+  label.opt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg);cursor:pointer}
+  label.opt input[type=checkbox]{accent-color:var(--acc);width:15px;height:15px;margin:0;flex:0 0 auto}
+  label.opt input[type=number]{width:58px;padding:4px 6px;margin-left:auto}
+  label.opt .unit{color:var(--dim);font-size:11px;min-width:22px}
+  #mailRow{grid-column:1/-1;flex-wrap:wrap}
+  .progress-wrap{padding:6px 14px 10px;display:none}
   .progress-wrap.show{display:block}
-  .pbar{width:100%;height:6px;background:#1e2030;border-radius:3px;overflow:hidden}
-  .pfill{height:100%;background:linear-gradient(90deg,#059669,#34d399);border-radius:3px;transition:width .4s;width:0}
-  .plabel{display:flex;justify-content:space-between;font-size:10.5px;color:#94a3b8;margin-bottom:5px}
-  #log{max-height:110px;overflow-y:auto;padding:6px 14px;border-bottom:1px solid #1e2030;font-size:11px;color:#94a3b8}
+  .pbar{width:100%;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+  .pfill{height:100%;background:var(--acc);border-radius:3px;transition:width .4s;width:0}
+  .plabel{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-bottom:5px}
+  #log{max-height:110px;overflow-y:auto;margin:0 14px 8px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font-size:11.5px;color:var(--mut)}
+  #log:empty{display:none}
   #log div{padding:1.5px 0}
-  #log .ok{color:#4ade80}#log .err{color:#f87171}#log .act{color:#6ee7b7}
+  #log .ok{color:var(--acc)}#log .err{color:var(--bad)}#log .act{color:var(--fg)}
   .tbl-wrap{overflow-x:auto}
-  table{width:100%;border-collapse:collapse;font-size:11.5px}
-  th{position:sticky;top:0;background:#12141d;text-align:left;padding:7px 8px;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #232636}
-  td{padding:7px 8px;border-bottom:1px solid #1a1d2a;vertical-align:top}
-  tr:hover td{background:#141724}
-  a{color:#34d399;text-decoration:none}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{position:sticky;top:0;background:var(--surface);text-align:left;padding:7px 8px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line);border-top:1px solid var(--line)}
+  td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:hover td{background:var(--surface)}
+  a{color:var(--acc);text-decoration:none}
   a:hover{text-decoration:underline}
-  .badge{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:8px;text-transform:uppercase;white-space:nowrap}
-  .b-pending{background:rgba(251,191,36,.14);color:#fbbf24}
-  .b-applying{background:rgba(167,139,250,.16);color:#a78bfa}
-  .b-done{background:rgba(74,222,128,.14);color:#4ade80}
-  .b-failed,.b-timeout{background:rgba(239,68,68,.14);color:#f87171}
-  .b-skipped{background:rgba(148,163,184,.14);color:#94a3b8}
-  .b-needsyou{background:rgba(251,146,60,.18);color:#fb923c;animation:p 1.6s ease-in-out infinite}
-  .rowbtn{background:none;color:#64748b;padding:2px 5px;font-size:12px}
-  .rowbtn:hover{color:#34d399}
-  .rowbtn.del:hover{color:#f87171}
+  .badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;text-transform:uppercase;letter-spacing:.02em;white-space:nowrap}
+  .b-pending{background:var(--run-soft);color:var(--run)}
+  .b-applying{background:var(--info-soft);color:var(--info)}
+  .b-done{background:var(--acc-soft);color:var(--acc)}
+  .b-failed,.b-timeout{background:var(--bad-soft);color:var(--bad)}
+  .b-skipped{background:var(--surface2);color:var(--mut)}
+  .b-needsyou{background:var(--run-soft);color:var(--run);animation:p 1.6s ease-in-out infinite}
+  .rowbtn{background:none;border:0;color:var(--dim);padding:2px 5px;font-size:13px}
+  .rowbtn:hover{color:var(--acc);background:none}
+  .rowbtn.del:hover{color:var(--bad)}
   .url{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
-  .stage-txt{color:#a78bfa;font-size:10px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .err-txt{color:#f87171;font-size:10px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #empty{padding:44px 20px;text-align:center;color:#64748b;font-size:12.5px}
+  .stage-txt{color:var(--info);font-size:11px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .err-txt{color:var(--bad);font-size:11px;display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #empty{margin:8px 14px;padding:36px 20px;text-align:center;color:var(--mut);font-size:13px;border:1px dashed var(--line2);border-radius:12px}
+  #empty strong{display:block;color:var(--fg);font-size:14px;margin-bottom:6px}
   .hidden{display:none!important}
-  .hint{font-size:10px;color:#475569;padding:6px 14px 12px}
-  dialog{background:#12141d;color:#e2e8f0;border:1px solid #232636;border-radius:12px;padding:14px;max-width:min(560px,92vw);width:100%}
+  .hint{font-size:11px;color:var(--dim);padding:8px 14px 14px}
+  dialog{background:var(--surface);color:var(--fg);border:1px solid var(--line2);border-radius:12px;padding:16px;max-width:min(560px,92vw);width:100%}
   dialog::backdrop{background:rgba(0,0,0,.6)}
-  dialog h2{font-size:13px;margin:0 0 8px;color:#6ee7b7}
+  dialog h2{font-size:14px;margin:0 0 8px}
   dialog textarea{width:100%;min-height:150px;resize:vertical}
-  .dlg-bar{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
-  .row-count{font-size:10px;color:#64748b;padding:0 14px 8px}
+  .dlg-bar{display:flex;gap:6px;justify-content:flex-end;margin-top:12px}
+  .row-count{font-size:11px;color:var(--dim);padding:6px 14px 8px}
   #diagDlg{max-width:min(920px,96vw)}
   #qDlg,#loginDlg{max-width:min(760px,96vw)}
   .dlg-list{max-height:min(55vh,460px);overflow:auto;margin:8px 0}
   .dlg-row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
-  .dlg-row .q{flex:1 1 100%;font-size:12px;color:#e2e8f0}
-  .dlg-row .meta{font-size:10.5px;color:#94a3b8}
+  .dlg-row .q{flex:1 1 100%;font-size:12px;color:var(--fg)}
+  .dlg-row .meta{font-size:11px;color:var(--mut)}
   .dlg-row input[type=text],.dlg-row input[type=email],.dlg-row input[type=password]{flex:1;min-width:120px}
   #diagDlg textarea{min-height:min(60vh,520px);font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;overflow-wrap:normal;overflow-x:auto}
-  .dlg-note{font-size:11px;color:#94a3b8;margin:0 0 9px;line-height:1.45}
+  .dlg-note{font-size:12px;color:var(--mut);margin:0 0 10px;line-height:1.5}
 </style>
 </head>
 <body>
   <header>
     <div class="pulse" id="pulse"></div>
-    <h1>⚡ Jobright Queue Manager</h1>
+    <h1>Queue Manager</h1>
     <span class="chip" id="counter">0 jobs</span>
+    <span class="grow"></span>
+    <button id="swMaster" class="sw" role="switch" aria-checked="false" title="Autofill switch. Off: nothing fills, clicks or submits, and a running queue is stopped.">
+      <small>Autofill</small><b id="swState">…</b><span class="track" aria-hidden="true"><span class="knob"></span></span>
+    </button>
   </header>
 
   <div id="stats"></div>
 
   <div class="bar">
-    <button class="b-start" id="btnStart">▶ Start</button>
-    <button class="b-pause" id="btnPause" disabled>⏸ Pause</button>
-    <button class="b-stop" id="btnStop" disabled>■ Stop</button>
-    <select id="conc" title="How many jobs run at once, each in its own background tab">
+    <button class="b-start" id="btnStart">Start</button>
+    <button class="b-pause" id="btnPause" disabled>Pause</button>
+    <button class="b-stop" id="btnStop" disabled>Stop</button>
+    <select id="conc" class="hidden" aria-hidden="true" tabindex="-1">
       <option value="1">1 tab</option>
       <option value="2">2 tabs</option>
       <option value="3" selected>3 tabs</option>
@@ -106,40 +144,58 @@
     </select>
   </div>
 
-  <div class="bar">
-    <button class="b-accent" id="btnImport">⬆ Import CSV</button>
-    <input type="file" id="csvFile" accept=".csv,.tsv,.txt,text/csv,text/plain" class="hidden" multiple>
-    <button class="b-accent" id="btnPaste">✎ Paste URLs</button>
-    <button id="btnExport">⬇ Export</button>
-    <button id="btnCopyFails" title="Copy every failure, with its reason, to the clipboard">⚠ Copy failures</button>
-    <button id="btnDebugDl" title="One file with everything: every job's timeline, page snapshot and screenshot, failures by cause, the diagnostics report, the queue, logs and settings (no passwords)">⬇ Download debug log</button>
-    <button class="b-accent" id="btnDebugger" title="Every job's full timeline, the page's fields and errors when it ended, and a screenshot — failures grouped by cause">🐞 Debugger</button>
-    <button id="btnDiag" title="Everything the recorder has seen across every ATS — outcomes, reasons, and the questions that could not be answered">🩺 Diagnostics</button>
-    <button id="btnQuestions" title="Required questions the autofill had no answer for. Answer each once — every future application that asks it is filled automatically.">❓ Questions to answer</button>
-    <button id="btnLogins" title="A login for a particular employer's site — for a Workday (or other) account you created yourself with a different password">🔐 Site logins</button>
-    <button id="btnRetry">↻ Retry failed</button>
-    <button id="btnClearDone">Clear done</button>
-    <button id="btnClearAll">Clear all</button>
+  <div class="progress-wrap" id="progressWrap">
+    <div class="plabel"><span id="progressLabel">Running…</span><span id="progressPct">0%</span></div>
+    <div class="pbar"><div class="pfill" id="progressFill"></div></div>
+  </div>
+
+  <div id="log" aria-live="polite"></div>
+
+  <div class="group">
+    <h2>Add jobs</h2>
+    <div class="bar">
+      <button class="b-accent" id="btnImport">Import CSV</button>
+      <input type="file" id="csvFile" accept=".csv,.tsv,.txt,text/csv,text/plain" class="hidden" multiple>
+      <button class="b-accent" id="btnPaste">Paste URLs</button>
+    </div>
+    <h2>Queue</h2>
+    <div class="bar">
+      <button id="btnRetry">Retry failed</button>
+      <button id="btnExport">Export CSV</button>
+      <button id="btnClearDone">Clear done</button>
+      <button id="btnClearAll" class="b-danger">Clear all</button>
+    </div>
+    <h2>Fix and review</h2>
+    <div class="bar">
+      <button id="btnQuestions" title="Required questions the autofill had no answer for. Answer each once — every future application that asks it is filled automatically.">Questions to answer</button>
+      <button id="btnLogins" title="A login for a particular employer's site — for a Workday (or other) account you created yourself with a different password">Site logins</button>
+      <button id="btnCopyFails" title="Copy every failure, with its reason, to the clipboard">Copy failures</button>
+      <button id="btnDebugger" title="Every job's full timeline, the page's fields and errors when it ended, and a screenshot — failures grouped by cause">Debugger</button>
+      <button id="btnDiag" title="Everything the recorder has seen across every ATS — outcomes, reasons, and the questions that could not be answered">Diagnostics</button>
+      <button id="btnDebugDl" title="One file with everything: every job's timeline, page snapshot and screenshot, failures by cause, the diagnostics report, the queue, logs and settings (no passwords)">Download debug log</button>
+    </div>
+    <details class="more">
+    <summary>Settings</summary>
+    <div class="settings">
+      <label class="opt" title="How many jobs to apply to at the same time, each in its own background tab. A 544-job CSV at 3 at a time is 181 sequential rounds; at 12 it is 46. Different employers do not share a rate limit, so running them side by side is the cheapest speed there is. Raise it until your machine starts to feel slow.">Jobs at the same time <input type="number" id="optConc" min="1" max="12" step="1" value="3"><span class="unit"></span></label>
+      <label class="opt" title="Give up on a job after this many minutes and move on">Give up on a job after <input type="number" id="optTimeout" min="1" max="30" step="1" value="3"><span class="unit">min</span></label>
+      <label class="opt" title="If a job makes no progress for this long, skip it and start the next one. The countdown is PAUSED while it is actively filling, uploading, submitting or verifying — it only runs when nothing is happening.">Skip if stuck for <input type="number" id="optStall" min="5" max="600" step="5" value="15"><span class="unit">s</span></label>
+      <label class="opt" title="How long a job blocked by a CAPTCHA keeps its tab open waiting for you. It does NOT hold a slot — the rest of the queue keeps running at full speed meanwhile.">Wait for me at a CAPTCHA <input type="number" id="optHuman" min="0.5" max="30" step="0.5" value="1"><span class="unit">min</span></label>
+      <label class="opt" title="Never apply twice to the same job, even across separate CSV imports"><input type="checkbox" id="optSkip" checked> Skip jobs already applied to</label>
+      <label class="opt" title="Use Jobright's resume generator on every job (slower, can stall)"><input type="checkbox" id="optTailor"> Tailor resume for each job</label>
+      <label class="opt" title="Read verification codes (Oracle/JPMorgan PINs, Workday, Amazon…) from the Gmail you are already signed in to in this browser — no Google setup needed. Read-only: only emails from the last few minutes that read like a verification code, and nothing is kept."><input type="checkbox" id="optGmailSession"> Read codes from my signed-in Gmail</label>
+      <label class="opt" id="mailRow" title="Some ATS stop mid-application and email you a link or a code — Workday per tenant, iCIMS and Taleo on some setups, ADP when it does not recognise you. Connect a mailbox and the queue clears those on its own. Read-only: it can only read mail from the last few minutes, from the employer being applied to, and it can never send, delete or change anything.">
+        <span id="mailState">Mailbox: not connected</span>
+        <input type="text" id="mailClientId" placeholder="Google OAuth client ID" style="width:190px" />
+        <button id="mailConnect" type="button">Connect</button>
+        <button id="mailDisconnect" type="button" style="display:none">Disconnect</button>
+      </label>
+    </div>
+    </details>
   </div>
 
   <div class="bar">
-    <label class="opt" title="Never apply twice to the same job, even across separate CSV imports"><input type="checkbox" id="optSkip" checked> Skip already applied</label>
-    <label class="opt" title="Use Jobright's resume generator on every job (slower, can stall)"><input type="checkbox" id="optTailor"> Tailor resume</label>
-    <label class="opt" id="mailRow" title="Some ATS stop mid-application and email you a link or a code — Workday per tenant, iCIMS and Taleo on some setups, ADP when it does not recognise you. Connect a mailbox and the queue clears those on its own. Read-only: it can only read mail from the last few minutes, from the employer being applied to, and it can never send, delete or change anything.">
-      <span id="mailState">Mailbox: not connected</span>
-      <input type="text" id="mailClientId" placeholder="Google OAuth client ID" style="width:190px" />
-      <button id="mailConnect" type="button">Connect</button>
-      <button id="mailDisconnect" type="button" style="display:none">Disconnect</button>
-    </label>
-    <label class="opt" title="Read verification codes (Oracle/JPMorgan PINs, Workday, Amazon…) from the Gmail you are already signed in to in this browser — no Google setup needed. Read-only: only emails from the last few minutes that read like a verification code, and nothing is kept."><input type="checkbox" id="optGmailSession"> Read codes from my signed-in Gmail</label>
-    <label class="opt" title="How many jobs to apply to at the same time, each in its own background tab. A 544-job CSV at 3 at a time is 181 sequential rounds; at 12 it is 46. Different employers do not share a rate limit, so running them side by side is the cheapest speed there is. Raise it until your machine starts to feel slow.">Parallel jobs <input type="number" id="optConc" min="1" max="12" step="1" value="3" style="width:48px"></label>
-    <label class="opt" title="Give up on a job after this many minutes and move on">Timeout <input type="number" id="optTimeout" min="1" max="30" step="1" value="3" style="width:52px"> min</label>
-    <label class="opt" title="If a job makes no progress for this long, skip it and start the next one. The countdown is PAUSED while it is actively filling, uploading, submitting or verifying — it only runs when nothing is happening.">Skip if stuck <input type="number" id="optStall" min="5" max="600" step="5" value="15" style="width:56px"> s</label>
-    <label class="opt" title="How long a job blocked by a CAPTCHA keeps its tab open waiting for you. It does NOT hold a slot — the rest of the queue keeps running at full speed meanwhile.">Wait for me <input type="number" id="optHuman" min="0.5" max="30" step="0.5" value="1" style="width:52px"> min</label>
-  </div>
-
-  <div class="bar">
-    <input type="search" id="search" placeholder="Search url / title / company…" style="flex:1;min-width:120px">
+    <input type="search" id="search" placeholder="Search by URL, title or company" style="flex:1;min-width:120px">
     <select id="statusFilter">
       <option value="all">All statuses</option>
       <option value="pending">Pending</option>
@@ -151,14 +207,7 @@
     </select>
   </div>
 
-  <div class="progress-wrap" id="progressWrap">
-    <div class="plabel"><span id="progressLabel">Running…</span><span id="progressPct">0%</span></div>
-    <div class="pbar"><div class="pfill" id="progressFill"></div></div>
-  </div>
-
-  <div id="log"></div>
-
-  <div id="empty">No jobs yet. Import a CSV of job URLs (or drop one anywhere on this panel) — then hit ▶ Start.<br><br>Jobs open in <b>background tabs</b> so you can keep browsing, and the run keeps going even if you close this panel.</div>
+  <div id="empty"><strong>No jobs yet</strong>Import a CSV of job links, or drop one anywhere on this panel, then press Start.<br>Jobs open in background tabs, and the run keeps going if you close this panel.</div>
   <div class="tbl-wrap">
     <table id="tbl" class="hidden">
       <thead><tr><th>#</th><th>Status</th><th>Job</th><th>Board</th><th>When</th><th></th></tr></thead>
@@ -178,7 +227,7 @@
   </dialog>
 
   <dialog id="diagDlg">
-    <h2>🩺 Diagnostics — every ATS this extension has seen</h2>
+    <h2>Diagnostics: every ATS this extension has seen</h2>
     <p class="dlg-note">Outcomes and success rate per ATS, the employer boards with
       trouble, what went wrong and how often, and every required question the
       filler had no answer for. No field values are ever recorded — questions
@@ -186,14 +235,14 @@
     <textarea id="diagBox" readonly spellcheck="false"></textarea>
     <div class="dlg-bar">
       <button id="diagClear" title="Start the record over — use this before a fresh test run">Reset record</button>
-      <button id="diagDownload">⬇ Download .txt</button>
+      <button id="diagDownload">Download .txt</button>
       <button class="b-accent" id="diagCopy">Copy all</button>
       <button id="diagClose">Close</button>
     </div>
   </dialog>
 
   <dialog id="qDlg">
-    <h2>❓ Questions to answer</h2>
+    <h2>Questions to answer</h2>
     <p class="dlg-note">Required questions the autofill had no answer for, most frequent first.
       Answer one once and every future application that asks it is filled with your answer —
       it counts as your own, so it is never second-guessed. Answers stay on this computer.</p>
@@ -202,7 +251,7 @@
   </dialog>
 
   <dialog id="loginDlg">
-    <h2>🔐 Site logins</h2>
+    <h2>Site logins</h2>
     <p class="dlg-note">Every ATS account is normally created and signed into with one shared email and password.
       If you already have an account on an employer's site with a different password — common on Workday —
       add it here and the automation uses it on that site only. Stored on this computer only; passwords are never shown again.</p>

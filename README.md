@@ -5097,3 +5097,75 @@ From the 9 Nov 22:24 log:
 
 Tests: `tests/v1763.test.js` (27 checks, in `tests/run.sh`) and
 `tests/e2e/dom-1763.js` (14 checks in Chromium).
+
+## v17.64 — one switch, one look
+
+- **The toolbar popup is gone.** Clicking the extension icon opens Jobright's
+  sidebar, as the original extension does. The Autofill switch is the first
+  card in that sidebar (OFF / ON / RUNNING, one toggle) and is also in the
+  Queue Manager header. The icon badge still shows ON, OFF or RUN, and
+  Alt+Shift+A still switches everything off from any tab.
+- **Sidebar cards restyled**: one colour set, larger text (nothing under 11px),
+  hover and keyboard-focus states, plain labels in place of emoji.
+- **Queue Manager restyled**: actions grouped (Add jobs, Queue, Fix and review),
+  Settings folded away so the job list is on screen, light and dark themes.
+  The Debugger uses the same colours.
+- **Queue Manager start-up bug fixed.** Its mailbox code called a helper that
+  did not exist in that scope, which threw and stopped the rest of the panel
+  from starting: the first load of the queue and stats, and live updates.
+  `tests/e2e/switch-off.js` now checks the panel starts without a script error.
+
+## v17.65 — background tabs keep pace; fewer wasted minutes
+
+From the 11 Nov 14:46 log (80 jobs: 16 done, 29 timed out, 21 failed).
+
+- **Background job tabs no longer crawl.** Greenhouse, Workday and others
+  refuse the small timer worker added in v17.60, so on those sites a hidden
+  job tab fell back to the page's own timers, which Chrome checks about once a
+  minute after five minutes in the background. Jobs ran out their time limit
+  mid-form ("answering dropdowns"). Now:
+  - when the worker is refused, the extension's own service worker keeps the
+    clock and messages the tab when each wait ends (`UA_CLOCK`, only from this
+    extension's tabs, at most 10 minutes per wait);
+  - for the length of a run the tab holds a WebRTC data channel connected to
+    itself, which Chrome exempts from that throttling, so the site's own
+    scripts and Jobright's autofill keep time too. It is local only: no
+    servers, nothing sent anywhere, and it closes when the run lets go of the tab.
+- **SuccessFactors (Capgemini): "Apply now" is pressed.** The job page's
+  "Search by Keyword / Location" and job-alert boxes counted as three form
+  fields, so the description page was taken for the application and 7 jobs
+  ended "no Submit control was found". Job-search and alert boxes no longer count.
+- **Verification-code walls with Gmail reading off skip at once.** The "allow
+  reading the code from Gmail?" question is now shown only in a tab you can
+  see. In a background queue tab it sat unseen for 120s, and the job then kept
+  filling until the 300s cap (Stripe and MongoDB on Greenhouse, JPMC and others
+  on Oracle). The job now stops at the wall with the reason.
+
+Tests: `tests/v1765.test.js` (31 checks), `tests/keepalive.test.js` (now 48),
+both in `tests/run.sh`, and `tests/e2e/dom-1765.js` (in Chromium).
+
+## v17.66 — Workday "School or University"
+
+- **The school box is filled.** Workday's school box only searches when Enter
+  is pressed. The built-in Workday flow typed the name and waited for results
+  that never came, so both "School or University" boxes stayed empty and the
+  page refused to continue ("The field School or University is required").
+  It now uses the Workday engine's search, which presses Enter.
+- **Never a school you did not attend.** A result is picked only when it is
+  your whole school name ("University of Derby" is not "University of Dundee"
+  or "Derby College"). The old fallbacks, "any word matches" and "the first
+  result", are gone. Not in the list → the list's own "Other" / "Not Listed".
+  Neither → left empty for you, with a log line saying why.
+
+Test: `tests/e2e/wd-school.js` (4 checks in Chromium, against a copy of
+Workday's search box).
+- **Workday start date: two weeks from the day you apply.** A start-date box
+  ("When can you start?", "Earliest start date", "Date available") gets today
+  plus 14 days, worked out on the day the application is filled in. A text box
+  or list keeps your saved availability, else "2 weeks".
+- **Never LazyApply's placeholder email.** LazyApply types
+  `default@lazyapply.com` into email boxes when its own profile has no email.
+  The create-account step kept any email already in the box, so accounts could
+  be made under that address. A placeholder (`@lazyapply.com`, `default@…`,
+  `@example.com`) is now replaced with your email, in the sign-up step and in
+  the fill pass, and is never saved as your account email.

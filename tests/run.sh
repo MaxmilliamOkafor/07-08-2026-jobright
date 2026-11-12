@@ -17,7 +17,7 @@ ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
 step "JavaScript syntax"
-for f in "$EXT"/ua-keepalive.js "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/ua-switch-gate.js "$EXT"/ua-switch.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
+for f in "$EXT"/ua-keepalive.js "$EXT"/ua-enhancement.js "$EXT"/ua-queue.js "$EXT"/ua-orchestrator.js "$EXT"/ua-page-hooks.js "$EXT"/ua-mailbox.js "$EXT"/ua-switch-gate.js "$EXT"/static/background/index.js "$EXT"/contents.d42e7fcf.js; do
   if node --check "$f" 2>/dev/null; then ok "$(basename "$f")"; else bad "$(basename "$f")"; fi
 done
 
@@ -105,6 +105,9 @@ node tests/v1762.test.js "$EXT" || fails=$((fails + 1))
 
 step "The five jobs v17.62 left unfixed (v17.63)"
 node tests/v1763.test.js "$EXT" || fails=$((fails + 1))
+
+step "Fixes from the 11 Nov 14:46 log (v17.65)"
+node tests/v1765.test.js "$EXT" || fails=$((fails + 1))
 
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
