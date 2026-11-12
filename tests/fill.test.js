@@ -3268,7 +3268,7 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
 
   // Location filler leaves Address Line 2 alone.
   const lf = {};
-  new Function('exports', `let L = ''; const getLabel = () => L; ${body('isLocationField')}
+  new Function('exports', `let L = ''; const getLabel = () => L; ${body('isYesNoLocationQuestion')}${body('isLocationField')}
     exports.loc = (label) => { L = label; return isLocationField({ tagName: 'INPUT', className: '', getAttribute: () => null }); };`)(lf);
   eq('"Address Line 2" is not a place search', lf.loc('Address Line 2'), false);
   eq('"Apartment / Suite" neither', lf.loc('Apartment, suite, etc.'), false);
@@ -3279,7 +3279,7 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
   eq('"Location" still is', lf.loc('Location (City)'), true);
 
   const gv = body('guessValue');
-  eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (/address|street/.test(l)) return p.address"), true);
+  eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (!yn && /address|street/.test(l)) return p.address"), true);
   const cd = body('commitCustomDropdown');
   eq('"No results" rows are not options', /filter\(o => !NO_RESULTS_RE\.test\(comboText\(o\)\)\)/.test(cd), true);
   eq('typeahead falls back to the first word, then the full list', /\[want\.slice\(0, 24\), words\[0\], ''/.test(cd), true);
@@ -3787,6 +3787,7 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
       const location = { hostname: 'job-boards.greenhouse.io', pathname: '/anthropic/jobs/1', search: '', href: 'https://job-boards.greenhouse.io/anthropic/jobs/1' };
       const document = { title: 'Research Engineer - Anthropic', querySelector: () => null, querySelectorAll: () => [] };
       const DEFAULTS = { years: '9', why: 'I admire the company culture and the opportunity to make a meaningful impact.', country: 'United Kingdom', cover: 'c', howHeard: 'LinkedIn', salary: '1' };
+      ${body('isYesNoLocationQuestion')}
       ${src.slice(shapeStart, shapeEnd)}
       Object.assign(exports, { guessValue, pageCompanyName });
     `)(g);

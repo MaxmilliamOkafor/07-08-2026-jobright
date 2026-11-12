@@ -5169,3 +5169,16 @@ Workday's search box).
   be made under that address. A placeholder (`@lazyapply.com`, `default@…`,
   `@example.com`) is now replaced with your email, in the sign-up step and in
   the fill pass, and is never saved as your account email.
+
+## v17.67 — Stripe's "authorized to work in the location(s)" stops flickering
+
+- A yes/no question that mentions a location ("Are you authorized to work in
+  the location(s) you selected in your previous response?", "Are you living in
+  London or willing to move?", "Do you plan to work remotely?") was treated as
+  a place search: "Dublin, Dublin, Ireland" was typed into the Yes/No dropdown,
+  found "No options", and was typed again every pass, which was the flicker on
+  Stripe's Greenhouse form. Such questions are no longer location boxes, and
+  the city/country/address answers are not used for them; they go to the
+  question answerer instead.
+
+Tests: in `tests/v1765.test.js` (now 63 checks).

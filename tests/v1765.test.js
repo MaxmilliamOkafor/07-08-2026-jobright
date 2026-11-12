@@ -74,5 +74,19 @@ console.log('v17.66 — a placeholder email another tool typed is replaced with 
   ok(/await replacePlaceholderEmails\(\);/.test(fn('fallbackFill__impl')), 'the fill pass swaps placeholder emails for yours');
 }
 
-console.log(`  v17.65/66: ${pass} passed, ${fail} failed`);
+console.log('v17.67 — a yes/no question about a location is not a place search (Stripe)');
+{
+  const q = new Function(fn('isYesNoLocationQuestion') + '\nreturn isYesNoLocationQuestion;')();
+  for (const t of ['Are you authorized to work in the location(s) you selected in your previous response?*',
+    'Will you require Stripe to sponsor you for a work permit now or in the future for the location(s) you selected in your previous response?',
+    'If this role offers the option to work from a remote location, do you plan to work remotely?',
+    'Are you currently living in London or willing to move to London?', 'Do you live within commuting distance of our Dublin office?'])
+    ok(q(t), 'question, not a place: ' + t.slice(0, 70));
+  for (const t of ['Location (City)*', 'City', 'Current location', 'Where are you based?', 'Which city do you live in?',
+    'Please select the country where you currently reside.', 'Preferred work location for this position:*'])
+    ok(!q(t), 'still a place: ' + t);
+  ok(/if \(isYesNoLocationQuestion\(/.test(fn('isLocationField')), 'isLocationField turns those questions down');
+}
+
+console.log(`  v17.65/66/67: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

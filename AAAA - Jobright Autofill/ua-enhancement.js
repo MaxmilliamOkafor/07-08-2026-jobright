@@ -1475,6 +1475,8 @@
     // Trimmed: "Name*" became "name " and missed ^name$ — Ashby's required
     // full-name box was left empty and the form could never be sent.
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    // v17.67 — a yes/no question that mentions a place is not asking for the place.
+    const yn = isYesNoLocationQuestion(label);
     // "What state do you reside in?" is a value question; it kept coming back
     // "Yes" from a fuzzy saved-answer match, so answer it properly and early.
     if (/what state|which state|state do you (reside|live)|state you (reside|live)|state of (residence|resident)|home state|state province/.test(l))
@@ -1489,7 +1491,7 @@
     // the FULL phone number stuffed into it too (Workday then displayed the number
     // twice: "087 426 1508 x087 426 1508 (Mobile)"). Extension should stay blank.
     if (/phone|mobile|cell|telephone/.test(l) && !/ext(ension)?\b/.test(l)) return p.phone || '';
-    if (/^city$|\bcity\b|current.?city/.test(l)) {
+    if (!yn && /^city$|\bcity\b|current.?city/.test(l)) {
       // SmartRecruiters uses "City, Region, Country" format for city fields
       if (/smartrecruiters/i.test(location.href) && p.city) {
         return [p.city, p.state || p.region || '', p.country || DEFAULTS.country].filter(Boolean).join(', ');
@@ -1505,12 +1507,12 @@
     if (/\bcounty\b/.test(l) && !/country/.test(l)) return p.county || p.state || p.region || '';
     if (/\bstate\b|province|region/.test(l) && !/statement|country (region )?code/.test(l)) return p.state || '';
     if (/zip|postal|post ?code|\beircode\b/.test(l)) return p.postal_code || p.zip || p.postcode || '';
-    if (/country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
+    if (!yn && /country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
     // Line 2 before the general address rule — it caught "Address Line 2" and
     // wrote the street into both lines (Oracle showed it twice).
     if (/address\s*(line\s*)?2\b|\bline\s*2\b/.test(l)) return p.address_line_2 || p.address2 || '';
-    if (/address|street/.test(l)) return p.address || '';
-    if (/location|where.*(you|do you).*live/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
+    if (!yn && /address|street/.test(l)) return p.address || '';
+    if (!yn && /location|where.*(you|do you).*live/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
     if (/linkedin/.test(l)) return p.linkedin_profile_url || p.linkedin || '';
     if (/github/.test(l)) return p.github_url || p.github || '';
     if (/website|portfolio|personal.?url/.test(l)) return p.website_url || p.website || '';
@@ -2847,6 +2849,12 @@
   }
 
   // Is this input a location / city / address autocomplete?
+  function isYesNoLocationQuestion(label) {
+    const l = String(label || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!l) return false;
+    if (/\b(authori[sz]ed|authori[sz]ation|legally (able|entitled|permitted)|right to work|eligible|eligibility|sponsor\w*|visa|work permit|remote(ly)?|relocat\w*|commut\w*|willing|able to work (from|in|at)|previous response|onsite|on-site|in[- ]office|hybrid)\b/.test(l)) return true;
+    return /^(are|do|does|did|will|would|have|has|can|could|is|were|should)\s+(you|your)\b/.test(l);
+  }
   function isLocationField(el) {
     if (!el || (el.tagName !== 'INPUT' && el.getAttribute('contenteditable') !== 'true')) return false;
     /* v17.63 — a checkbox or radio is a CHOICE, never a place search. TeamTailor's
@@ -2858,6 +2866,12 @@
       el.getAttribute('autocomplete'), el.getAttribute('data-automation-id')]
       .filter(Boolean).join(' ').toLowerCase();
     if (/password|email|phone|search jobs|keyword/i.test(hay)) return false;
+    /* v17.67 — a yes/no QUESTION that mentions a location is not a place
+       search. Stripe's "Are you authorized to work in the location(s) you
+       selected in your previous response?" (options Yes / No) got
+       "Dublin, Dublin, Ireland" typed in, found "No options", and was
+       re-typed every pass — the flicker. */
+    if (isYesNoLocationQuestion(getLabel(el) || el.getAttribute('aria-label') || '')) return false;
     // Address Line 2 / flat / suite is optional and never a place search — an
     // empty one got "London, United Kingdom" on Oracle.
     if (/address\s*(line\s*)?[2-4]\b|\bline\s*[2-4]\b|address2|addressline[2-4]|apartment|\bapt\b|suite|flat\b/i.test(hay) &&
@@ -10538,7 +10552,7 @@
     // Phase 3: Location field (Lever has "Where in the US are you located?" etc.)
     const locInputs = $$('input,textarea').filter(el => {
       const l = (getLabel(el) || '').toLowerCase();
-      return isVisible(el) && !el.value?.trim() && /where.*(located|live|based)|current.?location|location/i.test(l);
+      return isVisible(el) && !el.value?.trim() && !isYesNoLocationQuestion(l) && /where.*(located|live|based)|current.?location|location/i.test(l);
     });
     for (const loc of locInputs) {
       const locVal = p.city ? `${p.city}, ${p.state || p.country || ''}`.trim().replace(/,$/, '') : '';
