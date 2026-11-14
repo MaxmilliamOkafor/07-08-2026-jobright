@@ -3253,6 +3253,8 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
     const optionIndexForDecision = (texts, d) => texts.findIndex((t) => t.toLowerCase() === d);
     const guessFieldValue = () => '';
     const bestOptionIndex = () => -1;
+    const DEFAULTS = { ageUnder: 30 };
+    ${gc('AGE_Q_RE')}${body('ageRangeOf')}${body('ageOptionIndex')}
     ${body('pillChoice')}
     exports.pick = (q, opts, p) => { const i = pillChoice(q, opts, p || {}); return i < 0 ? null : opts[i]; };`)(pc);
   eq('consent → "I consent"', pc.pick('I consent to the processing of my diversity information.', ['I consent', 'I do not consent']), 'I consent');

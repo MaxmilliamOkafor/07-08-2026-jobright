@@ -5182,3 +5182,21 @@ Workday's search box).
   question answerer instead.
 
 Tests: in `tests/v1765.test.js` (now 63 checks).
+
+## v17.68 — Ashby: age group, "Where are you located?", interviewing question
+
+From a MaintainX (Autodesk) application on Ashby, 14 Nov.
+
+- **Age group.** "What is your current age?" was left blank or declined. It now
+  gets your age group: exactly, from a date of birth in your profile when there
+  is one, otherwise "under 30" as you told us. An option is picked only when it
+  is the one bucket covering every adult age under 30 ("Under 30", "18-29").
+  With "18-24 / 25-29" that isn't enough to know, so it declines as before.
+- **"Where are you located?"** was never filled: "located" did not count as a
+  location word. It does now, and the place list prefers your country: an entry
+  in another country ("Dublin, Ohio, United States") loses to "Dublin, Ireland"
+  wherever it sits in the list.
+- **"Are you currently interviewing or actively being considered for a role at
+  <company>?"** → No, at every company (your answer).
+
+Tests: `tests/v1768.test.js` (18 checks, in `tests/run.sh`).
