@@ -5200,3 +5200,31 @@ From a MaintainX (Autodesk) application on Ashby, 14 Nov.
   <company>?"** → No, at every company (your answer).
 
 Tests: `tests/v1768.test.js` (18 checks, in `tests/run.sh`).
+
+## v17.69 — rebased onto Jobright 1.26.3
+
+Jobright 1.26.3 changes three of their files. It adds no new files and no
+manifest entries. All were merged by the steps under "Applying the next
+Jobright patch".
+- **`helper-app.41ea2652.js`** (their sidebar app): theirs, with our two edits
+  re-applied. One function the edits touch was renamed (`j` → `L`); the
+  anchors are otherwise unchanged and each still appears exactly once.
+  - "Add this job first" is answered "Not Now".
+  - Their standard autofill stands down on a tab our run owns.
+- Their own fill changes, from the bundle diff:
+  - iCIMS country matching;
+  - Workday preferred-name reporting;
+  - Oracle independent questions;
+  - SuccessFactors late-loading dropdowns;
+  - tweaks to the Ashby, Greenhouse and checkbox fillers.
+- **`static/background/index.js`** (their worker): theirs, with our five
+  `importScripts` lines re-appended. The only change: their filled-fields
+  report leaves out "Skills" fields. Nothing collides with ours. The counts of
+  `active:!0` (4), `chrome.alarms` (6), `action.onClicked` (1) and
+  `openTailorTab` (1) are the same, and there are still no `UA_` messages,
+  side panel, context menus, commands or `beforeunload`.
+- **Manifest:** version 1.26.3 only. Their content scripts, permissions and
+  resources are unchanged. `_metadata/` was not copied.
+
+On 1.26.3, all unit checks pass, and so do the switch browser test (18/18),
+the leave-page test (11/11) and the DOM units (26/26).
