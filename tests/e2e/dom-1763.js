@@ -24,7 +24,7 @@ const lib = `
   const guessFieldValue = () => '';
   ${line('PICK_LIST_HINT_RE')}${line('PICK_LIST_SUBJECT_RE')}${line('PICK_OTHER_RE')}
   const _pickTries = new WeakMap();
-  ${['isLocationField', 'typeInto', 'waitUntil', 'findAutocompleteDropdown', 'wdSimilarity', 'wdBestIndex', 'isPickListField', 'pickListValue', 'pickListItems', 'pickListSearch', 'pickListClick', 'commitPickList'].map(fn).join('\n')}
+  ${['isYesNoLocationQuestion', 'isLocationField', 'typeInto', 'waitUntil', 'findAutocompleteDropdown', 'wdSimilarity', 'wdBestIndex', 'isPickListField', 'pickListValue', 'pickListItems', 'pickListSearch', 'pickListClick', 'commitPickList'].map(fn).join('\n')}
   window.T = { isLocationField, isPickListField, pickListValue, commitPickList };
 `;
 const PAGE = `<!doctype html><meta charset="utf-8"><body>

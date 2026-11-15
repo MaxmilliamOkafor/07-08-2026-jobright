@@ -3253,6 +3253,8 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
     const optionIndexForDecision = (texts, d) => texts.findIndex((t) => t.toLowerCase() === d);
     const guessFieldValue = () => '';
     const bestOptionIndex = () => -1;
+    const DEFAULTS = { ageUnder: 30 };
+    ${gc('AGE_Q_RE')}${body('ageRangeOf')}${body('ageOptionIndex')}
     ${body('pillChoice')}
     exports.pick = (q, opts, p) => { const i = pillChoice(q, opts, p || {}); return i < 0 ? null : opts[i]; };`)(pc);
   eq('consent → "I consent"', pc.pick('I consent to the processing of my diversity information.', ['I consent', 'I do not consent']), 'I consent');
@@ -3268,7 +3270,7 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
 
   // Location filler leaves Address Line 2 alone.
   const lf = {};
-  new Function('exports', `let L = ''; const getLabel = () => L; ${body('isLocationField')}
+  new Function('exports', `let L = ''; const getLabel = () => L; ${body('isYesNoLocationQuestion')}${body('isLocationField')}
     exports.loc = (label) => { L = label; return isLocationField({ tagName: 'INPUT', className: '', getAttribute: () => null }); };`)(lf);
   eq('"Address Line 2" is not a place search', lf.loc('Address Line 2'), false);
   eq('"Apartment / Suite" neither', lf.loc('Apartment, suite, etc.'), false);
@@ -3279,7 +3281,7 @@ console.log('v17.21: Oracle Recruiting Cloud — address, self-identification pi
   eq('"Location" still is', lf.loc('Location (City)'), true);
 
   const gv = body('guessValue');
-  eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (/address|street/.test(l)) return p.address"), true);
+  eq('"Address Line 2" is asked before the general address rule', gv.indexOf('address\\s*(line\\s*)?2\\b') > 0 && gv.indexOf('address\\s*(line\\s*)?2\\b') < gv.indexOf("if (!yn && /address|street/.test(l)) return p.address"), true);
   const cd = body('commitCustomDropdown');
   eq('"No results" rows are not options', /filter\(o => !NO_RESULTS_RE\.test\(comboText\(o\)\)\)/.test(cd), true);
   eq('typeahead falls back to the first word, then the full list', /\[want\.slice\(0, 24\), words\[0\], ''/.test(cd), true);
@@ -3787,6 +3789,7 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
       const location = { hostname: 'job-boards.greenhouse.io', pathname: '/anthropic/jobs/1', search: '', href: 'https://job-boards.greenhouse.io/anthropic/jobs/1' };
       const document = { title: 'Research Engineer - Anthropic', querySelector: () => null, querySelectorAll: () => [] };
       const DEFAULTS = { years: '9', why: 'I admire the company culture and the opportunity to make a meaningful impact.', country: 'United Kingdom', cover: 'c', howHeard: 'LinkedIn', salary: '1' };
+      ${body('isYesNoLocationQuestion')}
       ${src.slice(shapeStart, shapeEnd)}
       Object.assign(exports, { guessValue, pageCompanyName });
     `)(g);
@@ -3958,7 +3961,9 @@ console.log('v17.39: Workday = SpeedyApply only; this extension signs in / creat
     /await fillWorkdayCreateAccount\(true\)/.test(sa) && /await clickApplyManually\(\)/.test(sa) && /pressing \$\{isSubmit \? 'Submit' : 'Save and Continue'\}/.test(sa), true);
   eq('Jobright\'s sidebar is tucked away while SpeedyApply fills, so its "Autofill in progress…" shows', /tuckJobrightOnWorkday\(\);/.test(sa) && /el\.style\.display = 'none'/.test(body('tuckJobrightForSpeedyApply')) && /!\(_saDriving && host\.getAttribute\('data-ua-sa-tucked'\)\)/.test(body('forceOpenSidebar')), true);
   eq('errors SpeedyApply left fail the job only when nobody is answering them', /Date\.now\(\) - errorsSince > STUCK_MS && quiet > 30000/.test(sa), true);
-  eq('SpeedyApply add-on\'s "N required fields need you" box is hidden (its file unchanged)', /st\.textContent = '#sa-status\{display:none!important\}';/.test(src), true);
+  eq('SpeedyApply add-on\'s "N required fields need you" box is hidden', /st\.textContent = '#sa-status\{display:none!important\}';/.test(src), true);
+  { const gate = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'ua-switch-gate.js'), 'utf8');
+    eq('…and removed whenever it is added, even on sites that rebuild <head>', /getElementById\('sa-status'\); if \(b\) b\.remove\(\);/.test(gate) && /new MutationObserver\(zap\)\.observe\(document\.body, \{ childList: true \}\)/.test(gate), true); }
   eq('…but never on a step showing errors (that would only re-validate an empty field)', sa.indexOf('} else if (wdPageErrors()) {') < sa.indexOf('} else if (quiet > STILL_MS && pressed < 3) {'), true);
 }
 

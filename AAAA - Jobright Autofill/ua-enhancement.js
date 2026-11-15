@@ -1160,6 +1160,8 @@
 
   // ===================== PROFILE =====================
   const DEFAULTS = {
+    // v17.68 — you told us (14 Nov 2026): under 30. A date of birth in your profile wins.
+    ageUnder: 30,
     authorized: 'Yes', sponsorship: 'No', relocation: 'Yes', remote: 'Yes',
     veteran: 'I am not a protected veteran', disability: 'I do not have a disability',
     gender: 'Prefer not to say', ethnicity: 'Prefer not to say', race: 'Prefer not to say',
@@ -1475,6 +1477,8 @@
     // Trimmed: "Name*" became "name " and missed ^name$ — Ashby's required
     // full-name box was left empty and the form could never be sent.
     const l = (label || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+    // v17.67 — a yes/no question that mentions a place is not asking for the place.
+    const yn = isYesNoLocationQuestion(label);
     // "What state do you reside in?" is a value question; it kept coming back
     // "Yes" from a fuzzy saved-answer match, so answer it properly and early.
     if (/what state|which state|state do you (reside|live)|state you (reside|live)|state of (residence|resident)|home state|state province/.test(l))
@@ -1489,7 +1493,7 @@
     // the FULL phone number stuffed into it too (Workday then displayed the number
     // twice: "087 426 1508 x087 426 1508 (Mobile)"). Extension should stay blank.
     if (/phone|mobile|cell|telephone/.test(l) && !/ext(ension)?\b/.test(l)) return p.phone || '';
-    if (/^city$|\bcity\b|current.?city/.test(l)) {
+    if (!yn && /^city$|\bcity\b|current.?city/.test(l)) {
       // SmartRecruiters uses "City, Region, Country" format for city fields
       if (/smartrecruiters/i.test(location.href) && p.city) {
         return [p.city, p.state || p.region || '', p.country || DEFAULTS.country].filter(Boolean).join(', ');
@@ -1505,12 +1509,12 @@
     if (/\bcounty\b/.test(l) && !/country/.test(l)) return p.county || p.state || p.region || '';
     if (/\bstate\b|province|region/.test(l) && !/statement|country (region )?code/.test(l)) return p.state || '';
     if (/zip|postal|post ?code|\beircode\b/.test(l)) return p.postal_code || p.zip || p.postcode || '';
-    if (/country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
+    if (!yn && /country/.test(l) && !/code|phone|dial/.test(l)) return p.country || DEFAULTS.country;
     // Line 2 before the general address rule — it caught "Address Line 2" and
     // wrote the street into both lines (Oracle showed it twice).
     if (/address\s*(line\s*)?2\b|\bline\s*2\b/.test(l)) return p.address_line_2 || p.address2 || '';
-    if (/address|street/.test(l)) return p.address || '';
-    if (/location|where.*(you|do you).*live/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
+    if (!yn && /address|street/.test(l)) return p.address || '';
+    if (!yn && /location|where.*(you|do you).*(live|located|reside|based)/.test(l)) return p.city ? `${p.city}, ${p.state || ''}`.trim().replace(/,$/, '') : '';
     if (/linkedin/.test(l)) return p.linkedin_profile_url || p.linkedin || '';
     if (/github/.test(l)) return p.github_url || p.github || '';
     if (/website|portfolio|personal.?url/.test(l)) return p.website_url || p.website || '';
@@ -2286,6 +2290,9 @@
     const q = questionText.toLowerCase();
     // Your fixed knockout answers first (AWS certification, years thresholds).
     { const pol = knockoutPolicy(q, _policyProfile); if (pol === 'yes' || pol === 'no') return pol; }
+    /* v17.68 — your answer (14 Nov 2026): "Are you currently interviewing or
+       actively being considered for a role at Autodesk?" → No, at every company. */
+    if (/\b(currently|already|actively)\b.{0,40}\b(interviewing|being considered|in (the )?(interview|hiring|recruitment) process|under consideration)\b|\b(interviewing|being considered) for (another|other|a different|any other) (role|position|job)/.test(q)) return 'no';
     // EEO/Diversity — prefer "Prefer not to say/answer"
     if (/gender|sex\b|disability|veteran|military|ethnic|race|racial|heritage|hispanic|latino/.test(q)) return 'eeo';
 
@@ -2847,6 +2854,12 @@
   }
 
   // Is this input a location / city / address autocomplete?
+  function isYesNoLocationQuestion(label) {
+    const l = String(label || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!l) return false;
+    if (/\b(authori[sz]ed|authori[sz]ation|legally (able|entitled|permitted)|right to work|eligible|eligibility|sponsor\w*|visa|work permit|remote(ly)?|relocat\w*|commut\w*|willing|able to work (from|in|at)|previous response|onsite|on-site|in[- ]office|hybrid)\b/.test(l)) return true;
+    return /^(are|do|does|did|will|would|have|has|can|could|is|were|should)\s+(you|your)\b/.test(l);
+  }
   function isLocationField(el) {
     if (!el || (el.tagName !== 'INPUT' && el.getAttribute('contenteditable') !== 'true')) return false;
     /* v17.63 — a checkbox or radio is a CHOICE, never a place search. TeamTailor's
@@ -2858,6 +2871,12 @@
       el.getAttribute('autocomplete'), el.getAttribute('data-automation-id')]
       .filter(Boolean).join(' ').toLowerCase();
     if (/password|email|phone|search jobs|keyword/i.test(hay)) return false;
+    /* v17.67 — a yes/no QUESTION that mentions a location is not a place
+       search. Stripe's "Are you authorized to work in the location(s) you
+       selected in your previous response?" (options Yes / No) got
+       "Dublin, Dublin, Ireland" typed in, found "No options", and was
+       re-typed every pass — the flicker. */
+    if (isYesNoLocationQuestion(getLabel(el) || el.getAttribute('aria-label') || '')) return false;
     // Address Line 2 / flat / suite is optional and never a place search — an
     // empty one got "London, United Kingdom" on Oracle.
     if (/address\s*(line\s*)?[2-4]\b|\bline\s*[2-4]\b|address2|addressline[2-4]|apartment|\bapt\b|suite|flat\b/i.test(hay) &&
@@ -2873,7 +2892,7 @@
     // got "London, United Kingdom"; "re-LOCATION" / "auTHENticity" likewise.
     // (Not word-bounded: ids like candidateLocation / addressCity must match.)
     const hayPlace = hay.replace(/ethnicity|ethnicities|relocat\w*|authenticity|electricity|capacity|velocity|publicity|simplicity|specificity|elasticity|toxicity|felicity/g, ' ');
-    return /location|city|town|address|where.*(live|based)|metro|region/i.test(hayPlace) ||
+    return /location|city|town|address|where.*(live|based|located|reside)|currently located|metro|region/i.test(hayPlace) ||
       el.getAttribute('autocomplete') === 'address-level2' || pac;
   }
 
@@ -2936,6 +2955,15 @@
       // Exactly the town ("London, England…"), not something named after it ("London Bridge…").
       if (city && (t === city || t.startsWith(city + ','))) sc += 2;
       if (country && t.includes(country)) sc += 1;
+      /* v17.68 — "Dublin, Ohio, United States" is not your Dublin. Ashby lists
+         Dublin, Ireland next to four US Dublins: an entry that ends in another
+         country loses outright, so the list's order never decides it. */
+      else if (country && t.includes(',')) {
+        const last = t.split(',').pop().trim();
+        const alias = { 'united kingdom': /^(uk|united kingdom|great britain|england|scotland|wales|northern ireland)$/, 'united states': /^(us|usa|united states( of america)?)$/, 'ireland': /^(ireland|republic of ireland|éire|eire)$/ }[country];
+        const isCountry = /^(us|usa|united states( of america)?|canada|mexico|brazil|argentina|uk|united kingdom|great britain|england|scotland|wales|ireland|france|germany|spain|portugal|italy|netherlands|belgium|switzerland|austria|poland|sweden|norway|denmark|finland|india|china|japan|singapore|australia|new zealand|south africa|nigeria|united arab emirates|uae|israel)$/;
+        if (last && last !== country && isCountry.test(last) && !(alias && alias.test(last))) sc -= 5;
+      }
       if (NOT_A_PLACE_RE.test(t.replace(city, ''))) sc -= 6;
       if (sc > bestScore) { bestScore = sc; best = it; }
     });
@@ -10538,7 +10566,7 @@
     // Phase 3: Location field (Lever has "Where in the US are you located?" etc.)
     const locInputs = $$('input,textarea').filter(el => {
       const l = (getLabel(el) || '').toLowerCase();
-      return isVisible(el) && !el.value?.trim() && /where.*(located|live|based)|current.?location|location/i.test(l);
+      return isVisible(el) && !el.value?.trim() && !isYesNoLocationQuestion(l) && /where.*(located|live|based)|current.?location|location/i.test(l);
     });
     for (const loc of locInputs) {
       const locVal = p.city ? `${p.city}, ${p.state || p.country || ''}`.trim().replace(/,$/, '') : '';
@@ -17756,8 +17784,41 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   const PILL_ON = (b) => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-checked') === 'true';
   const DEMOGRAPHIC_Q_RE = /gender|\bsex\b|sexual|orientation|pronoun|transgender|\btrans\b|(registered|assigned) at birth|ethnic|\brace\b|racial|disab|health condition|veteran|religio|\bbelief|marital|caring responsib|\bcarer\b|social (class|background|mobility)|socio-?economic|first generation|\bage\b/i;
 
+  /* v17.68 — "What is your current age?" (Under 30 / 30-39 / … / I prefer not
+     to answer). Your exact age from a date of birth in your profile when there
+     is one; otherwise only what you told us — under 30 — so an option is
+     picked only when it is the ONE option entirely under 30 ("Under 30",
+     "18-29"). Between "18-24" and "25-29" that is not enough to know: -1, and
+     the decline rule answers instead. */
+  const AGE_Q_RE = /\b(your )?(current )?age\b(?! of 18)|\bage (group|range|bracket|band)\b|\bhow old\b/i;
+  function ageRangeOf(t) {
+    const s = String(t || '').toLowerCase().replace(/\s+/g, ' ');
+    let m;
+    if ((m = s.match(/\b(\d{2})\s*(?:-|–|to)\s*(\d{2})\b/))) return [+m[1], +m[2]];
+    if ((m = s.match(/\b(?:under|below|younger than|less than)\s*(\d{2})\b/))) return [0, +m[1] - 1];
+    if ((m = s.match(/\b(\d{2})\s*(?:or (?:younger|under|below)|and (?:under|below|younger))\b/))) return [0, +m[1]];
+    if ((m = s.match(/\b(\d{2})\s*(?:\+|or (?:older|over|above)|and (?:over|above|older))|\b(?:over|above|older than)\s*(\d{2})\b/))) return [+(m[1] || m[2]) + (m[2] ? 1 : 0), 200];
+    return null;
+  }
+  function ageOptionIndex(texts, p) {
+    let age = NaN;
+    const dob = p && (p.date_of_birth || p.dob || p.birth_date || p.birthday);
+    if (dob) { const d = new Date(dob); if (!isNaN(d)) { const n = new Date(); age = n.getFullYear() - d.getFullYear() - ((n.getMonth() < d.getMonth() || (n.getMonth() === d.getMonth() && n.getDate() < d.getDate())) ? 1 : 0); } }
+    if (!(age >= 0) && p && Number(p.age) > 0) age = Number(p.age);
+    const ranges = texts.map(ageRangeOf);
+    if (age >= 0) return ranges.findIndex((r) => r && age >= r[0] && age <= r[1]);
+    const under = Number(DEFAULTS.ageUnder) || 0;
+    if (!under) return -1;
+    // The ONE bucket that holds every adult age under `under`: 18 … under-1.
+    const whole = ranges.map((r, i) => (r && r[0] <= 18 && r[1] === under - 1 ? i : -1)).filter((i) => i >= 0);
+    return whole.length === 1 ? whole[0] : -1;
+  }
   function pillChoice(q, texts, p) {
     const ql = q.toLowerCase();
+    if (AGE_Q_RE.test(ql) && !/\b18\b|legal (working )?age|of age\b/.test(ql)) {
+      const a = ageOptionIndex(texts, p || {});
+      if (a >= 0) return a;
+    }
     const consentQ = /\b(i )?consent|agree|acknowledg|i understand|declaration|privacy|data protection/i.test(ql) ||
       texts.some((t) => /^i (consent|agree)\b/i.test(t));
     if (consentQ) {

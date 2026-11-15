@@ -5169,3 +5169,72 @@ Workday's search box).
   be made under that address. A placeholder (`@lazyapply.com`, `default@…`,
   `@example.com`) is now replaced with your email, in the sign-up step and in
   the fill pass, and is never saved as your account email.
+
+## v17.67 — Stripe's "authorized to work in the location(s)" stops flickering
+
+- A yes/no question that mentions a location ("Are you authorized to work in
+  the location(s) you selected in your previous response?", "Are you living in
+  London or willing to move?", "Do you plan to work remotely?") was treated as
+  a place search: "Dublin, Dublin, Ireland" was typed into the Yes/No dropdown,
+  found "No options", and was typed again every pass, which was the flicker on
+  Stripe's Greenhouse form. Such questions are no longer location boxes, and
+  the city/country/address answers are not used for them; they go to the
+  question answerer instead.
+
+Tests: in `tests/v1765.test.js` (now 63 checks).
+
+## v17.68 — Ashby: age group, "Where are you located?", interviewing question
+
+From a MaintainX (Autodesk) application on Ashby, 14 Nov.
+
+- **Age group.** "What is your current age?" was left blank or declined. It now
+  gets your age group: exactly, from a date of birth in your profile when there
+  is one, otherwise "under 30" as you told us. An option is picked only when it
+  is the one bucket covering every adult age under 30 ("Under 30", "18-29").
+  With "18-24 / 25-29" that isn't enough to know, so it declines as before.
+- **"Where are you located?"** was never filled: "located" did not count as a
+  location word. It does now, and the place list prefers your country: an entry
+  in another country ("Dublin, Ohio, United States") loses to "Dublin, Ireland"
+  wherever it sits in the list.
+- **"Are you currently interviewing or actively being considered for a role at
+  <company>?"** → No, at every company (your answer).
+
+Tests: `tests/v1768.test.js` (18 checks, in `tests/run.sh`).
+
+## v17.69 — rebased onto Jobright 1.26.3
+
+Jobright 1.26.3 changes three of their files. It adds no new files and no
+manifest entries. All were merged by the steps under "Applying the next
+Jobright patch".
+- **`helper-app.41ea2652.js`** (their sidebar app): theirs, with our two edits
+  re-applied. One function the edits touch was renamed (`j` → `L`); the
+  anchors are otherwise unchanged and each still appears exactly once.
+  - "Add this job first" is answered "Not Now".
+  - Their standard autofill stands down on a tab our run owns.
+- Their own fill changes, from the bundle diff:
+  - iCIMS country matching;
+  - Workday preferred-name reporting;
+  - Oracle independent questions;
+  - SuccessFactors late-loading dropdowns;
+  - tweaks to the Ashby, Greenhouse and checkbox fillers.
+- **`static/background/index.js`** (their worker): theirs, with our five
+  `importScripts` lines re-appended. The only change: their filled-fields
+  report leaves out "Skills" fields. Nothing collides with ours. The counts of
+  `active:!0` (4), `chrome.alarms` (6), `action.onClicked` (1) and
+  `openTailorTab` (1) are the same, and there are still no `UA_` messages,
+  side panel, context menus, commands or `beforeunload`.
+- **Manifest:** version 1.26.3 only. Their content scripts, permissions and
+  resources are unchanged. `_metadata/` was not copied.
+
+On 1.26.3, all unit checks pass, and so do the switch browser test (18/18),
+the leave-page test (11/11) and the DOM units (26/26).
+
+## v17.69 — the "N required fields need you" box is gone for good
+
+SpeedyApply's Workflow Add-on adds a box at the bottom left listing the
+required fields it left empty, with a "Continue" button. The style rule in
+`ua-enhancement.js` that was meant to hide it lives in `<head>`, and some sites
+(Riskified's careers page, for one) rebuild that, so the box came back.
+`ua-switch-gate.js` loads in every frame before the add-on, in the same script
+world, so it now removes the box whenever it is added. SpeedyApply's files are
+still unchanged, and its status still goes to the console.
