@@ -5228,3 +5228,13 @@ Jobright patch".
 
 On 1.26.3, all unit checks pass, and so do the switch browser test (18/18),
 the leave-page test (11/11) and the DOM units (26/26).
+
+## v17.69 — the "N required fields need you" box is gone for good
+
+SpeedyApply's Workflow Add-on adds a box at the bottom left listing the
+required fields it left empty, with a "Continue" button. The style rule in
+`ua-enhancement.js` that was meant to hide it lives in `<head>`, and some sites
+(Riskified's careers page, for one) rebuild that, so the box came back.
+`ua-switch-gate.js` loads in every frame before the add-on, in the same script
+world, so it now removes the box whenever it is added. SpeedyApply's files are
+still unchanged, and its status still goes to the console.

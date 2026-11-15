@@ -128,3 +128,23 @@
     };
   } catch (_) {}
 })();
+
+/* No "N required fields need you" box. SpeedyApply's Workflow Add-on
+   (sa-enhancement.js, unchanged) appends #sa-status to <body> with a list of
+   empty required fields and a "Continue" button. You asked for it to go.
+   ua-enhancement.js hides it with a style rule, but that rule lives in <head>,
+   which some sites rebuild. This removes the box whenever it is added. The
+   add-on keeps running; its status still goes to the console. */
+(() => {
+  'use strict';
+  if (window.__uaNoSaStatus) return;
+  window.__uaNoSaStatus = true;
+  const zap = () => { try { const b = document.getElementById('sa-status'); if (b) b.remove(); } catch (_) {} };
+  const watch = () => {
+    if (!document.body) return false;
+    zap();
+    try { new MutationObserver(zap).observe(document.body, { childList: true }); } catch (_) {}
+    return true;
+  };
+  try { if (!watch()) document.addEventListener('DOMContentLoaded', watch, { once: true }); } catch (_) {}
+})();
