@@ -129,7 +129,7 @@ console.log('Workday: a current role on a site with no "I currently work here" b
   const mc = fn(eng, 'markCurrentRole');
   ok(/if \(!box\) \{[\s\S]{0,700}!readValue\(end0\)[\s\S]{0,200}setDate\(end0, thisMonth\(\)\)/.test(mc), 'most recent role with no end date gets To = this month');
   ok(/\} else if \(w\.current && !cur\) \{[\s\S]{0,300}setDate\(end, thisMonth\(\)\)/.test(fn(eng, 'fillWork')), 'a role marked current gets To = this month');
-  ok(/if \(!w\.current && w\.end\) \{/.test(fn(eng, 'fillWork')), 'a past role still gets its own end date');
+  ok(/if \(!w\.current && w\.end( && !endBeforeStart)?\) \{/.test(fn(eng, 'fillWork')), 'a past role still gets its own end date');
 }
 
 console.log('a dropdown nothing matches is left for you, never given the first option');
