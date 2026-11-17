@@ -365,6 +365,17 @@ export async function myInformation(ctx: Ctx): Promise<void> {
 
 /* ---------------- My Experience ---------------- */
 
+/** Items in order, without later ones whose key was already seen. */
+export function uniqueBy<T>(items: T[], key: (t: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((t) => {
+    const k = key(t);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 async function fillWork(ctx: Ctx, block: HTMLElement, w: WorkEntry) {
   await fill(ctx, "jobTitleF", w.title, block);
   await fill(ctx, "companyF", w.company, block);
@@ -380,7 +391,11 @@ async function fillWork(ctx: Ctx, block: HTMLElement, w: WorkEntry) {
     handled.add(start);
     if (!(await setDate(start, w.start))) ctx.flag(`${w.company} start date`, "Date didn't stick");
   }
-  if (!w.current && w.end) {
+  // [ua] An end date before the start date (a CV typo) makes Workday stop with
+  // "Must end after start date" on every save; leave the end date out instead.
+  const endBeforeStart = !!(w.start && w.end && w.end < w.start);
+  if (endBeforeStart) ctx.flag(`${w.company} end date`, `End ${w.end} is before start ${w.start} in your profile: left empty`);
+  if (!w.current && w.end && !endBeforeStart) {
     const end = dateContainer(block, "end");
     if (end) {
       handled.add(end);
@@ -562,10 +577,13 @@ export async function myExperience(ctx: Ctx): Promise<void> {
   }
 
   const langs = section("langSection", /^(languages?|sprachen?|langues?|idiomas?|lingue|talen|języki|語学|语言)/iu);
-  if (langs && p.languages.length && q(sel("langF"), langs)) {
-    const bs = await ensureBlockCount(ctx, langs, "langF", p.languages.length);
-    for (let i = 0; i < Math.min(bs.length, p.languages.length); i++) {
-      const l = p.languages[i];
+  // [ua] Each language once: the same language twice (from the profile and the
+  // CV) made Workday stop with "Duplicate language entries are not allowed".
+  const langList = uniqueBy(p.languages.filter((l) => l && l.language), (l) => l.language.trim().toLowerCase());
+  if (langs && langList.length && q(sel("langF"), langs)) {
+    const bs = await ensureBlockCount(ctx, langs, "langF", langList.length);
+    for (let i = 0; i < Math.min(bs.length, langList.length); i++) {
+      const l = langList[i];
       await fill(ctx, "langF", l.language, bs[i]);
       const native = field("nativeF", bs[i]);
       if (native) await setCheckbox(containerOf(native), l.native);
@@ -602,7 +620,9 @@ export async function myExperience(ctx: Ctx): Promise<void> {
   await uploadDocuments(ctx);
 
   // [ua] No LinkedIn box on this tenant: LinkedIn goes in Websites, first (Workday guide §3).
-  const sites = [field("linkedin") ? "" : p.personal.linkedin, p.personal.github, p.personal.website].filter(Boolean);
+  // [ua] Each address once ("You can't add duplicate website URLs" when the
+  // website and GitHub, or LinkedIn and website, are the same link).
+  const sites = uniqueBy([field("linkedin") ? "" : p.personal.linkedin, p.personal.github, p.personal.website].filter(Boolean) as string[], (u) => u.trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/[/#?]+$/, ""));
   const web = section("webSection", /^(websites?|webseiten?|sites? web|sitios web|sites|siti web|websites?|strony)/iu);
   if (web && sites.length) {
     const bs = await ensureBlockCount(ctx, web, "urlF", sites.length);

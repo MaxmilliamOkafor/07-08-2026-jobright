@@ -6778,7 +6778,14 @@
 
   /* HARD evidence: the page itself says the application was submitted. Safe to
      trust on its own — no ATS renders these unless something really was sent. */
+  /* Workday sends the tab to one of these only after a submission: the
+     .../jobTasks/completed/application task page, or the careers home with
+     ?Job_Application_ID=<hex> ("Congratulations"). Neither page names the job,
+     so text checks alone missed them and the run counted the job as skipped. */
+  const WD_SUBMITTED_URL_RE = /^https:\/\/[^/]+\.(myworkdayjobs|myworkdaysite|workday)\.com\/.*(\/jobTasks\/completed\/application|[?&]Job_Application_ID=[0-9a-f]+)/i;
+  function wdSubmittedUrl(href) { return WD_SUBMITTED_URL_RE.test(String(href || '')); }
   function hardSuccessSignal() {
+    if (wdSubmittedUrl(location.href)) return true;
     const body = document.body?.innerText || '';
     if (SUCCESS_TEXT_RE.test(body)) return true;
     if ($('#application_confirmation,.application-confirmation,.confirmation-text,.posting-confirmation,.success-message,.submission-confirmation')) return true;

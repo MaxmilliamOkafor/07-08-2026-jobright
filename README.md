@@ -5238,3 +5238,23 @@ required fields it left empty, with a "Continue" button. The style rule in
 `ua-switch-gate.js` loads in every frame before the add-on, in the same script
 world, so it now removes the box whenever it is added. SpeedyApply's files are
 still unchanged, and its status still goes to the console.
+
+## v17.70 — Workday fixes carried over from LazyApply's logs
+
+- **Submitted pages count as success.** After a submission Workday sends the
+  tab to `.../jobTasks/completed/application`, or to the careers home with
+  `?Job_Application_ID=<id>` ("Congratulations"). Neither page names the job,
+  so the run counted those jobs as skipped. `hardSuccessSignal()` in
+  `ua-enhancement.js` now treats both addresses as proof of a submission.
+- **Each language once.** The same language from the profile and the CV made
+  Workday stop with "Duplicate language entries are not allowed".
+- **Each website once.** LinkedIn, GitHub and website are compared without
+  `https://`, `www.` or a trailing `/`, so the same link is not added twice
+  ("You can't add duplicate website URLs").
+- **An end date before the start date is left out**, and flagged, instead of
+  stopping every save with "Must end after start date".
+
+The engine fixes are in `workday-engine/src/workday/steps.ts` and, by hand, in
+`ua-wd-engine.js`. The committed bundle has many changes that never reached the
+TypeScript source, so rebuilding it would undo them. Tests:
+`tests/v1770.test.js`.

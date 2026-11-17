@@ -112,6 +112,9 @@ node tests/v1765.test.js "$EXT" || fails=$((fails + 1))
 step "Ashby age, location and interviewing (v17.68)"
 node tests/v1768.test.js "$EXT" || fails=$((fails + 1))
 
+step "Workday: submitted pages, duplicate languages/websites, end before start (v17.70)"
+node tests/v1770.test.js "$EXT" || fails=$((fails + 1))
+
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))
 
