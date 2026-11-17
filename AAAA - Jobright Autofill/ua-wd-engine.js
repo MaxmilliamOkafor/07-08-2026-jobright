@@ -2040,7 +2040,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
   function caseOnly(a, b) {
     return a !== b && a.trim().toLowerCase() === b.trim().toLowerCase();
   }
-  async function fill(ctx, key2, value, root2 = document) {
+  async function fill(ctx, key2, value, root2 = document, force = false) {
     const el = field(key2, root2);
     if (!el) return false;
     const c = containerOf(el);
@@ -2048,7 +2048,11 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (!value) return false;
     const existing = readValue(kindOf(c) === "none" ? el : c);
     const keep = existing && (touched.has(c) || !TENANT_DEFAULTS.has(key2) && !caseOnly(existing, value));
-    if (hooks.keepExisting?.() && keep) return true;
+    // [ua] Work / education entries: the profile wins over what Workday's CV
+    // parser pre-filled (the same job twice, another job's company), unless you
+    // edited the field yourself.
+    if (force && existing && !touched.has(c) && same(existing, value)) return true;
+    if (hooks.keepExisting?.() && keep && !(force && !touched.has(c))) return true;
     await pace(ctx);
     let ok = await writeValue(kindOf(c) === "none" ? el : c, value).catch((e) => {
       if (e instanceof NeedsHuman) return false;
@@ -2289,9 +2293,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     });
   }
   async function fillWork(ctx, block, w) {
-    await fill(ctx, "jobTitleF", w.title, block);
-    await fill(ctx, "companyF", w.company, block);
-    await fill(ctx, "locationF", w.location, block);
+    await fill(ctx, "jobTitleF", w.title, block, true);
+    await fill(ctx, "companyF", w.company, block, true);
+    await fill(ctx, "locationF", w.location, block, true);
     const cur = field("currentlyF", block);
     if (cur) {
       handled.add(containerOf(cur));
@@ -2301,7 +2305,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const start = dateContainer(block, "start");
     if (start && w.start) {
       handled.add(start);
-      if (!await setDate(start, w.start)) ctx.flag(`${w.company} start date`, "Date didn't stick");
+      if (!sameDate(dateValue(start), w.start) && !await setDate(start, w.start)) ctx.flag(`${w.company} start date`, "Date didn't stick");
     }
     // [ua] An end date before the start date (a CV typo) makes Workday stop with
     // "Must end after start date" on every save; leave the end date out instead.
@@ -2311,7 +2315,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       const end = dateContainer(block, "end");
       if (end) {
         handled.add(end);
-        if (!await setDate(end, w.end)) ctx.flag(`${w.company} end date`, "Date didn't stick");
+        if (!sameDate(dateValue(end), w.end) && !await setDate(end, w.end)) ctx.flag(`${w.company} end date`, "Date didn't stick");
       }
     } else if (w.current && !cur) {
       // A current role where the site has no "currently work here" box: To is this month.
@@ -2450,6 +2454,36 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       }
     }
   }
+  /* [ua] Does this Work Experience entry show the profile job w? Title,
+     company and from / to are compared (Workday's CV parser pre-fills entries,
+     e.g. a second copy of the current job with another job's end date, and
+     Workday then refuses the page with "Must end after start date"). */
+  function workMatches(block, w) {
+    const val = (k) => {
+      const el = field(k, block);
+      return el ? readValue(containerOf(el)) : null;
+    };
+    for (const [k, want] of [["jobTitleF", w.title], ["companyF", w.company]]) {
+      const v = val(k);
+      if (want && v !== null && !same(v, want)) return false;
+    }
+    const start = dateContainer(block, "start");
+    if (start && w.start && !sameDate(dateValue(start), w.start)) return false;
+    const endBeforeStart = !!(w.start && w.end && w.end < w.start);
+    const end = dateContainer(block, "end");
+    if (end && !w.current && w.end && !endBeforeStart && isVisible(end) && !sameDate(dateValue(end), w.end)) return false;
+    return true;
+  }
+  function same(a, b) {
+    const n = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+    return n(a) === n(b);
+  }
+  // "2022-8" / "2022-08" / "2022-08-01" all match "2022-08".
+  function sameDate(shown, want) {
+    const p = (s) => String(s ?? "").split("-").filter(Boolean).slice(0, 2).map((x) => String(Number(x)));
+    const a = p(shown), b = p(want);
+    return !!a.length && a.length >= b.length && b.every((x, i) => a[i] === x);
+  }
   async function verifyBlocks(ctx, sectionEl, anchor, items, fillFn) {
     for (let pass = 0; pass < 2; pass++) {
       await waitStable(150, 2e3);
@@ -2457,12 +2491,12 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       let fixed = 0;
       for (let i = 0; i < Math.min(bs.length, items.length); i++) {
         const a = field(anchor, bs[i]);
-        if (a && readValue(containerOf(a))) continue;
+        if (a && readValue(containerOf(a)) && (anchor !== "jobTitleF" || workMatches(bs[i], items[i]))) continue;
         await fillFn(ctx, bs[i], items[i]);
         fixed++;
       }
       if (!fixed) return;
-      ctx.log(`Re-filled ${fixed} ${anchor === "jobTitleF" ? "work" : "education"} entr(ies) that came back empty`, "warn");
+      ctx.log(`Re-filled ${fixed} ${anchor === "jobTitleF" ? "work" : "education"} entr(ies) that came back empty or different from your profile`, "warn");
     }
   }
   async function myExperience(ctx) {
