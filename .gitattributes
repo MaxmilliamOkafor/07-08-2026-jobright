@@ -1,0 +1,7 @@
+# The tests read sources with "\n" line breaks, and SpeedyApply's embedded
+# files are checked against SHA-256 hashes, so every checkout (Windows too)
+# keeps the LF endings the repository stores.
+* text=auto eol=lf
+# Stored with CRLF: keep them byte for byte.
+**/speedyapply-manifest.json -text
+**/knockout-pack.html -text
