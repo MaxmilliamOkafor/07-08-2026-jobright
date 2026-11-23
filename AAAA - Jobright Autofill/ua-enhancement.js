@@ -2262,6 +2262,16 @@
          firm named is your current employer;
        • a graduate of the company's early-careers / graduate programme;
        • needs adjustments / accommodations for the interview. */
+  /* v17.72 — your answer (23 Nov 2026): "Do you hold an ADDITIONAL citizenship,
+     nationality, or permanent residency of any other country that is NOT Iran,
+     Cuba, Syria, or North Korea?" → No. A second citizenship / nationality /
+     residency is Yes only when your profile names one (second nationality). */
+  const ADDL_CITIZENSHIP_RE = /\b(additional|second|secondary|dual|another|multiple|more than one)\b[^?]{0,40}\b(citizenships?|nationalit(y|ies)|passports?|permanent residen\w*|residenc(y|ies))\b|\b(citizen|national)s? of (more than one|another|any other|multiple|a second) countr/;
+  function additionalCitizenshipAnswer(q) {
+    if (!ADDL_CITIZENSHIP_RE.test(q)) return null;
+    const p = _policyProfile || {};
+    return String(p.second_nationality || p.nationality2 || p.second_citizenship || '').trim() ? 'yes' : 'no';
+  }
   const EMBARGO_RE = /\b(cuba|iran|north korea|dprk|syria|crimea|donetsk|luhansk|sanctioned|embargoed)\b/;
   function packKnockoutNo(q) {
     if (EMBARGO_RE.test(q) && /\b(citizen|national|resident|residency|reside|live|lived|living|located|ordinarily)\b/.test(q)) return 'no';
@@ -2299,6 +2309,7 @@
     // Work authorisation / sponsorship, decided by what the sentence actually
     // asks rather than by whether it contains the word "visa".
     // Before the work-authorisation rule: "citizen … or permanent resident of Cuba…" is not a right-to-work question.
+    { const ac = additionalCitizenshipAnswer(q); if (ac) return ac; }
     { const ko = packKnockoutNo(q); if (ko) return ko; }
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
@@ -3118,6 +3129,7 @@
        work in Belgium without visa sponsorship?" was answered No and the employer
        read it as "not allowed to work in Belgium". */
     // Before the work-authorisation rule: "citizen … or permanent resident of Cuba…" is not a right-to-work question.
+    { const ac = additionalCitizenshipAnswer(q); if (ac) return ac; }
     { const ko = packKnockoutNo(q); if (ko) return ko; }
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
@@ -7940,6 +7952,24 @@
       const exact = getLearnedAnswer(label, null, true);
       const exactOk = exact && (isManualAnswer(label, null) ? exact : safeKnockoutAnswer(exact, label));
       return fromSaved || exactOk || null;
+    } catch (_) { return null; }
+  };
+  /* v17.72 — the Workday engine asks this BEFORE its own saved answers and AI:
+     yes/no questions with one safe answer (sponsorship, right to work, a second
+     citizenship, export control, your fixed knockout answers) get the same
+     answer as on every other ATS. A question you answered by hand is left to
+     your answer. "Will you now or in the future require sponsorship…? (You must
+     answer "Yes" if your visa is tied to your partner's…)" came back Yes. */
+  window.__uaWdKnockout = (label) => {
+    try {
+      if (isManualAnswer(label, null)) return null;
+      const l = String(label || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!l) return null;
+      const pol = knockoutPolicy(l, _policyProfile);
+      if (pol === 'yes' || pol === 'no') return pol === 'yes' ? 'Yes' : 'No';
+      if (!(additionalCitizenshipAnswer(l) || packKnockoutNo(l) || workAuthorisationAnswer(l))) return null;
+      const d = determineYesNo(l);
+      return d === 'yes' ? 'Yes' : d === 'no' ? 'No' : null;
     } catch (_) { return null; }
   };
   window.__uaWdProgress = (page) => { try { noteProgress('Workday engine: ' + (page || 'working')); } catch (_) {} };

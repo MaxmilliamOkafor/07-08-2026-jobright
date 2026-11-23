@@ -1929,6 +1929,14 @@
   }
   async function resolveAnswer(label, kind, options, ctx, llm) {
     const norm2 = normalizeLabel(label);
+    /* [ua] v17.72: a yes/no question with one safe answer (sponsorship, right to
+       work, a second citizenship, export control) is decided by the host's rules
+       first — before a saved answer or the AI could put "Yes" on it. */
+    if (hooks.knockout && options.length) {
+      const k = await Promise.resolve(hooks.knockout(label)).catch(() => null);
+      const hit = k ? options.find((o) => similarity(o, k) >= 0.85) : null;
+      if (hit) return { answer: hit, source: "rule" };
+    }
     const bank = await getAnswerBank();
     const saved = bank[norm2] ?? Object.values(bank).find((e) => similarity(normalizeLabel(e.label), norm2) >= 0.92);
     if (saved && (!options.length || options.some((o) => similarity(o, saved.answer) >= 0.85))) {
@@ -3694,7 +3702,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       ...hist,
       answers: {
         authorizedCountries: country ? [country] : [],
-        needsSponsorship: /require|need|yes/.test(visa) && !/not require|no sponsorship|does not/.test(visa),
+        // [ua] v17.72: "I don't need sponsorship" / "no visa required" read as needing it.
+        needsSponsorship: /require|need|yes/.test(visa) && !/\b(no|not|never|without)\b|n't\b|\bdont\b|\bdoesnt\b/.test(visa),
         salaryExpectation: pick(s, "expected_salary", "salary"),
         noticePeriod: pick(s, "notice_period", "notice"),
         earliestStartDate: pick(s, "availability", "start_date"),
@@ -3874,6 +3883,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       autoSubmit: () => mode.submit,
       ...mode.assist ? { advance: () => false, keepExisting: () => true } : {},
       answer: (label, kind, options) => hostAnswer(label, kind, options, mode),
+      knockout: (label) => {
+        try { return typeof W.__uaWdKnockout === "function" ? W.__uaWdKnockout(label) : null; } catch { return null; }
+      },
       onPage: (run) => onPage(run),
       beforeExperience: () => within(cvReady, 3e4).then(() => void 0),
       onFinish: (run, outcome) => void finish(mode, run, outcome)

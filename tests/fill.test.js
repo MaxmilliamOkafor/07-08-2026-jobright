@@ -1438,6 +1438,7 @@ new Function('exports', `
   ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
+  ${body('additionalCitizenshipAnswer')}
   ${body('packKnockoutNo')}
   ${body('workAuthorisationAnswer')}
   ${body('workAuthOptionIndex')}
@@ -2608,6 +2609,7 @@ console.log('knockout answers are the ones that do not get you rejected');
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
+    ${body('additionalCitizenshipAnswer')}
     ${body('packKnockoutNo')}
     exports.d = determineYesNo;
   `)(koCtx2);

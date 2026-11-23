@@ -5288,3 +5288,29 @@ by the steps under "Applying the next Jobright patch".
 
 On 1.27.0, all unit checks pass, and so do the switch browser test (18/18),
 the leave-page test (11/11) and the DOM units (26/26).
+
+## v17.72 — two Workday questions that are No for you
+
+From two Workday forms (23 Nov), both answered Yes:
+- "Do you hold an ADDITIONAL citizenship, nationality, or permanent residency
+  of any other country that is NOT Iran, Cuba, Syria, or North Korea?"
+- "Will you now or could you in the future require sponsorship to obtain work
+  authorization or to transfer or extend your current visa? (You must answer
+  "Yes" if your current visa is tied to your spouse or partner's visa …)"
+
+Our yes/no rules already said No to both. The Yes came from the Workday
+engine, which consulted its own saved answers, its profile rule and the AI
+before our rules. The fixes:
+- **Our rules first.** `window.__uaWdKnockout` (in `ua-enhancement.js`)
+  answers yes/no questions that have one safe answer: sponsorship, right to
+  work, a second citizenship, export control, and your fixed knockout answers.
+  `resolveAnswer` in `ua-wd-engine.js` asks it before anything else. A
+  question you answered by hand is still left to your answer.
+- **A second citizenship** is now its own rule (`additionalCitizenshipAnswer`).
+  It answers No unless your profile names a second nationality.
+- **Reading your profile:** "needs sponsorship" now takes negation into
+  account, so "I don't need sponsorship" and "no visa required" no longer
+  read as needing it.
+
+The TypeScript source in `workday-engine/` is not changed; the bundle is the
+shipped copy (see v17.70). Tests: `tests/v1772.test.js`.
