@@ -21305,9 +21305,12 @@ a[href*="/checkout" i],
   }
   function isAuthorizedFor(countryId) {
     if (!countryId) return null;
-    if (RESOLVED.has(countryId)) return true;
-    // Also accept if any of the user's selections aliases match
-    return false;
+    /* v17.73 — your answer (23 Nov 2026): "no sponsorship needed in any
+       country". Every country counts as authorised, so a sponsorship question
+       is always No and a right-to-work question always Yes. Before, a country
+       you had not ticked here (the United States, say) turned "Will you require
+       sponsorship?" into Yes. */
+    return true;
   }
 
   // Find the question label associated with a control (radio group, select, input)

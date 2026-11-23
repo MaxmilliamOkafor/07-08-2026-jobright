@@ -60,5 +60,17 @@ for (const v of ["i don't need sponsorship", 'no visa required', 'authorised to 
 for (const v of ['will require sponsorship', 'yes', 'need visa sponsorship'])
   ok(needs && needs(v), 'needed: ' + v);
 
-console.log(`  v17.72: ${pass} passed, ${fail} failed`);
+console.log('v17.73 — no sponsorship needed in any country');
+{
+  for (const q of ['Will you now or in the future require visa sponsorship to work in the United States?',
+    'Do you require sponsorship to work in Canada?', 'Will you need a work permit to work in Australia?'])
+    ok(d(q) === 'no', 'No: ' + q);
+  for (const q of ['Are you legally authorized to work in the United States?', 'Do you have the right to work in Singapore?'])
+    ok(d(q) === 'yes', 'Yes: ' + q);
+  ok(/\[Q\.sponsorship, \(\) => "No"\],\s*\n\s*\[Q\.authorized, \(\) => "Yes"\],/.test(eng), 'Workday engine: sponsorship No, authorised Yes, for every country');
+  const m2 = /function isAuthorizedFor\(countryId\) \{[\s\S]*?\n  \}/.exec(src);
+  ok(!!m2 && /return true;\s*\}$/.test(m2[0]) && !/return false/.test(m2[0]), 'the Work Authorization picker counts every country as authorised');
+}
+
+console.log(`  v17.72/73: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -5314,3 +5314,16 @@ before our rules. The fixes:
 
 The TypeScript source in `workday-engine/` is not changed; the bundle is the
 shipped copy (see v17.70). Tests: `tests/v1772.test.js`.
+
+## v17.73 — no sponsorship needed in any country
+
+Your answer (23 Nov): you need no sponsorship anywhere. Every sponsorship
+question is now No, and every right-to-work question Yes, whatever country it
+names:
+- **The Work Authorization picker** (Ctrl+Shift+W) counts every country as
+  authorised. Before, a country you had not ticked there (the United States,
+  say) turned "Will you require sponsorship?" into **Yes**.
+- **The Workday engine's own rules** answer sponsorship No and authorised Yes
+  outright, instead of going by the saved profile and its country list.
+- The main yes/no rules already ignored the country. Tests are in
+  `tests/v1772.test.js`, in the v17.73 section.

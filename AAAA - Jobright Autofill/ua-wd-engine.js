@@ -1882,8 +1882,11 @@
     return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
   }
   var RULES = [
-    [Q.sponsorship, (_l, c) => yesNo(c.profile.answers.needsSponsorship)],
-    [Q.authorized, (l, c) => yesNo(authorizedFor(l, c))],
+    /* [ua] v17.73 — your answer: no sponsorship needed in any country. So every
+       sponsorship question is No and every right-to-work question Yes, whatever
+       country it names or the saved profile says. */
+    [Q.sponsorship, () => "No"],
+    [Q.authorized, () => "Yes"],
     [Q.adult, () => "Yes"],
     [Q.salary, (_l, c) => c.profile.answers.salaryExpectation || null],
     [Q.notice, (_l, c) => c.profile.answers.noticePeriod || null],
