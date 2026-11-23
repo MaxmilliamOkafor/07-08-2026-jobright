@@ -3654,6 +3654,23 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (/^(yes|i have|i am)/.test(s)) return "yes";
     return "decline";
   }
+  /* [ua] v17.74 — Workday's "County" is required on Irish addresses (ING, Equinix,
+     MSD: LazyApply's 17 Nov log stopped 21 jobs on it). With no county in your
+     profile, the county your Irish town is in: its own name for the cities
+     that share one, Co. Dublin for the Dublin suburbs. Nothing for others. */
+  const IE_SAME_NAME_COUNTIES = ['dublin', 'cork', 'galway', 'limerick', 'waterford', 'kilkenny', 'sligo', 'wexford', 'carlow', 'longford', 'roscommon', 'monaghan', 'cavan', 'kildare', 'wicklow'];
+  const IE_DUBLIN_TOWNS = ['lucan', 'swords', 'tallaght', 'blanchardstown', 'clondalkin', 'dun laoghaire', 'dún laoghaire', 'malahide', 'balbriggan', 'rathfarnham', 'dundrum', 'howth', 'skerries', 'donabate', 'castleknock', 'finglas', 'santry', 'sandyford', 'stillorgan', 'blackrock', 'dalkey', 'killiney', 'portmarnock', 'rush', 'lusk', 'ballyfermot', 'crumlin', 'rathmines', 'ranelagh', 'drumcondra', 'clontarf', 'raheny', 'ballsbridge', 'citywest', 'saggart', 'rathcoole', 'newcastle', 'palmerstown', 'chapelizod', 'glasnevin', 'cabra', 'artane', 'coolock', 'donnybrook', 'terenure', 'templeogue', 'firhouse', 'knocklyon', 'ballinteer', 'leopardstown', 'cherrywood', 'shankill'];
+  function irishCountyFor(country, ...places) {
+    if (country && !/^(ie|irl|ireland|republic of ireland|éire|eire)$/i.test(String(country).trim())) return '';
+    for (const raw of places) {
+      const t = String(raw || '').toLowerCase().replace(/^(co\.?|county)\s+/, '').replace(/[,.]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!t) continue;
+      const first = t.split(' ').length <= 3 ? t : '';
+      if (IE_SAME_NAME_COUNTIES.includes(first)) return first.charAt(0).toUpperCase() + first.slice(1);
+      if (IE_DUBLIN_TOWNS.includes(first) || /\bdublin \d{1,2}w?\b|^d\d{1,2}w?$/.test(t)) return 'Dublin';
+    }
+    return '';
+  }
   async function buildProfile() {
     const s = await uaProfile();
     const rawCountry = pick(s, "country", "location_country", "country_name");
@@ -3691,7 +3708,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
           line1: pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/)[0],
           line2: pick(s, "address_line_2", "address2") || pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/).slice(1).join(", "),
           city: pick(s, "city"),
-          region: pick(s, "state", "region", "province", "county"),
+          region: pick(s, "state", "region", "province", "county") || irishCountyFor(country, pick(s, "city"), pick(s, "address_line_2", "address2")),
           postalCode: pick(s, "postal_code", "zip", "postcode"),
           country
         },

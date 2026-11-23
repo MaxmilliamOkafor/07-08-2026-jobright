@@ -72,5 +72,28 @@ console.log('v17.73 — no sponsorship needed in any country');
   ok(!!m2 && /return true;\s*\}$/.test(m2[0]) && !/return false/.test(m2[0]), 'the Work Authorization picker counts every country as authorised');
 }
 
-console.log(`  v17.72/73: ${pass} passed, ${fail} failed`);
+console.log('v17.74 — lessons from LazyApply\'s 17 Nov log');
+{
+  const CARRIER = 'Do you now work or have you ever worked at or for Carrier or any of its subsidiaries?';
+  ok(d(CARRIER) === 'no', 'Carrier "now work or ever worked at or for" → No (was Yes)');
+  ok(d('Have you ever worked for Thales before?') === 'no' && d('Are you currently a Zendesk Employee?') === 'no', 'Thales / Zendesk → No');
+  const mine = make({ work_experience: [{ company: 'Accenture' }, { company: 'Carrier Global' }] });
+  ok(mine(CARRIER) === 'yes', '…Yes when Carrier is in your work history');
+  ok(mine('Have you ever worked at Accenture?') === 'yes' && mine('Have you ever worked at Deloitte?') === 'no', 'checked against every employer, not just the current one');
+  ok(d('Have you ever worked for this company?') === 'no', '"this company" is still No');
+
+  for (const [file, label] of [[src, 'ua-enhancement'], [eng, 'Workday engine']]) {
+    const lines = file.split('\n');
+    const pick = (re) => { const i = lines.findIndex((l) => re.test(l)); return lines[i]; };
+    const fnStart = lines.findIndex((l) => /^  function irishCountyFor\(/.test(l));
+    const fnEnd = lines.findIndex((l, i) => i > fnStart && l === '  }');
+    const cf = fnStart > 0 && new Function(pick(/^  const IE_SAME_NAME_COUNTIES = /) + pick(/^  const IE_DUBLIN_TOWNS = /) + lines.slice(fnStart, fnEnd + 1).join('\n') + '\nreturn irishCountyFor;')();
+    ok(cf && cf('Ireland', 'Lucan') === 'Dublin' && cf('IE', 'Dublin 15') === 'Dublin' && cf('Ireland', 'Cork') === 'Cork' && cf('Ireland', 'Galway') === 'Galway', label + ': Lucan / Dublin 15 → Dublin, Cork, Galway');
+    ok(cf && cf('Ireland', 'Athlone') === '' && cf('United Kingdom', 'Dublin') === '', label + ': unknown town or not Ireland → nothing guessed');
+  }
+  ok(/irishCountyFor\(p\.country \|\| DEFAULTS\.country, p\.city, p\.address_line_2\)/.test(src), 'your profile gets the county only when it has none');
+  ok(/region: pick\(s, "state", "region", "province", "county"\) \|\| irishCountyFor\(/.test(eng), 'the Workday engine too');
+}
+
+console.log(`  v17.72/73/74: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

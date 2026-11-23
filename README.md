@@ -5327,3 +5327,26 @@ names:
   outright, instead of going by the saved profile and its country list.
 - The main yes/no rules already ignored the country. Tests are in
   `tests/v1772.test.js`, in the v17.73 section.
+
+## v17.74 — lessons from LazyApply's 17 Nov log
+
+LazyApply's run that day covered about 700 jobs: 48 completed, 52 reached
+Submit and 656 were skipped. Our extension stood aside during it. These are
+the failures our own runs could hit too (v17.66 and v17.70 already cover
+School, duplicate languages and end-before-start):
+- **"Do you now work or have you ever worked at or for Carrier or any of its
+  subsidiaries?"** Our rules answered **Yes**. It is now Yes only when that
+  company is in your work history (any employer, not just the current one),
+  else No. The Workday engine gets the same answer through `__uaWdKnockout`.
+- **County required on Irish addresses** (ING, Equinix, MSD; 21 jobs stuck).
+  With no county or state in your profile, the county your town is in is used:
+  - its own name for the cities that share one (Dublin, Cork, Galway, Limerick …);
+  - Co. Dublin for the Dublin suburbs (Lucan, Swords, Tallaght …) and "Dublin 15"-style districts;
+  - nothing for any other town, so nothing is guessed.
+
+  This is applied both in `getProfile` and in the Workday engine's profile.
+- **Not changed:** Workday's "Prefix" (7 jobs) is filled only from a prefix
+  in your profile and is never guessed. Wrong-password and verify-account
+  stops were LazyApply's own account problems.
+
+Tests: `tests/v1772.test.js`, in the v17.74 section.

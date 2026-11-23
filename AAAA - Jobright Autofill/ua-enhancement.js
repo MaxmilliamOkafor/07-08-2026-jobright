@@ -1244,6 +1244,23 @@
   }
   try { window.__uaJrProfile = profileFromJobright; window.__uaMergeProfiles = mergeProfiles; } catch (_) {}
 
+  /* v17.74 — Workday's "County" is required on Irish addresses (ING, Equinix,
+     MSD: LazyApply's 17 Nov log stopped 21 jobs on it). With no county in your
+     profile, the county your Irish town is in: its own name for the cities
+     that share one, Co. Dublin for the Dublin suburbs. Nothing for others. */
+  const IE_SAME_NAME_COUNTIES = ['dublin', 'cork', 'galway', 'limerick', 'waterford', 'kilkenny', 'sligo', 'wexford', 'carlow', 'longford', 'roscommon', 'monaghan', 'cavan', 'kildare', 'wicklow'];
+  const IE_DUBLIN_TOWNS = ['lucan', 'swords', 'tallaght', 'blanchardstown', 'clondalkin', 'dun laoghaire', 'dún laoghaire', 'malahide', 'balbriggan', 'rathfarnham', 'dundrum', 'howth', 'skerries', 'donabate', 'castleknock', 'finglas', 'santry', 'sandyford', 'stillorgan', 'blackrock', 'dalkey', 'killiney', 'portmarnock', 'rush', 'lusk', 'ballyfermot', 'crumlin', 'rathmines', 'ranelagh', 'drumcondra', 'clontarf', 'raheny', 'ballsbridge', 'citywest', 'saggart', 'rathcoole', 'newcastle', 'palmerstown', 'chapelizod', 'glasnevin', 'cabra', 'artane', 'coolock', 'donnybrook', 'terenure', 'templeogue', 'firhouse', 'knocklyon', 'ballinteer', 'leopardstown', 'cherrywood', 'shankill'];
+  function irishCountyFor(country, ...places) {
+    if (country && !/^(ie|irl|ireland|republic of ireland|éire|eire)$/i.test(String(country).trim())) return '';
+    for (const raw of places) {
+      const t = String(raw || '').toLowerCase().replace(/^(co\.?|county)\s+/, '').replace(/[,.]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!t) continue;
+      const first = t.split(' ').length <= 3 ? t : '';
+      if (IE_SAME_NAME_COUNTIES.includes(first)) return first.charAt(0).toUpperCase() + first.slice(1);
+      if (IE_DUBLIN_TOWNS.includes(first) || /\bdublin \d{1,2}w?\b|^d\d{1,2}w?$/.test(t)) return 'Dublin';
+    }
+    return '';
+  }
   async function getProfile() {
     let p = (await st.get(SK.PROF)) || {};
     // Also check OptimHire candidate data, and Jobright's own profile underneath both.
@@ -1255,6 +1272,12 @@
       p = mergeProfiles(profileFromJobright(ohData[JR_SNAPSHOT_KEY]), ud, cd, p);
       p.years = ownYears;
     } catch (_) { }
+    try {
+      if (!String(p.county || '').trim() && !String(p.state || '').trim()) {
+        const c = irishCountyFor(p.country || DEFAULTS.country, p.city, p.address_line_2);
+        if (c) p.county = c;
+      }
+    } catch (_) {}
     _policyProfile = p;
     return p;
   }
@@ -2290,6 +2313,17 @@
     if (firm && !/\b(this|our|the) (company|organi[sz]ation|firm)\b|\b(any|a|an)\b/.test(firm[1])) {
       const cur = String((_policyProfile && (_policyProfile.current_company || _policyProfile.company)) || '').toLowerCase().trim();
       return cur && firm[1].includes(cur) ? 'yes' : 'no';
+    }
+    /* v17.74 — from LazyApply's 17 Nov log: "Do you now work or have you ever
+       worked at or for Carrier or any of its subsidiaries?" came back Yes here.
+       Yes only when that company is in your work history, else No. */
+    const ever = q.match(/\b(?:do you (?:now |currently )?work|are you (?:now |currently )?working|have you (?:ever |previously )?(?:worked|been employed)|did you (?:ever )?work)\b[^?]{0,30}?\b(?:at|for|with|by)\b(?: or (?:for|at|with|by))?\s+([a-z0-9&.' -]{2,40}?)(?:\s+or\s+(?:any|one|an?)\b|\s+(?:before|previously|in the past)\b|\s*[,(?]|$)/);
+    if (ever && !/^(this|our|the|any|a|an|us|another)\b/.test(ever[1].trim())) {
+      const firm2 = ever[1].trim();
+      const pp = _policyProfile || {};
+      const mine = [pp.current_company, pp.company].concat((pp.work_experience || pp.work_experiences || []).map((w) => w && w.company))
+        .map((c) => String(c || '').toLowerCase().trim()).filter((c) => c.length >= 3);
+      return mine.some((c) => firm2.includes(c) || c.includes(firm2)) ? 'yes' : 'no';
     }
     return null;
   }
