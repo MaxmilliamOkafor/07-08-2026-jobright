@@ -5258,3 +5258,33 @@ The engine fixes are in `workday-engine/src/workday/steps.ts` and, by hand, in
 `ua-wd-engine.js`. The committed bundle has many changes that never reached the
 TypeScript source, so rebuilding it would undo them. Tests:
 `tests/v1770.test.js`.
+
+## v17.71 — rebased onto Jobright 1.27.0
+
+A larger patch: seven of their files changed and ten are new. All were merged
+by the steps under "Applying the next Jobright patch".
+- **Copied as theirs** (none had edits of ours): `contents`,
+  `applied-success-popup`, `ats-submission-resume`,
+  `clearcompany-submission-attribution`, `global.css`.
+- **New:**
+  - an autofill tutorial page (`tabs/autofill-tutorial.*`) with its sample
+    resume and cover letter (`Alex_Johnson_*.pdf`);
+  - a PDF reader (`pdf.*.js`) and a font (`InterVariable.woff2`);
+  - `mphasis-ripplehire-submission-main.*.js`, injected by their worker.
+  None are content scripts. The tutorial opens only on a fresh install or
+  from their own menus. Reloading an unpacked copy counts as an update, so it
+  never opens during a run.
+- **`helper-app.41ea2652.js`**: theirs, with our two edits re-applied by
+  `node tools/merge-helper-app.js <theirs> <out>`. The minified names changed
+  again, so the script matches the code by shape, not by name.
+- **`static/background/index.js`**: theirs, with our five `importScripts` lines
+  re-appended. The only new tab it opens is the tutorial. Otherwise the counts
+  of `active:!0` (4), `chrome.alarms` (6) and `action.onClicked` (1) are the
+  same, and there are still no `UA_` messages, side panel, context menus or
+  commands.
+- **Manifest:** version 1.27.0 only. Their content scripts, permissions and
+  resources are unchanged. `_metadata/` and their `update_url` were not
+  copied.
+
+On 1.27.0, all unit checks pass, and so do the switch browser test (18/18),
+the leave-page test (11/11) and the DOM units (26/26).
