@@ -5350,3 +5350,29 @@ School, duplicate languages and end-before-start):
   stops were LazyApply's own account problems.
 
 Tests: `tests/v1772.test.js`, in the v17.74 section.
+
+## v17.75 — six wrong Yes answers from LazyApply's 23 Nov log
+
+LazyApply's run on 23 Nov ended with 186 of 189 Workday jobs skipped. I ran
+every question that stopped a job through our yes/no rules, and six came back
+**Yes** when the answer is No for you. Each is now Yes only when your profile
+shows it:
+- "Did someone within Axis recommend this job to you?" and "Have you been
+  referred to us by an employee of …?": Yes only with a referrer in your
+  profile.
+- "Are you aware of any ongoing negotiations, tenders, RFPs, or other
+  procurements involving … your current employer?" (Marsh): No.
+- "…Officer or Cabinet-level officer or above … Senate/House Member",
+  minister, head of state, member of parliament: No.
+- "Within the past 5 years, were you a CIO/Deputy CIO; CISO/Deputy CISO?":
+  Yes only with such a title in your work history.
+- "Are you located in US?": answered from your profile's country
+  (`locatedInAnswer`). EU, Europe and EMEA are understood. A place that is
+  not a country (a city, "commuting distance") is left to the other rules.
+
+All six reach the Workday engine through `__uaWdKnockout`. Tests are in
+`tests/v1772.test.js`, in the v17.75 section.
+
+Not changed, because nothing in your profile says what is true:
+- "Do you hold a valid drivers licence…?"
+- "Are you a national of the country where you are applying?"

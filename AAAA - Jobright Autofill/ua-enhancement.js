@@ -2295,6 +2295,41 @@
     const p = _policyProfile || {};
     return String(p.second_nationality || p.nationality2 || p.second_citizenship || '').trim() ? 'yes' : 'no';
   }
+  /* v17.75 — "Are you located in US?" (Workday, LazyApply's 23 Nov log) came
+     back Yes. A plain "are you located / based / living in <country>?" is
+     answered from your profile's country; a place that is not a country it
+     knows (a city, "commuting distance") is left to the other rules. */
+  const LOC_COUNTRY_ALIASES = {
+    'united states': ['us', 'usa', 'u.s.', 'u.s.a.', 'united states', 'united states of america', 'america', 'the us', 'the united states'],
+    'united kingdom': ['uk', 'u.k.', 'united kingdom', 'great britain', 'britain', 'england', 'scotland', 'wales', 'the uk', 'the united kingdom'],
+    ireland: ['ireland', 'republic of ireland', 'éire'], canada: ['canada'], australia: ['australia'], india: ['india'], germany: ['germany'],
+    france: ['france'], spain: ['spain'], netherlands: ['netherlands', 'the netherlands', 'holland'], poland: ['poland'], portugal: ['portugal'],
+    italy: ['italy'], belgium: ['belgium'], sweden: ['sweden'], switzerland: ['switzerland'], singapore: ['singapore'], mexico: ['mexico'],
+    brazil: ['brazil'], 'united arab emirates': ['uae', 'united arab emirates'], israel: ['israel'], japan: ['japan'], 'new zealand': ['new zealand'],
+  };
+  const LOC_EU = ['ireland', 'germany', 'france', 'spain', 'netherlands', 'poland', 'portugal', 'italy', 'belgium', 'sweden'];
+  function locatedInAnswer(q) {
+    const m = /^\s*(?:\d+[.)]\s*)?(?:are you|do you)\s+(?:currently\s+)?(?:located|based|living|live|residing|reside)\s+(?:in|within)\s+(?:the\s+)?([a-z .]{2,40}?)\s*\??\s*\*?\s*$/.exec(q);
+    if (!m) return null;
+    const place = m[1].trim().replace(/\.$/, '');
+    const p = _policyProfile || {};
+    const mineRaw = String(p.country || (typeof DEFAULTS !== 'undefined' && DEFAULTS.country) || '').toLowerCase().trim();
+    let mine = '', there = '';
+    for (const [k, al] of Object.entries(LOC_COUNTRY_ALIASES)) {
+      if (al.includes(mineRaw) || k === mineRaw) mine = k;
+      if (al.includes(place) || k === place || al.includes('the ' + place)) there = k;
+    }
+    if (/^(eu|e\.u\.|european union|europe|emea)$/.test(place)) {
+      if (!mine) return null;
+      const inEu = LOC_EU.includes(mine);
+      if (/^(eu|e\.u\.|european union)$/.test(place)) return inEu ? 'yes' : 'no';
+      const inEurope = inEu || ['united kingdom', 'switzerland'].includes(mine);
+      if (place === 'europe') return inEurope ? 'yes' : 'no';
+      return inEurope || ['united arab emirates', 'israel'].includes(mine) ? 'yes' : 'no';   // EMEA
+    }
+    if (!there || !mine) return null;
+    return there === mine ? 'yes' : 'no';
+  }
   const EMBARGO_RE = /\b(cuba|iran|north korea|dprk|syria|crimea|donetsk|luhansk|sanctioned|embargoed)\b/;
   function packKnockoutNo(q) {
     if (EMBARGO_RE.test(q) && /\b(citizen|national|resident|residency|reside|live|lived|living|located|ordinarily)\b/.test(q)) return 'no';
@@ -2302,6 +2337,23 @@
     if (/\b(employee|employed|worked)\b[^?]{0,40}\b(federal|state|local|us|u\.s\.|united states)\b[^?]{0,20}\bgovernment\b|\bgovernment\b[^?]{0,30}\b(employee|employed)\b|\bemployed (by|with|at) (a|an|the|any)?\s*(\w+ )?government\b/.test(q)) return 'no';
     if (/\b(early[- ]careers?|graduate|apprenticeship|internship|intern)\s+(programme|program|scheme)\b/.test(q) && /\b(graduate of|completed|alumn|participated|been (a|an|part of))\b/.test(q)) return 'no';
     if (/\b(require|need|request)\b[^?]{0,30}\b(adjustments?|accommodations?|special arrangements?)\b|\b(adjustments?|accommodations?|special arrangements?)\b[^?]{0,20}\b(needed|required|requested)\b/.test(q)) return 'no';
+    /* v17.75 — from LazyApply's 23 Nov log, each answered Yes here. A Yes is
+       only given when your profile shows it (a referrer, a matching job title). */
+    {
+      const pp = _policyProfile || {};
+      // "Did someone within Axis recommend this job to you?" / "Have you been referred by an employee of …?"
+      if (/\b(did|has) (someone|anyone|an? (employee|staff member|colleague|person))\b[^?]{0,60}\b(recommend|refer)\w*\b|\b(have|were) you (been )?referred (to us |for this (role|job|position) )?by\b|\bwere you referred\b/.test(q))
+        return String(pp.referrer || pp.referral || pp.referred_by || '').trim() ? 'yes' : 'no';
+      // "Are you aware of any ongoing negotiations, tenders, RFPs, or other procurements involving … your current employer?" (Marsh)
+      if (/\b(aware of|involved in|party to)\b[^?]{0,40}\b(negotiations?|tenders?|rfps?|procurements?|bids?)\b/.test(q)) return 'no';
+      // Senior public office: "Cabinet-level officer … Senate/House Member", minister, head of state, member of parliament.
+      if (/\b(cabinet[- ]level|senate|house member|member of (the )?(parliament|congress|senate)|head of (state|government)|minister|ambassador|politically exposed|executive branch)\b/.test(q)) return 'no';
+      // "Within the past 5 years, were you a CIO/Deputy CIO; CISO/Deputy CISO …?"
+      if (/\bwere you (an? )?(cio|ciso|cto|ceo|cfo|chief [a-z ]{2,30}officer|deputy (cio|ciso))\b/.test(q)) {
+        const titles = [pp.current_title, pp.title].concat((pp.work_experience || []).map((w) => w && w.title)).join(' | ').toLowerCase();
+        return /\b(cio|ciso|chief information( security)? officer)\b/.test(titles) && /\b(cio|ciso|information)\b/.test(q) ? 'yes' : 'no';
+      }
+    }
     // Workday's own careers site (Application Questions 1 of 2) left these on "Select One".
     if (/\bnon[- ]?(compete|competition|solicit\w*)\b|\brestrictive covenants?\b/.test(q)) return 'no';
     if (/\b(related to|relative of|family member of)\b[^?]{0,60}\b(employees?|officials?|officers?|directors?)\b|\b(relatives?|family members?)\b[^?]{0,40}\b(works?|working|employed)\b/.test(q)) return 'no';
@@ -2344,6 +2396,7 @@
     // asks rather than by whether it contains the word "visa".
     // Before the work-authorisation rule: "citizen … or permanent resident of Cuba…" is not a right-to-work question.
     { const ac = additionalCitizenshipAnswer(q); if (ac) return ac; }
+    { const li = locatedInAnswer(q); if (li) return li; }
     { const ko = packKnockoutNo(q); if (ko) return ko; }
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
@@ -3164,6 +3217,7 @@
        read it as "not allowed to work in Belgium". */
     // Before the work-authorisation rule: "citizen … or permanent resident of Cuba…" is not a right-to-work question.
     { const ac = additionalCitizenshipAnswer(q); if (ac) return ac; }
+    { const li = locatedInAnswer(q); if (li) return li; }
     { const ko = packKnockoutNo(q); if (ko) return ko; }
     const wa = workAuthorisationAnswer(q);
     if (wa) return wa;
@@ -8001,7 +8055,7 @@
       if (!l) return null;
       const pol = knockoutPolicy(l, _policyProfile);
       if (pol === 'yes' || pol === 'no') return pol === 'yes' ? 'Yes' : 'No';
-      if (!(additionalCitizenshipAnswer(l) || packKnockoutNo(l) || workAuthorisationAnswer(l))) return null;
+      if (!(additionalCitizenshipAnswer(l) || locatedInAnswer(l) || packKnockoutNo(l) || workAuthorisationAnswer(l))) return null;
       const d = determineYesNo(l);
       return d === 'yes' ? 'Yes' : d === 'no' ? 'No' : null;
     } catch (_) { return null; }

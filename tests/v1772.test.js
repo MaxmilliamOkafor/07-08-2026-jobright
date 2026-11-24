@@ -24,11 +24,19 @@ function body(name) {
   return lines.slice(start, end + 1).join('\n');
 }
 const reLines = (src.match(/^  const [A-Z][A-Z0-9_]*_RE = \/.*\/[a-z]*;$/gm) || []).join('\n  ');
+function locLib() {
+  const lines = src.split('\n');
+  const a = lines.findIndex((l) => l.startsWith('  const LOC_COUNTRY_ALIASES = {'));
+  const b = lines.findIndex((l, i) => i > a && l === '  };');
+  const eu = lines.find((l) => l.startsWith('  const LOC_EU = '));
+  return lines.slice(a, b + 1).join('\n') + '\n' + eu + '\n' + body('locatedInAnswer');
+}
 const make = (profile) => {
   const x = {};
   new Function('exports', 'profile', `${reLines}
-    const DEFAULTS = { years: '7' }; const _policyProfile = profile;
+    const DEFAULTS = { years: '7', country: 'Ireland' }; const _policyProfile = profile;
     ${body('yearsAnswer')}${body('knockoutPolicy')}${body('workAuthorisationAnswer')}${body('workAuthOptionIndex')}
+    ${locLib()}
     ${body('additionalCitizenshipAnswer')}${body('packKnockoutNo')}${body('determineYesNo')}
     exports.d = (q) => determineYesNo(q.toLowerCase());`)(x, profile);
   return x.d;
@@ -95,5 +103,24 @@ console.log('v17.74 — lessons from LazyApply\'s 17 Nov log');
   ok(/region: pick\(s, "state", "region", "province", "county"\) \|\| irishCountyFor\(/.test(eng), 'the Workday engine too');
 }
 
-console.log(`  v17.72/73/74: ${pass} passed, ${fail} failed`);
+console.log('v17.75 — six Yes answers from LazyApply\'s 23 Nov log that are No for you');
+{
+  const NO = [
+    'Did someone within Axis recommend this job to you?',
+    'Have you been referred to us by an employee of a government agency or state-owned entity?',
+    'Are you aware of any ongoing negotiations, tenders, RFPs, or other procurements involving Marsh businesses and your current employer?',
+    '5. Within the past 5 years, were you a CIO/Deputy CIO; CISO/Deputy CISO within any of the countries above?',
+    '3. Within the past 5 years, were you in an Officer or Cabinet-level officer or above position, or a Senate/House Member within any of the countries above?',
+    'Are you located in US?',
+  ];
+  for (const q of NO) ok(d(q) === 'no', 'No: ' + q.slice(0, 80));
+  ok(make({ referrer: 'Jane Smith' })('Did someone within Axis recommend this job to you?') === 'yes', '…a referrer in your profile makes the referral question Yes');
+  ok(make({ work_experience: [{ title: 'Deputy CISO', company: 'X' }] })(NO[3]) === 'yes', '…a CISO title in your work history makes that one Yes');
+  ok(d('Are you located in Ireland?') === 'yes' && d('Are you based in the EU?') === 'yes' && d('Are you located in Europe?') === 'yes', 'your own country / EU / Europe → Yes');
+  ok(d('Are you located in the United Kingdom?') === 'no' && d('Are you based in Canada?') === 'no', 'another country → No');
+  ok(make({ country: 'United States' })('Are you located in US?') === 'yes', '…US is Yes for a US profile');
+  ok(/locatedInAnswer\(l\) \|\| packKnockoutNo\(l\)/.test(src), 'the Workday engine gets these through the knockout hook');
+}
+
+console.log(`  v17.72-75: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

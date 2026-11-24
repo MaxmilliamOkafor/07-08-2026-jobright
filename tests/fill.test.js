@@ -40,6 +40,14 @@ function body(name) {
   if (end < 0) throw new Error('no end for: ' + name);
   return lines.slice(start, end + 1).join('\n');
 }
+// v17.75: locatedInAnswer and the two tables it reads, for sandboxes that build determineYesNo.
+function locLib() {
+  const lines = src.split('\n');
+  const a = lines.findIndex((l) => l.startsWith('  const LOC_COUNTRY_ALIASES = {'));
+  const b = lines.findIndex((l, i) => i > a && l === '  };');
+  const eu = lines.find((l) => l.startsWith('  const LOC_EU = '));
+  return lines.slice(a, b + 1).join('\n') + '\n' + eu + '\n' + body('locatedInAnswer');
+}
 
 /* ── 1. the universal fillers must not use a blind query ──────────────────── */
 console.log('universal fillers see shadow DOM + frames');
@@ -1438,6 +1446,7 @@ new Function('exports', `
   ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
+  ${locLib()}
   ${body('additionalCitizenshipAnswer')}
   ${body('packKnockoutNo')}
   ${body('workAuthorisationAnswer')}
@@ -2609,6 +2618,7 @@ console.log('knockout answers are the ones that do not get you rejected');
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
+    ${locLib()}
     ${body('additionalCitizenshipAnswer')}
     ${body('packKnockoutNo')}
     exports.d = determineYesNo;
