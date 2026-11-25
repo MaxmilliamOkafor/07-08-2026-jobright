@@ -1825,11 +1825,29 @@
     const [by, bm] = b ? b.split("-").map(Number) : [now.getFullYear(), now.getMonth() + 1];
     return Math.max(0, (by - ay) * 12 + ((bm || 1) - (am || 1)));
   }
-  function yearsOfExperience(p, label) {
-    const l = label.toLowerCase();
-    const skill = p.skills.find((s) => s.length > 1 && l.includes(s.toLowerCase()));
-    const roles = skill ? p.work.filter((w) => `${w.title} ${w.bullets.join(" ")}`.toLowerCase().includes(skill.toLowerCase())) : p.work;
-    const months = roles.reduce((m, w) => m + (w.start ? monthsBetween(w.start, w.current ? void 0 : w.end) : 0), 0);
+  /* v17.77 — your TOTAL career years, the same number every other form gets:
+     the extension's own answer first (your profile editor figure, else your
+     work history), else your roles here with overlapping roles counted once.
+     It used to count only roles mentioning the skill in the question, so a
+     9-year career could answer "2" to "years of Python". */
+  function yearsOfExperience(p, _label) {
+    try {
+      if (typeof window !== "undefined" && typeof window.__uaWdYears === "function") {
+        const own = parseInt(window.__uaWdYears(), 10);
+        if (own > 0 && own < 60) return own;
+      }
+    } catch {
+    }
+    const idx = (s) => { const [y, m] = String(s).split("-").map(Number); return y * 12 + ((m || 1) - 1); };
+    const now = /* @__PURE__ */ new Date(), nowIdx = now.getFullYear() * 12 + now.getMonth();
+    const spans = p.work.filter((w) => w.start).map((w) => [idx(w.start), w.current || !w.end ? nowIdx : idx(w.end)])
+      .filter((s) => !isNaN(s[0]) && !isNaN(s[1]) && s[0] <= s[1]).sort((a, b) => a[0] - b[0]);
+    let months = 0, cur = null;
+    for (const s of spans) {
+      if (!cur || s[0] > cur[1]) { if (cur) months += cur[1] - cur[0]; cur = s.slice(); }
+      else cur[1] = Math.max(cur[1], s[1]);
+    }
+    if (cur) months += cur[1] - cur[0];
     return Math.floor(months / 12);
   }
   function bucketFor(n, options) {

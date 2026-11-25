@@ -5394,3 +5394,32 @@ Not changed, because nothing in your profile says what is true:
     Jose, California office of Ernst & Young?" is now No.
 
 Tests are in `tests/v1772.test.js`, in the v17.76 section.
+
+## v17.77 — answers built from your profile, not one line for everyone
+
+Recruiters' ATS screens rank generic, identical answers low. Your choices
+(25 Nov) are now the rule everywhere, including the Workday engine:
+
+- **Years of experience** is your total career years: the number in the
+  profile editor first, else the years worked out from your work history
+  (overlapping roles counted once), else the old default only when your
+  history has no dates. The Workday engine used to count only the roles that
+  mentioned the skill in the question, so "years of Python" could come out
+  far below your real career.
+- **Salary**, when your profile has no figure: free-text boxes get
+  "Negotiable — in line with the market rate for this role". Number-only
+  boxes, and questions that ask for a number, still get a figure. A figure
+  in your profile is always used as-is.
+- **Cover letter** (when you have not written one), **"Why us?"** and
+  **"Tell us about yourself"** are built from your profile: the role and
+  company, your current title and employer, earlier employers, top skills
+  and degree.
+- **"Please elaborate on your experience with X"** says where your profile
+  shows X (a role or a listed skill). If your profile does not mention X, it
+  gives a factual summary of your background and makes no claim about X. The
+  old sentence that claimed "hands-on, professional experience" with any
+  topic is gone.
+
+The old neutral sentences are used only when your profile is empty.
+
+Tests are in `tests/v1772.test.js`, in the v17.77 section.

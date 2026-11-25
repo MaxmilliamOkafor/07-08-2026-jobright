@@ -133,5 +133,72 @@ console.log('v17.76 — Intel (Workday) and the AI Answer Generator');
   ok(aiStart > 0 && /'use strict';\s*\/\*[\s\S]*?\*\/\s*if \(true\) return;\s*const TAG = '\[UA-AI\]';/.test(iife), 'the AI Answer Generator module returns before doing anything');
 }
 
-console.log(`  v17.72-76: ${pass} passed, ${fail} failed`);
+console.log('v17.77 — answers built from your profile (ATS ranking)');
+{
+  const line = (re) => src.split('\n').find((l) => re.test(l));
+  const lib = {};
+  new Function('exports', `${reLines}
+    const DEFAULTS = { years: '7', cover: 'GENERIC COVER', why: 'GENERIC WHY', salary: '60000' };
+    let _policyProfile = {}; let __co = '', __ti = '';
+    function pageCompanyName() { return __co; } function pageJobTitle() { return __ti; }
+    ${body('monthIndexOf')}${body('profileRoles')}${body('careerYears')}${body('profileSkills')}
+    ${line(/^  function listJoin\(/)}
+    ${body('profileFactsText')}${body('profileCoverText')}${body('defaultCover')}${body('elaborateAnswer')}
+    ${line(/^  const SALARY_NEGOTIABLE = /)}
+    ${body('salaryNegotiableFor')}${body('yearsAnswer')}${body('whyAnswer')}
+    Object.assign(exports, { careerYears, yearsAnswer, profileFactsText, defaultCover, elaborateAnswer, salaryNegotiableFor, whyAnswer, SALARY_NEGOTIABLE,
+      set: (p, co, ti) => { _policyProfile = p; __co = co || ''; __ti = ti || ''; } });`)(lib);
+  const NOW = new Date(2026, 10, 25);
+  const P = {
+    work_experience: [
+      { title: 'Senior Data Engineer', company: 'Acme', start_date: '2021-03', is_current: true, description: 'Built Spark pipelines on AWS' },
+      { title: 'Data Engineer', company: 'Globex', start_date: '2017-01', end_date: '2021-06', description: 'SQL and Python ETL' },
+    ],
+    work_experiences: [{ title: 'Data Engineer', company: 'Globex', from: '2017-01', to: '2021-06' }],
+    skills: 'Python, SQL, Spark, AWS',
+    education: [{ school: 'Trinity College Dublin', degree: 'BSc Computer Science' }],
+  };
+  ok(lib.careerYears(P, NOW) === 9, 'career years: 2017-01 → now, the overlapping 2021 months counted once (9)');
+  ok(lib.careerYears({ work_experience: [{ company: 'A', start_date: 'Jan 2020', end_date: '12/2022' }] }, NOW) === 3, '"Jan 2020" and "12/2022" read as dates');
+  ok(lib.careerYears({ work_experience: [{ company: 'A' }] }, NOW) === 0, 'no dates → 0 (nothing invented)');
+  ok(lib.yearsAnswer({ years: '12', ...P }) === '12', 'the number in your profile editor still wins');
+  ok(lib.yearsAnswer({ work_experience: [{ company: 'A', start_date: '2020-01', end_date: '2023-01' }] }) === '3', 'else your work history');
+  ok(lib.yearsAnswer({}) === '7', 'else the default, only when there are no dates');
+
+  const f = lib.profileFactsText(P);
+  ok(/Senior Data Engineer at Acme/.test(f) && /before that at Globex/.test(f) && /Python, SQL, Spark and AWS/.test(f) && /BSc Computer Science from Trinity College Dublin/.test(f), 'facts: your title, employers, skills and degree');
+  lib.set(P, 'Stripe', 'Data Engineer');
+  const cov = lib.defaultCover(P);
+  ok(/^I am applying for the Data Engineer role at Stripe\./.test(cov) && cov.includes('Acme') && !cov.includes('GENERIC'), 'cover letter: names the role and company, then your facts');
+  ok(lib.defaultCover({}) === 'GENERIC COVER', 'empty profile → the old neutral line');
+  const why = lib.whyAnswer();
+  ok(why.includes('Stripe') && why.includes('Acme') && !/production systems/.test(why), '"why us": the company plus your background, no stock claim');
+
+  const kafka = lib.elaborateAnswer('Kafka', P);
+  ok(!/worked with Kafka|Kafka is one of/.test(kafka) && kafka.includes('Acme'), 'elaborate on Kafka (not in profile) → your background, no claim about Kafka');
+  ok(/^I have worked with Spark as Senior Data Engineer at Acme/.test(lib.elaborateAnswer('Spark', P)), 'elaborate on Spark → where your profile shows it');
+  ok(/^SQL is one of the skills/.test(lib.elaborateAnswer('SQL', { skills: 'SQL' })), 'a listed skill is named as a skill');
+  ok(!/hands-on, professional experience with/.test(src), 'the made-up "hands-on experience with <topic>" sentence is gone');
+
+  const el = (tag, type, attrs = {}) => ({ tagName: tag, type, getAttribute: (k) => attrs[k] || null });
+  const S = 'What are your salary expectations?';
+  ok(lib.salaryNegotiableFor(S, el('TEXTAREA'), {}) && lib.salaryNegotiableFor(S, el('INPUT', 'text'), {}), 'salary in a text box → Negotiable');
+  ok(!lib.salaryNegotiableFor(S, el('INPUT', 'number'), {}) && !lib.salaryNegotiableFor(S, el('INPUT', 'text', { inputmode: 'numeric' }), {}), 'number boxes keep a figure');
+  ok(!lib.salaryNegotiableFor('Expected salary (numbers only)', el('INPUT', 'text'), {}), '"numbers only" keeps a figure');
+  ok(!lib.salaryNegotiableFor(S, el('INPUT', 'text'), { expected_salary: '75000' }), 'your own figure is used when your profile has one');
+  ok(!lib.salaryNegotiableFor('Salary currency', el('INPUT', 'text'), {}), 'salary currency / period are not the amount');
+  ok(/if \(\(!v \|\| v === String\(DEFAULTS\.salary\)\) && el && salaryNegotiableFor\(label, el, p\)\) return SALARY_NEGOTIABLE;/.test(src), 'wired into every filler (refineAnswerForControl)');
+  ok(/salaryNegotiableFor\(label, null, p\)\) return SALARY_NEGOTIABLE;/.test(src), '…and the Workday engine');
+
+  ok(/window\.__uaWdYears = \(\) =>/.test(src) && /window\.__uaWdYears\(\)/.test(eng), 'Workday engine asks the extension for your years');
+  const yf = eng.slice(eng.indexOf('function yearsOfExperience('), eng.indexOf('function bucketFor('));
+  const yoe = new Function(yf + '\nreturn yearsOfExperience;')();
+  const wp = { skills: ['python'], work: [
+    { title: 'Engineer', bullets: ['python'], start: '2016-01', end: '2020-01' },
+    { title: 'Manager', bullets: [], start: '2019-01', current: true }] };
+  const want = Math.floor(((new Date().getFullYear() * 12 + new Date().getMonth()) - (2016 * 12)) / 12);
+  ok(yoe(wp, 'Years of Python experience') === want, 'engine: total career years with overlaps merged, not per-skill (' + want + ')');
+}
+
+console.log(`  v17.72-77: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

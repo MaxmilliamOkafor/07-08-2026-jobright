@@ -1336,12 +1336,146 @@
       : `${p2(n.getMonth() + 1)}${sep}${p2(n.getDate())}${sep}${n.getFullYear()}`;
   }
   function isDateText(v) { return /^\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/.]\d{1,2}[\/.]\d{4})\s*$/.test(String(v || '')); }
+  /* ── v17.77 — answers built from YOUR profile, not one line for everyone ──
+     You chose (25 Nov 2026): years = your real total career years; salary
+     text boxes say "Negotiable" when your profile has no figure. The cover
+     letter, "why us" and "elaborate on X" answers only state facts your
+     profile holds — employers, titles, skills, degree — and never claim
+     experience with something your profile does not mention. */
+  const MONTHS_RE = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{4})\b/i;
+  function monthIndexOf(v) {
+    const s = String(v || '').trim();
+    if (!s) return null;
+    let m = /^(\d{4})-(\d{1,2})/.exec(s);
+    if (m) return +m[1] * 12 + (+m[2] - 1);
+    m = /^(\d{1,2})[\/.-](\d{4})$/.exec(s) || /^\d{1,2}[\/.-](\d{1,2})[\/.-](\d{4})$/.exec(s);
+    if (m) return +m[2] * 12 + (+m[1] - 1);
+    m = MONTHS_RE.exec(s);
+    if (m) return +m[2] * 12 + ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(m[1].slice(0, 3).toLowerCase());
+    m = /\b(19|20)\d{2}\b/.exec(s);
+    return m ? +m[0] * 12 : null;
+  }
+  function profileRoles(p) {
+    const seen = new Set(), out = [];
+    for (const w of [].concat((p && p.work_experience) || [], (p && p.work_experiences) || [])) {
+      if (!w || !w.company) continue;
+      const key = (String(w.company) + '|' + String(w.title || '')).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ title: String(w.title || '').trim(), company: String(w.company || '').trim(), description: String(w.description || ''),
+        start: w.start_date || w.from || '', end: w.end_date || w.to || '', current: !!(w.is_current || w.current) });
+    }
+    return out;
+  }
+  // Total career years from your roles, overlapping roles counted once. 0 when the dates are missing.
+  function careerYears(p, now = new Date()) {
+    const nowIdx = now.getFullYear() * 12 + now.getMonth();
+    const spans = [];
+    for (const r of profileRoles(p)) {
+      const a = monthIndexOf(r.start);
+      if (a == null) continue;
+      const b = r.current ? nowIdx : monthIndexOf(r.end);
+      if (b == null || b < a) continue;
+      spans.push([a, Math.min(b, nowIdx)]);
+    }
+    spans.sort((x, y) => x[0] - y[0]);
+    let total = 0, cur = null;
+    for (const s of spans) {
+      if (!cur || s[0] > cur[1]) { if (cur) total += cur[1] - cur[0] + 1; cur = s.slice(); }
+      else cur[1] = Math.max(cur[1], s[1]);
+    }
+    if (cur) total += cur[1] - cur[0] + 1;
+    return Math.floor(total / 12);
+  }
+  function profileSkills(p) {
+    const raw = p && p.skills;
+    const list = Array.isArray(raw) ? raw.map((s) => (s && typeof s === 'object' ? s.name : s)) : String(raw || '').split(/[,;\n]/);
+    return list.map((s) => String(s || '').trim()).filter((s) => s.length > 1 && s.length < 40);
+  }
+  function listJoin(a) { return a.length <= 1 ? (a[0] || '') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]; }
+  // "I have N years of experience, most recently as X at Y, …" — only what the profile says.
+  function profileFactsText(p) {
+    const roles = profileRoles(p);
+    const yrs = careerYears(p);
+    const out = [];
+    const cur = roles[0] || (p && p.current_company ? { title: p.current_title || '', company: p.current_company } : null);
+    if (cur && cur.company) {
+      const lead = yrs >= 1 ? `I have ${yrs} year${yrs === 1 ? '' : 's'} of professional experience, most recently` : 'Most recently, I have worked';
+      let s = `${lead}${cur.title ? ' as ' + cur.title : ''} at ${cur.company}`;
+      const before = [...new Set(roles.slice(1).map((r) => r.company))].filter((c) => c && c !== cur.company).slice(0, 3);
+      if (before.length) s += `, and before that at ${listJoin(before)}`;
+      out.push(s + '.');
+    } else if (yrs >= 1) out.push(`I have ${yrs} years of professional experience.`);
+    const sk = profileSkills(p).slice(0, 5);
+    if (sk.length) out.push(`My skills include ${listJoin(sk)}.`);
+    const edu = (p && Array.isArray(p.education) && p.education[0]) || null;
+    const school = (edu && edu.school) || (p && p.school) || '';
+    const degree = (edu && edu.degree) || (p && p.degree) || '';
+    if (school) out.push(degree ? `I hold a ${degree} from ${school}.` : `I studied at ${school}.`);
+    return out.join(' ');
+  }
+  function profileCoverText(p, opts) {
+    const facts = profileFactsText(p);
+    if (!facts) return '';
+    const company = (opts && opts.company) || '', title = (opts && opts.title) || '';
+    const opener = title && company ? `I am applying for the ${title} role at ${company}. `
+      : company ? `I am writing to apply to ${company}. ` : title ? `I am applying for the ${title} role. ` : '';
+    return `${opener}${facts} I would welcome the opportunity to discuss how I can contribute to ${company || 'your team'}.`;
+  }
+  // Your cover letter if you wrote one; else one built from your profile; the old line only when the profile is empty.
+  function defaultCover(p) {
+    let company = '', title = '';
+    try { company = String(pageCompanyName() || '').trim(); } catch (_) {}
+    try { title = String(pageJobTitle() || '').trim(); } catch (_) {}
+    if (company.length > 60) company = '';
+    if (title.length > 80) title = '';
+    return profileCoverText(p || _policyProfile || {}, { company, title }) || DEFAULTS.cover;
+  }
+  // "Please elaborate on your experience with X": where your profile shows X, else your background with no claim about X.
+  function elaborateAnswer(topic, p) {
+    p = p || {};
+    const t = String(topic || '').toLowerCase().trim();
+    const facts = profileFactsText(p);
+    if (t.length >= 2) {
+      const words = t.split(/[^a-z0-9+#.]+/).filter((w) => w.length >= 3 && !/^(your|with|and|the|experience|using|working|work|skills?|knowledge|any|have|you)$/.test(w));
+      const hit = (s) => { s = String(s || '').toLowerCase(); return words.length > 0 && words.every((w) => s.includes(w)); };
+      const where = profileRoles(p).filter((r) => hit(r.title + ' ' + r.description)).slice(0, 2);
+      if (where.length) return `I have worked with ${topic} as ${listJoin(where.map((r) => (r.title ? r.title + ' at ' : '') + r.company))}. ${facts}`.trim();
+      if (profileSkills(p).some((s) => hit(s))) return `${topic} is one of the skills I use in my work. ${facts}`.trim();
+    }
+    return facts || DEFAULTS.cover;
+  }
+  // Salary in a free-text box with no figure in your profile: "Negotiable", unless the question asks for a number.
+  const SALARY_NEGOTIABLE = 'Negotiable — in line with the market rate for this role';
+  const SALARY_Q_RE = /\b(salary|compensation|remuneration|pay expectations?|desired pay|expected pay|pay range)\b/i;
+  function salaryNegotiableFor(label, el, p) {
+    if (p && (p.expected_salary || p.desired_salary || p.salary_expectation)) return false;
+    const q = String(label || '');
+    if (!SALARY_Q_RE.test(q) || /\b(currency|period|frequency|type|basis|hourly or)\b/i.test(q)) return false;
+    if (/\b(number|numeric|digits|figure|amount|numbers only)\b/i.test(q)) return false;
+    if (!el) return true;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName !== 'INPUT') return false;
+    const ty = String(el.type || 'text').toLowerCase();
+    if (ty !== 'text' && ty !== 'search') return false;
+    if (/numeric|decimal/i.test(el.getAttribute('inputmode') || '')) return false;
+    if (/\\d|\[0-9\]/.test(el.getAttribute('pattern') || '')) return false;
+    return true;
+  }
   // "Why <company>?" — named, not the one generic line every form gets.
   function whyAnswer() {
     let co = '';
     try { co = String(pageCompanyName() || '').trim(); } catch (_) {}
-    if (!co || co.length > 40) return DEFAULTS.why;
-    return `I'm drawn to ${co}'s mission and the chance to work on problems that genuinely matter. My experience building and shipping production systems maps closely to this role, and I would welcome the opportunity to contribute to the team and grow with it.`;
+    if (co.length > 40) co = '';
+    let title = '';
+    try { title = String(pageJobTitle() || '').trim(); } catch (_) {}
+    if (title.length > 80) title = '';
+    /* v17.77 — what YOUR profile says, not a claim about "production systems"
+       made for everyone. Generic text only when the profile is empty. */
+    const facts = profileFactsText(_policyProfile || {});
+    if (!facts) return co ? `I'm drawn to ${co}'s work and the chance to contribute to it${title ? ' as ' + title : ''}. I would welcome the opportunity to join the team and grow with it.` : DEFAULTS.why;
+    const lead = co ? `I'm drawn to ${co}${title ? ' and this ' + title + ' role' : ''} because it builds directly on my background.` : `This ${title ? title + ' role' : 'role'} builds directly on my background.`;
+    return `${lead} ${facts} I would welcome the opportunity to contribute to ${co || 'the team'} and grow with it.`;
   }
   function pageCompanyName() {
     // The queue knows it when the CSV carried it.
@@ -1592,8 +1726,8 @@
     if (/signature|sign here|type your (full )?name|e-?sign/.test(l) && !/upload|image|file/.test(l))
       return `${p.first_name || p.firstName || ''} ${p.last_name || p.lastName || ''}`.trim();
     if (/today.?s date|date signed|signature date|current date|date of (signature|application)/.test(l)) return '__TODAY__';
-    if (/cover.?letter|motivation|additional.?info|message.?to/.test(l)) return p.cover_letter || DEFAULTS.cover;
-    if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || DEFAULTS.cover;
+    if (/cover.?letter|motivation|additional.?info|message.?to/.test(l)) return p.cover_letter || defaultCover(p);
+    if (/summary|about.?(yourself|you|me)|bio|objective/.test(l)) return p.summary || p.cover_letter || profileFactsText(p) || defaultCover(p);
     /* "Why Anthropic?" names the company and nothing else, so it matched none of
        these words and a REQUIRED question went out as "N/A". */
     if (/why.*(compan|role|want|interest|position|join|work (here|with us|for us|at))/.test(l) ||
@@ -1694,7 +1828,7 @@
     if (/skills|technical.?skills|key.?skills/.test(l)) return p.skills || '';
     if (/\bprefix\b|salutation|honorific/.test(l)) return p.prefix || '';
     if (/\bsuffix\b|name.?suffix/.test(l)) return p.suffix || '';
-    if (/number.*years|how.*many.*years/.test(l)) return DEFAULTS.years;
+    if (/number.*years|how.*many.*years/.test(l)) return yearsAnswer(p);
     if (/proficiency|skill.?level/.test(l)) return 'Advanced';
     if (/hear.?about.*company|how.*find.*us|job.?source/.test(l)) return DEFAULTS.howHeard;
     if (/social.?security|ssn|tax.?id/.test(l)) return '';
@@ -1755,12 +1889,12 @@
   /* ── YOUR KNOCKOUT ANSWERS — one rule, every ATS, every filler ─────────────
      A wrong knockout answer ranks an application at the bottom for good, so
      these are fixed rather than guessed:
-       • any years-of-experience question → 7 (DEFAULTS.years). The only
-         override is a number YOU put in this extension's profile editor
-         ("Years Experience"); years merged in from other stored data, a count
-         worked out from your roles (the Workday engine), or Jobright's guess
-         never lower it.
-       • "Do you have N+ years of …?" → Yes when 7 ≥ N.
+       • any years-of-experience question → your TOTAL career years (v17.77,
+         your choice): a number YOU put in this extension's profile editor
+         ("Years Experience") first, else the years worked out from your work
+         history (overlapping roles counted once), else DEFAULTS.years when
+         the history has no dates. Every filler and the Workday engine use it.
+       • "Do you have N+ years of …?" → Yes when your years ≥ N.
        • "Do you hold an AWS Certified … certification?" → Yes.
      Your own manual answer to that exact question still wins; everything else
      — saved responses, learned answers, the deciders, the Workday engine, and
@@ -1768,7 +1902,10 @@
      re-checks the page before every submit. */
   function yearsAnswer(p) {
     const own = parseInt(String((p && p.years) || '').trim(), 10);
-    return own > 0 && own < 60 ? String(own) : DEFAULTS.years;
+    if (own > 0 && own < 60) return String(own);
+    let cy = 0;
+    try { cy = careerYears(p || {}); } catch (_) {}
+    return cy >= 1 && cy < 60 ? String(cy) : DEFAULTS.years;
   }
   const AWS_CERT_Q_RE = /\b(aws|amazon web services)\b[^?]{0,90}\bcertif|\bcertif[^?]{0,60}\b(aws|amazon web services)\b/i;
   const ASKS_LIST_RE = /\b(which|what|list|name|specify|describe|explain|provide|details?|when did|expir|number|id\b|credential id|date)\b/i;
@@ -1802,6 +1939,9 @@
     let q = String(label || '');
     try { if (el) q += ' ' + (getFullQuestionText(el) || ''); } catch (_) {}
     q = q.replace(/\s+/g, ' ');
+    // v17.77 — a salary TEXT box with no figure in your profile: "Negotiable"
+    // instead of a made-up number. Number-only boxes keep the figure.
+    if ((!v || v === String(DEFAULTS.salary)) && el && salaryNegotiableFor(label, el, p)) return SALARY_NEGOTIABLE;
     if (!v) {
       /* Nothing resolved. Leaving it blank is normally right — inventing answers
          is how a form ends up full of nonsense. "How many years…" is the
@@ -4998,7 +5138,7 @@
       if (deepQueryAll('input[type="file"]', block, 10).some((f) => f.files && f.files.length)) return false;
     } catch (_) {}
 
-    const letter = tailorCoverText(p.cover_letter || DEFAULTS.cover,
+    const letter = tailorCoverText(p.cover_letter || defaultCover(p),
       { company: pageCompanyName(), title: pageJobTitle() });
 
     // 1. The manual-entry path, which is what a person would use.
@@ -8054,6 +8194,7 @@
      answer as on every other ATS. A question you answered by hand is left to
      your answer. "Will you now or in the future require sponsorship…? (You must
      answer "Yes" if your visa is tied to your partner's…)" came back Yes. */
+  window.__uaWdYears = () => { try { return yearsAnswer(_policyProfile || {}); } catch (_) { return ''; } };
   window.__uaWdKnockout = (label) => {
     try {
       if (isManualAnswer(label, null)) return null;
@@ -8088,6 +8229,7 @@
       }
       let raw = '';
       try { raw = guessFieldValue(label, p, null); } catch (_) { raw = guessValue(label, p) || ''; }
+      if (!texts.length && (!raw || raw === String(DEFAULTS.salary)) && kind !== 'number' && salaryNegotiableFor(label, null, p)) return SALARY_NEGOTIABLE;
       if (!texts.length) return raw && !/^n\/?a$/i.test(raw) ? raw : null;
       // Any language first ("Wurden Sie jemals … verurteilt?" → Nein): the Workday chooser.
       try {
@@ -10888,7 +11030,7 @@
       'input[data-ui="address"],input[name="address"],input[aria-label*="Address" i]': p.address || p.city || '',
       'input[data-ui="city"],input[name="city"],input[aria-label*="City" i]': p.city || '',
       'input[name="region"],input[aria-label*="State" i],input[aria-label*="Estado" i]': p.state || p.region || '',
-      'textarea[data-ui="cover_letter"],textarea[name="cover_letter"],textarea[aria-label*="cover" i]': p.cover_letter || DEFAULTS.cover,
+      'textarea[data-ui="cover_letter"],textarea[name="cover_letter"],textarea[aria-label*="cover" i]': p.cover_letter || defaultCover(p),
     };
     for (const [sels, val] of Object.entries(wkFields)) {
       if (!val) continue;
@@ -10985,9 +11127,8 @@
       let val = findSavedResponseMatch(getFullQuestionText(ta)) || getLearnedAnswer(lbl, ta, true);
       if (!val) {
         const topic = lbl.replace(/please\s+elaborate\s+on\s+(your\s+)?/i, '').replace(/[?.]+$/, '').trim();
-        val = topic
-          ? `I have hands-on, professional experience with ${topic.slice(0, 140)}. In previous roles I applied these skills to deliver reliable, high-quality results, and I am confident I can bring the same value to your team.`
-          : DEFAULTS.cover;
+        // v17.77 — only what your profile shows; no claimed experience with the topic.
+        val = elaborateAnswer(topic.slice(0, 140), p);
       }
       ta.focus({ preventScroll: true }); nativeSet(ta, val); await sleep(80);
     }
@@ -11090,7 +11231,7 @@
       'input[name="phone"],input[type="tel"]': p.phone || '',
       'input[name="address"],input[placeholder*="address" i]': p.address || '',
       'input[name="headline"],input[placeholder*="headline" i]': p.current_title || p.title || '',
-      'textarea[name="summary"],textarea[placeholder*="summary" i]': p.summary || p.cover_letter || DEFAULTS.cover,
+      'textarea[name="summary"],textarea[placeholder*="summary" i]': p.summary || p.cover_letter || profileFactsText(p) || defaultCover(p),
     };
     for (const [sels, val] of Object.entries(brFields)) {
       if (!val) continue;
@@ -12018,9 +12159,9 @@
         try { co = pageCompanyName() || ''; } catch (_) {}
         const filler = [
           (p.cover_letter || p.cover || '').trim(),
-          DEFAULTS.why,
-          `My experience maps closely to what this role needs, and I am confident I could contribute quickly${co ? ' at ' + co : ''}.`,
-          DEFAULTS.cover,
+          whyAnswer(),
+          `I am confident I could contribute quickly${co ? ' at ' + co : ''}.`,
+          defaultCover(p),
           'I would welcome the chance to discuss how I can help the team.',
         ].filter(Boolean);
         for (const f of filler) if (t.length < lim && !t.includes(f)) t = (t ? t + ' ' : '') + f;
