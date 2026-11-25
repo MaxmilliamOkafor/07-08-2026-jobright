@@ -122,5 +122,16 @@ console.log('v17.75 — six Yes answers from LazyApply\'s 23 Nov log that are No
   ok(/locatedInAnswer\(l\) \|\| packKnockoutNo\(l\)/.test(src), 'the Workday engine gets these through the knockout hook');
 }
 
-console.log(`  v17.72-75: ${pass} passed, ${fail} failed`);
+console.log('v17.76 — Intel (Workday) and the AI Answer Generator');
+{
+  const IP = '4. Do you own, control, or have an economic interest in any intellectual property rights (patents, trademarks, or copyrights)?';
+  ok(d(IP) === 'no', 'intellectual property rights → No (was Yes)');
+  ok(make({ patents: 'US 1234567' })(IP) === 'yes', '…Yes with patents in your profile');
+  ok(d('2. Are you an immediate family member of anyone who is based out of the San Jose, California office of Ernst & Young?') === 'no', 'immediate family member of anyone at EY → No (was Yes)');
+  const aiStart = src.indexOf('// ===================== BRING-YOUR-OWN-AI ANSWER GENERATOR');
+  const iife = src.slice(src.indexOf('(function () {', aiStart), src.indexOf('(function () {', aiStart) + 900);
+  ok(aiStart > 0 && /'use strict';\s*\/\*[\s\S]*?\*\/\s*if \(true\) return;\s*const TAG = '\[UA-AI\]';/.test(iife), 'the AI Answer Generator module returns before doing anything');
+}
+
+console.log(`  v17.72-76: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

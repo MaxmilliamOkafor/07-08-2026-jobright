@@ -5376,3 +5376,21 @@ All six reach the Workday engine through `__uaWdKnockout`. Tests are in
 Not changed, because nothing in your profile says what is true:
 - "Do you hold a valid drivers licence…?"
 - "Are you a national of the country where you are applying?"
+
+## v17.76 — no AI Answer Generator; two Intel questions
+
+- **The "🤖 AI Answer Generator" pop-up is gone** (your request, 25 Nov). It
+  came from the bring-your-own-AI-key module in `ua-enhancement.js`. The
+  module now returns before doing anything, so there are no "✨ AI" buttons on
+  text boxes, no settings pop-up and no Ctrl+Shift+A. The pop-up appeared
+  whenever a "✨ AI" button was clicked with no key saved, and an autofill
+  tool clicking buttons does exactly that.
+- **Intel (Workday), both answered Yes by our rules:**
+  - "Do you own, control, or have an economic interest in any intellectual
+    property rights (patents, trademarks, or copyrights)?" is now No, unless
+    your profile lists patents. Questions about IP *experience* are not
+    affected.
+  - "Are you an immediate family member of anyone who is based out of the San
+    Jose, California office of Ernst & Young?" is now No.
+
+Tests are in `tests/v1772.test.js`, in the v17.76 section.

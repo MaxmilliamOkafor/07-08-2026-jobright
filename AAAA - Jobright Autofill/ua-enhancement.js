@@ -2346,6 +2346,12 @@
         return String(pp.referrer || pp.referral || pp.referred_by || '').trim() ? 'yes' : 'no';
       // "Are you aware of any ongoing negotiations, tenders, RFPs, or other procurements involving … your current employer?" (Marsh)
       if (/\b(aware of|involved in|party to)\b[^?]{0,40}\b(negotiations?|tenders?|rfps?|procurements?|bids?)\b/.test(q)) return 'no';
+      /* v17.76 — Intel (Workday), 25 Nov: both answered Yes here.
+         "Do you own, control, or have an economic interest in any intellectual property rights (patents, trademarks, or copyrights)?"
+         "Are you an immediate family member of anyone who is based out of the San Jose, California office of Ernst & Young?" */
+      if (/\b(own|control|hold|have)\b[^?]{0,60}\b(intellectual property|patents?|trademarks?|copyrights?)\b/.test(q) && !/\b(experience|familiar|knowledge|worked on|work with)\b/.test(q))
+        return String(pp.patents || pp.intellectual_property || '').trim() ? 'yes' : 'no';
+      if (/\b(are you|is any)\b[^?]{0,20}\b(an? )?(immediate |close )?(family member|relative)s?\b[^?]{0,10}\bof\b/.test(q)) return 'no';
       // Senior public office: "Cabinet-level officer … Senate/House Member", minister, head of state, member of parliament.
       if (/\b(cabinet[- ]level|senate|house member|member of (the )?(parliament|congress|senate)|head of (state|government)|minister|ambassador|politically exposed|executive branch)\b/.test(q)) return 'no';
       // "Within the past 5 years, were you a CIO/Deputy CIO; CISO/Deputy CISO …?"
@@ -21774,6 +21780,11 @@ a[href*="/checkout" i],
 //   provider's API endpoint.
 (function () {
   'use strict';
+  /* v17.76 — removed at your request (25 Nov 2026): "what is this prompt remove
+     it — AI Answer Generator". No "✨ AI" buttons on text boxes, no settings
+     pop-up, no Ctrl+Shift+A. The pop-up opened whenever a "✨ AI" button was
+     clicked (an autofill tool clicking buttons will do it) with no key saved. */
+  if (true) return;
   const TAG = '[UA-AI]';
   const log = (...a) => { try { console.log(TAG, ...a); } catch (_) {} };
   // PERF GUARD: this module observes the whole document to inject AI buttons on answer
