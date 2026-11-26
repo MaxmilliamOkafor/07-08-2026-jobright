@@ -1825,11 +1825,29 @@
     const [by, bm] = b ? b.split("-").map(Number) : [now.getFullYear(), now.getMonth() + 1];
     return Math.max(0, (by - ay) * 12 + ((bm || 1) - (am || 1)));
   }
-  function yearsOfExperience(p, label) {
-    const l = label.toLowerCase();
-    const skill = p.skills.find((s) => s.length > 1 && l.includes(s.toLowerCase()));
-    const roles = skill ? p.work.filter((w) => `${w.title} ${w.bullets.join(" ")}`.toLowerCase().includes(skill.toLowerCase())) : p.work;
-    const months = roles.reduce((m, w) => m + (w.start ? monthsBetween(w.start, w.current ? void 0 : w.end) : 0), 0);
+  /* v17.77 — your TOTAL career years, the same number every other form gets:
+     the extension's own answer first (your profile editor figure, else your
+     work history), else your roles here with overlapping roles counted once.
+     It used to count only roles mentioning the skill in the question, so a
+     9-year career could answer "2" to "years of Python". */
+  function yearsOfExperience(p, _label) {
+    try {
+      if (typeof window !== "undefined" && typeof window.__uaWdYears === "function") {
+        const own = parseInt(window.__uaWdYears(), 10);
+        if (own > 0 && own < 60) return own;
+      }
+    } catch {
+    }
+    const idx = (s) => { const [y, m] = String(s).split("-").map(Number); return y * 12 + ((m || 1) - 1); };
+    const now = /* @__PURE__ */ new Date(), nowIdx = now.getFullYear() * 12 + now.getMonth();
+    const spans = p.work.filter((w) => w.start).map((w) => [idx(w.start), w.current || !w.end ? nowIdx : idx(w.end)])
+      .filter((s) => !isNaN(s[0]) && !isNaN(s[1]) && s[0] <= s[1]).sort((a, b) => a[0] - b[0]);
+    let months = 0, cur = null;
+    for (const s of spans) {
+      if (!cur || s[0] > cur[1]) { if (cur) months += cur[1] - cur[0]; cur = s.slice(); }
+      else cur[1] = Math.max(cur[1], s[1]);
+    }
+    if (cur) months += cur[1] - cur[0];
     return Math.floor(months / 12);
   }
   function bucketFor(n, options) {
@@ -1882,8 +1900,11 @@
     return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
   }
   var RULES = [
-    [Q.sponsorship, (_l, c) => yesNo(c.profile.answers.needsSponsorship)],
-    [Q.authorized, (l, c) => yesNo(authorizedFor(l, c))],
+    /* [ua] v17.73 — your answer: no sponsorship needed in any country. So every
+       sponsorship question is No and every right-to-work question Yes, whatever
+       country it names or the saved profile says. */
+    [Q.sponsorship, () => "No"],
+    [Q.authorized, () => "Yes"],
     [Q.adult, () => "Yes"],
     [Q.salary, (_l, c) => c.profile.answers.salaryExpectation || null],
     [Q.notice, (_l, c) => c.profile.answers.noticePeriod || null],
@@ -1929,6 +1950,14 @@
   }
   async function resolveAnswer(label, kind, options, ctx, llm) {
     const norm2 = normalizeLabel(label);
+    /* [ua] v17.72: a yes/no question with one safe answer (sponsorship, right to
+       work, a second citizenship, export control) is decided by the host's rules
+       first — before a saved answer or the AI could put "Yes" on it. */
+    if (hooks.knockout && options.length) {
+      const k = await Promise.resolve(hooks.knockout(label)).catch(() => null);
+      const hit = k ? options.find((o) => similarity(o, k) >= 0.85) : null;
+      if (hit) return { answer: hit, source: "rule" };
+    }
     const bank = await getAnswerBank();
     const saved = bank[norm2] ?? Object.values(bank).find((e) => similarity(normalizeLabel(e.label), norm2) >= 0.92);
     if (saved && (!options.length || options.some((o) => similarity(o, saved.answer) >= 0.85))) {
@@ -3677,6 +3706,23 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     if (/^(yes|i have|i am)/.test(s)) return "yes";
     return "decline";
   }
+  /* [ua] v17.74 — Workday's "County" is required on Irish addresses (ING, Equinix,
+     MSD: LazyApply's 17 Nov log stopped 21 jobs on it). With no county in your
+     profile, the county your Irish town is in: its own name for the cities
+     that share one, Co. Dublin for the Dublin suburbs. Nothing for others. */
+  const IE_SAME_NAME_COUNTIES = ['dublin', 'cork', 'galway', 'limerick', 'waterford', 'kilkenny', 'sligo', 'wexford', 'carlow', 'longford', 'roscommon', 'monaghan', 'cavan', 'kildare', 'wicklow'];
+  const IE_DUBLIN_TOWNS = ['lucan', 'swords', 'tallaght', 'blanchardstown', 'clondalkin', 'dun laoghaire', 'dún laoghaire', 'malahide', 'balbriggan', 'rathfarnham', 'dundrum', 'howth', 'skerries', 'donabate', 'castleknock', 'finglas', 'santry', 'sandyford', 'stillorgan', 'blackrock', 'dalkey', 'killiney', 'portmarnock', 'rush', 'lusk', 'ballyfermot', 'crumlin', 'rathmines', 'ranelagh', 'drumcondra', 'clontarf', 'raheny', 'ballsbridge', 'citywest', 'saggart', 'rathcoole', 'newcastle', 'palmerstown', 'chapelizod', 'glasnevin', 'cabra', 'artane', 'coolock', 'donnybrook', 'terenure', 'templeogue', 'firhouse', 'knocklyon', 'ballinteer', 'leopardstown', 'cherrywood', 'shankill'];
+  function irishCountyFor(country, ...places) {
+    if (country && !/^(ie|irl|ireland|republic of ireland|éire|eire)$/i.test(String(country).trim())) return '';
+    for (const raw of places) {
+      const t = String(raw || '').toLowerCase().replace(/^(co\.?|county)\s+/, '').replace(/[,.]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!t) continue;
+      const first = t.split(' ').length <= 3 ? t : '';
+      if (IE_SAME_NAME_COUNTIES.includes(first)) return first.charAt(0).toUpperCase() + first.slice(1);
+      if (IE_DUBLIN_TOWNS.includes(first) || /\bdublin \d{1,2}w?\b|^d\d{1,2}w?$/.test(t)) return 'Dublin';
+    }
+    return '';
+  }
   async function buildProfile() {
     const s = await uaProfile();
     const rawCountry = pick(s, "country", "location_country", "country_name");
@@ -3714,7 +3760,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
           line1: pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/)[0],
           line2: pick(s, "address_line_2", "address2") || pick(s, "address", "address_line_1", "address1", "street").split(/\s*[\r\n]+\s*/).slice(1).join(", "),
           city: pick(s, "city"),
-          region: pick(s, "state", "region", "province", "county"),
+          region: pick(s, "state", "region", "province", "county") || irishCountyFor(country, pick(s, "city"), pick(s, "address_line_2", "address2")),
           postalCode: pick(s, "postal_code", "zip", "postcode"),
           country
         },
@@ -3728,7 +3774,8 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       ...hist,
       answers: {
         authorizedCountries: country ? [country] : [],
-        needsSponsorship: /require|need|yes/.test(visa) && !/not require|no sponsorship|does not/.test(visa),
+        // [ua] v17.72: "I don't need sponsorship" / "no visa required" read as needing it.
+        needsSponsorship: /require|need|yes/.test(visa) && !/\b(no|not|never|without)\b|n't\b|\bdont\b|\bdoesnt\b/.test(visa),
         salaryExpectation: pick(s, "expected_salary", "salary"),
         noticePeriod: pick(s, "notice_period", "notice"),
         earliestStartDate: pick(s, "availability", "start_date"),
@@ -3908,6 +3955,9 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       autoSubmit: () => mode.submit,
       ...mode.assist ? { advance: () => false, keepExisting: () => true } : {},
       answer: (label, kind, options) => hostAnswer(label, kind, options, mode),
+      knockout: (label) => {
+        try { return typeof W.__uaWdKnockout === "function" ? W.__uaWdKnockout(label) : null; } catch { return null; }
+      },
       onPage: (run) => onPage(run),
       beforeExperience: () => within(cvReady, 3e4).then(() => void 0),
       onFinish: (run, outcome) => void finish(mode, run, outcome)

@@ -40,6 +40,14 @@ function body(name) {
   if (end < 0) throw new Error('no end for: ' + name);
   return lines.slice(start, end + 1).join('\n');
 }
+// v17.75: locatedInAnswer and the two tables it reads, for sandboxes that build determineYesNo.
+function locLib() {
+  const lines = src.split('\n');
+  const a = lines.findIndex((l) => l.startsWith('  const LOC_COUNTRY_ALIASES = {'));
+  const b = lines.findIndex((l, i) => i > a && l === '  };');
+  const eu = lines.find((l) => l.startsWith('  const LOC_EU = '));
+  return lines.slice(a, b + 1).join('\n') + '\n' + eu + '\n' + body('locatedInAnswer');
+}
 
 /* ── 1. the universal fillers must not use a blind query ──────────────────── */
 console.log('universal fillers see shadow DOM + frames');
@@ -1438,6 +1446,8 @@ new Function('exports', `
   ${body('knockoutPolicy')}
   ${body('safeKnockoutAnswer')}
   ${body('determineYesNo')}
+  ${locLib()}
+  ${body('additionalCitizenshipAnswer')}
   ${body('packKnockoutNo')}
   ${body('workAuthorisationAnswer')}
   ${body('workAuthOptionIndex')}
@@ -1853,7 +1863,7 @@ eq('nor is one already attached',
 eq('the manual box is preferred — it is the path a person would use',
   coverFn.indexOf('MANUAL_ENTRY_RE') < coverFn.indexOf('new File('), true);
 eq('and the letter is addressed to this employer, not generic',
-  /tailorCoverText\(p\.cover_letter \|\| DEFAULTS\.cover,/.test(coverFn), true);
+  /tailorCoverText\(p\.cover_letter \|\| defaultCover\(p\),/.test(coverFn), true);
 eq('otherwise a PDF named after you (plain text only where PDF is not accepted)',
   /new File\(\[textToPdf\(letter\)\], `\$\{who\}_Cover_Letter\.pdf`/.test(coverFn) && /new File\(\[letter\], `\$\{who\}_Cover_Letter\.txt`/.test(coverFn), true);
 eq('and the outcome is recorded either way', /DIAG\('cover\.blocked'/.test(coverFn), true);
@@ -2608,6 +2618,8 @@ console.log('knockout answers are the ones that do not get you rejected');
     ${body('workAuthorisationAnswer')}
     ${body('workAuthOptionIndex')}
     ${body('determineYesNo')}
+    ${locLib()}
+    ${body('additionalCitizenshipAnswer')}
     ${body('packKnockoutNo')}
     exports.d = determineYesNo;
   `)(koCtx2);
@@ -3785,7 +3797,7 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
   try {
     new Function('exports', `
       const getFullQuestionText = () => '', getLabel = () => '', LOG = () => {}, queue = [], workAuthorisationAnswer = () => '';
-      const extractJDCompany = () => exports.company, extractJDTitle = () => '', isFieldRequired = () => false;
+      const extractJDCompany = () => exports.company, extractJDTitle = () => '', isFieldRequired = () => false, _policyProfile = {};
       const location = { hostname: 'job-boards.greenhouse.io', pathname: '/anthropic/jobs/1', search: '', href: 'https://job-boards.greenhouse.io/anthropic/jobs/1' };
       const document = { title: 'Research Engineer - Anthropic', querySelector: () => null, querySelectorAll: () => [] };
       const DEFAULTS = { years: '9', why: 'I admire the company culture and the opportunity to make a meaningful impact.', country: 'United Kingdom', cover: 'c', howHeard: 'LinkedIn', salary: '1' };
@@ -3799,11 +3811,11 @@ console.log('v17.35: Ashby name / Yes-No buttons / picked location, Lever radios
   g.guessValue = gv && ((l, p) => { try { return gv(l, p); } catch (e) { return 'ERR ' + e.message; } });
   if (g.guessValue) {
     eq('Ashby\'s "Name*" gets the full name (the * left it empty)', g.guessValue('Name*', P), 'Max Okafor');
-    eq('"Why Anthropic?" names the company, not the generic line', /Anthropic's mission/.test(g.guessValue('Why Anthropic?', P)), true);
+    eq('"Why Anthropic?" names the company, not the generic line', /Anthropic's work/.test(g.guessValue('Why Anthropic?', P)), true);
     g.company = '';
     eq('with nothing in the description, the board\'s path names the employer (job-boards.greenhouse.io/anthropic)', g.pageCompanyName(), 'Anthropic');
     g.company = 'Anthropic';
-    eq('…but "Why are you leaving your current role?" is not a why-us answer', /mission/.test(g.guessValue('Why are you leaving?', P) || ''), false);
+    eq('…but "Why are you leaving your current role?" is not a why-us answer', /drawn to/.test(g.guessValue('Why are you leaving?', P) || ''), false);
   } else {
     eq('guessValue runs out of the shipped block (' + g.err + ')', false, true);
   }

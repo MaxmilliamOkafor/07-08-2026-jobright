@@ -5273,3 +5273,200 @@ The engine fixes are in `workday-engine/src/workday/steps.ts` and, by hand, in
 `ua-wd-engine.js`. The committed bundle has many changes that never reached the
 TypeScript source, so rebuilding it would undo them. Tests:
 `tests/v1770.test.js`.
+
+## v17.71 — rebased onto Jobright 1.27.0
+
+A larger patch: seven of their files changed and ten are new. All were merged
+by the steps under "Applying the next Jobright patch".
+- **Copied as theirs** (none had edits of ours): `contents`,
+  `applied-success-popup`, `ats-submission-resume`,
+  `clearcompany-submission-attribution`, `global.css`.
+- **New:**
+  - an autofill tutorial page (`tabs/autofill-tutorial.*`) with its sample
+    resume and cover letter (`Alex_Johnson_*.pdf`);
+  - a PDF reader (`pdf.*.js`) and a font (`InterVariable.woff2`);
+  - `mphasis-ripplehire-submission-main.*.js`, injected by their worker.
+  None are content scripts. The tutorial opens only on a fresh install or
+  from their own menus. Reloading an unpacked copy counts as an update, so it
+  never opens during a run.
+- **`helper-app.41ea2652.js`**: theirs, with our two edits re-applied by
+  `node tools/merge-helper-app.js <theirs> <out>`. The minified names changed
+  again, so the script matches the code by shape, not by name.
+- **`static/background/index.js`**: theirs, with our five `importScripts` lines
+  re-appended. The only new tab it opens is the tutorial. Otherwise the counts
+  of `active:!0` (4), `chrome.alarms` (6) and `action.onClicked` (1) are the
+  same, and there are still no `UA_` messages, side panel, context menus or
+  commands.
+- **Manifest:** version 1.27.0 only. Their content scripts, permissions and
+  resources are unchanged. `_metadata/` and their `update_url` were not
+  copied.
+
+On 1.27.0, all unit checks pass, and so do the switch browser test (18/18),
+the leave-page test (11/11) and the DOM units (26/26).
+
+## v17.72 — two Workday questions that are No for you
+
+From two Workday forms (23 Nov), both answered Yes:
+- "Do you hold an ADDITIONAL citizenship, nationality, or permanent residency
+  of any other country that is NOT Iran, Cuba, Syria, or North Korea?"
+- "Will you now or could you in the future require sponsorship to obtain work
+  authorization or to transfer or extend your current visa? (You must answer
+  "Yes" if your current visa is tied to your spouse or partner's visa …)"
+
+Our yes/no rules already said No to both. The Yes came from the Workday
+engine, which consulted its own saved answers, its profile rule and the AI
+before our rules. The fixes:
+- **Our rules first.** `window.__uaWdKnockout` (in `ua-enhancement.js`)
+  answers yes/no questions that have one safe answer: sponsorship, right to
+  work, a second citizenship, export control, and your fixed knockout answers.
+  `resolveAnswer` in `ua-wd-engine.js` asks it before anything else. A
+  question you answered by hand is still left to your answer.
+- **A second citizenship** is now its own rule (`additionalCitizenshipAnswer`).
+  It answers No unless your profile names a second nationality.
+- **Reading your profile:** "needs sponsorship" now takes negation into
+  account, so "I don't need sponsorship" and "no visa required" no longer
+  read as needing it.
+
+The TypeScript source in `workday-engine/` is not changed; the bundle is the
+shipped copy (see v17.70). Tests: `tests/v1772.test.js`.
+
+## v17.73 — no sponsorship needed in any country
+
+Your answer (23 Nov): you need no sponsorship anywhere. Every sponsorship
+question is now No, and every right-to-work question Yes, whatever country it
+names:
+- **The Work Authorization picker** (Ctrl+Shift+W) counts every country as
+  authorised. Before, a country you had not ticked there (the United States,
+  say) turned "Will you require sponsorship?" into **Yes**.
+- **The Workday engine's own rules** answer sponsorship No and authorised Yes
+  outright, instead of going by the saved profile and its country list.
+- The main yes/no rules already ignored the country. Tests are in
+  `tests/v1772.test.js`, in the v17.73 section.
+
+## v17.74 — lessons from LazyApply's 17 Nov log
+
+LazyApply's run that day covered about 700 jobs: 48 completed, 52 reached
+Submit and 656 were skipped. Our extension stood aside during it. These are
+the failures our own runs could hit too (v17.66 and v17.70 already cover
+School, duplicate languages and end-before-start):
+- **"Do you now work or have you ever worked at or for Carrier or any of its
+  subsidiaries?"** Our rules answered **Yes**. It is now Yes only when that
+  company is in your work history (any employer, not just the current one),
+  else No. The Workday engine gets the same answer through `__uaWdKnockout`.
+- **County required on Irish addresses** (ING, Equinix, MSD; 21 jobs stuck).
+  With no county or state in your profile, the county your town is in is used:
+  - its own name for the cities that share one (Dublin, Cork, Galway, Limerick …);
+  - Co. Dublin for the Dublin suburbs (Lucan, Swords, Tallaght …) and "Dublin 15"-style districts;
+  - nothing for any other town, so nothing is guessed.
+
+  This is applied both in `getProfile` and in the Workday engine's profile.
+- **Not changed:** Workday's "Prefix" (7 jobs) is filled only from a prefix
+  in your profile and is never guessed. Wrong-password and verify-account
+  stops were LazyApply's own account problems.
+
+Tests: `tests/v1772.test.js`, in the v17.74 section.
+
+## v17.75 — six wrong Yes answers from LazyApply's 23 Nov log
+
+LazyApply's run on 23 Nov ended with 186 of 189 Workday jobs skipped. I ran
+every question that stopped a job through our yes/no rules, and six came back
+**Yes** when the answer is No for you. Each is now Yes only when your profile
+shows it:
+- "Did someone within Axis recommend this job to you?" and "Have you been
+  referred to us by an employee of …?": Yes only with a referrer in your
+  profile.
+- "Are you aware of any ongoing negotiations, tenders, RFPs, or other
+  procurements involving … your current employer?" (Marsh): No.
+- "…Officer or Cabinet-level officer or above … Senate/House Member",
+  minister, head of state, member of parliament: No.
+- "Within the past 5 years, were you a CIO/Deputy CIO; CISO/Deputy CISO?":
+  Yes only with such a title in your work history.
+- "Are you located in US?": answered from your profile's country
+  (`locatedInAnswer`). EU, Europe and EMEA are understood. A place that is
+  not a country (a city, "commuting distance") is left to the other rules.
+
+All six reach the Workday engine through `__uaWdKnockout`. Tests are in
+`tests/v1772.test.js`, in the v17.75 section.
+
+Not changed, because nothing in your profile says what is true:
+- "Do you hold a valid drivers licence…?"
+- "Are you a national of the country where you are applying?"
+
+## v17.76 — no AI Answer Generator; two Intel questions
+
+- **The "🤖 AI Answer Generator" pop-up is gone** (your request, 25 Nov). It
+  came from the bring-your-own-AI-key module in `ua-enhancement.js`. The
+  module now returns before doing anything, so there are no "✨ AI" buttons on
+  text boxes, no settings pop-up and no Ctrl+Shift+A. The pop-up appeared
+  whenever a "✨ AI" button was clicked with no key saved, and an autofill
+  tool clicking buttons does exactly that.
+- **Intel (Workday), both answered Yes by our rules:**
+  - "Do you own, control, or have an economic interest in any intellectual
+    property rights (patents, trademarks, or copyrights)?" is now No, unless
+    your profile lists patents. Questions about IP *experience* are not
+    affected.
+  - "Are you an immediate family member of anyone who is based out of the San
+    Jose, California office of Ernst & Young?" is now No.
+
+Tests are in `tests/v1772.test.js`, in the v17.76 section.
+
+## v17.77 — answers built from your profile, not one line for everyone
+
+Recruiters' ATS screens rank generic, identical answers low. Your choices
+(25 Nov) are now the rule everywhere, including the Workday engine:
+
+- **Years of experience** is your total career years: the number in the
+  profile editor first, else the years worked out from your work history
+  (overlapping roles counted once), else the old default only when your
+  history has no dates. The Workday engine used to count only the roles that
+  mentioned the skill in the question, so "years of Python" could come out
+  far below your real career.
+- **Salary**, when your profile has no figure: free-text boxes get
+  "Negotiable — in line with the market rate for this role". Number-only
+  boxes, and questions that ask for a number, still get a figure. A figure
+  in your profile is always used as-is.
+- **Cover letter** (when you have not written one), **"Why us?"** and
+  **"Tell us about yourself"** are built from your profile: the role and
+  company, your current title and employer, earlier employers, top skills
+  and degree.
+- **"Please elaborate on your experience with X"** says where your profile
+  shows X (a role or a listed skill). If your profile does not mention X, it
+  gives a factual summary of your background and makes no claim about X. The
+  old sentence that claimed "hands-on, professional experience" with any
+  topic is gone.
+
+The old neutral sentences are used only when your profile is empty.
+
+Tests are in `tests/v1772.test.js`, in the v17.77 section.
+
+## v17.78 — rebased onto Jobright 1.27.2
+
+Merged by the steps under "Applying the next Jobright patch".
+- **Copied as theirs** (none had edits of ours): `contents`, `global.css`, and
+  the autofill tutorial page's script and styles (`tabs/autofill-tutorial.*`).
+- **New:** `resume-preview.fd9379e5.webp`, an image used by their sidebar
+  and tutorial.
+- **`helper-app.41ea2652.js`**: theirs, with our two edits re-applied by
+  `node tools/merge-helper-app.js` (both anchors found exactly once).
+- **`static/background/index.js`**: theirs, with our five `importScripts`
+  lines re-appended.
+  - Their tailor tab ("Generate Your Custom Resume") moved into its own
+    module and now remembers which job each tailor tab belongs to. It still
+    opens through `chrome.tabs.create`, so our guard still decides: it opens
+    only when you press Tailor yourself, or in the background when queue
+    tailoring is on. A refused tab still reaches their `catch` as "not
+    opened".
+  - The only other new tab is their install landing page, reorganised around
+    the tutorial; it opens on a fresh install only.
+  - Unchanged counts: `active:!0` (4), `chrome.alarms` (6),
+    `action.onClicked` (1), page injections (41). There are still no `UA_`
+    messages, side panel, context menus, commands or popups.
+- **Manifest:** version 1.27.2 only. Their content scripts, permissions and
+  resources are unchanged against ours. `_metadata/` and `update_url` were
+  not copied.
+
+On 1.27.2, these pass:
+- all unit checks;
+- the switch browser test, 18/18;
+- the leave-page test, 11/11;
+- the DOM units, 26/26 and 2/2.
