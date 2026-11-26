@@ -8,7 +8,7 @@
 <div id="app"></div>
 <script>
   // ?acct_pw=… : the account was made earlier with a password the extension may not know.
-  const ACCOUNT = { email: 'max.test@example.com', password: new URLSearchParams(location.search).get('acct_pw') || 'JobrightPass1!' };
+  const ACCOUNT = { email: 'max.test@jobapply.test', password: new URLSearchParams(location.search).get('acct_pw') || 'JobrightPass1!' };
   // Like Workday: five refused sign-ins lock the account (kept across reloads of this tab).
   const fails = () => +(sessionStorage.getItem('fx_fails') || 0);
   const app = document.getElementById('app');

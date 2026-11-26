@@ -45,7 +45,9 @@ const T0 = Date.now();
   await panel.evaluate(async ({ pdf, extra, profileExtra }) => {
     await chrome.storage.local.set({
       ua_profile: {
-        first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@example.com', phone: '+44 7700 900123',
+        // Not @example.com: since v17.66 that domain is another tool's placeholder and is
+        // never used for an account (.test is reserved for tests, RFC 2606).
+        first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@jobapply.test', phone: '+44 7700 900123',
         city: 'London', country: 'United Kingdom', address: '1 Grand Canal Square', postal_code: 'D02 P820',
         current_company: 'Acme Cloud', current_title: 'Senior Solutions Architect', school: 'Trinity College Dublin', major: 'Computer Science', work_start_year: '2019', linkedin: 'linkedin.com/in/maxtest',
         years_experience: '7', expected_salary: '85000', notice_period: '1 month', degree: 'Master of Science', education_level: "Master's",

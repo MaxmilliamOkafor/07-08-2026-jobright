@@ -12796,6 +12796,18 @@
     return 'stop';
   }
 
+  async function wdNoEmailDeadEnd() {
+    let seen = '';
+    try { seen = String((await st.get('ua_app_email')) || (await getProfile()).email || '').trim(); } catch (_) {}
+    _authSkip = true;
+    _authDeadEnd = `No email address of yours to create or sign in to the Workday account on ${location.hostname} — ` +
+      (seen ? `the only one saved ("${seen.slice(0, 60)}") is a placeholder another tool uses, not a real address` : 'none is saved') +
+      '. Add your email in Jobright → Your Autofill Information (or under 🔐 Site logins in the Queue Manager) — skipped';
+    LOG('Workday: ' + _authDeadEnd);
+    DIAG('workday.no-email', location.hostname);
+    return 'stop';
+  }
+
   function wdCandHash(cands) {
     let h = 0;
     for (const ch of cands.join('\u0001')) h = (h * 31 + ch.charCodeAt(0)) | 0;
@@ -12948,7 +12960,13 @@
     const _onCreate0 = workdayControlShown(_createBtn0);
     // Creating an account uses the first choice; signing in walks the list.
     const pw = _onCreate0 ? candidates[0] : candidates[Math.min(auth.idx, candidates.length - 1)];
-    if (!email || !pw) return 'working';
+    /* No email of yours to create or sign in with. Since v17.66 a stand-in
+       address (default@lazyapply.com, anything @example.com) is never used for
+       an account, and when that is all there is, this step used to answer
+       "working" for ever: nothing was typed and the job was killed as "stalled"
+       with no reason. It is a dead end: say so, and skip the job at once. */
+    if (!email) return wdNoEmailDeadEnd();
+    if (!pw) return 'working';
 
     // Which form are we on?
     const createBtn = workdaySubmitControl('createAccountSubmitButton');
@@ -13391,6 +13409,15 @@
        stall, so it is exempt. */
     stallIv = uaEvery(() => {
       if (finalized) return;
+      /* A dead end is already known (a refused sign-in, no email of yours for
+         the account): the job is over. It used to run on until the stall
+         watchdog called it "Stalled — no progress", and the real reason was
+         lost. Skipped now, with that reason, within 3s. */
+      if (jobDeadEnded()) {
+        LOG('Job ends here: ' + _authDeadEnd);
+        finalize('skipped', _authDeadEnd);
+        return;
+      }
       pollPageProgress();
       // Actively filling, uploading, submitting or verifying: the countdown does
       // not run at all, so a slow-but-working step is never interrupted.

@@ -5455,3 +5455,38 @@ On 1.27.2, these pass:
 - the switch browser test, 18/18;
 - the leave-page test, 11/11;
 - the DOM units, 26/26 and 2/2.
+
+## v17.79 — Workday account step: no usable email is a clear dead end
+
+**What looked broken.** From v17.66 on, the Workday browser test stopped at
+the account step: the password box was never filled, and the job was killed
+as "Stalled — no progress". A `git bisect` from 1.26.0 (good) to v17.77 (bad)
+points at the second v17.66 commit (bd5d8fb, "replace placeholder emails").
+That commit treats LazyApply's `default@lazyapply.com` and any `@example.com`
+address as another tool's stand-in, never as your email. The test profile
+used `max.test@example.com`, so the extension had no email to make the
+account with.
+
+Your own Workday runs, with a real address, are not affected: the same test
+with a real-looking address submits on v17.77.
+
+**What was wrong in the extension:** with no usable email (only a
+placeholder, or none at all), the account step answered "still working"
+forever. Nothing was typed, and about 15 seconds later the stall watchdog
+killed the job with no reason.
+
+Now:
+- **No email of yours → the job is skipped at once, with the reason:** "No
+  email address of yours to create or sign in to the Workday account on … —
+  the only one saved ("default@lazyapply.com") is a placeholder another tool
+  uses… Add your email in Jobright → Your Autofill Information (or under 🔐
+  Site logins)". In the browser test it now ends at 4s, against 19s before.
+- **Any known dead end ends the job within 3s**, as skipped with its own
+  reason: a refused sign-in, or no email. Before, the job ran on until the
+  stall watchdog called it "Stalled — no progress", and the real reason was
+  lost.
+- **The browser tests use `max.test@jobapply.test`.** `.test` is reserved
+  for tests (RFC 2606), and the placeholder rule rightly leaves it alone.
+  Changed in `tests/e2e/run.js` and `tests/e2e/workday-auth.html`.
+
+Tests: 6 new checks in `tests/fill.test.js`.
