@@ -2471,8 +2471,13 @@
     return there === mine ? 'yes' : 'no';
   }
   const EMBARGO_RE = /\b(cuba|iran|north korea|dprk|syria|crimea|donetsk|luhansk|sanctioned|embargoed)\b/;
+  const RESIDE_IN_RE = /\b(reside|residing|resident|live|living|based|located|domiciled)\b[^?]{0,30}\b(in|within)\b/;
+  const RESIDE_YES_PLACE_RE = /\b(united states|usa|u\.?s\.?a?\.?|us|america|canada|united kingdom|uk|u\.k\.|great britain|britain|england|scotland|wales|northern ireland|europe|european union|eu|eea|austria|belgium|bulgaria|croatia|cyprus|czechia|czech republic|denmark|estonia|finland|france|germany|greece|hungary|ireland|italy|latvia|lithuania|luxembourg|malta|netherlands|holland|poland|portugal|romania|slovakia|slovenia|spain|sweden|norway|iceland|liechtenstein|switzerland|albania|andorra|armenia|azerbaijan|belarus|bosnia( and herzegovina)?|georgia|kosovo|moldova|monaco|montenegro|north macedonia|macedonia|san marino|serbia|turkey|türkiye|ukraine|vatican)\b/;
   function packKnockoutNo(q) {
     if (EMBARGO_RE.test(q) && /\b(citizen|national|resident|residency|reside|live|lived|living|located|ordinarily)\b/.test(q)) return 'no';
+    // v17.71 — "Do you currently reside / live / are you based in X?": Yes for
+    // every European country (and "the EU"), the UK, the US and Canada.
+    if (RESIDE_IN_RE.test(q) && !/\b(sponsor\w*|visa|authori[sz]\w*|eligib\w*|right to work|relocat\w*|commut\w*|distance|miles|km)\b/.test(q) && RESIDE_YES_PLACE_RE.test(q)) return 'yes';
     if (/\b(related|relative|family member|close personal relationship|spouse|partner)\b[^?]{0,80}\b(influence|sign|award|approve|decision)\w*\b[^?]{0,60}\b(contracts?|agreements?|business)\b/.test(q)) return 'no';
     if (/\b(employee|employed|worked)\b[^?]{0,40}\b(federal|state|local|us|u\.s\.|united states)\b[^?]{0,20}\bgovernment\b|\bgovernment\b[^?]{0,30}\b(employee|employed)\b|\bemployed (by|with|at) (a|an|the|any)?\s*(\w+ )?government\b/.test(q)) return 'no';
     if (/\b(early[- ]careers?|graduate|apprenticeship|internship|intern)\s+(programme|program|scheme)\b/.test(q) && /\b(graduate of|completed|alumn|participated|been (a|an|part of))\b/.test(q)) return 'no';

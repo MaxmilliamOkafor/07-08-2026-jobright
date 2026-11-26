@@ -5239,6 +5239,21 @@ required fields it left empty, with a "Continue" button. The style rule in
 world, so it now removes the box whenever it is added. SpeedyApply's files are
 still unchanged, and its status still goes to the console.
 
+## v17.71 — Workday work history in the right order; "reside in" questions
+
+- **Each Work Experience entry now shows the job from your profile at the same
+  place** (entry 1 = your first job, entry 2 = your second ...). Workday's CV
+  parser pre-fills entries, sometimes with the same job twice. With "keep what
+  is already there" on, the engine kept those values, so entry 2 could show
+  Meta with From 01/2023 and To 12/2022, and Workday refused the page ("Must
+  end after start date"). Title, company and location now always come from your
+  profile unless you edited the field yourself. After filling, every entry's
+  title, company and From / To are compared with your profile and refilled when
+  they differ, not only when the entry is empty. A date that is already right
+  is not typed again.
+- **"Do you currently reside / live / are you based in X?" → Yes** when X is a
+  European country (or "the EU"), the UK, the United States or Canada.
+
 ## v17.70 — Workday fixes carried over from LazyApply's logs
 
 - **Submitted pages count as success.** After a submission Workday sends the
