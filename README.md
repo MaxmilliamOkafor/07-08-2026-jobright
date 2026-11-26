@@ -5423,3 +5423,35 @@ Recruiters' ATS screens rank generic, identical answers low. Your choices
 The old neutral sentences are used only when your profile is empty.
 
 Tests are in `tests/v1772.test.js`, in the v17.77 section.
+
+## v17.78 — rebased onto Jobright 1.27.2
+
+Merged by the steps under "Applying the next Jobright patch".
+- **Copied as theirs** (none had edits of ours): `contents`, `global.css`, and
+  the autofill tutorial page's script and styles (`tabs/autofill-tutorial.*`).
+- **New:** `resume-preview.fd9379e5.webp`, an image used by their sidebar
+  and tutorial.
+- **`helper-app.41ea2652.js`**: theirs, with our two edits re-applied by
+  `node tools/merge-helper-app.js` (both anchors found exactly once).
+- **`static/background/index.js`**: theirs, with our five `importScripts`
+  lines re-appended.
+  - Their tailor tab ("Generate Your Custom Resume") moved into its own
+    module and now remembers which job each tailor tab belongs to. It still
+    opens through `chrome.tabs.create`, so our guard still decides: it opens
+    only when you press Tailor yourself, or in the background when queue
+    tailoring is on. A refused tab still reaches their `catch` as "not
+    opened".
+  - The only other new tab is their install landing page, reorganised around
+    the tutorial; it opens on a fresh install only.
+  - Unchanged counts: `active:!0` (4), `chrome.alarms` (6),
+    `action.onClicked` (1), page injections (41). There are still no `UA_`
+    messages, side panel, context menus, commands or popups.
+- **Manifest:** version 1.27.2 only. Their content scripts, permissions and
+  resources are unchanged against ours. `_metadata/` and `update_url` were
+  not copied.
+
+On 1.27.2, these pass:
+- all unit checks;
+- the switch browser test, 18/18;
+- the leave-page test, 11/11;
+- the DOM units, 26/26 and 2/2.
