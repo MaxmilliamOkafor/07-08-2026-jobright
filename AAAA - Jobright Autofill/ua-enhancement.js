@@ -4428,7 +4428,10 @@
      it. Writing anything into one throws the application away as spam, with
      no error on screen. Checked here, at the one place every text write goes
      through, so no path in the automation can ever fill one. */
-  const TRAP_FIELD_RE = /\bhoney[\s_-]*pot\b|\bbot[\s_-]*(?:field|trap|check)\b|\bspam[\s_-]*(?:trap|check)\b|\brobots?\s+only\b|\bdo\s+not\s+(?:enter|fill|complete|change)[^.!?]{0,80}\b(?:human|person)\b|\bleave\s+(?:this\s+)?(?:field|input|box)?\s*(?:blank|empty)\b|\bif\s+you\s+are\s+(?:a\s+)?human\b/i;
+  /* v17.80: two traps AIHawk met on real forms, known by id or name alone: Workday's
+     hidden `beecatcher` (name "website", "This input is for robots only") and BambooHR's
+     `#nickname_hpcsaf` ("Please leave this field blank"). */
+  const TRAP_FIELD_RE = /\bbeecatcher\b|_hpcsaf\b|\bhpcsaf\b|\bhoney[\s_-]*pot\b|\bbot[\s_-]*(?:field|trap|check)\b|\bspam[\s_-]*(?:trap|check)\b|\brobots?\s+only\b|\bdo\s+not\s+(?:enter|fill|complete|change)[^.!?]{0,80}\b(?:human|person)\b|\bleave\s+(?:this\s+)?(?:field|input|box)?\s*(?:blank|empty)\b|\bif\s+you\s+are\s+(?:a\s+)?human\b/i;
   function isTrapField(el) {
     try {
       if (!el || !el.getAttribute) return false;
@@ -4977,6 +4980,23 @@
     } catch (_) {}
     return false;
   }
+  const RESUME_PARSER_RE = /\bauto-?fill\b|\bimport\s+(your\s+)?(r[ée]sum[ée]|cv)\b|\b(r[ée]sum[ée]|cv)\s+import\b|\bparse\b|fill\s+(out\s+)?(the\s+|your\s+|this\s+)?(application|form)\s+(with|from)/i;
+  function isResumeParserInput(el) {
+    try {
+      const own = [el.name, el.id, el.getAttribute('aria-label'), el.getAttribute('data-testid'), getLabel(el)].join(' ');
+      if (/_systemfield_resume\b/i.test(own)) return false;
+      if (RESUME_PARSER_RE.test(own)) return true;
+      // The nearest block that says what the box is for (a heading or a button beside it).
+      let scope = el.parentElement;
+      for (let up = 0; up < 3 && scope; up++, scope = scope.parentElement) {
+        const t = (scope.innerText || scope.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        if (t.length > 160) break;
+        return RESUME_PARSER_RE.test(t);
+      }
+    } catch (_) {}
+    return false;
+  }
   function resumeFileInputs() {
     const all = deepAll('input[type="file"]', 60);
     const found = all.filter((el) => {
@@ -4988,6 +5008,16 @@
       try { return !!el.closest('[class*="upload" i],[class*="dropzone" i],[class*="attach" i],[class*="resume" i],[class*="file" i]'); }
       catch (_) { return false; }
     });
+    /* v17.80 — a parser's box, not the CV field (AIHawk's Ashby notes, seen on real
+       forms): Ashby's first file input is "Autofill from resume", and the real field
+       is #_systemfield_resume after it. The CV went into the first one that took it,
+       Ashby filled fields from it, and the required "Resume" stayed empty. Workable's
+       "Autofill application" / "Import resume from" are the same kind. When a real CV
+       field is there, the parser boxes are left alone; alone, one is still used. */
+    if (found.length > 1) {
+      const real = found.filter((el) => !isResumeParserInput(el));
+      if (real.length) return real;
+    }
     if (found.length) return found;
     /* Google Careers: "Upload your résumé*" over one bare <input type=file>
        (accept=".pdf,.docx", generated class names, no label of its own). The
@@ -6290,6 +6320,7 @@
   async function fallbackFill__impl() {
     LOG('Fallback fill starting — catching missed fields');
     await replacePlaceholderEmails();
+    untickResumeParseOption();
     const p = await getProfile();
     await loadAnswerBank();
     let filled = 0;
@@ -6582,7 +6613,11 @@
 
   // ===================== SUCCESS / FAILURE / STABILITY DETECTION =====================
   // (Robustness techniques adapted from the OptimHire auto-applier for 100% reliability.)
-  const SUCCESS_TEXT_RE = /application\s+(was\s+)?(submitted|received|complete)|thank\s+you\s+for\s+(applying|your\s+(job\s+)?application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+(job\s+)?application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
+  /* v17.80 (from AIHawk's site notes, feder-cr/Jobs_Applier_AI_Agent, MIT): Ashby's real
+     confirmation reads "Your application was successfully submitted", which the
+     words in between kept from matching; Recruitee, Teamtailor and Breezy confirm in
+     the company's language ("Danke für deine Bewerbung!", "Hemos recibido tu solicitud"). */
+  const SUCCESS_TEXT_RE = /application\s+(was\s+|has\s+been\s+)?(successfully\s+)?(submitted|received|complete)|danke\s+f(ü|ue)r\s+(deine|ihre|die)\s+bewerbung|vielen\s+dank\s+f(ü|ue)r\s+(deine|ihre)\s+bewerbung|ihre\s+bewerbung\s+(wurde|ist)\s+(erfolgreich\s+)?(versendet|eingegangen|übermittelt|gesendet)|gracias\s+por\s+(la|tu|su)\s+(solicitud|postulaci[oó]n|candidatura)|hemos\s+recibido\s+(tu|su)\s+(solicitud|postulaci[oó]n|candidatura)|merci\s+pour\s+votre\s+candidature|votre\s+candidature\s+a\s+(bien\s+)?(été\s+)?(envoy|reçu|transmis)|grazie\s+per\s+(la\s+tua|la\s+sua|aver\s+inviato\s+la)\s+candidatura|candidatura\s+(è\s+stata\s+)?inviata\s+con\s+successo|bedankt\s+voor\s+(je|jouw|uw)\s+sollicitatie|obrigad[oa]\s+pela\s+(sua\s+)?candidatura|thank\s+you\s+for\s+(applying|your\s+(job\s+)?application|your\s+interest)|we['’]ve\s+received\s+your\s+application|we\s+have\s+received\s+your\s+(job\s+)?application|your\s+application\s+has\s+been\s+(received|submitted)|application\s+successful|you['’]ve\s+applied|you['’]re\s+all\s+set|application\s+is\s+under\s+review/i;
   /* A URL only counts as a confirmation page when one of these is a COMPLETE path
      segment. As a substring (what this used to be) it matched ordinary job slugs and
      declared the application submitted before anything had been submitted:
@@ -6592,7 +6627,7 @@
        /job/donegal-warehouse-operative → "done"
      Those are some of the most common titles there are, which is why filled-but-never
      -submitted jobs were being marked done and skipped on every ATS. */
-  const SUCCESS_PATH_RE = /(^|\/)(thanks|thank-?you|thankyou|success|successful|confirmation|submitted|application-?complete|application-?submitted|apply-?success|applicationconfirmation)(\/|$)/i;
+  const SUCCESS_PATH_RE = /(^|\/)(thanks|thank-?you|thankyou|success|successful|confirmation|submitted|applied|application-?complete|application-?submitted|apply-?success|applicationconfirmation)(\/|$)/i;   // v17.80: Recruitee's .../applied
   const FAILURE_TEXT_RE = /(already\s+applied|application\s+already\s+submitted|you\s+have\s+already\s+applied|no\s+application\s+(form|available)|job\s+is\s+no\s+longer\s+available|this\s+position\s+is\s+(closed|no\s+longer)|posting\s+is\s+closed|application\s+window\s+has\s+closed|page\s+not\s+found|404\s+error|job\s+posting\s+has\s+expired|posting\s+is\s+no\s+longer\s+available|no\s+longer\s+accepting\s+applications|position\s+has\s+been\s+filled|job\s+has\s+been\s+filled|vacancy\s+(is\s+)?closed)/i;
   /* ── STALL DETECTION ───────────────────────────────────────────────────────
      A "stuck" job looks exactly like a slow one to a wall-clock timeout. These
@@ -6806,8 +6841,19 @@
      control was found". */
   const JOB_GONE_RE = /(?:the\s+)?page\s+you(?:\s+are|['’]re)\s+looking\s+for\s+(?:doesn['’]t|does\s+not|no\s+longer)\s+exists?|die\s+seite,?\s+die\s+sie\s+suchen,?\s+(?:ist\s+nicht\s+(?:mehr\s+)?vorhanden|existiert\s+nicht)|la\s+page\s+que\s+vous\s+(?:recherchez|cherchez)\s+n['’]existe\s+pas|la\s+p[áa]gina\s+que\s+(?:busca|buscas|est[áa]\s+buscando)\s+no\s+existe|de\s+pagina\s+die\s+u\s+zoekt,?\s+bestaat\s+niet|la\s+pagina\s+che\s+stai\s+cercando\s+non\s+esiste|a\s+p[áa]gina\s+que\s+(?:voc[êe]\s+)?(?:procura|est[áa]\s+procurando)\s+n[ãa]o\s+existe/i;
   const JOB_GONE_REASON = 'The job no longer exists — the posting was taken down';
+  /* v17.80 — each ATS's own sign of a closed posting, from AIHawk's site notes (measured
+     on real closed postings there): Greenhouse sends the browser to the board with
+     ?error=true, Workable to apply.workable.com/oops, Paylocity to
+     /Recruiting/Jobs/JobNotFound, and Lever answers "Sorry, we couldn't find anything
+     here". Each one used to be filled for minutes, then "no Submit control was found". */
+  const JOB_GONE_URL_RE = /greenhouse\.io\/[^?#]*[?&]error=true\b|^https?:\/\/apply\.workable\.com\/oops\b|\/recruiting\/jobs\/jobnotfound\b/i;
+  const JOB_GONE_TEXT2_RE = /sorry,?\s+we\s+couldn['’]t\s+find\s+anything\s+here|this\s+job\s+is\s+no\s+longer\s+open|job\s+not\s+found/i;
   function pageJobGone() {
-    try { return JOB_GONE_RE.test((document.body && document.body.innerText || '').slice(0, 4000)) && !hasApplicationForm(); } catch (_) { return false; }
+    try {
+      if (JOB_GONE_URL_RE.test(location.href)) return true;
+      const t = (document.body && document.body.innerText || '').slice(0, 4000);
+      return (JOB_GONE_RE.test(t) || JOB_GONE_TEXT2_RE.test(t)) && !hasApplicationForm();
+    } catch (_) { return false; }
   }
   function pageHasFailure() {
     try { return FAILURE_TEXT_RE.test((document.body && document.body.innerText || '').slice(0, 4000)) || pageJobGone(); } catch (_) { return false; }
@@ -7035,8 +7081,13 @@
      so text checks alone missed them and the run counted the job as skipped. */
   const WD_SUBMITTED_URL_RE = /^https:\/\/[^/]+\.(myworkdayjobs|myworkdaysite|workday)\.com\/.*(\/jobTasks\/completed\/application|[?&]Job_Application_ID=[0-9a-f]+)/i;
   function wdSubmittedUrl(href) { return WD_SUBMITTED_URL_RE.test(String(href || '')); }
+  /* v17.80 (AIHawk's Lever notes): a company may send the browser from Lever to its own
+     website with LeverAppId=<the application's id> in the address. That is a received
+     application, though the page there says nothing about it. */
+  const LEVER_APP_ID_RE = /[?&#]LeverAppId=[0-9a-f-]{8,}/i;
   function hardSuccessSignal() {
     if (wdSubmittedUrl(location.href)) return true;
+    if (LEVER_APP_ID_RE.test(location.href)) return true;
     const body = document.body?.innerText || '';
     if (SUCCESS_TEXT_RE.test(body)) return true;
     if ($('#application_confirmation,.application-confirmation,.confirmation-text,.posting-confirmation,.success-message,.submission-confirmation')) return true;
@@ -12635,7 +12686,28 @@
      application. */
   const WD_STEP_LABELS = ['my information', 'my experience', 'application questions', 'voluntary disclosures', 'self identify', 'review'];
   function workdayOnAccountWall() {
-    try { return deepAll('input[type=password]', 6).some(isVisible); } catch (_) { return false; }
+    try { return deepAll('input[type=password]', 6).some(isVisible) || !!wdEmailSignInButton(); } catch (_) { return false; }
+  }
+  /* v17.80 (AIHawk's Workday notes): the "Create Account/Sign In" step on newer tenants
+     first shows only sign-in buttons — Google, LinkedIn, and "Sign in with email"
+     (SignInWithEmailButton) — with no password box. Every check here looked for a
+     password box, so that screen was not taken for the account step at all. The
+     email route is the one used: never Google or LinkedIn. */
+  function wdEmailSignInButton() {
+    try { return deepAll('[data-automation-id="SignInWithEmailButton"]', 3).find(isVisible) || null; } catch (_) { return null; }
+  }
+  let _wdEmailSignInAt = 0;
+  function wdOpenEmailSignIn() {
+    const b = wdEmailSignInButton();
+    if (!b) return false;
+    // The Workday engine presses it itself while it drives the page.
+    try { if (window.__uaWdEngine && typeof window.__uaWdEngine.busy === 'function' && window.__uaWdEngine.busy()) return true; } catch (_) {}
+    if (Date.now() - _wdEmailSignInAt > 2500) {
+      _wdEmailSignInAt = Date.now();
+      LOG('Workday: "Sign in with email" — opening the email sign-in form');
+      realClick(b);
+    }
+    return true;
   }
   function workdayApplicationReady() {
     try {
@@ -12956,6 +13028,7 @@
     try { if (window.__uaWdEngine && typeof window.__uaWdEngine.busy === 'function' && window.__uaWdEngine.busy()) return 'working'; } catch (_) {}
     if (submit && wdAuthState().reset) { const rs = await wdResetStep(); if (rs) return rs; }
     let pwFields = $$('input[type=password]').filter(isVisible);
+    if (!pwFields.length && wdOpenEmailSignIn()) return 'working';   // v17.80: the email form comes first
     if (!pwFields.length) return 'stop'; // not on a create-account / sign-in page
     const email = await getAppEmail();
     const auth = wdAuthState();
@@ -13170,7 +13243,7 @@
           markAccountCreated(location.hostname); // confirmed: this tenant now has an account
           clearInterval(iv); LOG('Workday account watcher: account step passed ✓'); return;
         }
-        if (!pwFields.length) return; // not on a create-account / sign-in page yet
+        if (!pwFields.length) { wdOpenEmailSignIn(); return; } // not on a create-account / sign-in page yet (v17.80: "Sign in with email" first)
         // Defend the fields + make a BOUNDED set of submit attempts. fillWorkdayCreateAccount
         // returns 'stop' once it has exhausted Create-Account/Sign-In attempts, so we don't
         // hammer the form (the old code spam-clicked ~30×, bouncing between the two forms).
@@ -13882,6 +13955,13 @@
     goNext();
   }
 
+  function askPostingCheck(url) {
+    return new Promise((res) => {
+      const t = setTimeout(() => res(null), 9500);
+      try { chrome.runtime.sendMessage({ type: 'UA_POSTING_CHECK', url }, (r) => { void chrome.runtime.lastError; clearTimeout(t); res(r || null); }); }
+      catch (_) { clearTimeout(t); res(null); }
+    });
+  }
   function goNext() {
     clearInterval(_qDoneIv);
     if (qPaused) return;
@@ -13905,7 +13985,18 @@
         // Inter-job delay scales with speed (no hidden 3s floor unless the user
         // explicitly enabled rate limiting).
         const delay = Math.max(_rateLimitDelay || 0, QUEUE_DELAYS[qSpeed] || 1500);
-        setTimeout(() => { goToNextJob(n.url); }, delay);
+        setTimeout(async () => {
+          /* v17.80 — a closed posting is skipped before this tab goes to it (the
+             worker's one-request check, ported from AIHawk; unclear = go as before). */
+          const v = await askPostingCheck(n.url);
+          if (v && v.state === 'closed' && n.status === 'applying' && !qPaused) {
+            n.status = 'skipped'; n.error = 'Posting closed — ' + (v.why || 'the site says so') + ' (checked before opening)'; n.completedAt = Date.now();
+            LOG('Queue: closed posting skipped without opening it — ' + (v.why || n.url));
+            await saveQ(); try { renderQ(); } catch (_) {}
+            return goNext();
+          }
+          goToNextJob(n.url);
+        }, delay);
       });
     } else {
       qActive = false;
@@ -16762,6 +16853,24 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
   function isPlaceholderEmail(v) {
     return !!v && /^\s*(default|your\.?email|noreply|no-reply)@|@(lazyapply\.com|example\.(com|org|net)|domain\.com)\s*$/i.test(String(v));
   }
+  /* v17.80 (AIHawk's Paylocity notes): "Fill out application with my resume"
+     (#useAttachedResumeToFillOutApplication) is ticked when the page opens, and the
+     site's parser then rewrites what was typed — the name in capitals, the phone in a
+     format the same form refuses. Fields are filled here, so it is unticked once. */
+  const RESUME_PARSE_OPTION_RE = /use\s*attached\s*resume\s*to\s*fill|fill\s+out\s+(the\s+|my\s+|this\s+)?application\s+with\s+my\s+(r[ée]sum[ée]|cv)/i;
+  function untickResumeParseOption() {
+    let n = 0;
+    try {
+      for (const el of deepAll('input[type=checkbox]', 60)) {
+        if (!el.checked || el.disabled) continue;
+        const hay = (el.id || '') + ' ' + (el.name || '') + ' ' + (getLabel(el) || '');
+        if (!RESUME_PARSE_OPTION_RE.test(hay)) continue;
+        try { el.click(); } catch (_) {}
+        if (!el.checked) { n++; LOG('Unticked "' + (getLabel(el) || el.id).slice(0, 60) + '" — the fields are filled here, not by the site\'s CV parser'); }
+      }
+    } catch (_) {}
+    return n;
+  }
   async function replacePlaceholderEmails() {
     let n = 0;
     try {
@@ -17077,6 +17186,8 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
     if (isOracleCloud()) hosts.push('oraclecloud.com', 'oracle.com');
     // Amazon's sign-in codes come from amazon.jobs / amazon.com senders.
     if (/(^|\.)amazon\.jobs$/i.test(location.hostname)) hosts.push('amazon.jobs', 'amazon.com');
+    // v17.80 (AIHawk's Workday notes): Workday mails its codes from <company>@myworkday.com, not the tenant host on screen.
+    if (isWorkday()) hosts.push('myworkday.com');
     // The employer's own domain too: the mail often comes from the company, not
     // from the ATS that rendered the page.
     const company = pageCompanyName();

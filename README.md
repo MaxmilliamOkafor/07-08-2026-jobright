@@ -5505,3 +5505,81 @@ Now:
   Changed in `tests/e2e/run.js` and `tests/e2e/workday-auth.html`.
 
 Tests: 6 new checks in `tests/fill.test.js`.
+
+## v17.80 — lessons from AIHawk's site notes, and closed postings skipped before they open
+
+AIHawk (feder-cr/Jobs_Applier_AI_Agent, MIT; see `THIRD_PARTY_NOTICES.md`) is now an
+AI agent that fills each ATS from a short note per site. Each note records what was
+seen on real forms: the exact controls, the traps, and what a closed posting and a
+confirmation look like. Every fact in those notes was checked against this
+extension. Where we lacked one, it is added below, with a browser test where a
+mistake would cost a job.
+
+**Closed postings are skipped before a tab opens.** AIHawk measured that about one
+listed posting in six has closed since it was published. Each one cost us a tab
+and minutes of "filling". Now the Queue Manager first asks the site with one
+plain request (no cookies, 8 seconds at most, all of a batch at once), going by
+each site's own sign:
+
+| Site | Closed when |
+|---|---|
+| Lever | the posting answers 404 |
+| Ashby | it answers 404 with the board's "Jobs" page |
+| Greenhouse | it redirects with `error=true`, or the board's public API answers 404 |
+| Workable | it redirects to `/oops` |
+| BambooHR | the job's own JSON answers 404 or leads back to the job list |
+| Paylocity | it redirects to `JobNotFound` |
+| Workday | the job's JSON answers 403 with error `S22` |
+
+A closed posting is marked **skipped** with that reason, and its slot goes to the
+next job at once. Anything less than a clear "closed" means the job is opened as
+before: a blocked request, a captcha, a timeout, an error, or any other site. The
+single-tab runner asks the same check before each job. To switch it off, set
+`livenessCheck: false` in the Queue Manager's settings (`ua_mgr_settings`).
+
+**Ashby: the CV went into the wrong box.** Ashby's first file input is its parser,
+"Autofill from resume"; the real field is `#_systemfield_resume`. The CV went into
+the first box that took it, so the required Resume stayed empty and the job ended
+"Submit was clicked but no confirmation appeared". On the Ashby test page, with
+that decoy box added as on the real form:
+- v17.79: **failed**;
+- now: submitted, with the CV in `_systemfield_resume`.
+Parser boxes ("Autofill from resume", "Autofill application", "Import resume
+from") are passed over whenever a real CV field is there.
+
+**Workday's "Sign in with email" screen.** Newer tenants first show only "Sign
+in with Google / LinkedIn / email", with no password box. The built-in flow did
+not see an account step there. Worse, the Workday engine then took that screen
+for a finished application: on the test page, v17.79 reported **"Application
+submitted — logged to your tracker" without signing in or sending anything**.
+Now the screen counts as the account step, and "Sign in with email" is pressed
+(never Google or LinkedIn). On the test page (`workday-auth.html?email_first=1`)
+it signs in and really submits. Workday's verification codes are also looked
+for from `myworkday.com`, the address Workday sends them from.
+
+**Confirmations that were missed:**
+- Ashby's "Your application was **successfully** submitted": the extra word
+  kept it from matching.
+- Lever sending you on to the company's own site with `LeverAppId=…` in the
+  address, which is a received application.
+- Recruitee's `…/applied` page.
+- Confirmations in German, Spanish, French, Italian, Dutch and Portuguese
+  ("Danke für deine Bewerbung!", "Hemos recibido tu solicitud", …).
+
+Lever's "Success!" after the CV upload is still not taken for a send.
+
+**Closed postings once a page is open:** Greenhouse's `?error=true`, Workable's
+`/oops`, Paylocity's `JobNotFound` and Lever's "Sorry, we couldn't find anything
+here" now end the job as "posting taken down". Before, it was filled for minutes
+and ended "no Submit control was found".
+
+**Two honeypots known only by id:** Workday's hidden `beecatcher` ("This input is
+for robots only") and BambooHR's `#nickname_hpcsaf`. Filling either one bins the
+application as spam, so neither is ever filled.
+
+**Paylocity:** "Fill out application with my resume" starts ticked, and the
+site's parser then rewrote typed fields (the name in capitals, the phone in a
+format the same form refuses). It is now unticked before filling.
+
+Tests: `tests/v1780.test.js` (49 checks, in `tests/run.sh`), and the browser
+tests `ashby.html` (with the decoy box) and `workday-auth.html?email_first=1`.
