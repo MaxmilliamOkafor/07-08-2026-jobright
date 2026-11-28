@@ -1445,6 +1445,34 @@
     }
     return facts || DEFAULTS.cover;
   }
+  /* Salary currency: the money of the country you live in (Ireland → Euro).
+     v17.83: "Salary Expectation in Local Currency" as a custom dropdown of
+     currencies (Euro, Pound Sterling, Irish Pound, …) was answered with the salary
+     figure, 60000, which no option matches, and the required field stayed empty.
+     A plain <select> already got the currency; custom dropdowns and the Workday
+     engine now do too. "Irish Pound" is not Pound Sterling. */
+  function profileCurrency(p) {
+    const c = String((p && p.country) || DEFAULTS.country || '').toLowerCase();
+    return /united kingdom|\buk\b|britain|england|scotland|wales|northern ireland/.test(c) ? 'gbp' : /united states|\busa?\b|america/.test(c) ? 'usd'
+      : /switzerland/.test(c) ? 'chf' : /poland/.test(c) ? 'pln' : 'eur';
+  }
+  const CURRENCY_NAME = { eur: 'Euro', gbp: 'Pound Sterling', usd: 'US Dollar', chf: 'Swiss Franc', pln: 'Polish Zloty' };
+  const CURRENCY_OPTION_RE = {
+    eur: [/\beur\b|\beuros?\b|€/i],
+    gbp: [/\bgbp\b|pound sterling|british pound|£/i, /^(uk )?pounds?\b/i],
+    usd: [/\busd\b|\bu\.?s\.? dollars?\b|united states dollars?|us\$/i, /^dollars?\b|^\$/i],
+    chf: [/\bchf\b|swiss franc/i],
+    pln: [/\bpln\b|zloty|złoty/i],
+  };
+  function currencyOption(opts, p, textOf) {
+    for (const rx of CURRENCY_OPTION_RE[profileCurrency(p)] || []) {
+      const hit = (opts || []).find((o) => rx.test(String(textOf(o) || '').trim()));
+      if (hit) return hit;
+    }
+    return null;
+  }
+  // A question that asks WHICH currency (not how much), on a control that offers choices.
+  const CURRENCY_Q_RE = /\bcurrenc(y|ies)\b/i;
   // Salary in a free-text box with no figure in your profile: "Negotiable", unless the question asks for a number.
   const SALARY_NEGOTIABLE = 'Negotiable — in line with the market rate for this role';
   const SALARY_Q_RE = /\b(salary|compensation|remuneration|pay expectations?|desired pay|expected pay|pay range)\b/i;
@@ -2673,10 +2701,7 @@
     }
     // Salary currency: the money of the country you live in.
     if (/\bcurrenc/.test(ql)) {
-      const c = String(p.country || DEFAULTS.country || '').toLowerCase();
-      const cur = /united kingdom|\buk\b|britain|england|scotland|wales/.test(c) ? 'gbp' : /united states|\busa?\b|america/.test(c) ? 'usd'
-        : /switzerland/.test(c) ? 'chf' : /poland/.test(c) ? 'pln' : 'eur';
-      const hit = opts.find((o) => new RegExp('\\b' + cur + '\\b|' + { eur: 'euro', gbp: 'pound', usd: 'dollar', chf: 'franc', pln: 'zloty|złoty' }[cur], 'i').test(o.text));
+      const hit = currencyOption(opts, p, (o) => o.text);
       if (hit) return hit;
     }
     if (/\bgross\b.*\bnet\b|\bnet\b.*\bgross\b/.test(ql)) { const g = opts.find((o) => /\bgross\b/i.test(o.text)); if (g) return g; }
@@ -5701,6 +5726,8 @@
       const rsInput = reactSelectControl(combo) ? (reactSelectControl(combo).querySelector('input') || combo) : combo;
       const required = isFieldRequired(combo) || isFieldRequired(rsInput) || /\*/.test(q);
       let guess = q ? guessFieldValue(q, profile, combo) : '';
+      // v17.83: a dropdown asking for a currency gets one, not the salary figure.
+      if (q && CURRENCY_Q_RE.test(q)) guess = CURRENCY_NAME[profileCurrency(profile || _policyProfile)] || guess;
       // Nothing resolved on a Yes/No question: decided by meaning, so a required one
       // is not handed to the first-option fallback (always "Yes"). See choiceByMeaning.
       if (!guess && q && looksLikeYesNoQuestion(q)) {
@@ -8250,8 +8277,13 @@
   let _uaJobKey = '';                 // the queue job this tab is applying (none outside a run)
   let _wdAssistActive = false;        // assist has this Workday page: no automatic page walk
   // The engine asks for YOUR answers first: saved responses and answers you gave yourself.
-  window.__uaWdAnswer = (label) => {
+  window.__uaWdAnswer = (label, kind, options) => {
     try {
+      // v17.83: "Salary Expectation in Local Currency" with currencies to choose from.
+      if (CURRENCY_Q_RE.test(String(label || '')) && Array.isArray(options) && options.length) {
+        const c = currencyOption(options, _policyProfile, (o) => (o && typeof o === 'object' ? o.text || o.label || '' : o));
+        if (c) return typeof c === 'object' ? (c.text || c.label) : c;
+      }
       // Your fixed knockout answers come first (years → 7, AWS certification → Yes).
       if (!isManualAnswer(label, null)) {
         const pol = knockoutPolicy(label, _policyProfile);
@@ -16842,6 +16874,21 @@ html[data-ua-auto="1"] [class*="paywall"],html[data-ua-auto="1"] [class*="upgrad
       return { email, password: String(a.accountPassword || ''), hasProfile: !!(prof && prof.nameData && (prof.nameData.firstName || prof.nameData.lastName)) };
     } catch (_) { return null; }
   }
+  /* v17.83 — SpeedyApply's Workflow Add-on (sa-enhancement.js) on Workday with no
+     SpeedyApply profile. It fills nothing, but it pressed "Save and Continue" as soon
+     as a step's required fields were filled — while the Workday engine was still
+     working on that step. On My Experience the page moved on under the engine
+     ("No Add button found" on Work Experience) and the engine paused. With no
+     profile the engine fills every step, so the add-on is told autofill is off
+     (ua-switch-gate.js asks this; its files stay unchanged). With a profile it
+     runs as before. */
+  window.__uaSaAddonAllowed = async function () {
+    try {
+      if (!isWorkday() || !saEmbedded()) return true;
+      const sa = await saSettings();
+      return !(sa && !sa.hasProfile);
+    } catch (_) { return true; }
+  };
   /* SpeedyApply with no profile kept showing its profile picker on every
      application — "No profiles available. Please contact support if the issue
      persists." With no profile it fills nothing (this extension fills instead),

@@ -5643,3 +5643,32 @@ before).
 
 Tests: `tests/v1782.test.js` (10 checks, in `tests/run.sh`). `tests/e2e/run.js`
 has a new `ENGINE_LOG=1` setting that prints the Workday engine's own run log.
+
+## v17.83 — Workday My Experience pause; salary currency dropdowns
+
+**The Workday engine no longer pauses on My Experience.** On every Workday test
+the engine paused there ("No Add button found" on Work Experience, or Education),
+and the built-in flow finished the step. The cause was not the engine.
+SpeedyApply's Workflow Add-on (`sa-enhancement.js`) runs on the same tab. With no
+SpeedyApply profile it fills nothing, but it presses "Save and Continue" as soon as
+a step's required fields are filled. On My Experience that came right after the
+engine filled the work entry, while it was still checking the entries. The page
+moved to Application Questions under it.
+
+Now, on Workday with no SpeedyApply profile, the add-on is told autofill is off,
+because the engine fills every step. This is answered by `ua-switch-gate.js`;
+SpeedyApply's own files are unchanged. With a SpeedyApply profile, it runs as
+before. On the Workday test the engine now fills every step itself, Work
+Experience and Education included, and submits at 32s (35s before).
+
+**Salary Expectation in Local Currency.** This field was a required dropdown of
+currencies (Euro, Pound Sterling, Irish Pound, …). It was answered with the salary
+figure, 60000, which matches no option, so it stayed empty. A plain `<select>`
+already got your currency; custom dropdowns and the Workday engine now do too.
+- The currency is that of your country: Ireland → Euro, the UK → Pound Sterling,
+  the US → US Dollar.
+- "Irish Pound" is never taken for Pound Sterling, and "Australian Dollar" never
+  for US Dollar.
+- A salary amount box still gets the figure.
+
+Tests: `tests/v1783.test.js` (20 checks, in `tests/run.sh`).
