@@ -18,10 +18,13 @@
       scroll the page or move the focus against each other, so there is no
       flicker and no up-down-up-down scrolling.
    2. LazyApply leads. It can always act and its answers win. While it is busy
-      (wrote something in the last LEADER_IDLE_MS) the others wait; when it
-      goes quiet they fill only the fields it left empty. While its
-      "Automation In Progress" panel is up, Next / Submit / Apply clicks are
-      left to LazyApply alone.
+      (acted in the last LEADER_IDLE_MS; LEADER_RUN_IDLE_MS during a run) the
+      others wait; when it goes quiet they fill only the fields it left empty.
+      A LazyApply run is started from the lazyapply.com dashboard and works in
+      its automation tab(s); its background script injects this file there
+      together with the application script. While that run's "Automation In
+      Progress" panel (#autoFillTemplate) is up, Next / Submit / Apply clicks
+      are left to LazyApply alone.
    3. No overwriting. Once a field is answered by one tool (or by you), the
       others leave it alone (LazyApply excepted). Fields are tagged
       data-afc-by="<tool>".
@@ -50,7 +53,8 @@
   const RANK = { you: 5, lazyapply: 4, jobright: 3, optimhire: 2, jobgenie: 1, other: 0 };
   const TAILORED_RESUME_WINS = true;
   const LEASE_MS = 2500;
-  const LEADER_IDLE_MS = 4000;
+  const LEADER_IDLE_MS = 4000;      // LazyApply quiet this long → others may fill what it left empty
+  const LEADER_RUN_IDLE_MS = 12000; // …but during a LazyApply run (it waits on AI answers / uploads)
   const BANK_KEY = 'afc_bank';
   const BANK_MAX = 3000;
 
@@ -104,7 +108,7 @@
       return r;
     };
   })();
-  const FOREIGN_UI = '[id^="ua-"],[id^="optimhire"],plasmo-csui,[class*="lazyapply"],[id*="lazyapply"],[id^="jg-"],[id*="job-genie" i],[class*="job-genie" i],[id^="afc-"]';
+  const FOREIGN_UI = '[id^="ua-"],[id^="optimhire"],plasmo-csui,[class*="lazyapply"],[id*="lazyapply"],[id^="jg-"],[id*="job-genie" i],[class*="job-genie" i],[id^="afc-"],#autoFillTemplate';
   function isOwn(el) {
     let n = el, i = 0;
     while (n && i++ < 80) {
@@ -135,7 +139,8 @@
   function leaderBusy() {
     if (IS_LEADER) return false;
     const t = Number(de() && gA(de(), 'data-afc-last-' + LEADER)) || 0;
-    return now() - t < LEADER_IDLE_MS;
+    if (!t) return false;
+    return now() - t < (leaderRunning() ? LEADER_RUN_IDLE_MS : LEADER_IDLE_MS);
   }
   let panelAt = 0, panelSeen = false;
   function leaderRunning() {               // LazyApply's "Automation In Progress" panel is up
@@ -143,6 +148,8 @@
     if (now() - panelAt < 1000) return panelSeen;
     panelAt = now(); panelSeen = false;
     try {
+      const host = document.getElementById('autoFillTemplate');
+      if (host && host.getClientRects().length) { panelSeen = true; return true; }
       const r = document.evaluate("//*[contains(normalize-space(text()),'Automation In Progress')]", document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
       for (let i = 0; i < r.snapshotLength; i++) { const e = r.snapshotItem(i); if (e.getClientRects().length) { panelSeen = true; break; } }
     } catch (_) {}
