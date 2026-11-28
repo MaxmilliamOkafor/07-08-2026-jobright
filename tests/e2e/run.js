@@ -124,6 +124,11 @@ const T0 = Date.now();
   if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
   if (process.env.LOG_DUMP) for (const l of logs) console.log('  | ' + l);
+  // ENGINE_LOG=1: the Workday engine's own run log (what it did on each page, and why it stopped).
+  if (process.env.ENGINE_LOG) {
+    const runs = await panel.evaluate(() => new Promise((r) => chrome.storage.local.get(null, (d) => r(Object.keys(d).filter((k) => k.startsWith('wd:run:')).map((k) => d[k]))))).catch(() => []);
+    for (const run of runs) { console.log('ENGINE RUN: ' + run.status + (run.pauseReason ? ' — ' + run.pauseReason : '')); for (const e of run.log || []) console.log('  E ' + (e.level || '') + ' ' + e.msg); }
+  }
   // DEBUG_SHOT=<dir>: open the Debugger page, print what it recorded, screenshot it.
   if (process.env.DEBUG_SHOT) {
     await new Promise((r) => setTimeout(r, 2500));

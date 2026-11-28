@@ -5617,3 +5617,29 @@ same after 15 seconds. Submit is now not pressed again for 20 seconds unless
 Workday shows an error.
 
 Tests: `tests/v1781.test.js` (47 checks, in `tests/run.sh`).
+
+## v17.82 — Workday engine: Submit on a step that is not Review
+
+On the "Sign in with email" test (v17.81), the Workday engine signed in, reached
+My Information, and stopped. It left no log line, and the job carried on with the
+built-in Workday flow, which finished it 8 seconds later.
+
+Why: that application has one step, My Information, and its only button is
+Submit. The engine presses Submit only on a step it knows as Review. On any other
+step, a Submit button ended the run with no word, and the host could only report
+"the engine stopped on this page without finishing". Some tenants could do the
+same: a last step under another name, or a step bar in a language the engine
+does not read.
+
+Now a Submit button on any step means that step is the last one:
+- the engine logs "Submit is on this step (…) — it is the last one";
+- a queue job, which may submit, is submitted by the engine itself;
+- a run that may not submit is held for you, as on Review;
+- off a step other than Review, only Workday's own confirmation counts as sent.
+  Leaving the page with no error is not taken as sent.
+
+On the test page the engine now fills and submits at 19s with no hand-over (27s
+before).
+
+Tests: `tests/v1782.test.js` (10 checks, in `tests/run.sh`). `tests/e2e/run.js`
+has a new `ENGINE_LOG=1` setting that prints the Workday engine's own run log.
