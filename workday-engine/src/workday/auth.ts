@@ -6,7 +6,7 @@
  * password never locks the account; CAPTCHAs and email verification are always
  * handed to the user.
  */
-import { NeedsHuman, buttonByText, byAid, humanClick, isVisible, qa, sleep, text, waitStable } from "./dom.js";
+import { NeedsHuman, buttonByText, byAid, humanClick, isVisible, pageText, qa, sleep, text, waitStable } from "./dom.js";
 import { setCheckbox, setText } from "./controls.js";
 import { authEmailInput, authPasswordInputs, errorMessages } from "./detect.js";
 import { pace, type Ctx } from "./context.js";
@@ -121,7 +121,7 @@ export async function handleSignIn(ctx: Ctx): Promise<void> {
     }
     throw new NeedsHuman("Sign-in was rejected. Check the saved password (Workday settings) or use 'Forgot password', then click Resume.");
   }
-  if (VERIFY_EMAIL_RX.test(text(document.body).slice(0, 3000)) && !byAid("next")) {
+  if (VERIFY_EMAIL_RX.test(pageText().slice(0, 3000)) && !byAid("next")) {
     throw new NeedsHuman("Workday wants you to verify your email. Click the link in the email it sent, sign in again if asked, then click Resume.");
   }
   ctx.log("Signed in");

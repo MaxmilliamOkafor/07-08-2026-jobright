@@ -45,7 +45,9 @@ const T0 = Date.now();
   await panel.evaluate(async ({ pdf, extra, profileExtra }) => {
     await chrome.storage.local.set({
       ua_profile: {
-        first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@example.com', phone: '+44 7700 900123',
+        // Not @example.com: since v17.66 that domain is another tool's placeholder and is
+        // never used for an account (.test is reserved for tests, RFC 2606).
+        first_name: 'Maxmilliam', last_name: 'Okafor', email: 'max.test@jobapply.test', phone: '+44 7700 900123',
         city: 'London', country: 'United Kingdom', address: '1 Grand Canal Square', postal_code: 'D02 P820',
         current_company: 'Acme Cloud', current_title: 'Senior Solutions Architect', school: 'Trinity College Dublin', major: 'Computer Science', work_start_year: '2019', linkedin: 'linkedin.com/in/maxtest',
         years_experience: '7', expected_salary: '85000', notice_period: '1 month', degree: 'Master of Science', education_level: "Master's",
@@ -122,6 +124,11 @@ const T0 = Date.now();
   if (sub) console.log('SUBMITTED:', sub.slice(0, 600));
   console.log('log lines:', logs.length);
   if (process.env.LOG_DUMP) for (const l of logs) console.log('  | ' + l);
+  // ENGINE_LOG=1: the Workday engine's own run log (what it did on each page, and why it stopped).
+  if (process.env.ENGINE_LOG) {
+    const runs = await panel.evaluate(() => new Promise((r) => chrome.storage.local.get(null, (d) => r(Object.keys(d).filter((k) => k.startsWith('wd:run:')).map((k) => d[k]))))).catch(() => []);
+    for (const run of runs) { console.log('ENGINE RUN: ' + run.status + (run.pauseReason ? ' — ' + run.pauseReason : '')); for (const e of run.log || []) console.log('  E ' + (e.level || '') + ' ' + e.msg); }
+  }
   // DEBUG_SHOT=<dir>: open the Debugger page, print what it recorded, screenshot it.
   if (process.env.DEBUG_SHOT) {
     await new Promise((r) => setTimeout(r, 2500));

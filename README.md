@@ -5274,7 +5274,7 @@ The engine fixes are in `workday-engine/src/workday/steps.ts` and, by hand, in
 TypeScript source, so rebuilding it would undo them. Tests:
 `tests/v1770.test.js`.
 
-## v17.71 — rebased onto Jobright 1.27.0
+## v17.71.1 — rebased onto Jobright 1.27.0
 
 A larger patch: seven of their files changed and ten are new. All were merged
 by the steps under "Applying the next Jobright patch".
@@ -5470,3 +5470,205 @@ On 1.27.2, these pass:
 - the switch browser test, 18/18;
 - the leave-page test, 11/11;
 - the DOM units, 26/26 and 2/2.
+
+## v17.79 — Workday account step: no usable email is a clear dead end
+
+**What looked broken.** From v17.66 on, the Workday browser test stopped at
+the account step: the password box was never filled, and the job was killed
+as "Stalled — no progress". A `git bisect` from 1.26.0 (good) to v17.77 (bad)
+points at the second v17.66 commit (bd5d8fb, "replace placeholder emails").
+That commit treats LazyApply's `default@lazyapply.com` and any `@example.com`
+address as another tool's stand-in, never as your email. The test profile
+used `max.test@example.com`, so the extension had no email to make the
+account with.
+
+Your own Workday runs, with a real address, are not affected: the same test
+with a real-looking address submits on v17.77.
+
+**What was wrong in the extension:** with no usable email (only a
+placeholder, or none at all), the account step answered "still working"
+forever. Nothing was typed, and about 15 seconds later the stall watchdog
+killed the job with no reason.
+
+Now:
+- **No email of yours → the job is skipped at once, with the reason:** "No
+  email address of yours to create or sign in to the Workday account on … —
+  the only one saved ("default@lazyapply.com") is a placeholder another tool
+  uses… Add your email in Jobright → Your Autofill Information (or under 🔐
+  Site logins)". In the browser test it now ends at 4s, against 19s before.
+- **Any known dead end ends the job within 3s**, as skipped with its own
+  reason: a refused sign-in, or no email. Before, the job ran on until the
+  stall watchdog called it "Stalled — no progress", and the real reason was
+  lost.
+- **The browser tests use `max.test@jobapply.test`.** `.test` is reserved
+  for tests (RFC 2606), and the placeholder rule rightly leaves it alone.
+  Changed in `tests/e2e/run.js` and `tests/e2e/workday-auth.html`.
+
+Tests: 6 new checks in `tests/fill.test.js`.
+
+## v17.80 — lessons from AIHawk's site notes, and closed postings skipped before they open
+
+AIHawk (feder-cr/Jobs_Applier_AI_Agent, MIT; see `THIRD_PARTY_NOTICES.md`) is now an
+AI agent that fills each ATS from a short note per site. Each note records what was
+seen on real forms: the exact controls, the traps, and what a closed posting and a
+confirmation look like. Every fact in those notes was checked against this
+extension. Where we lacked one, it is added below, with a browser test where a
+mistake would cost a job.
+
+**Closed postings are skipped before a tab opens.** AIHawk measured that about one
+listed posting in six has closed since it was published. Each one cost us a tab
+and minutes of "filling". Now the Queue Manager first asks the site with one
+plain request (no cookies, 8 seconds at most, all of a batch at once), going by
+each site's own sign:
+
+| Site | Closed when |
+|---|---|
+| Lever | the posting answers 404 |
+| Ashby | it answers 404 with the board's "Jobs" page |
+| Greenhouse | it redirects with `error=true`, or the board's public API answers 404 |
+| Workable | it redirects to `/oops` |
+| BambooHR | the job's own JSON answers 404 or leads back to the job list |
+| Paylocity | it redirects to `JobNotFound` |
+| Workday | the job's JSON answers 403 with error `S22` |
+
+A closed posting is marked **skipped** with that reason, and its slot goes to the
+next job at once. Anything less than a clear "closed" means the job is opened as
+before: a blocked request, a captcha, a timeout, an error, or any other site. The
+single-tab runner asks the same check before each job. To switch it off, set
+`livenessCheck: false` in the Queue Manager's settings (`ua_mgr_settings`).
+
+**Ashby: the CV went into the wrong box.** Ashby's first file input is its parser,
+"Autofill from resume"; the real field is `#_systemfield_resume`. The CV went into
+the first box that took it, so the required Resume stayed empty and the job ended
+"Submit was clicked but no confirmation appeared". On the Ashby test page, with
+that decoy box added as on the real form:
+- v17.79: **failed**;
+- now: submitted, with the CV in `_systemfield_resume`.
+Parser boxes ("Autofill from resume", "Autofill application", "Import resume
+from") are passed over whenever a real CV field is there.
+
+**Workday's "Sign in with email" screen.** Newer tenants first show only "Sign
+in with Google / LinkedIn / email", with no password box. The built-in flow did
+not see an account step there. Worse, the Workday engine then took that screen
+for a finished application: on the test page, v17.79 reported **"Application
+submitted — logged to your tracker" without signing in or sending anything**.
+Now the screen counts as the account step, and "Sign in with email" is pressed
+(never Google or LinkedIn). On the test page (`workday-auth.html?email_first=1`)
+it signs in and really submits. Workday's verification codes are also looked
+for from `myworkday.com`, the address Workday sends them from.
+
+**Confirmations that were missed:**
+- Ashby's "Your application was **successfully** submitted": the extra word
+  kept it from matching.
+- Lever sending you on to the company's own site with `LeverAppId=…` in the
+  address, which is a received application.
+- Recruitee's `…/applied` page.
+- Confirmations in German, Spanish, French, Italian, Dutch and Portuguese
+  ("Danke für deine Bewerbung!", "Hemos recibido tu solicitud", …).
+
+Lever's "Success!" after the CV upload is still not taken for a send.
+
+**Closed postings once a page is open:** Greenhouse's `?error=true`, Workable's
+`/oops`, Paylocity's `JobNotFound` and Lever's "Sorry, we couldn't find anything
+here" now end the job as "posting taken down". Before, it was filled for minutes
+and ended "no Submit control was found".
+
+**Two honeypots known only by id:** Workday's hidden `beecatcher` ("This input is
+for robots only") and BambooHR's `#nickname_hpcsaf`. Filling either one bins the
+application as spam, so neither is ever filled.
+
+**Paylocity:** "Fill out application with my resume" starts ticked, and the
+site's parser then rewrote typed fields (the name in capitals, the phone in a
+format the same form refuses). It is now unticked before filling.
+
+Tests: `tests/v1780.test.js` (49 checks, in `tests/run.sh`), and the browser
+tests `ashby.html` (with the decoy box) and `workday-auth.html?email_first=1`.
+
+## v17.81 — Workday, from AIHawk's Workday notes
+
+**The engine reads the page as you see it.** To tell which step it was on, the
+Workday engine read the page's raw text, which includes the page's own scripts.
+On the test page's "Sign in with email" screen, an inline script contains the
+words "Application Submitted", so the engine reported the application as sent
+while it was still at the sign-in. Any page whose scripts or hidden templates
+hold such words could do the same. The engine now reads only the visible text: when it works out
+which step it is on, and when it checks for "verify your email".
+
+**The honeypot is never typed into by the engine either.** Workday's hidden
+`beecatcher` field ("This input is for robots only", named `website`) was
+already skipped by the general fill (v17.80). The Workday engine types into
+fields by its own route, and now skips that field too.
+
+**One Workday posting is one job.** The same posting has many addresses: `/apply`,
+`/apply/applyManually`, `autofillWithResume`, another language (`en-GB`), another
+career site name, or another `wdN` server. Each one was a new job, so one posting
+could be queued and applied to twice. A Workday posting is now known by its
+company (tenant) and requisition id, as AIHawk does. This applies to:
+- adding to the Queue Manager;
+- the CSV import, for both "already applied" and "already queued";
+- the single-tab runner's "already applied" check.
+All other sites keep the address rule.
+
+**Submit is pressed once.** After Submit, Workday can leave the Review page and its
+Submit button on screen for some seconds before it moves to
+`/jobTasks/completed/application`. The SpeedyApply-driven loop took that page for
+a finished step and could press Submit again. The one-click Autofill could do the
+same after 15 seconds. Submit is now not pressed again for 20 seconds unless
+Workday shows an error.
+
+Tests: `tests/v1781.test.js` (47 checks, in `tests/run.sh`).
+
+## v17.82 — Workday engine: Submit on a step that is not Review
+
+On the "Sign in with email" test (v17.81), the Workday engine signed in, reached
+My Information, and stopped. It left no log line, and the job carried on with the
+built-in Workday flow, which finished it 8 seconds later.
+
+Why: that application has one step, My Information, and its only button is
+Submit. The engine presses Submit only on a step it knows as Review. On any other
+step, a Submit button ended the run with no word, and the host could only report
+"the engine stopped on this page without finishing". Some tenants could do the
+same: a last step under another name, or a step bar in a language the engine
+does not read.
+
+Now a Submit button on any step means that step is the last one:
+- the engine logs "Submit is on this step (…) — it is the last one";
+- a queue job, which may submit, is submitted by the engine itself;
+- a run that may not submit is held for you, as on Review;
+- off a step other than Review, only Workday's own confirmation counts as sent.
+  Leaving the page with no error is not taken as sent.
+
+On the test page the engine now fills and submits at 19s with no hand-over (27s
+before).
+
+Tests: `tests/v1782.test.js` (10 checks, in `tests/run.sh`). `tests/e2e/run.js`
+has a new `ENGINE_LOG=1` setting that prints the Workday engine's own run log.
+
+## v17.83 — Workday My Experience pause; salary currency dropdowns
+
+**The Workday engine no longer pauses on My Experience.** On every Workday test
+the engine paused there ("No Add button found" on Work Experience, or Education),
+and the built-in flow finished the step. The cause was not the engine.
+SpeedyApply's Workflow Add-on (`sa-enhancement.js`) runs on the same tab. With no
+SpeedyApply profile it fills nothing, but it presses "Save and Continue" as soon as
+a step's required fields are filled. On My Experience that came right after the
+engine filled the work entry, while it was still checking the entries. The page
+moved to Application Questions under it.
+
+Now, on Workday with no SpeedyApply profile, the add-on is told autofill is off,
+because the engine fills every step. This is answered by `ua-switch-gate.js`;
+SpeedyApply's own files are unchanged. With a SpeedyApply profile, it runs as
+before. On the Workday test the engine now fills every step itself, Work
+Experience and Education included, and submits at 32s (35s before).
+
+**Salary Expectation in Local Currency.** This field was a required dropdown of
+currencies (Euro, Pound Sterling, Irish Pound, …). It was answered with the salary
+figure, 60000, which matches no option, so it stayed empty. A plain `<select>`
+already got your currency; custom dropdowns and the Workday engine now do too.
+- The currency is that of your country: Ireland → Euro, the UK → Pound Sterling,
+  the US → US Dollar.
+- "Irish Pound" is never taken for Pound Sterling, and "Australian Dollar" never
+  for US Dollar.
+- A salary amount box still gets the figure.
+
+Tests: `tests/v1783.test.js` (20 checks, in `tests/run.sh`).

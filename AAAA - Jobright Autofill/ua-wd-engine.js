@@ -684,6 +684,15 @@
   function text(el) {
     return (el?.textContent ?? "").replace(/\s+/g, " ").trim();
   }
+  // [ua] v17.81 — the text a person sees: never inline scripts, hidden templates or
+  // closed dialogs. Reading textContent, the words "Application Submitted" inside a
+  // page's own script made the sign-in screen count as a submitted application.
+  function pageText() {
+    const b = document.body;
+    if (!b) return "";
+    const t = typeof b.innerText === "string" ? b.innerText : b.textContent;
+    return (t ?? "").replace(/\s+/g, " ").trim();
+  }
   function labelOf(el) {
     const container = el.closest('[data-automation-id^="formField-"]') ?? el;
     const legend = container.querySelector("legend, label");
@@ -821,9 +830,21 @@
     const res = await chrome.runtime.sendMessage({ type: "wd:trustedType", text: value });
     return !!res?.ok;
   }
+  // [ua] v17.81 — Workday's hidden "beecatcher" (name "website", "This input is for
+  // robots only", from AIHawk's Workday notes): anything typed there marks the
+  // application as a bot's. Never written, whatever matched it.
+  function isHoneypot(el) {
+    try {
+      const own = [el.getAttribute("data-automation-id"), el.id, el.name, el.getAttribute("aria-label"), el.placeholder].join(" ");
+      if (/beecatcher/i.test(own)) return true;
+      const own2 = [...(el.labels ?? [])].map((l) => l.textContent).join(" ");
+      return /\brobots?\s+only\b/i.test(own2);
+    } catch { return false; }
+  }
   async function setText(target, value) {
     const el = inputIn(target);
     if (!el || el.disabled || el.readOnly) return false;
+    if (isHoneypot(el)) return false;
     const max = Number(el.getAttribute("maxlength")) || 0;
     const v = max > 0 ? value.slice(0, max) : value;
     if (el.value === v) return true;
@@ -1373,7 +1394,7 @@
     return qa('input[type="password"]').filter(isVisible);
   }
   function detectPage() {
-    const body = text(document.body).slice(0, 5e3);
+    const body = pageText().slice(0, 5e3);
     const next = nextButton();
     if (SUBMITTED_RX.test(body) && !next)
       return "submitted";
@@ -1736,7 +1757,7 @@
       }
       throw new NeedsHuman("Sign-in was rejected. Check the saved password (Workday settings) or use 'Forgot password', then click Resume.");
     }
-    if (VERIFY_EMAIL_RX.test(text(document.body).slice(0, 3e3)) && !byAid("next")) {
+    if (VERIFY_EMAIL_RX.test(pageText().slice(0, 3e3)) && !byAid("next")) {
       throw new NeedsHuman("Workday wants you to verify your email. Click the link in the email it sent, sign in again if asked, then click Resume.");
     }
     ctx.log("Signed in");
@@ -2930,7 +2951,10 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     // A slow Workday page draws its footer late: wait for it rather than give up at once.
     const btn = nextButton() ?? await waitFor(nextButton, 8e3, 250).catch(() => null);
     if (!btn) throw new NeedsHuman("Couldn't find the Next / Save and Continue button.");
-    if (isSubmitButton(btn)) return "stop";
+    // [ua] v17.82 — Submit on a step that is not Review (a one-step application, or a
+    // tenant whose last step has another name): this is the last step. It used to end
+    // the run with no word, and the host reported "stopped without finishing".
+    if (isSubmitButton(btn)) return submitOrHold(ctx, btn);
     const before = `${activeStepName()}|${detectPage()}`;
     await humanClick(btn);
     await sleep(500);
@@ -3047,14 +3071,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
         if (ctx.run.llmFilled.length) ctx.log(`AI-answered (please check): ${ctx.run.llmFilled.map((x) => x.label).join("; ")}`, "warn");
         const btn = nextButton();
         if (hooks.autoSubmit?.() && btn && isSubmitButton(btn)) return submitApplication(ctx, btn);
-        if (btn) highlightSubmit(btn);
-        ctx.run.status = "review";
-        ctx.run.pauseReason = "Review everything, then click Submit yourself.";
-        await ctx.save();
-        notify("Workday application ready", `${ctx.job?.title ?? "Application"} is filled — review and click Submit.`);
-        watchForSubmission();
-        hooks.onFinish?.(ctx.run, "review");
-        return "stop";
+        return holdForReview(ctx, btn);
       }
       case "submitted":
         await markSubmitted(ctx.run);
@@ -3172,11 +3189,27 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
       active = false;
     }
   }
-  async function submitApplication(ctx, btn) {
+  async function holdForReview(ctx, btn) {
+    if (btn) highlightSubmit(btn);
+    ctx.run.status = "review";
+    ctx.run.pauseReason = "Review everything, then click Submit yourself.";
+    await ctx.save();
+    notify("Workday application ready", `${ctx.job?.title ?? "Application"} is filled — review and click Submit.`);
+    watchForSubmission();
+    hooks.onFinish?.(ctx.run, "review");
+    return "stop";
+  }
+  // [ua] v17.82 — Submit reached on a step other than Review.
+  async function submitOrHold(ctx, btn) {
+    ctx.log(`Submit is on this step (${ctx.page}) — it is the last one`);
+    if (hooks.autoSubmit?.()) return submitApplication(ctx, btn, ctx.page);
+    return holdForReview(ctx, btn);
+  }
+  async function submitApplication(ctx, btn, from = "review") {
     ctx.log("Submitting the application");
     await humanClick(btn);
     await sleep(500);
-    const moved = () => detectPage() !== "review" || errorMessages().length > 0;
+    const moved = () => detectPage() !== from || errorMessages().length > 0;
     if (!await waitFor(moved, 3e3, 200).then(() => true, () => false)) {
       const again = nextButton();
       if (again && isSubmitButton(again)) {
@@ -3188,7 +3221,7 @@ OPTIONS: ${JSON.stringify(options.slice(0, 150))}`
     const outcome = await waitFor(() => detectPage() === "submitted" ? "done" : errorMessages().length ? "error" : null, 3e4, 250).catch(
       () => "timeout"
     );
-    if (outcome === "done" || outcome === "timeout" && detectPage() !== "review" && !errorMessages().length) {
+    if (outcome === "done" || outcome === "timeout" && from === "review" && detectPage() !== "review" && !errorMessages().length) {
       await markSubmitted(ctx.run);
       return "stop";
     }

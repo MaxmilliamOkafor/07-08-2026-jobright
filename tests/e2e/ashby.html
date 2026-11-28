@@ -10,6 +10,10 @@ input[type=text],input[type=email],input[type=tel],textarea{width:100%;padding:6
      "Submit Application". -->
 <h1>Senior Data Engineer</h1>
 <div class="ashby-application-form-container"><form id="af" novalidate onsubmit="return window.__validate(event)">
+ <!-- v17.80: as on real Ashby forms (AIHawk's notes), the FIRST file input is the parser's
+      "Autofill from resume"; the CV belongs in #_systemfield_resume below. -->
+ <div class="_autofillPane"><p>Autofill from resume</p><p>Upload your resume here to autofill key application fields.</p>
+   <button type="button" onclick="document.getElementById('af-resume').click()">Upload file</button><input id="af-resume" name="autofill_resume" type="file" style="display:none"></div>
  <div class="_fieldEntry"><label for="_systemfield_name" class="ashby-application-form-question-title">Name<span>*</span></label><input id="_systemfield_name" name="_systemfield_name" type="text" required></div>
  <div class="_fieldEntry"><label for="_systemfield_email" class="ashby-application-form-question-title">Email<span>*</span></label><input id="_systemfield_email" name="_systemfield_email" type="email" required></div>
  <div class="_fieldEntry"><label for="ph-3f1" class="ashby-application-form-question-title">Phone Number<span>*</span></label><input id="ph-3f1" name="ph-3f1" type="tel" required></div>

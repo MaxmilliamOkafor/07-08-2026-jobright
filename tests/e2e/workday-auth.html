@@ -8,7 +8,7 @@
 <div id="app"></div>
 <script>
   // ?acct_pw=… : the account was made earlier with a password the extension may not know.
-  const ACCOUNT = { email: 'max.test@example.com', password: new URLSearchParams(location.search).get('acct_pw') || 'JobrightPass1!' };
+  const ACCOUNT = { email: 'max.test@jobapply.test', password: new URLSearchParams(location.search).get('acct_pw') || 'JobrightPass1!' };
   // Like Workday: five refused sign-ins lock the account (kept across reloads of this tab).
   const fails = () => +(sessionStorage.getItem('fx_fails') || 0);
   const app = document.getElementById('app');
@@ -54,6 +54,17 @@
       console.log('SUBMITTED ' + JSON.stringify({ first: document.getElementById('fn').value, tries: window.__tries }));
       document.body.innerHTML = '<h1>Application Submitted</h1><p>Thank you for applying!</p>'; };
   };
+  /* ?email_first=1 — newer tenants (AIHawk's Workday notes): the "Create Account/Sign In"
+     step first shows only sign-in buttons. The email form opens from SignInWithEmailButton;
+     Google and LinkedIn must never be pressed. */
+  const chooser = () => { app.innerHTML = `
+    <div data-automation-id="authenticationContainer"><h2>Create Account/Sign In</h2>
+    <button type="button" data-automation-id="SignInWithGoogleButton" id="viaGoogle">Sign in with Google</button>
+    <button type="button" data-automation-id="SignInWithLinkedInButton" id="viaLinkedIn">Sign in with LinkedIn</button>
+    <button type="button" data-automation-id="SignInWithEmailButton" id="viaEmail">Sign in with email</button></div>`;
+    document.getElementById('viaGoogle').onclick = () => console.log('FX_GOOGLE_PRESSED');
+    document.getElementById('viaLinkedIn').onclick = () => console.log('FX_LINKEDIN_PRESSED');
+    document.getElementById('viaEmail').onclick = () => { console.log('FX_EMAIL_FORM'); signIn(''); }; };
   window.__events = { input: {}, scroll: 0, scrollDirChanges: 0 };
-  signIn('');
+  if (new URLSearchParams(location.search).get('email_first')) chooser(); else signIn('');
 </script></body></html>

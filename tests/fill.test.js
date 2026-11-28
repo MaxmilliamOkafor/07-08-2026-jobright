@@ -1413,7 +1413,7 @@ eq('the old catch-all skip message is gone',
 /* The slot filler is serial, so a flat 800ms per tab cost ten seconds of every
    refill at a concurrency of 12 — pure dead time in a bulk run. */
 console.log('tab opening scales with the batch');
-const fill = orch.slice(orch.indexOf('async function fillSlots'), orch.indexOf('async function fillSlots') + 4000);
+const fill = orch.slice(orch.indexOf('async function fillSlots'), orch.indexOf('async function fillSlots') + 7000);   // v17.80: the closed-posting check sits before the tab opening
 eq('the pause shrinks as the batch grows',
   /if \(cfg\.interJobDelayMs && toOpen\.length > 1\) \{\n          const per = Math\.max\(60, Math\.min\(cfg\.interJobDelayMs, Math\.round\(1200 \/ toOpen\.length\)\)\);/.test(fill), true);
 eq('a single job still gets the full configured pause',
@@ -2288,7 +2288,7 @@ const gnj = body('goToNextJob');
 eq('the runner asks the worker to move it, rather than setting location',
   /chrome\.runtime\.sendMessage\(\{ type: 'UA_NAV_NEXT', url \}/.test(gnj), true);
 eq('and the queue calls that instead of assigning location.href',
-  /setTimeout\(\(\) => \{ goToNextJob\(n\.url\); \}, delay\);/.test(src), true);
+  /setTimeout\(async \(\) => \{[\s\S]{0,900}?goToNextJob\(n\.url\);\n        \}, delay\);/.test(src), true);
 eq('no bare location.href hop is left in the queue runner',
   /setTimeout\(\(\) => \{ location\.href = n\.url; \}, delay\)/.test(src), false);
 /* A worker that is asleep, or a page outside the extension, must not strand the
@@ -4326,4 +4326,31 @@ console.log('v17.57: each job on its own page; one Workday account record; codes
   const dcb = body('dialCodeBeside');
   eq('a picker named "Country calling code" beside the phone box gives the code, so the box gets the local number',
     /country \(calling \|dial\(l\?ing\)\? \)\?code\|calling code/.test(dcb), true);
+}
+
+/* ── v17.79: the Workday account step with no usable email ── */
+console.log('v17.79: no email of yours for the Workday account → skipped at once, with the reason');
+{
+  const fwca = body('fillWorkdayCreateAccount');
+  eq('no email (only a placeholder, or none) is a dead end, not "working" for ever',
+    /if \(!email\) return wdNoEmailDeadEnd\(\);\n    if \(!pw\) return 'working';/.test(fwca) && !/if \(!email \|\| !pw\) return 'working';/.test(fwca), true);
+  const mk = (stored, profileEmail) => {
+    const state = { _authSkip: false, _authDeadEnd: '', logs: [] };
+    const fn = new Function('st', 'getProfile', 'LOG', 'DIAG', 'location', 'state',
+      `let _authSkip = false, _authDeadEnd = '';\n${body('wdNoEmailDeadEnd')}\nreturn async () => { const r = await wdNoEmailDeadEnd(); state._authSkip = _authSkip; state._authDeadEnd = _authDeadEnd; return r; };`)(
+      { get: async () => stored }, async () => ({ email: profileEmail }), (m) => state.logs.push(m), () => {}, { hostname: 'acme.wd1.myworkdayjobs.com' }, state);
+    return { run: fn, state };
+  };
+  asyncChecks.push((async () => {
+    const a = mk('default@lazyapply.com', '');
+    eq('LazyApply\'s default@lazyapply.com: the job stops (stop)', await a.run(), 'stop');
+    eq('…is skipped, not failed or left to stall', a.state._authSkip, true);
+    eq('…and says which placeholder it found and where to add your email',
+      /"default@lazyapply\.com"\) is a placeholder/.test(a.state._authDeadEnd) && /Your Autofill Information/.test(a.state._authDeadEnd), true);
+    const b = mk('', '');
+    await b.run();
+    eq('no email saved at all: says "none is saved"', /none is saved/.test(b.state._authDeadEnd), true);
+  })());
+  eq('a known dead end ends the job within 3s, as skipped with its reason (not "Stalled — no progress")',
+    /stallIv = uaEvery\(\(\) => \{\n      if \(finalized\) return;[\s\S]{0,420}if \(jobDeadEnded\(\)\) \{\n        LOG\('Job ends here: ' \+ _authDeadEnd\);\n        finalize\('skipped', _authDeadEnd\);/.test(src), true);
 }

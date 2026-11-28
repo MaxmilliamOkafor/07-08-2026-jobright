@@ -140,7 +140,10 @@ type StepResult = "next" | "continue" | "stop";
 async function clickNext(ctx: Ctx): Promise<StepResult> {
   const btn = nextButton();
   if (!btn) throw new NeedsHuman("Couldn't find the Next / Save and Continue button.");
-  if (isSubmitButton(btn)) return "stop";
+  // [ua] v17.82 — Submit on a step that is not Review (a one-step application, or a
+  // tenant whose last step has another name): this is the last step. It used to end
+  // the run with no word, and the host reported "stopped without finishing".
+  if (isSubmitButton(btn)) return submitOrHold(ctx, btn);
   const before = `${activeStepName()}|${detectPage()}`;
   await humanClick(btn);
   await sleep(500);
@@ -264,14 +267,7 @@ async function handlePage(ctx: Ctx, page: PageKind): Promise<StepResult> {
       if (ctx.run.llmFilled.length) ctx.log(`AI-answered (please check): ${ctx.run.llmFilled.map((x) => x.label).join("; ")}`, "warn");
       const btn = nextButton();
       if (hooks.autoSubmit?.() && btn && isSubmitButton(btn)) return submitApplication(ctx, btn); // [oh]
-      if (btn) highlightSubmit(btn);
-      ctx.run.status = "review";
-      ctx.run.pauseReason = "Review everything, then click Submit yourself.";
-      await ctx.save();
-      notify("Workday application ready", `${ctx.job?.title ?? "Application"} is filled — review and click Submit.`);
-      watchForSubmission();
-      hooks.onFinish?.(ctx.run, "review"); // [oh]
-      return "stop";
+      return holdForReview(ctx, btn);
     }
     case "submitted":
       await markSubmitted(ctx.run);
@@ -355,14 +351,33 @@ async function loop(run: RunState) {
   }
 }
 
+/** Filled, not sent: Submit is highlighted for you and the host is told "review". */
+async function holdForReview(ctx: Ctx, btn: HTMLElement | null): Promise<StepResult> {
+  if (btn) highlightSubmit(btn);
+  ctx.run.status = "review";
+  ctx.run.pauseReason = "Review everything, then click Submit yourself.";
+  await ctx.save();
+  notify("Workday application ready", `${ctx.job?.title ?? "Application"} is filled — review and click Submit.`);
+  watchForSubmission();
+  hooks.onFinish?.(ctx.run, "review"); // [oh]
+  return "stop";
+}
+
+/** [ua] v17.82 — Submit reached on a step other than Review. */
+async function submitOrHold(ctx: Ctx, btn: HTMLElement): Promise<StepResult> {
+  ctx.log(`Submit is on this step (${ctx.page}) — it is the last one`);
+  if (hooks.autoSubmit?.()) return submitApplication(ctx, btn, ctx.page);
+  return holdForReview(ctx, btn);
+}
+
 /** [oh] Unattended runs: press Submit and wait for Workday's confirmation. */
-async function submitApplication(ctx: Ctx, btn: HTMLElement): Promise<StepResult> {
+async function submitApplication(ctx: Ctx, btn: HTMLElement, from: PageKind = "review"): Promise<StepResult> {
   ctx.log("Submitting the application");
   await humanClick(btn);
   await sleep(500);
   // [ua] Same failure as "Add Another": Workday can swallow the synthetic click. If the
   // page hasn't moved and shows no errors, re-find Submit and click it natively.
-  const moved = () => detectPage() !== "review" || errorMessages().length > 0;
+  const moved = () => detectPage() !== from || errorMessages().length > 0;
   if (!(await waitFor(moved, 3000, 200).then(() => true, () => false))) {
     const again = nextButton();
     if (again && isSubmitButton(again)) {
@@ -375,7 +390,8 @@ async function submitApplication(ctx: Ctx, btn: HTMLElement): Promise<StepResult
     () => "timeout" as const
   );
   // Gone from Review with no error shown: Workday took it, whatever page it shows next.
-  if (outcome === "done" || (outcome === "timeout" && detectPage() !== "review" && !errorMessages().length)) {
+  // Off any other step, only Workday's own confirmation counts.
+  if (outcome === "done" || (outcome === "timeout" && from === "review" && detectPage() !== "review" && !errorMessages().length)) {
     await markSubmitted(ctx.run);
     return "stop";
   }

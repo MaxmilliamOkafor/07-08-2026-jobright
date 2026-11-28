@@ -2,7 +2,7 @@
  * Tenant, job and page detection. Pages are identified by what is on screen,
  * never by step number, because each tenant configures its own steps.
  */
-import { anyAid, byAid, isVisible, q, qa, text } from "./dom.js";
+import { anyAid, byAid, isVisible, pageText, q, qa, text } from "./dom.js";
 import { sel, type AidKey } from "./selectors.js";
 import type { JobPosting, PageKind } from "./types.js";
 import { ALREADY_APPLIED_RX, NEXT_TEXT_RX, SOMETHING_WRONG_RX, STEP_PATTERNS, SUBMIT_RX, SUBMITTED_RX, VERIFY_EMAIL_RX, detectLanguage, urlLanguage } from "./i18n.js";
@@ -89,7 +89,7 @@ export function authPasswordInputs(): HTMLInputElement[] {
 }
 
 export function detectPage(): PageKind {
-  const body = text(document.body).slice(0, 5000);
+  const body = pageText().slice(0, 5000);
   const next = nextButton();
 
   if (SUBMITTED_RX.test(body) && !next)

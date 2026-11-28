@@ -493,6 +493,161 @@
 
   /* ─────────────────────────── the engine ─────────────────────────── */
   let _filling = false, _refill = false;
+  /* ── IS THE POSTING STILL THERE? ONE PLAIN REQUEST BEFORE ITS TAB OPENS ─────
+     Ported from AIHawk's liveness check (feder-cr/Jobs_Applier_AI_Agent,
+     src/aihawk/liveness.py, MIT). It measured that about one listed posting in six
+     had closed since it was published, and that on these sites one request tells it
+     in under a second, by the site's own sign (each measured there on real closed
+     and open postings):
+       Lever       the posting answers 404
+       Ashby       404 with the board's own page, titled "Jobs"
+       Greenhouse  a redirect to the board with error=true; else the board's public
+                   API answers 404 for the job
+       Workable    a redirect to apply.workable.com/oops
+       BambooHR    the job's own JSON (/careers/<id>/detail) answers 404, or
+                   redirects to bamboohr.com or to the list of jobs
+       Paylocity   a redirect to /Recruiting/Jobs/JobNotFound
+       Workday     the JSON the page reads (/wday/cxs/…) answers 403, error S22
+     Only a clear "closed" skips a job. A site that blocks the request, a captcha, a
+     429, a timeout, any error, or any other site: unclear, and the job is opened as
+     before. No cookies are sent. Off with settings.livenessCheck = false. */
+  const LIVE = { OPEN: 'open', CLOSED: 'closed', UNCLEAR: 'unclear' };
+  const LIVE_TIMEOUT_MS = 8000;
+  const GREENHOUSE_BOARDS = ['boards.greenhouse.io', 'job-boards.greenhouse.io'];
+  const liveTitle = (t) => { const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(t || ''); return m ? m[1].trim() : ''; };
+  function workdayJobApi(url) {
+    try {
+      const u = new URL(url);
+      const host = u.hostname.toLowerCase();
+      if (!host.endsWith('.myworkdayjobs.com')) return '';
+      const m = /^\/(?:[a-z]{2}-[A-Z]{2}\/)?([^/]+)\/job\/(.+)$/.exec(u.pathname.replace(/\/(?:apply|applyManually)\/?$/, ''));
+      return m ? `https://${host}/wday/cxs/${host.split('.')[0]}/${m[1]}/job/${m[2]}` : '';
+    } catch (_) { return ''; }
+  }
+  function bamboohrJobApi(url) {
+    try {
+      const u = new URL(url);
+      const host = u.hostname.toLowerCase();
+      const m = /^\/careers\/(\d+)/.exec(u.pathname);
+      if (!m || host === 'www.bamboohr.com' || !host.endsWith('.bamboohr.com')) return '';
+      return `https://${host}/careers/${m[1]}/detail`;
+    } catch (_) { return ''; }
+  }
+  function greenhouseJobApi(url) {
+    try {
+      const u = new URL(url);
+      const m = /^\/([^/]+)\/jobs\/(\d+)/.exec(u.pathname);
+      if (!m || !GREENHOUSE_BOARDS.includes(u.hostname.toLowerCase())) return '';
+      return `https://boards-api.greenhouse.io/v1/boards/${m[1]}/jobs/${m[2]}`;
+    } catch (_) { return ''; }
+  }
+  function liveVendor(host) {
+    host = String(host || '').toLowerCase();
+    const on = (d) => host === d || host.endsWith('.' + d);
+    if (on('lever.co')) return 'lever';
+    if (on('ashbyhq.com')) return 'ashby';
+    if (on('greenhouse.io')) return 'greenhouse';
+    if (host === 'apply.workable.com') return 'workable';
+    if (on('bamboohr.com')) return 'bamboohr';
+    if (on('paylocity.com')) return 'paylocity';
+    if (on('myworkdayjobs.com')) return 'workday';
+    return '';
+  }
+  /* What one answer says: closed only on the site's own clear sign. */
+  function liveClassify(check, status, finalUrl, text) {
+    const final = String(finalUrl || '').split('#')[0];
+    let path = '', host = '';
+    try { const u = new URL(final); path = u.pathname.replace(/\/+$/, ''); host = u.hostname; } catch (_) {}
+    text = String(text || '');
+    switch (check) {
+      case 'lever': return status === 404 ? LIVE.CLOSED : status === 200 ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'ashby':
+        if (status === 404) return liveTitle(text) === 'Jobs' ? LIVE.CLOSED : LIVE.UNCLEAR;
+        return status === 200 ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'greenhouse':
+        if (/[?&]error=true\b/.test(final)) return LIVE.CLOSED;
+        // A page still holding its template's placeholder was not drawn for a real job: the API is asked.
+        return status === 200 && !text.includes('page_title') ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'greenhouse_api': return status === 404 ? LIVE.CLOSED : status === 200 ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'workable':
+        if (host === 'apply.workable.com' && path === '/oops') return LIVE.CLOSED;
+        return status === 200 ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'bamboohr':
+        if (status === 404 || host === 'www.bamboohr.com' || path === '/careers') return LIVE.CLOSED;
+        return status === 200 && text.includes('"jobOpening"') ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'paylocity':
+        if (/\/recruiting\/jobs\/jobnotfound/i.test(final)) return LIVE.CLOSED;
+        return status === 200 ? LIVE.OPEN : LIVE.UNCLEAR;
+      case 'workday': {
+        if (status === 200 && text.includes('jobPostingInfo')) return LIVE.OPEN;
+        let code = '';
+        try { const b = JSON.parse(text); code = b && typeof b === 'object' ? String(b.errorCode || '') : ''; } catch (_) {}
+        return status === 403 && code === 'S22' ? LIVE.CLOSED : LIVE.UNCLEAR;
+      }
+      default: return LIVE.UNCLEAR;
+    }
+  }
+  function livePlan(url) {
+    let u;
+    try { u = new URL(url); } catch (_) { return null; }
+    if (!/^https?:$/.test(u.protocol)) return null;
+    const vendor = liveVendor(u.hostname);
+    if (vendor === 'workday') { const api = workdayJobApi(url); return api ? ['workday', api] : null; }
+    if (vendor === 'bamboohr') { const api = bamboohrJobApi(url); return api ? ['bamboohr', api] : null; }
+    if (['lever', 'ashby', 'greenhouse', 'workable', 'paylocity'].includes(vendor)) return [vendor, url];
+    return null;
+  }
+  const LIVE_WHY = {
+    lever: 'Lever answers 404 for it', ashby: 'Ashby answers 404 with the board page', greenhouse: 'Greenhouse sends it back to the board ("error=true")',
+    greenhouse_api: 'Greenhouse\'s jobs API answers 404 for it', workable: 'Workable sends it to its "oops" page', bamboohr: 'BambooHR has no such job any more',
+    paylocity: 'Paylocity answers "Job Not Found"', workday: 'Workday answers "no longer available" (S22)',
+  };
+  async function liveAsk(check, target, signal, fetchFn) {
+    const r = await fetchFn(target, { credentials: 'omit', redirect: 'follow', cache: 'no-store', signal,
+      headers: { Accept: 'text/html,application/json;q=0.9,*/*;q=0.5' } });
+    let text = '';
+    try { text = (await r.text()).slice(0, 20000); } catch (_) {}
+    return liveClassify(check, r.status, r.url || target, text);
+  }
+  /* { state, why }. Never throws, never takes longer than LIVE_TIMEOUT_MS. */
+  async function postingCheck(url, fetchFn) {
+    const plan = livePlan(url);
+    if (!plan) return { state: LIVE.UNCLEAR, why: '' };
+    fetchFn = fetchFn || ((a, b) => fetch(a, b));
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => { try { ctl && ctl.abort(); } catch (_) {} }, LIVE_TIMEOUT_MS);
+    try {
+      const work = (async () => {
+        let [check, target] = plan;
+        let state = await liveAsk(check, target, ctl && ctl.signal, fetchFn);
+        if (check === 'greenhouse' && state === LIVE.UNCLEAR) {
+          const api = greenhouseJobApi(url);
+          if (api) { check = 'greenhouse_api'; state = await liveAsk(check, api, ctl && ctl.signal, fetchFn); }
+        }
+        return { state, why: state === LIVE.CLOSED ? LIVE_WHY[check] || '' : '' };
+      })();
+      const late = new Promise((r) => setTimeout(() => r({ state: LIVE.UNCLEAR, why: 'timeout' }), LIVE_TIMEOUT_MS + 200));
+      return await Promise.race([work, late]);
+    } catch (_) {
+      return { state: LIVE.UNCLEAR, why: '' };
+    } finally { clearTimeout(timer); }
+  }
+  self.__uaPostingCheck = postingCheck;
+  // The single-tab runner (a content script) asks here: a page cannot read other sites.
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (!msg || msg.type !== 'UA_POSTING_CHECK') return false;
+      (async () => {
+        const cfg = await settings().catch(() => ({}));
+        if (cfg && cfg.livenessCheck === false) return sendResponse({ state: LIVE.UNCLEAR, why: 'off' });
+        sendResponse(await postingCheck(String(msg.url || '')));
+      })().catch(() => { try { sendResponse({ state: LIVE.UNCLEAR }); } catch (_) {} });
+      return true;
+    });
+  } catch (_) {}
+  self.__uaLiveClassify = liveClassify;
+  self.__uaLivePlan = livePlan;
+
   async function fillSlots() {
     // Calls that arrive while a fill is in flight are not dropped — they're
     // coalesced into one more pass afterwards. Dropping them left slots empty
@@ -504,7 +659,7 @@
       if ((await get(K.PAUSED)) === true) return;
       const [cfg, conc, map] = [await settings(), await concurrency(), await reconcileTabs()];
 
-      const toOpen = (await withQueue((q) => {
+      let toOpen = (await withQueue((q) => {
         // Jobs parked on a CAPTCHA are deliberately excluded: they are waiting on
         // a person, not using the browser, so they must not cost a slot.
         const running = q.filter((j) => j.status === 'applying' && map[j.id] != null && !j.needsHuman).length;
@@ -522,6 +677,27 @@
         }
         return picked;
       })) || [];   // withQueue returns undefined if its callback threw
+
+      /* Closed postings are skipped before a tab is opened for them (see "IS THE
+         POSTING STILL THERE?"). All of this batch is asked at once, 8s at most. */
+      if (toOpen.length && cfg.livenessCheck !== false) {
+        const verdicts = await Promise.all(toOpen.map((j) => postingCheck(j.url).catch(() => ({ state: LIVE.UNCLEAR }))));
+        const closed = new Map();
+        toOpen.forEach((j, i) => { if (verdicts[i] && verdicts[i].state === LIVE.CLOSED) closed.set(j.id, verdicts[i].why); });
+        if (closed.size) {
+          await withQueue((q) => {
+            for (const j of q) {
+              if (!closed.has(j.id) || j.status !== 'applying') continue;
+              j.status = 'skipped';
+              j.error = 'Posting closed — ' + (closed.get(j.id) || 'the site says so') + ' (checked before opening, no tab used)';
+              j.completedAt = Date.now();
+            }
+          });
+          for (const [id, why] of closed) { const j = toOpen.find((x) => x.id === id); await log('⏭ Closed posting skipped: ' + ((j && (j.title || j.url)) || id) + ' — ' + why, 'warn'); }
+          toOpen = toOpen.filter((j) => !closed.has(j.id));
+          _refill = true;   // the freed slots go to the next jobs at once
+        }
+      }
 
       for (const job of toOpen) {
         const tab = await new Promise((res) => {
@@ -694,7 +870,7 @@
     const norm = normUrl(url);
     let added = false;
     await withQueue((q) => {
-      if (q.some((j) => normUrl(j.url) === norm)) return;
+      if (q.some((j) => normUrl(j.url) === norm || jobIdentity(j.url) === jobIdentity(norm))) return;
       q.push(Object.assign({
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         url: norm,
@@ -712,6 +888,28 @@
      normalizers — otherwise the same posting queued from two places (a CSV row
      and a right-click "add this page", say) looks like two different jobs and
      gets applied to twice. Tracking params are the usual culprit. */
+  function postingKey(u) {
+    /* v17.81 — one Workday job under many links (AIHawk's key.sql, MIT): with or
+       without the language or the city in the path, on any wdN shard, on
+       myworkdaysite.com, and with /apply or /apply/applyManually after it. The
+       company and the requisition id at the end ARE the job, so two links to it
+       are one job: never queued twice, never applied to twice. Any other site: ''. */
+    let x;
+    try { x = new URL(String(u || '').trim()); } catch (_) { return ''; }
+    const host = x.hostname.toLowerCase().replace(/^www\./, '');
+    const path = x.pathname.replace(/\/+$/, '').replace(/\/apply(\/(applyManually|autofillWithResume|useMyLastApplication))?$/i, '').replace(/\/(applyManually|application)$/i, '');
+    const req = /\/job\/(?:.*\/)?[^/]*_([^_/]+)$/i.exec(path);
+    if (!req) return '';
+    let m = /^([a-z0-9-]+)(?:\.wd\d+)?\.myworkdayjobs\.com$/.exec(host);
+    if (m) return 'workday:' + m[1] + ':' + req[1].toLowerCase();
+    if (/^wd\d+\.myworkdaysite\.com$/.test(host)) {
+      const t = /\/recruiting\/([^/]+)\//i.exec(path);
+      if (t) return 'workday:' + t[1].toLowerCase() + ':' + req[1].toLowerCase();
+    }
+    return '';
+  }
+  const jobIdentity = (u) => postingKey(u) || normUrl(u);
+
   function normUrl(u) {
     try {
       const x = new URL(String(u).trim());

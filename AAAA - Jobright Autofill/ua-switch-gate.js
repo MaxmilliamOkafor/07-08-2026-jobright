@@ -101,6 +101,9 @@
       if (!asksForIt(keys)) return cb === undefined ? rawGet(keys) : rawGet(keys, cb);
       const p = new Promise((res) => rawGet(keys, (d) => res(d || {}))).then(async (d) => {
         if (Object.prototype.hasOwnProperty.call(d, 'autofillEnabled') && !(await allowedAsync())) return Object.assign({}, d, { autofillEnabled: false });
+        // v17.83: on Workday with no SpeedyApply profile the Workday engine fills every
+        // step; the add-on only pressed Next under it (ua-enhancement.js decides).
+        if (d.autofillEnabled === true && TOP && typeof window.__uaSaAddonAllowed === 'function' && !(await window.__uaSaAddonAllowed())) return Object.assign({}, d, { autofillEnabled: false });
         return d;
       });
       if (typeof cb === 'function') { p.then((d) => cb(d)); return undefined; }
