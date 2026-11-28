@@ -1,7 +1,8 @@
-/* autofill-coordinator.js — lets LazyApply, Jobright, OptimHire and Job Genie
-   fill the same application form without fighting.
+/* autofill-coordinator.js — lets Jobright, OptimHire and Job Genie fill the
+   same application form without fighting, and keeps all three out of
+   LazyApply's way. LazyApply itself is not changed.
 
-   The SAME file is shipped in all four extensions and loaded as each one's
+   The SAME file is shipped in all three extensions and loaded as each one's
    first content script (document_start, every frame). Every extension's
    content scripts run in their own "isolated world" with their own copy of the
    DOM prototypes, so the wrappers below only change how THAT extension writes
@@ -17,16 +18,14 @@
       typing commands and clicks on form controls are skipped. No two tools
       scroll the page or move the focus against each other, so there is no
       flicker and no up-down-up-down scrolling.
-   2. LazyApply leads. It can always act and its answers win. While it is busy
-      (acted in the last LEADER_IDLE_MS; LEADER_RUN_IDLE_MS during a run) the
-      others wait; when it goes quiet they fill only the fields it left empty.
-      A LazyApply run is started from the lazyapply.com dashboard and works in
-      its automation tab(s); its background script injects this file there
-      together with the application script. While that run's "Automation In
-      Progress" panel (#autoFillTemplate) is up, Next / Submit / Apply clicks
-      are left to LazyApply alone.
+   2. LazyApply is left alone. A LazyApply run is started from the
+      lazyapply.com dashboard and works in its automation tab(s), which show
+      its "Automation In Progress" panel (#autoFillTemplate). While that panel
+      is on the page, the three others do not fill, click, focus or scroll
+      there at all. The only exception: Job Genie may still attach its tailored
+      resume to an EMPTY resume field. Job Genie's tailoring itself always runs.
    3. No overwriting. Once a field is answered by one tool (or by you), the
-      others leave it alone (LazyApply excepted). Fields are tagged
+      others leave it alone. Fields are tagged
       data-afc-by="<tool>".
    4. Job Genie's tailored CV. Job Genie may attach its tailored resume at any
       time, also over a resume another tool attached, and nobody replaces it
@@ -34,7 +33,7 @@
    5. Consistent answers. Each short answer is shared on the page and saved by
       every extension (chrome.storage.local "afc_bank"). When a tool is about
       to type an answer to a question that a higher-ranked source has already
-      answered (you > LazyApply > Jobright > OptimHire > Job Genie), it types
+      answered (you > Jobright > OptimHire > Job Genie), it types
       that answer instead. Free-text / company-specific questions are excluded.
    6. Less jitter for everyone: scrollIntoView on an element that is already
       fully on screen is skipped.
@@ -156,6 +155,7 @@
     return panelSeen;
   }
   function othersTurn() {                  // somebody else is acting right now
+    if (leaderRunning()) return true;      // a LazyApply run owns this page
     const h = holder();
     if (h && h !== ME && !IS_LEADER) return true;
     return leaderBusy();
@@ -359,7 +359,10 @@
 
     if (prop === 'files') {
       const resume = TAILORED_RESUME_WINS && isResume(field);
-      if (resume && ME === 'jobgenie') { claim(field, ME); log('tailored resume attached'); return { ok: true, v }; }
+      if (resume && ME === 'jobgenie') {
+        if (leaderRunning() && !isEmpty(field)) { log('LazyApply run: kept its resume'); return { ok: false }; }
+        claim(field, ME); log('tailored resume attached'); return { ok: true, v };
+      }
       if (resume && c === 'jobgenie') { log('kept Job Genie\'s tailored resume'); return { ok: false }; }
     }
     const empty = isEmpty(field);
