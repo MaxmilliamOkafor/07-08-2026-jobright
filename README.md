@@ -5274,7 +5274,7 @@ The engine fixes are in `workday-engine/src/workday/steps.ts` and, by hand, in
 TypeScript source, so rebuilding it would undo them. Tests:
 `tests/v1770.test.js`.
 
-## v17.71 — rebased onto Jobright 1.27.0
+## v17.71.1 — rebased onto Jobright 1.27.0
 
 A larger patch: seven of their files changed and ten are new. All were merged
 by the steps under "Applying the next Jobright patch".
