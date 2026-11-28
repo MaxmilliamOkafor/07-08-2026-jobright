@@ -82,9 +82,22 @@ async function trustedType(el: HTMLInputElement | HTMLTextAreaElement, value: st
   return !!res?.ok;
 }
 
+// [ua] v17.81 — Workday's hidden "beecatcher" (name "website", "This input is for
+// robots only", from AIHawk's Workday notes): anything typed there marks the
+// application as a bot's. Never written, whatever matched it.
+function isHoneypot(el: HTMLInputElement | HTMLTextAreaElement): boolean {
+  try {
+    const own = [el.getAttribute("data-automation-id"), el.id, el.name, el.getAttribute("aria-label"), el.placeholder].join(" ");
+    if (/beecatcher/i.test(own)) return true;
+    const own2 = [...(el.labels ?? [])].map((l) => l.textContent).join(" ");
+    return /\brobots?\s+only\b/i.test(own2);
+  } catch { return false; }
+}
+
 export async function setText(target: HTMLElement, value: string): Promise<boolean> {
   const el = inputIn(target);
   if (!el || el.disabled || el.readOnly) return false;
+  if (isHoneypot(el)) return false;
   const max = Number(el.getAttribute("maxlength")) || 0;
   const v = max > 0 ? value.slice(0, max) : value;
   if (el.value === v) return true;

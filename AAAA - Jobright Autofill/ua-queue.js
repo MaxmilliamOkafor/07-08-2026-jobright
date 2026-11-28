@@ -49,6 +49,28 @@
     try { const p = new URL(String(u)).protocol; return p === 'http:' || p === 'https:'; }
     catch (_) { return false; }
   }
+  function postingKey(u) {
+    /* v17.81 — one Workday job under many links (AIHawk's key.sql, MIT): with or
+       without the language or the city in the path, on any wdN shard, on
+       myworkdaysite.com, and with /apply or /apply/applyManually after it. The
+       company and the requisition id at the end ARE the job, so two links to it
+       are one job: never queued twice, never applied to twice. Any other site: ''. */
+    let x;
+    try { x = new URL(String(u || '').trim()); } catch (_) { return ''; }
+    const host = x.hostname.toLowerCase().replace(/^www\./, '');
+    const path = x.pathname.replace(/\/+$/, '').replace(/\/apply(\/(applyManually|autofillWithResume|useMyLastApplication))?$/i, '').replace(/\/(applyManually|application)$/i, '');
+    const req = /\/job\/(?:.*\/)?[^/]*_([^_/]+)$/i.exec(path);
+    if (!req) return '';
+    let m = /^([a-z0-9-]+)(?:\.wd\d+)?\.myworkdayjobs\.com$/.exec(host);
+    if (m) return 'workday:' + m[1] + ':' + req[1].toLowerCase();
+    if (/^wd\d+\.myworkdaysite\.com$/.test(host)) {
+      const t = /\/recruiting\/([^/]+)\//i.exec(path);
+      if (t) return 'workday:' + t[1].toLowerCase() + ':' + req[1].toLowerCase();
+    }
+    return '';
+  }
+  const jobIdentity = (u) => postingKey(u) || normUrl(u);
+
   function normUrl(u) {
     let s = String(u == null ? '' : u).trim()
       .replace(/^[\s"'<([]+/, '')
@@ -147,18 +169,19 @@
     // it clearly isn't data (no URL anywhere in it).
     if (!hasHeader && !urlFromRow(rows[0]) && rows.length > 1) hasHeader = true;
 
-    const applied = new Set(history.filter((h) => h.status === 'applied').map((h) => normUrl(h.url)));
+    const applied = new Set(history.filter((h) => h.status === 'applied').map((h) => jobIdentity(h.url)));
     const skipApplied = $('optSkip').checked;
-    const have = new Set(queue.map((j) => normUrl(j.url)));
+    const have = new Set(queue.map((j) => jobIdentity(j.url)));
     const additions = [];
     let dupes = 0, bad = 0, alreadyApplied = 0;
 
     for (const r of (hasHeader ? rows.slice(1) : rows)) {
       const url = urlFromRow(r, map.url);
       if (!url || !isSafeUrl(url)) { bad++; continue; }
-      if (have.has(url)) { dupes++; continue; }
-      if (skipApplied && applied.has(url)) { alreadyApplied++; continue; }
-      have.add(url);
+      const ident = jobIdentity(url);
+      if (have.has(ident)) { dupes++; continue; }
+      if (skipApplied && applied.has(ident)) { alreadyApplied++; continue; }
+      have.add(ident);
       additions.push({
         id: uid(),
         url,

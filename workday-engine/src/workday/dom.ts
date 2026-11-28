@@ -100,6 +100,16 @@ export function text(el: Element | null | undefined): string {
   return (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
+// [ua] v17.81 — the text a person sees: never inline scripts, hidden templates or
+// closed dialogs. Reading textContent, the words "Application Submitted" inside a
+// page's own script made the sign-in screen count as a submitted application.
+export function pageText(): string {
+  const b = document.body;
+  if (!b) return "";
+  const t = typeof b.innerText === "string" ? b.innerText : b.textContent;
+  return (t ?? "").replace(/\s+/g, " ").trim();
+}
+
 /** The label text of a form field container or control. */
 export function labelOf(el: HTMLElement): string {
   const container = el.closest<HTMLElement>('[data-automation-id^="formField-"]') ?? el;

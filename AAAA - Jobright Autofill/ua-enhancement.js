@@ -5986,6 +5986,28 @@
   function isSafeJobUrl(u) {
     try { const p = new URL(String(u)).protocol; return p === 'http:' || p === 'https:'; } catch (_) { return false; }
   }
+  function postingKey(u) {
+    /* v17.81 — one Workday job under many links (AIHawk's key.sql, MIT): with or
+       without the language or the city in the path, on any wdN shard, on
+       myworkdaysite.com, and with /apply or /apply/applyManually after it. The
+       company and the requisition id at the end ARE the job, so two links to it
+       are one job: never queued twice, never applied to twice. Any other site: ''. */
+    let x;
+    try { x = new URL(String(u || '').trim()); } catch (_) { return ''; }
+    const host = x.hostname.toLowerCase().replace(/^www\./, '');
+    const path = x.pathname.replace(/\/+$/, '').replace(/\/apply(\/(applyManually|autofillWithResume|useMyLastApplication))?$/i, '').replace(/\/(applyManually|application)$/i, '');
+    const req = /\/job\/(?:.*\/)?[^/]*_([^_/]+)$/i.exec(path);
+    if (!req) return '';
+    let m = /^([a-z0-9-]+)(?:\.wd\d+)?\.myworkdayjobs\.com$/.exec(host);
+    if (m) return 'workday:' + m[1] + ':' + req[1].toLowerCase();
+    if (/^wd\d+\.myworkdaysite\.com$/.test(host)) {
+      const t = /\/recruiting\/([^/]+)\//i.exec(path);
+      if (t) return 'workday:' + t[1].toLowerCase() + ':' + req[1].toLowerCase();
+    }
+    return '';
+  }
+  const jobIdentity = (u) => postingKey(u) || normalizeUrl(u);
+
   function normalizeUrl(u) {
     if (!u) return '';
     let s = String(u).trim().replace(/^[\s"'<([]+/, '').replace(/[)\]}>"'.,;]+$/, '');
@@ -6003,7 +6025,7 @@
   }
   async function addJob(url, title, meta) {
     url = normalizeUrl(url);
-    if (!url || !isSafeJobUrl(url) || queue.some(j => normalizeUrl(j.url) === url)) return;
+    if (!url || !isSafeJobUrl(url) || queue.some(j => normalizeUrl(j.url) === url || jobIdentity(j.url) === jobIdentity(url))) return;
     queue.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), url, title: title || shortUrl(url), status: 'pending', addedAt: Date.now(), jobBoard: detectJobBoard(url), companyName: meta?.companyName || '', error: null, startedAt: null, completedAt: null, duration: null, ...(meta || {}) });
     await saveQ(); renderQ(); updateCtrl();
   }
@@ -8652,6 +8674,12 @@
             }
             // A finished, quiet step SpeedyApply did not move on (its auto next / auto submit off).
             const n = wdNextButton();
+            /* v17.81 (AIHawk's Workday notes, seen on a real form): after Submit the
+               Review page — its Submit button included — can stay on screen for some
+               seconds before the address moves to /jobTasks/completed/application.
+               Read as "still settled", Submit was pressed again 4s later. It is not
+               pressed again for 20s unless Workday shows an error. */
+            if (n && /submit/i.test(n.textContent || '') && wdSubmitJustPressed()) { await sleep(400); continue; }
             if (n) {
               const isSubmit = /submit/i.test(n.textContent || '');
               LOG(`Workday (SpeedyApply): step settled — pressing ${isSubmit ? 'Submit' : 'Save and Continue'}`);
@@ -8794,7 +8822,10 @@
           LOG('Workday one-click: Review — pressing Submit');
           markSubmitAttempt();
           realClick(n);
-          if (await waitUntil(() => confirmSubmitted() || hardSuccessSignal(), 15000, 250)) { LOG('Workday one-click: application submitted'); outcome = 'submitted'; break; }
+          /* v17.81: the Review page can linger after Submit. Not pressed again until
+             Workday shows an error or 20s have passed with no confirmation. */
+          await waitUntil(() => confirmSubmitted() || hardSuccessSignal() || !wdSubmitJustPressed(), WD_SUBMIT_SETTLE_MS + 1000, 250);
+          if (confirmSubmitted() || hardSuccessSignal()) { LOG('Workday one-click: application submitted'); outcome = 'submitted'; break; }
           still = Date.now() - QUIET_MS; continue;    // errors shown: the next pass answers them
         }
         const before = stepSignature();
@@ -12641,8 +12672,8 @@
 
   // Has this URL already been applied to in a previous session?
   function alreadyApplied(url) {
-    const n = normalizeUrl(url);
-    return (_appHistory || []).some(a => a.status === 'applied' && normalizeUrl(a.url) === n);
+    const n = jobIdentity(url);
+    return !!n && (_appHistory || []).some(a => a.status === 'applied' && jobIdentity(a.url) === n);
   }
 
   // ===================== WORKDAY CREATE-ACCOUNT AUTO-FILLER =====================
@@ -12685,6 +12716,15 @@
      or more steps, a step heading, or several Workday form fields mean the
      application. */
   const WD_STEP_LABELS = ['my information', 'my experience', 'application questions', 'voluntary disclosures', 'self identify', 'review'];
+  /* Submit was pressed on Workday's Review less than 20s ago, and the page shows no
+     error: the send may still be leaving. Never press it again in that time. */
+  const WD_SUBMIT_SETTLE_MS = 20000;
+  function wdSubmitJustPressed() {
+    try {
+      if (!(submitAttempted() && submitAttemptAge() < WD_SUBMIT_SETTLE_MS)) return false;
+      return !(workdayAuthErrorText() || wdPageErrors());
+    } catch (_) { return false; }
+  }
   function workdayOnAccountWall() {
     try { return deepAll('input[type=password]', 6).some(isVisible) || !!wdEmailSignInButton(); } catch (_) { return false; }
   }

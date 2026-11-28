@@ -5583,3 +5583,37 @@ format the same form refuses). It is now unticked before filling.
 
 Tests: `tests/v1780.test.js` (49 checks, in `tests/run.sh`), and the browser
 tests `ashby.html` (with the decoy box) and `workday-auth.html?email_first=1`.
+
+## v17.81 — Workday, from AIHawk's Workday notes
+
+**The engine reads the page as you see it.** To tell which step it was on, the
+Workday engine read the page's raw text, which includes the page's own scripts.
+On the test page's "Sign in with email" screen, an inline script contains the
+words "Application Submitted", so the engine reported the application as sent
+while it was still at the sign-in. Any page whose scripts or hidden templates
+hold such words could do the same. The engine now reads only the visible text: when it works out
+which step it is on, and when it checks for "verify your email".
+
+**The honeypot is never typed into by the engine either.** Workday's hidden
+`beecatcher` field ("This input is for robots only", named `website`) was
+already skipped by the general fill (v17.80). The Workday engine types into
+fields by its own route, and now skips that field too.
+
+**One Workday posting is one job.** The same posting has many addresses: `/apply`,
+`/apply/applyManually`, `autofillWithResume`, another language (`en-GB`), another
+career site name, or another `wdN` server. Each one was a new job, so one posting
+could be queued and applied to twice. A Workday posting is now known by its
+company (tenant) and requisition id, as AIHawk does. This applies to:
+- adding to the Queue Manager;
+- the CSV import, for both "already applied" and "already queued";
+- the single-tab runner's "already applied" check.
+All other sites keep the address rule.
+
+**Submit is pressed once.** After Submit, Workday can leave the Review page and its
+Submit button on screen for some seconds before it moves to
+`/jobTasks/completed/application`. The SpeedyApply-driven loop took that page for
+a finished step and could press Submit again. The one-click Autofill could do the
+same after 15 seconds. Submit is now not pressed again for 20 seconds unless
+Workday shows an error.
+
+Tests: `tests/v1781.test.js` (47 checks, in `tests/run.sh`).

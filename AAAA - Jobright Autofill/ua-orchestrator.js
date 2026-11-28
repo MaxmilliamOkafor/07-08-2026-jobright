@@ -870,7 +870,7 @@
     const norm = normUrl(url);
     let added = false;
     await withQueue((q) => {
-      if (q.some((j) => normUrl(j.url) === norm)) return;
+      if (q.some((j) => normUrl(j.url) === norm || jobIdentity(j.url) === jobIdentity(norm))) return;
       q.push(Object.assign({
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         url: norm,
@@ -888,6 +888,28 @@
      normalizers — otherwise the same posting queued from two places (a CSV row
      and a right-click "add this page", say) looks like two different jobs and
      gets applied to twice. Tracking params are the usual culprit. */
+  function postingKey(u) {
+    /* v17.81 — one Workday job under many links (AIHawk's key.sql, MIT): with or
+       without the language or the city in the path, on any wdN shard, on
+       myworkdaysite.com, and with /apply or /apply/applyManually after it. The
+       company and the requisition id at the end ARE the job, so two links to it
+       are one job: never queued twice, never applied to twice. Any other site: ''. */
+    let x;
+    try { x = new URL(String(u || '').trim()); } catch (_) { return ''; }
+    const host = x.hostname.toLowerCase().replace(/^www\./, '');
+    const path = x.pathname.replace(/\/+$/, '').replace(/\/apply(\/(applyManually|autofillWithResume|useMyLastApplication))?$/i, '').replace(/\/(applyManually|application)$/i, '');
+    const req = /\/job\/(?:.*\/)?[^/]*_([^_/]+)$/i.exec(path);
+    if (!req) return '';
+    let m = /^([a-z0-9-]+)(?:\.wd\d+)?\.myworkdayjobs\.com$/.exec(host);
+    if (m) return 'workday:' + m[1] + ':' + req[1].toLowerCase();
+    if (/^wd\d+\.myworkdaysite\.com$/.test(host)) {
+      const t = /\/recruiting\/([^/]+)\//i.exec(path);
+      if (t) return 'workday:' + t[1].toLowerCase() + ':' + req[1].toLowerCase();
+    }
+    return '';
+  }
+  const jobIdentity = (u) => postingKey(u) || normUrl(u);
+
   function normUrl(u) {
     try {
       const x = new URL(String(u).trim());

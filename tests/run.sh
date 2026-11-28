@@ -117,6 +117,7 @@ step "Workday: submitted pages, duplicate languages/websites, end before start (
 node tests/v1770.test.js "$EXT" || fails=$((fails + 1))
 node tests/v1771.test.js "$EXT" || fails=$((fails + 1))
 node tests/v1780.test.js "$EXT" || fails=$((fails + 1))
+node tests/v1781.test.js "$EXT" || fails=$((fails + 1))
 
 step "Queue engine (service worker)"
 node tests/orchestrator.test.js "$EXT/ua-orchestrator.js" || fails=$((fails + 1))

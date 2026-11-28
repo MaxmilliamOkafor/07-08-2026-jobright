@@ -684,6 +684,15 @@
   function text(el) {
     return (el?.textContent ?? "").replace(/\s+/g, " ").trim();
   }
+  // [ua] v17.81 — the text a person sees: never inline scripts, hidden templates or
+  // closed dialogs. Reading textContent, the words "Application Submitted" inside a
+  // page's own script made the sign-in screen count as a submitted application.
+  function pageText() {
+    const b = document.body;
+    if (!b) return "";
+    const t = typeof b.innerText === "string" ? b.innerText : b.textContent;
+    return (t ?? "").replace(/\s+/g, " ").trim();
+  }
   function labelOf(el) {
     const container = el.closest('[data-automation-id^="formField-"]') ?? el;
     const legend = container.querySelector("legend, label");
@@ -821,9 +830,21 @@
     const res = await chrome.runtime.sendMessage({ type: "wd:trustedType", text: value });
     return !!res?.ok;
   }
+  // [ua] v17.81 — Workday's hidden "beecatcher" (name "website", "This input is for
+  // robots only", from AIHawk's Workday notes): anything typed there marks the
+  // application as a bot's. Never written, whatever matched it.
+  function isHoneypot(el) {
+    try {
+      const own = [el.getAttribute("data-automation-id"), el.id, el.name, el.getAttribute("aria-label"), el.placeholder].join(" ");
+      if (/beecatcher/i.test(own)) return true;
+      const own2 = [...(el.labels ?? [])].map((l) => l.textContent).join(" ");
+      return /\brobots?\s+only\b/i.test(own2);
+    } catch { return false; }
+  }
   async function setText(target, value) {
     const el = inputIn(target);
     if (!el || el.disabled || el.readOnly) return false;
+    if (isHoneypot(el)) return false;
     const max = Number(el.getAttribute("maxlength")) || 0;
     const v = max > 0 ? value.slice(0, max) : value;
     if (el.value === v) return true;
@@ -1373,7 +1394,7 @@
     return qa('input[type="password"]').filter(isVisible);
   }
   function detectPage() {
-    const body = text(document.body).slice(0, 5e3);
+    const body = pageText().slice(0, 5e3);
     const next = nextButton();
     if (SUBMITTED_RX.test(body) && !next)
       return "submitted";
@@ -1736,7 +1757,7 @@
       }
       throw new NeedsHuman("Sign-in was rejected. Check the saved password (Workday settings) or use 'Forgot password', then click Resume.");
     }
-    if (VERIFY_EMAIL_RX.test(text(document.body).slice(0, 3e3)) && !byAid("next")) {
+    if (VERIFY_EMAIL_RX.test(pageText().slice(0, 3e3)) && !byAid("next")) {
       throw new NeedsHuman("Workday wants you to verify your email. Click the link in the email it sent, sign in again if asked, then click Resume.");
     }
     ctx.log("Signed in");
